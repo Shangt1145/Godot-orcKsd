@@ -266,24 +266,18 @@ public partial class BattleScreen : Control
         if (card.Mode == BattleCardMode.Field && !_actions.Moves.Any(m => m.Uid == uid) && !_actions.AttackPreviews.Any(p => p.AttackerUid == uid))
         { CancelSelection(); ShowDetail(card); Hint("此单位当前没有可用行动"); return; }
         _selected = uid; _detail.Visible = _inspectStats.Visible = false;
-        Hint(card.Mode == BattleCardMode.Hand ? "点击我方支援线部署，或拖动卡牌；右键取消" : "点击前线移动，或移到敌方卡牌查看攻击预览");
+        Hint(card.Mode == BattleCardMode.Hand ? "拖动卡牌到我方支援线部署；右键取消" : "拖动单位到前线移动，或拖到敌方卡牌发动攻击；右键取消");
         UpdateSelection();
     }
     private void CardPressed(BattleCard card, Vector2 viewportPosition)
     {
         if (_busy) return;
-        if (_selected is { } selectedUid && _cards.TryGetValue(selectedUid, out var selectedHand) && selectedHand.Mode == BattleCardMode.Hand
-            && card.Mode != BattleCardMode.Hand && card.View?.OwnerSide == "self")
-        {
-            var at = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * viewportPosition;
-            if (SelfArea.HasPoint(at)) { TryDrop(at); return; }
-        }
+        // Actions are drag-only. A click never deploys, moves or attacks; it only selects and previews.
         if (card.View?.OwnerSide == "enemy")
         {
-            if (!_actions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == card.Uid))
-            { Hint("该目标当前不可选"); return; }
-            PreviewTarget(card.Uid);
-            if (_aim.Preview is not null && _actions.AttacksEnabled && _selected is { } attacker) Submit(new AttackUnit(attacker, card.Uid));
+            ShowDetail(card);
+            if (_selected is not null && !_actions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == card.Uid))
+                Hint("该目标当前不可选");
             return;
         }
         if (card.View?.IsHq == true) return;
@@ -367,8 +361,9 @@ public partial class BattleScreen : Control
     }
     private void BoardInput(InputEvent e)
     {
-        if (e is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } mouse || _pressed is not null || _busy) return;
-        TryDrop(mouse.Position);
+        // Clicking the board never commits an action; dragging is the only way to deploy, move or attack.
+        if (e is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } || _pressed is not null || _busy) return;
+        if (_selected is not null) CancelSelection();
     }
     private void TryDrop(Vector2 at)
     {
@@ -546,10 +541,13 @@ public partial class BattleScreen : Control
         if (!_state.SelfHand.Any(c => c.Uid == draggingUid) || _selected is not null || _cards[draggingUid].Position != _cards[draggingUid].RestPosition)
             throw new Exception("Battle invalid drop did not restore the hand.");
         var movingUid = _actions.Moves.First().Uid;
-        await ClickFixtureAsync(_cards[movingUid].RestPosition + new Vector2(56, 70));
+        // A click must never commit an action: dragging is the only gesture that moves a unit.
+        SelectCard(movingUid);
         await ClickFixtureAsync(new(890, 350));
         await ToSignal(GetTree().CreateTimer(.4), SceneTreeTimer.SignalName.Timeout);
-        if (_state.SelfLine.First(c => c.Uid == movingUid).Zone != "frontline") throw new Exception("Battle GUI click move failed.");
+        if (_state.SelfLine.First(c => c.Uid == movingUid).Zone != "support") throw new Exception("A click committed a move.");
+        await DragFixtureAsync(movingUid, new(890, 350));
+        if (_state.SelfLine.First(c => c.Uid == movingUid).Zone != "frontline") throw new Exception("Battle GUI drag move failed.");
         ResetDemo();
         SelectCard(_actions.PlayableUids.First());
         GetViewport().PushInput(new InputEventKey { Keycode = Key.Escape, Pressed = true }, true);
@@ -640,13 +638,12 @@ public partial class BattleScreen : Control
         StartScenario("bomber"); _demo.TryResolveAttack(new("self-front", "enemy-0"), out var stale, out _);
         inFlight = PresentCombatAsync(stale!, _demo.Actions); ResetDemo(); await inFlight;
         if (!_cards.ContainsKey("enemy-0") || _state.SelfKredits != 8 || _combat.LiveEffectCount != 0) throw new Exception("Stale combat mutated reset board.");
-        // Production projection: one click emits a request; it cannot spend Kredits, hurt or delete a card locally.
+        // Production projection: one drag emits a request; it cannot spend Kredits, hurt or delete a card locally.
         StartScenario("tank");
         var projected = _state; ApplyProjection(projected, _actions);
         var sent = new List<UiCommand>(); void OnCommand(UiCommand command) => sent.Add(command);
         CommandRequested += OnCommand;
-        SelectCard("self-front");
-        await ClickFixtureAsync(_cards["enemy-0"].RestPosition + _cards["enemy-0"].Size / 2);
+        await DragFixtureAsync("self-front", _cards["enemy-0"].RestPosition + _cards["enemy-0"].Size / 2);
         CommandRequested -= OnCommand;
         if (sent.Count != 1 || sent[0] is not AttackUnit || _state.SelfKredits != projected.SelfKredits || !_cards.ContainsKey("enemy-0")
             || _state.EnemyLine[0].Health != projected.EnemyLine[0].Health || _combat.IsPlaying)
