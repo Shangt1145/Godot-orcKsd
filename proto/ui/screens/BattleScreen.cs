@@ -391,10 +391,13 @@ public partial class BattleScreen : Control
             if (_pressed is not null && !_busy)
             {
                 if (at.DistanceTo(_pressAt) > 8) _dragging = true;
-                if (_dragging)
+                _detail.Visible = _inspectStats.Visible = false;
+                // Only a hand card travels with the cursor. A board unit stays on its slot and the
+                // gesture draws an arrow instead: that is how the original separates moving a unit
+                // from placing a card.
+                if (_dragging && _pressed.Mode == BattleCardMode.Hand)
                 {
                     _pressed.Position = at - _grabOffset; _pressed.Rotation = 0; _pressed.ZIndex = 140;
-                    _detail.Visible = _inspectStats.Visible = false;
                 }
             }
             if (_selected is not null && _cards.TryGetValue(_selected, out var selected) && selected.Mode == BattleCardMode.Field)
@@ -411,11 +414,8 @@ public partial class BattleScreen : Control
         if (e is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false } release && _pressed is not null)
         {
             var wasDragging = _dragging;
-            if (!wasDragging)
-            {
-                _pressed.Position = _pressed.RestPosition; _pressed.Rotation = _pressed.RestRotation;
-                _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
-            }
+            _pressed.Position = _pressed.RestPosition; _pressed.Rotation = _pressed.RestRotation;
+            _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
             _pressed = null; _dragging = false;
             if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position);
         }
@@ -548,6 +548,19 @@ public partial class BattleScreen : Control
         if (_state.SelfLine.First(c => c.Uid == movingUid).Zone != "support") throw new Exception("A click committed a move.");
         await DragFixtureAsync(movingUid, new(890, 350));
         if (_state.SelfLine.First(c => c.Uid == movingUid).Zone != "frontline") throw new Exception("Battle GUI drag move failed.");
+        // A board unit keeps its slot and draws an arrow; a hand card is the one that travels.
+        ResetDemo();
+        var arrowUid = _actions.Moves.First().Uid;
+        await DragBeginFixtureAsync(arrowUid, new(880, 340));
+        if (_cards[arrowUid].Position != _cards[arrowUid].RestPosition) throw new Exception("Dragging a board unit moved the card instead of drawing an arrow.");
+        if (!_aim.Visible) throw new Exception("Dragging a board unit did not draw an arrow.");
+        await DragEndFixtureAsync(new(880, 340));
+        if (_state.SelfLine.First(c => c.Uid == arrowUid).Zone != "frontline") throw new Exception("Releasing the arrow did not move the unit.");
+        ResetDemo();
+        var handUid = _actions.PlayableUids.First();
+        await DragBeginFixtureAsync(handUid, new(700, 520));
+        if (_cards[handUid].Position == _cards[handUid].RestPosition) throw new Exception("Dragging a hand card did not move the card.");
+        await DragEndFixtureAsync(new(700, 520));
         ResetDemo();
         SelectCard(_actions.PlayableUids.First());
         GetViewport().PushInput(new InputEventKey { Keycode = Key.Escape, Pressed = true }, true);
@@ -580,6 +593,24 @@ public partial class BattleScreen : Control
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         GetViewport().PushInput(new InputEventMouseButton { Position = finish, GlobalPosition = finish, ButtonIndex = MouseButton.Left, Pressed = false }, true);
         await ToSignal(GetTree().CreateTimer(.55), SceneTreeTimer.SignalName.Timeout);
+    }
+    private async Task DragBeginFixtureAsync(string uid, Vector2 to)
+    {
+        var card = _cards[uid];
+        var start = _canvas.GetGlobalTransformWithCanvas() * (card.RestPosition + new Vector2(card.Size.X / 2, 24));
+        var finish = _canvas.GetGlobalTransformWithCanvas() * to;
+        GetViewport().PushInput(new InputEventMouseMotion { Position = start, GlobalPosition = start }, true);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        GetViewport().PushInput(new InputEventMouseButton { Position = start, GlobalPosition = start, ButtonIndex = MouseButton.Left, Pressed = true, ButtonMask = MouseButtonMask.Left }, true);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        GetViewport().PushInput(new InputEventMouseMotion { Position = finish, GlobalPosition = finish, Relative = finish - start, ButtonMask = MouseButtonMask.Left }, true);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+    }
+    private async Task DragEndFixtureAsync(Vector2 to)
+    {
+        var point = _canvas.GetGlobalTransformWithCanvas() * to;
+        GetViewport().PushInput(new InputEventMouseButton { Position = point, GlobalPosition = point, ButtonIndex = MouseButton.Left, Pressed = false }, true);
+        await ToSignal(GetTree().CreateTimer(.5), SceneTreeTimer.SignalName.Timeout);
     }
     public void CapturePreview()
     {
