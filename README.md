@@ -1,5 +1,7 @@
 # OrC-KSD.Godot · 对战 UI
 
+> 版本：`0.0.0-alpha.1`（A.1）· 版本规则见 `docs/VERSIONING.md`
+
 Godot 4.7 .NET + C# 原型，入口为 `proto/scenes/Main.tscn`。
 
 当前源码在 `H:/Working Folder/OrC-KSD.Godot`，实际构建和运行副本在 **`H:/g/kards`**。只在源码目录编辑，使用脚本同步；短路径中的 `.godot`、bin、obj 不会复制回源码。参考项目与引擎源码均保持只读。
