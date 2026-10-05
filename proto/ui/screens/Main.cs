@@ -74,7 +74,12 @@ public partial class Main : Control
         AddScreen(content, "collection", collection);
         _battle = new BattleScreen();
         _battle.Initialize(_catalog, _textures, _clock, sfx);
-        _battle.CommandRequested += command => CommandRequested?.Invoke(command);
+        _battle.CommandRequested += command =>
+        {
+            if (_runner?.IsRunning == true) _ = _runner.SubmitAsync(command);
+            CommandRequested?.Invoke(command);
+        };
+        _battle.RealMatchRequested += () => _ = StartRealMatchAsync();
         _battle.NavigationRequested += Show;
         AddScreen(content, "battle", _battle);
         AddScreen(content, "deck", Placeholder("卡组编辑", "卡组保存、数量限制与可用性将在卡组契约确定后接入。", "浏览卡牌", () => Show("collection")));
@@ -121,6 +126,7 @@ public partial class Main : Control
         runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
         runner.PresentationReady += (resolution, actions) => _ = _battle.PresentSequenceAsync(resolution, actions);
         runner.ErrorRaised += message => GD.PushError("[engine] " + message);
+        runner.HintRequested += message => _battle.ShowHint(message);
         _runner = runner;
         await runner.StartAsync();
     }
@@ -143,7 +149,22 @@ public partial class Main : Control
         var settled = _runner!.CurrentView!;
         if (settled.MatchId != view.MatchId || settled.Phase != "play" || settled.SelfHand.Count != view.SelfHand.Count)
             throw new Exception("Pump mutated the authoritative projection.");
-        GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable");
+
+        // Playable loop: submit a real play and a real end-turn; the engine decides both outcomes.
+        var actions = _runner!.CurrentActions;
+        if (!actions.CanEndTurn || actions.PlayableUids.Count == 0)
+            throw new Exception("Engine availability did not reach the UI.");
+        var uid = actions.PlayableUids[0];
+        var handBefore = settled.SelfHand.Count;
+        await _runner!.SubmitAsync(new PlayCard(uid));
+        var played = _runner!.CurrentView!;
+        if (played.SelfHand.Count != handBefore - 1) throw new Exception("Playing a card did not consume it.");
+        if (!played.SelfLine.Any(c => c.Uid == uid)) throw new Exception("Played unit never reached the board.");
+
+        await _runner!.SubmitAsync(new EndTurn());
+        if (_runner!.CurrentView!.ActivePlayerSide != "enemy") throw new Exception("End turn did not pass the turn.");
+
+        GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable deploy endturn");
     }
 
     /// <summary>Version comes from project.godot (single source of truth: root VERSION file).</summary>

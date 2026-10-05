@@ -22,6 +22,7 @@ public sealed class OrcMatchHost
     private OrcCardReader _cards = null!;
     private OrcMatchReader _reader = null!;
     private OrcUpdateTranslator _translator = null!;
+    private readonly OrcActionReader _actions = new();
     private IDisposable? _immediate;
     private UiMatchView? _view;
 
@@ -47,6 +48,15 @@ public sealed class OrcMatchHost
 
     /// <summary>Last read board. Null until <see cref="InitializeAsync"/> completes.</summary>
     public UiMatchView View => _view ?? throw new InvalidOperationException("Match host has not been initialized.");
+
+    /// <summary>The player this host renders for.</summary>
+    public Player Viewer => _viewer;
+
+    /// <summary>uid -> engine card for the last read; commands arrive as uids.</summary>
+    public IReadOnlyDictionary<string, Orc.Cards.Card> Index => _reader?.LastIndex ?? new Dictionary<string, Orc.Cards.Card>();
+
+    /// <summary>Availability for the current board, read from the engine's query surfaces.</summary>
+    public UiBattleActions Actions => _actions.Read(_match, _viewer, Index);
 
     /// <summary>Non-blocking feedback lane: fire and forget flags only, never animation work.</summary>
     public event Action<string>? ImmediateUpdate;

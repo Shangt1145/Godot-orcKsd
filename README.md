@@ -1,6 +1,6 @@
 # OrC-KSD.Godot · 对战 UI
 
-> 版本：`0.0.0-alpha.1`（A.1）· 版本规则见 `docs/VERSIONING.md`
+> 版本规则见 `docs/VERSIONING.md`，当前版本见根目录 `VERSION`（应用内页脚同步显示）
 
 Godot 4.7 .NET + C# 原型，入口为 `proto/scenes/Main.tscn`。
 

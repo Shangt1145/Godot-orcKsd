@@ -18,6 +18,13 @@ public sealed class OrcMatchReader
 
     public OrcMatchReader(OrcCardReader cards) { _cards = cards; }
 
+    /// <summary>
+    /// uid -> engine card, rebuilt by every <see cref="Read"/>. Commands arrive as uids, so this is how a
+    /// click is mapped back to an engine entity. It is a snapshot: a card destroyed since the last read is
+    /// simply absent here.
+    /// </summary>
+    public IReadOnlyDictionary<string, Card> LastIndex { get; private set; } = new Dictionary<string, Card>();
+
     public UiMatchView Read(Match match, Player viewer, string matchId)
     {
         var opponent = OpponentOf(match, viewer);
@@ -28,15 +35,22 @@ public sealed class OrcMatchReader
             _ => "over"
         };
 
+        var index = new Dictionary<string, Card>();
         var hand = new List<UiCardView>();
         for (var i = 0; i < viewer.Hand.Count; i++)
             if (viewer.Hand[i] is CardBase card)
+            {
                 hand.Add(_cards.Read(card, viewer, "hand", i));
+                index[OrcRefs.KeyOf(card)] = card;
+            }
 
-        var selfLine = Row(match, viewer, viewer, front: false).Concat(Row(match, viewer, viewer, front: true)).ToArray();
+        var selfLine = Row(match, viewer, viewer, false, index).Concat(Row(match, viewer, viewer, true, index)).ToArray();
         var enemyLine = opponent is null
             ? Array.Empty<UiCardView>()
-            : Row(match, opponent, viewer, front: false).Concat(Row(match, opponent, viewer, front: true)).ToArray();
+            : Row(match, opponent, viewer, false, index).Concat(Row(match, opponent, viewer, true, index)).ToArray();
+        if (opponent is not null) HqOf(opponent, viewer, index);
+        var selfHq = HqOf(viewer, viewer, index);
+        LastIndex = index;
 
         return new UiMatchView
         {
@@ -58,25 +72,31 @@ public sealed class OrcMatchReader
             SelfCounterCount = viewer.Hand.Count(h => h is CardBase c && c.TryGetData<CounterActivationData>(out var a) && a.IsActive),
             SelfHand = hand,
             SelfLine = selfLine,
-            SelfHq = HqOf(viewer, viewer),
+            SelfHq = selfHq,
             EnemyLine = enemyLine,
             EnemyHq = opponent is null ? null : HqOf(opponent, viewer)
         };
     }
 
-    private UiCardView? HqOf(Player owner, Player viewer)
+    private UiCardView HqOf(Player owner, Player viewer) => HqOf(owner, viewer, new Dictionary<string, Card>());
+
+    private UiCardView HqOf(Player owner, Player viewer, Dictionary<string, Card> index)
     {
         var slot = owner.Hq.Position;
+        index[OrcRefs.KeyOf(owner.Hq)] = owner.Hq;
         return _cards.Read(owner.Hq, viewer, "support", slot?.Index ?? 0);
     }
 
-    private IEnumerable<UiCardView> Row(Match match, Player owner, Player viewer, bool front)
+    private IEnumerable<UiCardView> Row(Match match, Player owner, Player viewer, bool front, Dictionary<string, Card> index)
     {
         var battlefield = match.Battlefield;
         var line = front ? battlefield.FrontLine : battlefield.GetSupportLine(owner.Index);
         for (var i = 0; i < line.Count; i++)
             if (line[i].Occupant is UnitCard unit && ReferenceEquals(unit.Owner, owner))
+            {
+                index[OrcRefs.KeyOf(unit)] = unit;
                 yield return _cards.Read(unit, viewer, front ? "frontline" : "support", i);
+            }
     }
 
     private static Player? OpponentOf(Match match, Player viewer)

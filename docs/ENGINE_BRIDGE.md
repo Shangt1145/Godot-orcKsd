@@ -60,8 +60,26 @@ dotnet test tests/Kards.Ui.Tests.csproj            # 36 项（含 8 项真实对
 引擎源码不在本仓库内；引用路径由 `OrcEngineRoot` 属性控制，可覆盖：
 `dotnet build -p:OrcEngineRoot=<path>\src\Orc.Game`
 
+## 可玩闭环（P2）
+
+命令映射（`OrcMatchRunner.SubmitAsync`），引擎入口一一对应：
+
+| UI 命令 | 引擎入口 |
+|---|---|
+| `PlayCard` | `PlayManager.BeginUnitPrePlayAsync` / `BeginCommandPrePlayAsync` |
+| `MoveUnit` | `CommandManager.BeginMoveAsync` |
+| `AttackUnit` | `CommandManager.BeginAttackAsync`（玩家点击的目标作为选择回放给引擎） |
+| `EndTurn` | `Match.EndTurn` |
+
+- 可用行动投影 `OrcActionReader`：移动/攻击来自 `GetCommandAvailability`（引擎纯查询）；**引擎没有"能否出牌"查询面**，所以手牌列为可尝试，合法性由引擎在提交时判定，其拒绝原因（`PlayFailureReason` / `CommandFailureReason`）原样显示给玩家。
+- 伤害预览**不编造**：`AttackPreviews` 只带候选目标，不带伤害数字。
+- 目标选择：`OrcTargeterBridge` 优先用玩家意图（已点击的目标），换牌保留全部，其余取首个允许候选 —— 这是交互面板接入前的过渡策略。
+- 入口：战斗页齿轮菜单「真实对局（接入引擎）」。
+
 ## 尚未接线（后续阶段）
 
-- 换牌的**交互**面板（识别 `TargetSlotKind.MulliganSelect` 后让玩家点选；当前是"保留全部"自动应答）
-- 出牌 / 移动 / 攻击的命令映射与 `GetCommandAvailability` 高亮置黑
-- 战斗结算演出与终局
+- 交互式换牌面板（识别 `TargetSlotKind.MulliganSelect` 后让玩家点选替换）
+- 部署槽位 / 攻击目标的**玩家点选**面板（当前为自动应答）
+- 伤害数字预览（需引擎查询面）
+- 战斗结算演出、状态变化与终局面板
+- 卡图 `id → res://…png` 映射（当前为文字卡面兜底）

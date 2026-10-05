@@ -39,6 +39,16 @@ public partial class BattleScreen : Control
     public event Action<UiCommand>? CommandRequested;
 
     public event Action<string>? NavigationRequested;
+
+    /// <summary>Raised by the gear menu: run the screen from a real engine match instead of the demo fixture.</summary>
+    public event Action? RealMatchRequested;
+
+    /// <summary>Shows text supplied from outside (for example an engine refusal reason).</summary>
+    public void ShowHint(string text)
+    {
+        _hint.Text = text;
+        _hint.Visible = true;
+    }
     public void Initialize(CardCatalog catalog, TextureCache textures, AnimClock clock, SfxPlayer sfx)
     {
         _textures = textures; _clock = clock; _sfx = sfx; _demo = new(catalog.Cards);
@@ -69,9 +79,11 @@ public partial class BattleScreen : Control
         popup.AddSeparator(); popup.AddItem("反制武装演示", 18); popup.AddItem("取消武装演示", 19);
         popup.AddItem("反制触发演示", 20); popup.AddItem("治疗演示", 21); popup.AddItem("强化演示", 22);
         popup.AddItem("压制与解除演示", 23); popup.AddItem("费用变化演示", 24);
+        popup.AddSeparator(); popup.AddItem("真实对局（接入引擎）", 25);
         popup.IdPressed += id =>
         {
-            if (id == 0) NavigationRequested?.Invoke("collection");
+            if (id == 25) RealMatchRequested?.Invoke();
+            else if (id == 0) NavigationRequested?.Invoke("collection");
             else if (id == 1) NavigationRequested?.Invoke("settings");
             else if (id == 2) ResetDemo();
             else if (id == 9) StartScenario("tank", false, "fighter");
