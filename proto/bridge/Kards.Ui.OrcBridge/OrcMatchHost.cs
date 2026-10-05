@@ -98,13 +98,10 @@ public sealed class OrcMatchHost
 
             var after = _reader.Read(_match, _viewer, _matchId);
             var steps = _translator.Translate(updates, _viewer, _view ?? after, after);
-            var previous = _view;
             _view = after;
-            if (steps.Count == 0) continue;
-            PresentationReady?.Invoke(
-                new UiPresentationResolution(_matchId, steps, after),
-                new UiBattleActions());
-            _ = previous;
+            // Steps choreograph the transition; an empty list still settles the board through the
+            // presentation's animated render. Publishing earlier would overwrite the animation.
+            PresentationReady?.Invoke(new UiPresentationResolution(_matchId, steps, after), Actions);
         }
     }
 

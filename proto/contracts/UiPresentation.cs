@@ -9,7 +9,7 @@ public sealed record UiDeploymentPresentation(UiCardView Card, UiMatchView Deplo
 public sealed record UiRemovalPresentation(UiCardView Card) : UiPresentationStep;
 public enum UiCounterStage { Armed, Disarmed, Triggered }
 public sealed record UiCounterPresentation(string Side, UiCounterStage Stage, UiCardView? Card = null, UiCardView? BlockedCard = null) : UiPresentationStep;
-public enum UiStatusKind { Heal, Buff, Suppressed, Cleared, CostChanged }
+public enum UiStatusKind { Heal, Buff, Damaged, Suppressed, Cleared, CostChanged }
 public sealed record UiStatusPresentation(UiCardView Before, UiCardView After, UiStatusKind Status) : UiPresentationStep;
 public enum UiDiscardKind { Discard, Burn }
 public sealed record UiDiscardPresentation(string Side, UiCardView? Card, UiDiscardKind Kind) : UiPresentationStep;

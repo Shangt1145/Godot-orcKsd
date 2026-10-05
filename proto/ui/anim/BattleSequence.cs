@@ -250,11 +250,13 @@ public partial class BattleSequence : Control
         {
             UiStatusKind.Heal => "治疗 " + change.After.Health,
             UiStatusKind.Buff => $"{change.After.EffectiveAttack} / {change.After.Health}",
+            UiStatusKind.Damaged => "-" + Math.Max(0, (change.Before.Health ?? 0) - (change.After.Health ?? 0)),
             UiStatusKind.Suppressed => "压制", UiStatusKind.Cleared => "已解除",
             _ => "费用 " + change.After.EffectiveCost
         };
         var cue = new BattleStatusCue { Size = Size, Center = card.Position + (card.Mode == BattleCardMode.Hand ? new Vector2(card.Size.X / 2, 20) : card.Size / 2), Caption = caption,
-            Ink = change.Status is UiStatusKind.Heal or UiStatusKind.Buff ? new("a2b67d") : new("ded2a7"),
+            Ink = change.Status is UiStatusKind.Heal or UiStatusKind.Buff ? new("a2b67d")
+                : change.Status == UiStatusKind.Damaged ? new("d66142") : new("ded2a7"),
             Duration = Time(.80), Quiet = _clock.ReducedMotion, Stamp = change.Status is UiStatusKind.Suppressed or UiStatusKind.Cleared };
         AddChild(cue); _sfx.Play("intel");
         PhaseChanged?.Invoke("status-" + change.Status.ToString().ToLowerInvariant());

@@ -156,12 +156,17 @@ public partial class Main : Control
             throw new Exception("Engine availability did not reach the UI.");
         var uid = actions.PlayableUids[0];
         var handBefore = settled.SelfHand.Count;
+        var deployed = false;
+        _runner!.PresentationReady += (resolution, _) => deployed |= resolution.Steps.Any(s => s is UiDeploymentPresentation);
         await _runner!.SubmitAsync(new PlayCard(uid));
+        await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
         var played = _runner!.CurrentView!;
         if (played.SelfHand.Count != handBefore - 1) throw new Exception("Playing a card did not consume it.");
         if (!played.SelfLine.Any(c => c.Uid == uid)) throw new Exception("Played unit never reached the board.");
+        if (!deployed) throw new Exception("Deployment produced no presentation.");
 
         await _runner!.SubmitAsync(new EndTurn());
+        await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
         if (_runner!.CurrentView!.ActivePlayerSide != "enemy") throw new Exception("End turn did not pass the turn.");
 
         GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable deploy endturn");

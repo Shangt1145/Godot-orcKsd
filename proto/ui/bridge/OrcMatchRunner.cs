@@ -114,7 +114,7 @@ public sealed class OrcMatchRunner
                 HintRequested?.Invoke("该操作尚未接入引擎");
                 return;
         }
-        Publish();
+        // The board is not refreshed here: Pump picks up the segment and the presentation plays first.
     }
 
     private async Task PlayAsync(string uid, CancellationToken ct)

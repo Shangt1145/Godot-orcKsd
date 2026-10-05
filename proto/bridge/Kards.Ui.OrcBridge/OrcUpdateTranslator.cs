@@ -1,3 +1,4 @@
+using Orc.Cards;
 using Orc.Game;
 using Orc.Game.Cards;
 using Orc.Game.Players;
@@ -30,6 +31,12 @@ public sealed class OrcUpdateTranslator
                 case GameUpdates.CardHandAdd:
                 case GameUpdates.CardDrawn:
                     AddDraw(steps, payload, viewer, after);
+                    break;
+                case GameUpdates.UnitDeployed:
+                    AddDeployment(steps, payload, after);
+                    break;
+                case GameUpdates.CardStatChanged:
+                    AddStatChange(steps, payload, previous, after);
                     break;
                 case GameUpdates.CardDiscarded:
                     AddDiscard(steps, payload, viewer, UiDiscardKind.Discard);
@@ -93,6 +100,50 @@ public sealed class OrcUpdateTranslator
         var before = previous.SelfLine.Concat(previous.EnemyLine).FirstOrDefault(c => c.Uid == OrcRefs.KeyOf(card));
         if (before is null) return;
         steps.Add(new UiRemovalPresentation(before));
+    }
+
+    /// <summary>
+    /// A deployment plays the paper fly-in. The staged board is the row the instant before the unit
+    /// landed (the same trick the demo fixture uses), so the flight starts from the hand, not from a
+    /// board that already shows the final row.
+    /// </summary>
+    private void AddDeployment(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload, UiMatchView after)
+    {
+        var card = PayloadCard(payload);
+        if (card is null) return;
+        var view = BoardView(card, after);
+        if (view is null) return;
+        var staged = view.OwnerSide == "self"
+            ? after with { SelfLine = after.SelfLine.Where(c => c.Uid != view.Uid).ToArray() }
+            : after with { EnemyLine = after.EnemyLine.Where(c => c.Uid != view.Uid).ToArray() };
+        steps.Add(new UiDeploymentPresentation(view, staged));
+    }
+
+    /// <summary>A defense drop reads as damage: a red floating cue, not a silent value swap.</summary>
+    private void AddStatChange(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,
+        UiMatchView previous, UiMatchView after)
+    {
+        var card = PayloadCard(payload);
+        if (card is null) return;
+        var uid = OrcRefs.KeyOf(card);
+        var before = previous.SelfLine.Concat(previous.EnemyLine).FirstOrDefault(c => c.Uid == uid);
+        if (before is null && previous.SelfHq?.Uid == uid) before = previous.SelfHq;
+        if (before is null && previous.EnemyHq?.Uid == uid) before = previous.EnemyHq;
+        var afterView = BoardView(card, after);
+        if (before is null || afterView is null || afterView.Visibility != Visibility.Full) return;
+        var fields = payload.TryGetValue(GameUpdates.PayloadChangedFields, out var value) ? value as IReadOnlyList<string> : null;
+        var defenseHit = fields is null || fields.Contains(CardStatFields.Defense);
+        if (defenseHit && (before.Health ?? 0) > (afterView.Health ?? 0))
+            steps.Add(new UiStatusPresentation(before, afterView, UiStatusKind.Damaged));
+    }
+
+    private static UiCardView? BoardView(Card card, UiMatchView after)
+    {
+        var uid = OrcRefs.KeyOf(card);
+        var hit = after.SelfLine.FirstOrDefault(c => c.Uid == uid) ?? after.EnemyLine.FirstOrDefault(c => c.Uid == uid);
+        if (hit is not null) return hit;
+        if (after.SelfHq?.Uid == uid) return after.SelfHq;
+        return after.EnemyHq?.Uid == uid ? after.EnemyHq : null;
     }
 
     private void AddTurn(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,
