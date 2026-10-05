@@ -99,7 +99,7 @@ public partial class Main : Control
         root.AddChild(footer);
         var footRow = new HBoxContainer();
         footer.AddChild(footRow);
-        footRow.AddChild(UiStyles.Label("对战重做 · 第二阶段", 12, UiStyles.Dim));
+        footRow.AddChild(UiStyles.Label("对战重做 · 第二阶段" + VersionSuffix(), 12, UiStyles.Dim));
         var gap = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         footRow.AddChild(gap);
         _speedLabel = UiStyles.Label("", 12, UiStyles.Dim);
@@ -144,6 +144,13 @@ public partial class Main : Control
         if (settled.MatchId != view.MatchId || settled.Phase != "play" || settled.SelfHand.Count != view.SelfHand.Count)
             throw new Exception("Pump mutated the authoritative projection.");
         GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable");
+    }
+
+    /// <summary>Version comes from project.godot (single source of truth: root VERSION file).</summary>
+    private static string VersionSuffix()
+    {
+        var value = ProjectSettings.GetSetting("application/config/version", "").AsString();
+        return value.Length == 0 ? "" : " · " + value;
     }
 
     private void AddScreen(Control host, string id, Control screen)
