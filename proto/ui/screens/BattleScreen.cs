@@ -474,6 +474,38 @@ public partial class BattleScreen : Control
         var attack = _actions.AttackPreviews.First(p => p.AttackerUid == "self-front" && p.DefenderUid == (hq ? "enemy-hq" : "enemy-0"));
         SelectCard(attack.AttackerUid); PreviewTarget(attack.DefenderUid);
     }
+    /// <summary>
+    /// Board impacts coming from a real engine segment: hit flash, damage number, death — then the
+    /// authoritative after-state. No trajectory is played because the engine does not report the attacker.
+    /// </summary>
+    public async Task PresentBoardImpactsAsync(string matchId, IReadOnlyList<UiOrderImpact> supplied,
+        UiMatchView suppliedAfter, UiBattleActions suppliedActions)
+    {
+        if (supplied.Count == 0 || matchId != _state.MatchId || suppliedAfter.MatchId != matchId) return;
+        CancelSelection();
+        var impacts = supplied.Select(i => i with
+        {
+            Before = UiSnapshots.Freeze(i.Before), After = i.After is null ? null : UiSnapshots.Freeze(i.After)
+        }).ToArray();
+        var actions = UiSnapshots.Freeze(suppliedActions);
+        var after = UiSnapshots.Freeze(suppliedAfter);
+        var targets = impacts
+            .Where(i => i.Before.Visibility == Visibility.Full && _cards.TryGetValue(i.Before.Uid, out var card)
+                && card.Visible && card.View?.Visibility == Visibility.Full)
+            .GroupBy(i => i.Before.Uid).Select(g => (Impact: g.First(), Card: _cards[g.Key])).ToArray();
+        if (targets.Length == 0) { Render(after, actions, true); return; }
+        _busy = true; _endTurn.Disabled = true;
+        var generation = _generation;
+        try
+        {
+            await _combat.PresentImpactsAsync(targets);
+            if (generation != _generation) return;
+            Render(after, actions, true);
+        }
+        catch (OperationCanceledException) { /* Interrupt already settled the authoritative after-state. */ }
+        catch (Exception e) { GD.PushError(e.ToString()); if (generation == _generation) CancelSelection(); }
+    }
+
     public async Task PresentCombatAsync(UiCombatResolution supplied, UiBattleActions afterActions)
     {
         if (supplied.MatchId != _state.MatchId || supplied.After.MatchId != supplied.MatchId) return;

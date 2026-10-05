@@ -125,6 +125,8 @@ public partial class Main : Control
         var runner = new OrcMatchRunner();
         runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
         runner.PresentationReady += (resolution, actions) => _ = _battle.PresentSequenceAsync(resolution, actions);
+        var matchId = runner.MatchId;
+        runner.CombatReady += (impacts, after, actions) => _ = _battle.PresentBoardImpactsAsync(matchId, impacts, after, actions);
         runner.ErrorRaised += message => GD.PushError("[engine] " + message);
         runner.HintRequested += message => _battle.ShowHint(message);
         _runner = runner;
@@ -169,7 +171,29 @@ public partial class Main : Control
         await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
         if (_runner!.CurrentView!.ActivePlayerSide != "enemy") throw new Exception("End turn did not pass the turn.");
 
-        GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable deploy endturn");
+        // Combat choreography: advance and strike the enemy HQ; the engine decides the outcome.
+        var combatSeen = false;
+        _runner!.CombatReady += (impacts, _, _) => combatSeen |= impacts.Count > 0;
+        await _runner!.SubmitAsync(new EndTurn());
+        await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+        var attacker = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => !c.IsHq && c.Zone == "support")
+            ?? throw new Exception("No unit on the support line to advance.");
+        await _runner!.SubmitAsync(new MoveUnit(attacker.Uid, "frontline"));
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+        if (_runner!.CurrentView!.SelfLine.First(c => c.Uid == attacker.Uid).Zone != "frontline")
+            throw new Exception("Real move did not reach the front line.");
+        // A unit that moved cannot attack the same turn (engine rule); wait for its next turn.
+        await _runner!.SubmitAsync(new EndTurn());
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+        await _runner!.SubmitAsync(new EndTurn());
+        await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+        var hqUid = _runner!.CurrentView!.EnemyHq!.Uid;
+        await _runner!.SubmitAsync(new AttackUnit(attacker.Uid, hqUid));
+        await ToSignal(GetTree().CreateTimer(2.4), SceneTreeTimer.SignalName.Timeout);
+        if (!combatSeen) throw new Exception("Attack produced no impact presentation.");
+        var hqHealth = _runner!.CurrentView!.EnemyHq!.Health;
+        if (hqHealth is null || hqHealth >= 20) throw new Exception("Attack did not damage the enemy HQ.");
+        GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable deploy endturn combat hq-damaged");
     }
 
     /// <summary>Version comes from project.godot (single source of truth: root VERSION file).</summary>

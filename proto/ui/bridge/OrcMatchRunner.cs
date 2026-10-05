@@ -34,6 +34,7 @@ public sealed class OrcMatchRunner
 
     public event Action<UiMatchView, UiBattleActions>? ProjectionReady;
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
+    public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
     public event Action<string>? ErrorRaised;
 
     /// <summary>Engine refusal / status text for the player. The wording is the engine's, not ours.</summary>
@@ -55,6 +56,7 @@ public sealed class OrcMatchRunner
         _host = new OrcMatchHost(_match, MatchId);
         _host.ImmediateUpdate += _ => { };
         _host.PresentationReady += (resolution, actions) => PresentationReady?.Invoke(resolution, actions);
+        _host.CombatReady += (impacts, after, actions) => CombatReady?.Invoke(impacts, after, actions);
         _host.ErrorRaised += message => ErrorRaised?.Invoke(message);
 
         await _host.InitializeAsync(ct);
@@ -80,39 +82,56 @@ public sealed class OrcMatchRunner
     public async Task SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
         if (_match is null || _host is null) return;
+        GD.Print($"[engine] submit {command.GetType().Name} phase={_match.Phase}");
         if (_match.Phase != MatchPhase.Play)
         {
             HintRequested?.Invoke("当前阶段不接受该操作");
             return;
         }
-        if (!ReferenceEquals(_match.CurrentPlayer, _host.Viewer))
+        // Ending the turn is how the shell engine passes the opponent's turn too, so it is always allowed;
+        // every other action belongs to the player in turn.
+        if (command is not EndTurn && !ReferenceEquals(_match.CurrentPlayer, _host.Viewer))
         {
             HintRequested?.Invoke("等待对手行动");
             return;
         }
-        switch (command)
+        try
         {
-            case PlayCard play:
-                await PlayAsync(play.Uid, ct);
-                break;
-            case MoveUnit move when Resolve(move.Uid) is UnitCard unit:
-                // The player chose a front-line slot; replay it when the engine asks where to go.
-                _pendingSlot = move.SlotIndex;
-                Report(await _match.CommandManager.BeginMoveAsync(unit, ct));
-                _pendingSlot = null;
-                break;
-            case AttackUnit attack when Resolve(attack.AttackerUid) is UnitCard attacker:
-                // The player already picked the target; the engine asks again, so the choice is replayed.
-                _pendingSelection = [attack.DefenderUid];
-                Report(await _match.CommandManager.BeginAttackAsync(attacker, ct));
-                _pendingSelection = null;
-                break;
-            case EndTurn:
-                await _match.EndTurn(ct);
-                break;
-            default:
-                HintRequested?.Invoke("该操作尚未接入引擎");
-                return;
+            switch (command)
+            {
+                case PlayCard play:
+                    await PlayAsync(play.Uid, ct);
+                    break;
+                case MoveUnit move:
+                    if (Resolve(move.Uid) is not UnitCard unit)
+                    { GD.Print($"[engine] move resolve failed: {move.Uid} -> {Resolve(move.Uid)?.GetType().Name ?? "null"}"); HintRequested?.Invoke("找不到该单位"); return; }
+                    // The player chose a front-line slot; replay it when the engine asks where to go.
+                    _pendingSlot = move.SlotIndex;
+                    Report(await _match.CommandManager.BeginMoveAsync(unit, ct));
+                    _pendingSlot = null;
+                    break;
+                case AttackUnit attack:
+                    if (Resolve(attack.AttackerUid) is not UnitCard attacker)
+                    { GD.Print($"[engine] attack resolve failed: {attack.AttackerUid} -> {Resolve(attack.AttackerUid)?.GetType().Name ?? "null"}"); HintRequested?.Invoke("找不到该单位"); return; }
+                    // The player already picked the target; the engine asks again, so the choice is replayed.
+                    _pendingSelection = [attack.DefenderUid];
+                    Report(await _match.CommandManager.BeginAttackAsync(attacker, ct));
+                    _pendingSelection = null;
+                    break;
+                case EndTurn:
+                    await _match.EndTurn(ct);
+                    break;
+                default:
+                    HintRequested?.Invoke("该操作尚未接入引擎");
+                    return;
+            }
+        }
+        catch (Exception e)
+        {
+            // Engine entry points mostly report through result objects; the few that throw (phase gates)
+            // must not die silently in a fire-and-forget task.
+            GD.PushError($"[engine] {command.GetType().Name}: {e.Message}");
+            HintRequested?.Invoke(Reason(e.Message.Contains(' ') ? null : e.Message));
         }
         // The board is not refreshed here: Pump picks up the segment and the presentation plays first.
     }
@@ -136,12 +155,14 @@ public sealed class OrcMatchRunner
 
     private void Report(PlayResult result)
     {
+        GD.Print($"[engine] play -> {result.Status} {result.FailureReason}");
         if (result.Status == PlayResultStatus.Success) return;
         HintRequested?.Invoke(result.Status == PlayResultStatus.Cancelled ? "已取消" : Reason(result.FailureReason?.ToString()));
     }
 
     private void Report(CommandResult result)
     {
+        GD.Print($"[engine] command -> {result.Status} {result.FailureReason}");
         if (result.Status == CommandResultStatus.Success) return;
         HintRequested?.Invoke(result.Status == CommandResultStatus.Cancelled ? "已取消" : Reason(result.FailureReason?.ToString()));
     }

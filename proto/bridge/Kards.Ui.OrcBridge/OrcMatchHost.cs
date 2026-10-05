@@ -64,6 +64,9 @@ public sealed class OrcMatchHost
     /// <summary>One resolved action: steps to animate plus the authoritative board after it.</summary>
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
 
+    /// <summary>Board impacts (hit flash, damage number, death) take precedence over steps in the same segment.</summary>
+    public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
+
     /// <summary>Error entries ride along in segments; surfaced here for a UI toast.</summary>
     public event Action<string>? ErrorRaised;
 
@@ -97,11 +100,18 @@ public sealed class OrcMatchHost
                 ErrorRaised?.Invoke(entry.Message);
 
             var after = _reader.Read(_match, _viewer, _matchId);
-            var steps = _translator.Translate(updates, _viewer, _view ?? after, after);
+            var translation = _translator.Translate(updates, _viewer, _view ?? after, after);
             _view = after;
+            if (translation.Impacts.Count > 0)
+            {
+                // Combat impacts win; any draw/order steps in the same segment settle through the
+                // impact presentation's final render instead of their own choreography.
+                CombatReady?.Invoke(translation.Impacts, after, Actions);
+                continue;
+            }
             // Steps choreograph the transition; an empty list still settles the board through the
             // presentation's animated render. Publishing earlier would overwrite the animation.
-            PresentationReady?.Invoke(new UiPresentationResolution(_matchId, steps, after), Actions);
+            PresentationReady?.Invoke(new UiPresentationResolution(_matchId, translation.Steps, after), Actions);
         }
     }
 
