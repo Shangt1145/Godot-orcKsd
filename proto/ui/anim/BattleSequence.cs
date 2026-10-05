@@ -157,8 +157,10 @@ public partial class BattleSequence : Control
         var air = unitType is "fighter" or "bomber" or "spacefighter" or "space_fighter";
         return (tier == 2 ? .62 : tier == 1 ? .52 : .42) * (air ? 1.25 : 1);
     }
-    /// <summary>The landing itself: the compact card drops, squashes and kicks up dust by tier.</summary>
-    public async Task SlamAsync(BattleCard card, UiCardView view, int epoch)
+    /// <summary>The landing itself. Tier 0 is placed gently; tiers 1–2 rise first, then slam down.</summary>
+    public Task SlamAsync(BattleCard card, UiCardView view) => SlamAsync(card, view, _epoch);
+
+    private async Task SlamAsync(BattleCard card, UiCardView view, int epoch)
     {
         var defense = view.EffectiveDefense ?? view.Definition.BaseDefense;
         var tier = SlamTier(defense);
@@ -168,19 +170,29 @@ public partial class BattleSequence : Control
         {
             card.Position = rest; card.Scale = Vector2.One; await Wait(.12, epoch); return;
         }
-        PhaseChanged?.Invoke("deployment-slam");
-        _sfx.Play("deploy", view, tier == 2 ? 1f : tier == 1 ? .85f : .6f);
-        var lift = 20f + tier * 14f;
+        PhaseChanged?.Invoke("deployment-slam-" + tier);
+        // Louder with every tier: gently placed, then a thud, then the heaviest hit.
+        _sfx.Play("deploy", view, tier == 2 ? 1f : tier == 1 ? .75f : .45f);
+        var lift = tier == 0 ? 8f : tier == 1 ? 34f : 48f;
+        var squash = tier == 0 ? .02f : tier == 1 ? .085f : .12f;
         SlamDust? dust = null;
         var travel = CreateTween(); _tweens.Add(travel);
         travel.TweenMethod(Callable.From<float>(p =>
         {
-            var drop = p < .5f ? 1 - p / .5f : 0;
-            card.Position = rest + new Vector2(0, -lift * Ease(drop));
-            var squash = p > .5f ? MathF.Sin((p - .5f) / .5f * MathF.PI) * (.05f + tier * .035f) : 0;
-            card.Scale = new Vector2(1 + squash, 1 - squash);
-            // Dust belongs to the landing frame, not to the flight.
-            if (dust is null && p >= .5f && tier > 0)
+            float y;
+            if (tier == 0)
+            {
+                // Tier one never flies: the card is laid down where it lands.
+                y = -lift * (p < .5f ? 1 - p / .5f : 0);
+            }
+            else if (p < .3f) y = -lift * Ease(p / .3f);                              // rise
+            else if (p < .55f) y = -lift * (1 - Ease((p - .3f) / .25f));               // slam down
+            else y = 0;
+            card.Position = rest + new Vector2(0, y);
+            var bulge = p > .55f ? MathF.Sin((p - .55f) / .45f * MathF.PI) * squash : 0;
+            card.Scale = new Vector2(1 + bulge, 1 - bulge);
+            // Dust belongs to the landing frame, not to the flight; a gentle placement raises none.
+            if (dust is null && p >= .55f && tier >= 1)
             {
                 dust = new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .92f),
                     Diameter = 48 + tier * 24f, Duration = Time(.42) };

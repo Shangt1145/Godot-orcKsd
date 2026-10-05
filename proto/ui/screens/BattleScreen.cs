@@ -514,6 +514,21 @@ public partial class BattleScreen : Control
             throw new Exception("Deployment slam is not graded by defense.");
         if (BattleSequence.SlamSeconds(4, "fighter") <= BattleSequence.SlamSeconds(4, "infantry"))
             throw new Exception("Air deployment slam is not longer.");
+        // Tier behaviour: tier 0 is laid down gently, tier 2 slams hardest and shakes the table.
+        ResetDemo();
+        var slamProbe = _cards.Values.First(c => c.View is { } v && !v.IsHq && v.Visibility == Visibility.Full);
+        var slamPhases = new List<string>();
+        void OnSlamPhase(string phase) { if (phase.StartsWith("deployment-slam")) slamPhases.Add(phase); }
+        _sequence.PhaseChanged += OnSlamPhase;
+        await _sequence.SlamAsync(slamProbe, slamProbe.View! with { EffectiveDefense = 1 });
+        if (!slamPhases.Contains("deployment-slam-0")) throw new Exception("A light unit was not placed gently.");
+        slamPhases.Clear();
+        await _sequence.SlamAsync(slamProbe, slamProbe.View! with { EffectiveDefense = 7 });
+        _sequence.PhaseChanged -= OnSlamPhase;
+        if (!slamPhases.Contains("deployment-slam-2")) throw new Exception("The heaviest unit did not slam at tier two.");
+        if (slamProbe.Position != slamProbe.RestPosition || slamProbe.Scale != Vector2.One)
+            throw new Exception("Slam left the card displaced.");
+        if (_sequence.LiveCardCount != 0) throw new Exception("Slam retained temporary nodes.");
         ResetDemo();
         var uid = _actions.PlayableUids.First(); var oldHandCount = _state.SelfHand.Count;
         SelectCard(uid); TryDrop(new(640, 555));

@@ -13,6 +13,18 @@ public partial class BattleScreen
     {
         _sequence = new BattleSequence { Size = BoardSize, ZIndex = 210 };
         _sequence.Initialize(_textures, _clock, _sfx); _canvas.AddChild(_sequence);
+        // The heaviest deployment slam shakes the table itself, not just the card.
+        _sequence.PhaseChanged += phase => { if (phase == "deployment-slam-2") ShakeBoard(); };
+    }
+    private void ShakeBoard()
+    {
+        if (_clock.ReducedMotion) return;
+        var basePosition = _canvas.Position;
+        var shake = CreateTween();
+        foreach (var offset in new[] { new Vector2(-7, 4), new Vector2(6, -5), new Vector2(-4, 3), new Vector2(3, -2), new Vector2(-1, 1) })
+            shake.TweenProperty(_canvas, "position", basePosition + offset, .045);
+        shake.TweenProperty(_canvas, "position", basePosition, .05);
+        shake.Finished += FitBoard; _tweens.Add(shake);
     }
     private void ClearPresentation()
     { _pendingPresentation = null; _pendingPresentationActions = null; _sequence?.Interrupt(); }
