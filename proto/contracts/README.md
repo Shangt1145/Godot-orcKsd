@@ -1,0 +1,77 @@
+# UI 状态读面与交互投影提案
+
+日期：2026-10-05。收件方：Shangt1145 / OrC-KSD 上游。状态：**本地提案草稿，尚未发送或获得上游认可**。
+
+本目录是 UI 与引擎之间的候选契约。Godot 原型通过 mock 使用它；真实引擎的查询、状态投影和事件到演出的映射仍需双方确认。本次没有修改引擎源码。
+
+## 需要补齐的读面
+
+2026-10-05 对战重做第一阶段新增 `UiBattleActions`：允许出牌 UID、移动去向、攻击伤害/致死预览与结束回合状态。`UiMatchView` 新增可空敌方手牌和牌堆数量；前线单位由双方 Line 中 `Zone = "frontline"` 表示。仍为本地候选契约，真实适配器尚未接入，UI 不计算战斗规则。
+
+第二阶段新增 `UiCombatResolution` 候选表现载荷：攻击前角色值、外部给出的伤害、攻击后角色值及最终 `After` 投影；`UiBattleActions.AttacksEnabled` 默认关闭。`UiMatchView` 新增玩家名和可空 `ResultTitle`，UI 直接展示结果文字，不根据 HQ 缺失判定胜负。`Main.PresentCombatAsync` 仅负责播放和消费结果，外部模式的点击只发送请求。该候选结构供 UI 演示和后续适配使用，不要求未完成的主引擎按此设计架构。
+
+`TakeSegments` 和 `OnImmediateUpdate` 提供变化通知，却不能提供 UI 第一次打开时需要的完整可见状态。事件段也不能替代存档、重连快照或跨端同步协议。
+
+第三阶段新增 `UiPresentationResolution` 候选表现载荷。`Steps` 是按顺序播放的抽牌/指令快照；指令目标的 `Before`、`After` 与 `Damage` 均由外部提供，最终消费整个载荷的 `After`。`Main.PresentSequenceAsync` 只负责 UI 演出。对手抽牌的 `Card` 即使误传也会在冻结时丢弃；隐藏指令与目标不泄露身份。中断消费已提交的最终状态，新投影覆盖旧演出。它不是生产事件队列、正式抽牌/指令规则或对主引擎架构的要求。
+
+第四阶段增加 `UiCounterPresentation` 与 `UiStatusPresentation`。`IsCounterArmed` 是我方公开手牌的投影标记，不是 UI 自行推断的状态。对手武装/解除的身份在冻结时丢弃；对手资源必须由适配器保持可见性边界。触发时的 `BlockedCard` 是外部已确定的结果，UI 不执行反制条件。治疗、有效攻防、费用及压制状态都直接消费前后值，状态更新要求 UID 相同且目标公开。
+
+部署后触发的反制通过 `UiDeploymentPresentation(Card, Deployed)` → `UiCounterPresentation` → `UiRemovalPresentation(Card)` 表达。`Deployed` 为适配器提供的中间投影，允许单位在销毁前真实显示于战场；最终状态仍由整个载荷的 `After` 决定。相邻反制和销毁步骤使反制揭示卡在销毁演出中保持可见。消灭不推算伤害数值。UI 不按卡名识别触发条件，也不会把所有反制默认表现为阻止出牌。
+
+支援线按单位 `SlotIndex` 排序，再在 HQ 的 `SlotIndex` 处插入总部；HQ 未指定位置（负值）时放在单位队列中间。`PlayCard.SupportIndex` 是点击/拖放请求的插入位置，包含总部在内，左侧为 0。UI 只发送位置意图，外部模式不自行重排或部署；实际位置仍由随后投影决定。本地夹具支持总部两侧部署，并保持总部与单位的相对顺序。
+
+建议引擎侧提供：
+
+1. 当前玩家视角的全量 `UiMatchView` 投影。
+2. 含光环、永久/临时/动态修饰后的部署费、攻击、防御、操作费与 HQ 血量。
+3. `CanAttack`、`CanPlayCard`、`CanMoveAndAttack`、`CanBeTargeted` 与拒绝原因。
+4. 卡牌可见性等级和对应的脱敏内容。
+5. 请求发生时的候选集合与稳定的实体引用映射。
+
+所有 `Effective*` 都是有效值。UI 不读取修饰器，不重算光环，不承担业务规则判断。静态图鉴独立读取定义中的 `Base*`，并明确标为“基础数值”。动画根据防御值分配拍桌力度属于表现参数，不产生规则判定。
+
+## 与规格的必要修订
+
+| 修订 | 原因 |
+|---|---|
+| 增加 `MatchId` 与 `CardNodeKey(MatchId, Uid)` | 原规格对 Uid 跨对局复用有矛盾；缓存必须隔离对局与引擎实例 |
+| 将不变字段拆为 `UiCardDefinition`，实例引用定义 | 图鉴没有对局 Uid；避免为静态卡牌伪造运行时身份 |
+| 增加 `EffectiveCost` 与 `CanPlayCard` | 原文提到可出牌，但 DTO 缺失；运行时费用也可能被修改 |
+| 数值允许 null | 未公开、不适用、未知不能用 0 代替；原始 JSON 中大量指令字段为 null |
+| 可见性成为实例字段 | 单独声明 enum 无法约束具体卡牌展示 |
+| 实例携带当前词条和值 | 定义词条与运行时词条会因抑制、获得、移除而不同 |
+| 敌方资源允许 null | 未公开的资源不应展示为 0 |
+| 目标请求独立投影为槽位列表 | `SelectedTarget`/`PendingChoices` 无法表达多槽位与混合类型请求 |
+
+基准防御与运行时 `Health` 的恒等关系尚未在引擎侧确认，原型不强制这个不变量。原型也不定义新增的能力表或战斗区域规则。
+
+## 选目标桥接
+
+已核对 `H:/Working Folder/OrC-KSD/src/Orc.Game/Targeting/ITargeterBridge.cs`：
+
+- `CollectCandidatesAsync` 容器虽为 `object?`，元素要求 `Ref<Entity>`，字符串 UID 不会成为有效候选。
+- UI 提供完整候选 UID 列表，包含可能不符合规则的对象。**适配层**映射为引擎引用；UI 不持有引用。
+- `BeginInteraction` 为 void。立即展示请求并返回，不等待事件段或用户选择。
+- 允许集来自 `AllowedTargets`/各槽位载荷。UI 只依据允许集、槽位数量限制维护选择和灰显，不重新执行业务过滤。
+- 一次提交覆盖所有槽位；引用、选项与定义名单分别由适配层转换为对应 `TargetSelection`。
+- `Complete(false)` 和 `Cancel(false)` 保持等待状态，允许重试。
+- `Complete(true)` 表示终局，包含成功或域判定异常等失败终局；不能据此显示“操作成功”。
+- 请求 ID 原样回带。适配层随对局销毁引用注册表与陈旧请求。
+
+`EngineReferenceRegistry<TReference>` 展示映射责任边界，当前没有连接到生产引擎。
+
+## 事件段与历史值
+
+只有一个适配服务从引擎取段，再向面板分发。`Entries` 驱动线性演出，`Children` 仅用于因果展示，不能叠加执行。当前播放器按实例与 Sequence 去重，缓存乱序段并等待缺失段，不猜测跳过；重建实例使用新的播放器。
+
+即时回调只提交小型提示，演出在 UI 循环里进行。真正的历史值必须在 Emit/投影发生时复制成值对象。`UiSnapshots.Freeze` 冻结嵌套集合；在动作结束后才读取日志活引用再调用 Freeze，仍然无法恢复过去的数值。
+
+## 请上游确认
+
+1. 最小状态查询 API 的入口、调用时机和当前玩家视角。
+2. EffectiveDefense、Health 与 HQ 数值的最终语义。
+3. UI 使用的 Uid 与引擎实体/引用如何建立、失效和重新映射。
+4. 可见性脱敏、拒绝原因的结构，以及能否稳定查询出牌与攻击判定。
+5. 哪些事件可以在发出时投影历史值，以及初始全量投影与事件队列的时序边界。
+
+提案确认前，真实投影接口保持未接入；静态图鉴、mock 演出和交互消费可以继续独立验证。

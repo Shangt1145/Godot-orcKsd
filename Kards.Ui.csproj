@@ -1,0 +1,13 @@
+<Project Sdk="Godot.NET.Sdk/4.7.0">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="proto/ui/**/*.cs" />
+    <ProjectReference Include="proto/core/Kards.Ui.Core.csproj" />
+    <ProjectReference Include="proto/bridge/Kards.Ui.OrcBridge/Kards.Ui.OrcBridge.csproj" />
+  </ItemGroup>
+</Project>

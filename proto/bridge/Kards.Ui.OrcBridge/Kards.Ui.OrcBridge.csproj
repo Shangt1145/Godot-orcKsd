@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!--
+    Engine checkout root. The UI never copies engine sources; it references that checkout.
+    Override with: dotnet build -p:OrcEngineRoot=...
+    Default points at the clean GitHub worktree so the UI build is unaffected by uncommitted
+    engine work-in-progress in other clones.
+  -->
+  <PropertyGroup>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == ''">H:\Working Folder\OrC-KSD-github\src\Orc.Game</OrcEngineRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
+    <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
+  </ItemGroup>
+</Project>

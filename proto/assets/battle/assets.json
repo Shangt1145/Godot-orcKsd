@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-05",
+  "assets": [
+    {
+      "file": "tabletop-v2.png",
+      "resource": "res://proto/assets/battle/tabletop-v2.png",
+      "dimensions": [
+        1672,
+        941
+      ],
+      "pngColorType": 2,
+      "transparent_background": false,
+      "sha256": "bf3c1af024da28da47db57567b0287550afc9e85f76e24567b61f74b762580e5",
+      "generation_mode": "built-in image_gen",
+      "reference_image": "artifacts/research/kards-original/steam-board-2.jpg",
+      "original_output": "C:/Users/Alan/.codex/generated_images/01a10af9-4a20-7a82-b5b6-1a48b63f5707/exec-839dbc11-057e-4d1c-a77f-8cb4dbfeb0f0.png",
+      "prompt": "Use case: historical-scene. Asset type: production background texture for a desktop WWII card game's battlefield, landscape 16:9. Create a NEW original asset using the provided KARDS screenshot only as a reference for top-down tabletop composition, material realism, lighting and muted colors. Show a worn 1940s dark walnut military planning desk viewed perfectly straight down, horizontal wide wooden planks, deep grain, small scratches, uneven patina, warm restrained diffuse light, dark vignette at the far corners. Keep the whole central playing area (x 17%-83%, y 8%-94%) empty and flat wood, medium brown and readable, without clutter. A partially cropped olive map notebook and two brass cartridges in the far upper left, a partially cropped period pistol and leather holster at the far right edge, a cropped pencil along left edge, a tiny fold of canvas upper right. Props stay exclusively at the outermost edges, as in the reference. Realistic tactile wood, brass, paper, leather. NO cards, card backs, chips, resource counters, UI, buttons, text, numbers, dividers, triangles, logos or watermark anywhere. This is a game background asset, not a screenshot or UI mockup. High detail, understated military atmosphere."
+    },
+    {
+      "file": "card-back-v2.png",
+      "resource": "res://proto/assets/battle/card-back-v2.png",
+      "dimensions": [
+        1060,
+        1484
+      ],
+      "pngColorType": 6,
+      "transparent_background": true,
+      "sha256": "fb87799e88d0f5111000025838d8b0d76b74cf03befd68018804b73b777ed1ab",
+      "generation_mode": "built-in image_gen",
+      "reference_image": "artifacts/research/kards-original/steam-board-2.jpg",
+      "original_output": "C:/Users/Alan/.codex/generated_images/01a10af9-4a20-7a82-b5b6-1a48b63f5707/exec-b330b746-924f-417b-ad08-51f2e49e3bcf.png",
+      "prompt": "Use case: historical-scene. Asset type: a single usable portrait card-back texture for a WWII desktop card game. Generate a new card back referencing only the olive-backed cards visible along the top of the supplied KARDS screenshot: worn olive military cardstock, cream thin double inset rectangular border, tiny cream circular dots near the four corners, faded cream eight-point compass rose centered slightly below mid-height. Straight orthographic flat scan, NO perspective and no drop shadow. One single portrait rectangular card, width:height approximately 5:7, fills almost the whole image, rounded corners radius about 1% of width. Opaque textured olive paper inside the card, truly transparent outside the card. Balanced subdued colors, scuffed cream edges, restrained patina, fine paper fibers and tiny scratches. Keep the layout and print vocabulary very close to the reference, no redesign or new emblem. No letters, logos, numbers, title, text, extra cards, game UI, weapon, table, props, watermark or checkerboard backdrop. Production-ready isolated game asset."
+    },
+    {
+      "file": "explosion-v2.png",
+      "resource": "res://proto/assets/battle/explosion-v2.png",
+      "dimensions": [
+        1254,
+        1254
+      ],
+      "pngColorType": 6,
+      "transparent_background": true,
+      "sha256": "5d8027592237bed491e2bb8d11fe3fafa9ce914f1e3f7d01b5965296d844746c",
+      "generation_mode": "built-in image_gen",
+      "reference_image": null,
+      "original_output": "C:/Users/Alan/.codex/generated_images/01a10af9-4a20-7a82-b5b6-1a48b63f5707/exec-eff28b03-2cd3-44c7-afb9-fabb6828830f.png",
+      "prompt": "Use case: stylized-concept. Asset type: one production VFX sprite for a realistic WWII card game's explosion, square image on truly transparent background. An isolated small dense fireball impact/explosion, brilliant pale yellow core, orange ember tongues, turbulent charcoal-gray and warm brown smoke puffs around the fire, a few dark shards and sparks. Detailed photographic volume and irregular organic edges, compact spherical burst centered in image with about 20% clear transparent padding on all sides. Restrained realistic battlefield smoke and warm fire suitable for KARDS tabletop card combat. Not a cartoon, not neon, not a sci-fi spell, no circular halo, no shockwave ring, no bloom covering the full image. No ground, sky, table, cards, text, logos, UI, checkerboard pattern or cast shadow. Sprite must have real alpha with softly fading smoke edges. Single burst sprite only; no sheet or multiple panels."
+    },
+    {
+      "file": "hq-map-v2.png",
+      "resource": "res://proto/assets/battle/hq-map-v2.png",
+      "dimensions": [
+        1086,
+        1448
+      ],
+      "pngColorType": 2,
+      "transparent_background": false,
+      "sha256": "9a957851340589c5f5a9d0e8336c5cb1c6a8df7078245f5f14c608b7d98c552d",
+      "generation_mode": "built-in image_gen",
+      "reference_image": "artifacts/research/kards-original/steam-board-2.jpg",
+      "original_output": "C:/Users/Alan/.codex/generated_images/01a10af9-4a20-7a82-b5b6-1a48b63f5707/exec-6462454c-cfb7-41fc-b149-fc2807f7a0a2.png",
+      "prompt": "Create one new portrait 3:4 flat scan of a WWII military topographic map on aged cream and olive paper, as a texture for a small headquarters card in a WWII card game. Use the attached official KARDS gameplay image only for material, map print density, restrained color and wear reference; do not copy its city names, UI, cards, logos or emblems. The output is ONLY the unframed map paper texture, fully filling the canvas, straight-on, no perspective. Fine dense brown-olive contour lines, old rural road networks, faint rivers and terrain marks, low contrast ink, muted beige parchment with genuine fibers, flecks and worn edges. No text, digits, symbols, emblems, borders, drop shadows, objects or UI. Keep center around 45% height light enough for a separately drawn emblem and bottom 20% for a separately drawn shield. Dark ink should remain subtle at thumbnail scale. Opaque background."
+    }
+  ]
+}
