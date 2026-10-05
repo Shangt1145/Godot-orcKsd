@@ -1,7 +1,7 @@
 namespace Kards.Ui.Contracts;
 
 /// <summary>Permitted actions and combat forecasts are supplied by an adapter, never calculated by the view.</summary>
-public sealed record UiMoveOption(string Uid, string ToZone);
+public sealed record UiMoveOption(string Uid, string ToZone, int? SlotIndex = null);
 public sealed record UiAttackPreview(string AttackerUid, string DefenderUid,
     int? DamageToDefender, int? DamageToAttacker, bool DefenderDies, bool AttackerDies);
 public sealed record UiCombatResolution(string MatchId, UiCardView Attacker, UiCardView Defender,

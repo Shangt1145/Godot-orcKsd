@@ -4,6 +4,7 @@ using Kards.Ui.OrcBridge;
 using Orc.Cards;
 using Orc.Core;
 using Orc.Game;
+using Orc.Game.Board;
 using Orc.Game.Cards;
 using Orc.Game.Collections;
 using Orc.Game.Commanding;
@@ -26,6 +27,7 @@ public sealed class OrcMatchRunner
     private OrcMatchHost? _host;
     private Match? _match;
     private string[]? _pendingSelection;
+    private int? _pendingSlot;
 
     public bool IsRunning => _host is not null;
     public string MatchId { get; } = "orc-live";
@@ -94,7 +96,10 @@ public sealed class OrcMatchRunner
                 await PlayAsync(play.Uid, ct);
                 break;
             case MoveUnit move when Resolve(move.Uid) is UnitCard unit:
+                // The player chose a front-line slot; replay it when the engine asks where to go.
+                _pendingSlot = move.SlotIndex;
                 Report(await _match.CommandManager.BeginMoveAsync(unit, ct));
+                _pendingSlot = null;
                 break;
             case AttackUnit attack when Resolve(attack.AttackerUid) is UnitCard attacker:
                 // The player already picked the target; the engine asks again, so the choice is replayed.
@@ -187,6 +192,16 @@ public sealed class OrcMatchRunner
             if (picked.Length > 0)
             {
                 responder.Complete(description.RequestId, Map(slot.Name, picked));
+                return;
+            }
+        }
+        // A move: honour the front-line slot the player dropped on, instead of any allowed slot.
+        if (_pendingSlot is { } index)
+        {
+            var chosen = allowed.FirstOrDefault(r => OrcRefs.EntityOf(r.Value) is Slot target && target.Index == index);
+            if (chosen is not null)
+            {
+                responder.Complete(description.RequestId, Map(slot.Name, [chosen]));
                 return;
             }
         }

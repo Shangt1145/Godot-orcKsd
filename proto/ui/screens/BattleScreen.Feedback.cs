@@ -42,6 +42,7 @@ public partial class BattleScreen
             if (kind == "status-suppressed" && (!phases.Contains("status-suppressed") || !phases.Contains("status-cleared") || _cards["self-0"].View!.IsSuppressed))
                 throw new Exception("Suppression/clear sequence failed.");
             if (kind == "status-cost" && _cards["hand-0"].View!.EffectiveCost != 0) throw new Exception("Hand cost projection failed.");
+            if (kind == "counter-trigger" && !phases.Contains("deployment-slam")) throw new Exception("Deployment did not slam on landing.");
         }
         ResetDemo(); var hidden = _demo.CreatePresentationScenario("counter-hidden"); ApplyProjection(hidden.Before, new());
         if (((UiCounterPresentation)hidden.Resolution.Steps[0]).Card is not null) throw new Exception("Opponent armed counter retained identity.");

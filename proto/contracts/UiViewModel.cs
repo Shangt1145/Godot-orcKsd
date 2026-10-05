@@ -191,7 +191,7 @@ public sealed record UiMatchView
 
 public abstract record UiCommand;
 public sealed record PlayCard(string Uid, int? SupportIndex = null) : UiCommand;
-public sealed record MoveUnit(string Uid, string ToZone) : UiCommand;
+public sealed record MoveUnit(string Uid, string ToZone, int? SlotIndex = null) : UiCommand;
 public sealed record AttackUnit(string AttackerUid, string DefenderUid) : UiCommand;
 public sealed record RetreatUnit(string Uid) : UiCommand;
 public sealed record EndTurn : UiCommand;

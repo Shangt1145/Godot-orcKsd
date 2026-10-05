@@ -377,7 +377,14 @@ public partial class BattleScreen : Control
                 && c.RestPosition.X + c.Size.X / 2 < at.X);
             Submit(new PlayCard(_selected, index));
         }
-        else if (FrontArea.HasPoint(at) && _actions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline")) Submit(new MoveUnit(_selected, "frontline"));
+        else if (FrontArea.HasPoint(at) && _actions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"))
+        {
+            // The front line is a shared row: the drop point picks the slot, so a unit can enter to the
+            // left or the right of whatever already stands there instead of always landing on one side.
+            var slot = _cards.Values.Count(c => c.View?.Zone == "frontline" && c.Mode != BattleCardMode.Hand
+                && c.RestPosition.X + c.Size.X / 2 < at.X);
+            Submit(new MoveUnit(_selected, "frontline", slot));
+        }
         else { CancelSelection(); Hint("已取消，卡牌返回原位"); }
     }
     public override void _Input(InputEvent e)
@@ -501,6 +508,12 @@ public partial class BattleScreen : Control
 
     public async Task VerifyAsync()
     {
+        // Slam is graded by defense and stretched for aircraft (presentation estimates, not original timings).
+        if (BattleSequence.SlamSeconds(1, "infantry") >= BattleSequence.SlamSeconds(7, "infantry")
+            || BattleSequence.SlamSeconds(1, "infantry") >= BattleSequence.SlamSeconds(4, "infantry"))
+            throw new Exception("Deployment slam is not graded by defense.");
+        if (BattleSequence.SlamSeconds(4, "fighter") <= BattleSequence.SlamSeconds(4, "infantry"))
+            throw new Exception("Air deployment slam is not longer.");
         ResetDemo();
         var uid = _actions.PlayableUids.First(); var oldHandCount = _state.SelfHand.Count;
         SelectCard(uid); TryDrop(new(640, 555));
@@ -510,6 +523,17 @@ public partial class BattleScreen : Control
         var move = _actions.Moves.First(); SelectCard(move.Uid); TryDrop(new(640, 350));
         await ToSignal(GetTree().CreateTimer(.4), SceneTreeTimer.SignalName.Timeout);
         if (_state.SelfLine.First(c => c.Uid == move.Uid).Zone != "frontline") throw new Exception("Battle move failed.");
+        // Entering the front line must respect the side the card was dropped on, not always the right.
+        ResetDemo();
+        var entering = _actions.Moves.First().Uid;
+        var anchor = _cards.Values.First(c => c.View?.Zone == "frontline");
+        SelectCard(entering); TryDrop(new(anchor.RestPosition.X - 30, 350));
+        await ToSignal(GetTree().CreateTimer(.4), SceneTreeTimer.SignalName.Timeout);
+        var entered = _state.SelfLine.First(c => c.Uid == entering);
+        var anchored = _state.SelfLine.First(c => c.Uid == anchor.Uid);
+        if (entered.Zone != "frontline" || entered.SlotIndex > anchored.SlotIndex)
+            throw new Exception("Front-line entry ignored the side it was dropped on.");
+        ResetDemo();
         var preview = _actions.AttackPreviews.First(); SelectCard(preview.AttackerUid); PreviewTarget(preview.DefenderUid);
         if (!_aim.Visible || _aim.Preview != preview) throw new Exception("Battle preview failed.");
         CancelSelection();

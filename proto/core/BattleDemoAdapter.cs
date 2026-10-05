@@ -108,10 +108,25 @@ public sealed class BattleDemoAdapter
                 break;
             case MoveUnit move when Actions.Moves.Any(m => m.Uid == move.Uid && m.ToZone == move.ToZone):
                 var moving = State.SelfLine.First(c => c.Uid == move.Uid);
+                var entered = moving with { Zone = move.ToZone, SlotIndex = move.SlotIndex ?? State.SelfLine.Count(c => c.Zone == move.ToZone), CanMoveAndAttack = false };
+                // The front line is shared by both sides, so inserting at an index renumbers both rows.
+                var frontRow = State.SelfLine.Concat(State.EnemyLine).Where(c => c.Zone == "frontline")
+                    .OrderBy(c => c.SlotIndex).ToList();
+                frontRow.Insert(Math.Clamp(entered.SlotIndex, 0, frontRow.Count), entered);
+                var frontOrder = frontRow.Select((c, i) => (c.Uid, Index: i)).ToDictionary(p => p.Uid, p => p.Index);
+                // The moving unit is still "support" in the old state, so it must not stay in that row.
+                var supportRow = State.SelfLine.Where(c => c.Zone == "support" && c.Uid != move.Uid)
+                    .OrderBy(c => c.SlotIndex).Select((c, i) => c with { SlotIndex = i });
+                var selfFront = frontRow.Where(c => c.OwnerSide == "self").Select(c => c with { SlotIndex = frontOrder[c.Uid] });
                 State = State with
                 {
                     SelfKredits = State.SelfKredits - moving.EffectiveOpCost!.Value,
-                    SelfLine = ReindexLine(State.SelfLine.Select(c => c.Uid == move.Uid ? c with { Zone = move.ToZone, SlotIndex = State.SelfLine.Count(c => c.Zone == move.ToZone), CanMoveAndAttack = false } : c)),
+                    SelfLine = move.ToZone == "frontline"
+                        ? supportRow.Concat(selfFront).ToArray()
+                        : ReindexLine(State.SelfLine.Select(c => c.Uid == move.Uid ? entered : c)),
+                    EnemyLine = move.ToZone == "frontline"
+                        ? State.EnemyLine.Select(c => c.Zone == "frontline" ? c with { SlotIndex = frontOrder[c.Uid] } : c).ToArray()
+                        : State.EnemyLine,
                     SelfHq = State.SelfHq is { } selfHq && moving.Zone == "support" && moving.SlotIndex < selfHq.SlotIndex
                         ? selfHq with { SlotIndex = Math.Max(0, selfHq.SlotIndex - 1) } : State.SelfHq
                 };

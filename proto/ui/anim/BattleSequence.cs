@@ -133,7 +133,7 @@ public partial class BattleSequence : Control
     {
         var epoch = _epoch; field.Visible = false;
         var paper = Paper(card, from, new(144, 202), card.OwnerSide == "enemy" ? -.15f : .15f);
-        PhaseChanged?.Invoke("deployment-start"); _sfx.Play("deploy", card);
+        PhaseChanged?.Invoke("deployment-start");
         if (!_clock.ReducedMotion)
         {
             var move = Motion();
@@ -142,8 +142,58 @@ public partial class BattleSequence : Control
             move.TweenProperty(paper, "rotation", 0f, Time(.46)); await Wait(.46, epoch);
         }
         RemoveChild(paper); paper.QueueFree(); field.Visible = true;
-        PhaseChanged?.Invoke("deployment-settled"); await Wait(.25, epoch);
+        PhaseChanged?.Invoke("deployment-settled");
+        await SlamAsync(field, card, epoch);
     }
+    /// <summary>Light / medium / heavy, graded by defense: the original slams heavier units harder.</summary>
+    public static int SlamTier(int? defense) => defense <= 2 ? 0 : defense <= 5 ? 1 : 2;
+    /// <summary>
+    /// Deployment slam timing (seconds). Grades by defense (420 / 520 / 620 ms) and stretches air units
+    /// by 1.25x. These are presentation estimates, not extracted original timings.
+    /// </summary>
+    public static double SlamSeconds(int? defense, string unitType)
+    {
+        var tier = SlamTier(defense);
+        var air = unitType is "fighter" or "bomber" or "spacefighter" or "space_fighter";
+        return (tier == 2 ? .62 : tier == 1 ? .52 : .42) * (air ? 1.25 : 1);
+    }
+    /// <summary>The landing itself: the compact card drops, squashes and kicks up dust by tier.</summary>
+    public async Task SlamAsync(BattleCard card, UiCardView view, int epoch)
+    {
+        var defense = view.EffectiveDefense ?? view.Definition.BaseDefense;
+        var tier = SlamTier(defense);
+        var seconds = SlamSeconds(defense, view.Definition.UnitType);
+        var rest = card.RestPosition;
+        if (_clock.ReducedMotion)
+        {
+            card.Position = rest; card.Scale = Vector2.One; await Wait(.12, epoch); return;
+        }
+        PhaseChanged?.Invoke("deployment-slam");
+        _sfx.Play("deploy", view, tier == 2 ? 1f : tier == 1 ? .85f : .6f);
+        var lift = 20f + tier * 14f;
+        SlamDust? dust = null;
+        var travel = CreateTween(); _tweens.Add(travel);
+        travel.TweenMethod(Callable.From<float>(p =>
+        {
+            var drop = p < .5f ? 1 - p / .5f : 0;
+            card.Position = rest + new Vector2(0, -lift * Ease(drop));
+            var squash = p > .5f ? MathF.Sin((p - .5f) / .5f * MathF.PI) * (.05f + tier * .035f) : 0;
+            card.Scale = new Vector2(1 + squash, 1 - squash);
+            // Dust belongs to the landing frame, not to the flight.
+            if (dust is null && p >= .5f && tier > 0)
+            {
+                dust = new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .92f),
+                    Diameter = 48 + tier * 24f, Duration = Time(.42) };
+                AddChild(dust);
+            }
+        }), 0f, 1f, Time(seconds));
+        await Wait(seconds, epoch);
+        card.Position = rest; card.Scale = Vector2.One;
+        await Wait(.18, epoch);
+        if (dust is not null && GodotObject.IsInstanceValid(dust) && dust.GetParent() == this)
+        { RemoveChild(dust); dust.QueueFree(); }
+    }
+    private static float Ease(float t) { t = Math.Clamp(t, 0, 1); return t * t * (3 - 2 * t); }
     public async Task CounterAsync(UiCounterPresentation counter, BattleCard? handCard, Func<Task>? resolve = null)
     {
         var epoch = _epoch;
@@ -311,6 +361,37 @@ public partial class BattleSequence : Control
         PhaseChanged?.Invoke("turn-settled");
     }
     public override void _ExitTree() => Interrupt();
+}
+
+/// <summary>Dust kicked up by a deployment slam. Purely a landing feedback layer with its own lifetime.</summary>
+public partial class SlamDust : Control
+{
+    public Vector2 Center { get; set; }
+    public float Diameter { get; set; }
+    public double Duration { get; set; }
+    private double _age;
+    public override void _Ready() { MouseFilter = MouseFilterEnum.Ignore; }
+    public override void _Process(double delta)
+    {
+        _age += delta;
+        if (_age >= Duration) { GetParent()?.RemoveChild(this); QueueFree(); return; }
+        QueueRedraw();
+    }
+    public override void _Draw()
+    {
+        const int segments = 18;
+        var progress = (float)(_age / Duration);
+        var alpha = (1 - progress) * .5f;
+        var width = Diameter * (.4f + progress * 1.2f);
+        var height = width * .32f;
+        var points = new Vector2[segments];
+        for (var i = 0; i < segments; i++)
+        {
+            var angle = i / (float)segments * MathF.PI * 2;
+            points[i] = Center + new Vector2(MathF.Cos(angle) * width, MathF.Sin(angle) * height);
+        }
+        DrawColoredPolygon(points, new Color(.80f, .76f, .64f, alpha));
+    }
 }
 
 /// <summary>Centred turn notification band. Geometry only; the side and turn number come from the projection.</summary>
