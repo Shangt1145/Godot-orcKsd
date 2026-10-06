@@ -36,16 +36,36 @@ public sealed class OrcTargeterBridge : ITargeterBridge
         AutoRespond(description, responder);
     }
 
-    private static void AutoRespond(TargetingRequestDescription description, ITargetingResponder responder)
+    /// <summary>
+    /// The shared conservative policy: keep the whole opening hand on mulligan; otherwise take the first
+    /// allowed candidate for single-choice slots. Used directly when no interactive handler is supplied,
+    /// and as the fallback when the interactive handler has no pending player intent.
+    /// </summary>
+    public static void AutoRespond(TargetingRequestDescription description, ITargetingResponder responder)
     {
         var slot = description.Slots.Count > 0 ? description.Slots[0] : null;
-        if (slot is { Kind: TargetSlotKind.MulliganSelect } && slot.Min == 0)
+        if (slot is null)
+        {
+            responder.Cancel(description.RequestId);
+            return;
+        }
+        var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
+        if (slot.Kind == TargetSlotKind.MulliganSelect && slot.Min == 0)
         {
             // Keeping the whole opening hand is always a legal answer: the slot allows an empty selection.
             responder.Complete(description.RequestId,
                 new Dictionary<string, IReadOnlyList<TargetSelection>>(StringComparer.Ordinal)
                 {
                     [slot.Name] = Array.Empty<TargetSelection>()
+                });
+            return;
+        }
+        if (allowed.Length > 0 && slot.Min <= 1)
+        {
+            responder.Complete(description.RequestId,
+                new Dictionary<string, IReadOnlyList<TargetSelection>>(StringComparer.Ordinal)
+                {
+                    [slot.Name] = [TargetSelection.FromReference(allowed[0])]
                 });
             return;
         }

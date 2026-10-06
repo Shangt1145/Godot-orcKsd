@@ -120,6 +120,10 @@ public sealed class OrcMatchRunner
                     break;
                 case EndTurn:
                     await _match.EndTurn(ct);
+                    // The engine has no AI: passing the turn hands play to the opponent driver, which plays
+                    // the enemy turn through the same engine entry points and then passes back.
+                    if (_match.State == MatchState.InProgress && !ReferenceEquals(_match.CurrentPlayer, _host.Viewer))
+                        await OrcOpponentDriver.PlayTurnAsync(_match, _match.CurrentPlayer, ct: ct);
                     break;
                 default:
                     HintRequested?.Invoke("该操作尚未接入引擎");
@@ -244,17 +248,8 @@ public sealed class OrcMatchRunner
                 return;
             }
         }
-        if (slot.Kind == TargetSlotKind.MulliganSelect && slot.Min == 0)
-        {
-            responder.Complete(description.RequestId, Map(slot.Name, Array.Empty<Ref<Entity>>()));
-            return;
-        }
-        if (allowed.Length > 0 && slot.Min <= 1)
-        {
-            responder.Complete(description.RequestId, Map(slot.Name, allowed.Take(1).ToArray()));
-            return;
-        }
-        responder.Cancel(description.RequestId);
+        // No pending player intent: the shared conservative policy answers (mulligan keeps, else first allowed).
+        OrcTargeterBridge.AutoRespond(description, responder);
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<Ref<Entity>>> Map(string slot, IEnumerable<Ref<Entity>> selected)

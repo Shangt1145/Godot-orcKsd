@@ -118,10 +118,10 @@ public partial class Main : Control
         else if (args.Contains("--capture-ui"))
             CallDeferred(MethodName.CaptureUi);
     }
-    /// <summary>Runs the screen from a real engine match instead of the local demo fixture.</summary>
+    /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.</summary>
     public async Task StartRealMatchAsync()
     {
-        if (_runner is not null) return;
+        if (_runner is not null) { _runner.Stop(); _runner = null; }
         var runner = new OrcMatchRunner();
         runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
         runner.PresentationReady += (resolution, actions) => _ = _battle.PresentSequenceAsync(resolution, actions);
@@ -173,8 +173,11 @@ public partial class Main : Control
         if (!deployed) throw new Exception("Deployment produced no presentation.");
 
         await _runner!.SubmitAsync(new EndTurn());
-        await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
-        if (_runner!.CurrentView!.ActivePlayerSide != "enemy") throw new Exception("End turn did not pass the turn.");
+        await ToSignal(GetTree().CreateTimer(2.2), SceneTreeTimer.SignalName.Timeout);
+        // The opponent driver plays the enemy turn through the engine and passes straight back.
+        var afterEnemyTurn = _runner!.CurrentView!;
+        if (afterEnemyTurn.ActivePlayerSide != "self") throw new Exception("Opponent turn did not come back.");
+        if (afterEnemyTurn.EnemyLine.Count == 0) throw new Exception("Opponent driver did not deploy a unit.");
 
         // Combat choreography: advance and strike the enemy HQ; the engine decides the outcome.
         var combatSeen = false;

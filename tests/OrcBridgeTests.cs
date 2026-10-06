@@ -26,7 +26,21 @@ public sealed class OrcBridgeTests
         // Each side needs its own CardList instance: deck entries are bound to card instances at load time.
         var deckA = new CardList(Enumerable.Repeat(InfantryId, 20));
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
-        return new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: firstPlayerIndex);
+        Match? match = null;
+        var bridge = new OrcTargeterBridge(() => InteractablesOf(match));
+        match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: firstPlayerIndex, targeterBridge: bridge);
+        return match;
+    }
+
+    private static IReadOnlyList<object?> InteractablesOf(Match? match)
+    {
+        if (match is null || match.State == MatchState.Preparing) return Array.Empty<object?>();
+        var references = new List<object?>();
+        foreach (var line in new[] { match.Battlefield.PlayerASupportLine, match.Battlefield.FrontLine, match.Battlefield.PlayerBSupportLine })
+            foreach (var slot in line)
+                references.Add(slot.Ref);
+        foreach (var player in match.Players) references.Add(player.Hq.Ref);
+        return references;
     }
 
     [Fact]
@@ -116,6 +130,52 @@ public sealed class OrcBridgeTests
         // The opening action produces a segment; whatever it holds, the board it carries is the current truth.
         Assert.Equal("orc-pump", host.View.MatchId);
         Assert.Equal(host.View.SelfHand.Count, host.Refresh().SelfHand.Count);
+    }
+
+    /// <summary>Both sides confirm the opening hand, entering the play phase (the UI does this too).</summary>
+    private static async Task ConfirmMulliganAsync(Match match)
+    {
+        foreach (var player in match.Players)
+            await match.MulliganDone(player);
+    }
+
+    [Fact]
+    public async Task OpponentDriverPlaysARealEnemyTurn()
+    {
+        var match = CreateMatch();
+        var host = new OrcMatchHost(match, "orc-ai");
+        await host.InitializeAsync();
+        await ConfirmMulliganAsync(match);
+        var enemy = match.Players[1];
+        var deckBefore = host.View.EnemyDeckCount!.Value;
+
+        // Pass the first turn; the driver plays the enemy turn through the engine's own entry points.
+        await match.EndTurn();
+        await OrcOpponentDriver.PlayTurnAsync(match, enemy, message => Console.WriteLine("[driver] " + message));
+        host.Pump();
+
+        var view = host.Refresh();
+        Assert.Equal("play", view.Phase); // the driver passed the turn back to us
+        Assert.Equal(deckBefore - 1, view.EnemyDeckCount); // the enemy drew at their turn start
+        // The enemy deployed with their first point: a unit now stands on their support line.
+        Assert.True(view.EnemyLine.Count > 0, "Enemy driver never deployed a unit.");
+    }
+
+    [Fact]
+    public async Task ConcedeProjectsTheTerminalState()
+    {
+        var match = CreateMatch();
+        var host = new OrcMatchHost(match, "orc-concede");
+        await host.InitializeAsync();
+        await ConfirmMulliganAsync(match);
+
+        var result = match.Concede(match.Players[0]); // the viewer resigns; the opponent wins
+        Assert.Equal(ConcedeStatus.Accepted, result.Status);
+        host.Pump();
+
+        var view = host.Refresh();
+        Assert.Equal("over", view.Phase);
+        Assert.Equal("失败", view.ResultTitle);
     }
 
     [Fact]

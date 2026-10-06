@@ -187,10 +187,10 @@ public partial class BattleScreen : Control
             _result.AddChild(paper);
             var victory = Text(state.ResultTitle ?? "对局结束", new(0, 10), new(390, 75), 52, "e8dec1");
             victory.HorizontalAlignment = HorizontalAlignment.Center; _result.AddChild(victory);
-            var restart = new Button { Text = _usingDemo ? "再来一局" : "返回图鉴", Position = new(115, 104), Size = new(160, 38) };
+            var restart = new Button { Text = "再来一局", Position = new(115, 104), Size = new(160, 38) };
             foreach (var style in new[] { "normal", "hover", "pressed", "focus" }) restart.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
             restart.AddThemeColorOverride("font_color", new("e9e3cc"));
-            restart.Pressed += () => { if (_usingDemo) ResetDemo(); else NavigationRequested?.Invoke("collection"); }; _result.AddChild(restart);
+            restart.Pressed += () => { if (_usingDemo) ResetDemo(); else RealMatchRequested?.Invoke(); }; _result.AddChild(restart);
         }
         _paper.FrontOwnedBySelf = state.SelfLine.Any(c => c.Zone == "frontline");
         _paper.FrontOccupied = state.SelfLine.Concat(state.EnemyLine).Any(c => c.Zone == "frontline"); _paper.QueueRedraw();

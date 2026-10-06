@@ -10,7 +10,7 @@ config_version=5
 
 [application]
 
-config/version="0.0.0-alpha.7"
+config/version="0.0.0-alpha.8"
 config/name="OrC-KSD 路 鍗＄墝妗ｆ"
 run/main_scene="res://proto/scenes/Main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
