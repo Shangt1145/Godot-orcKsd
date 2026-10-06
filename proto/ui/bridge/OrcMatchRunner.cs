@@ -100,7 +100,7 @@ public sealed class OrcMatchRunner
             switch (command)
             {
                 case PlayCard play:
-                    await PlayAsync(play.Uid, ct);
+                    await PlayAsync(play.Uid, play.SupportIndex, ct);
                     break;
                 case MoveUnit move:
                     if (Resolve(move.Uid) is not UnitCard unit)
@@ -140,13 +140,16 @@ public sealed class OrcMatchRunner
         // The board is not refreshed here: Pump picks up the segment and the presentation plays first.
     }
 
-    private async Task PlayAsync(string uid, CancellationToken ct)
+    private async Task PlayAsync(string uid, int? supportIndex, CancellationToken ct)
     {
         if (_match is null) return;
         switch (Resolve(uid))
         {
             case UnitCard unit:
+                // The player dropped the card at a spot; replay that spot when the engine asks for a slot.
+                _pendingSlot = supportIndex;
                 Report(await _match.PlayManager.BeginUnitPrePlayAsync(unit, ct));
+                _pendingSlot = null;
                 break;
             case CommandCard order:
                 Report(await _match.PlayManager.BeginCommandPrePlayAsync(order, ct));
@@ -238,10 +241,16 @@ public sealed class OrcMatchRunner
                 return;
             }
         }
-        // A move: honour the front-line slot the player dropped on, instead of any allowed slot.
+        // A placement or move: honour the slot the player dropped on. The exact slot may be occupied
+        // (adjacent units), so the nearest empty slot wins instead of a fixed side.
         if (_pendingSlot is { } index)
         {
-            var chosen = allowed.FirstOrDefault(r => OrcRefs.EntityOf(r.Value) is Slot target && target.Index == index);
+            var chosen = allowed
+                .Select(r => (Ref: r, Slot: OrcRefs.EntityOf(r.Value) as Slot))
+                .Where(x => x.Slot is not null)
+                .OrderBy(x => Math.Abs(x.Slot!.Index - index))
+                .Select(x => x.Ref)
+                .FirstOrDefault();
             if (chosen is not null)
             {
                 responder.Complete(description.RequestId, Map(slot.Name, [chosen]));

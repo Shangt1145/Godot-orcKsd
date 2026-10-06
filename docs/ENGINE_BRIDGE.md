@@ -88,6 +88,13 @@ dotnet test tests/Kards.Ui.Tests.csproj            # 36 项（含 8 项真实对
 - `Match` 构造签名未变；`GetCommandAvailability` 未变；`AllowFirstTurnDraw`（先手首回合抽牌，缺省关）对 UI 透明。
 - 仍未解决：`damage-flow` 无结构化载荷 —— 攻击方弹道轨迹继续等待上游。
 
+## 落位自由度（P7，含上游缺口）
+
+- **前线移动**：候选＝前线全部空槽 → UI 按松手位置取最近空槽，左/右自由 ✅。
+- **部署**：引擎规则＝**邻位空槽**（`BattleLine.GetAdjacentEmptySlots`——只允许与被占槽位相邻的空槽），
+  支援线从 HQ 向右连续生长，因此部署位置暂无左右可选（第一张必落 HQ 右侧）。UI 已按"落点最近空槽"
+  回放玩家意图，规则一旦放宽即自动生效。**需上游放宽**：部署候选改为支援线全部空槽。
+
 ## 完整对局闭环（P7）
 
 引擎没有 AI，敌方回合原本是空转。新增 `OrcOpponentDriver`（桥接层、net8、可单测）：

@@ -162,7 +162,7 @@ public partial class Main : Control
         _runner!.PresentationReady += (resolution, _) => deployed |= resolution.Steps.Any(s => s is UiDeploymentPresentation);
         var phases = new List<string>();
         _battle.PresentationPhase += phase => phases.Add(phase);
-        await _runner!.SubmitAsync(new PlayCard(uid));
+        await _runner!.SubmitAsync(new PlayCard(uid, 2));
         await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
         GD.Print($"[bridge] presentation steps fired={deployed}, phases=[{string.Join(' ', phases)}]");
         if (!phases.Contains("deployment-start") || !phases.Any(p => p.StartsWith("deployment-slam")))
@@ -179,6 +179,18 @@ public partial class Main : Control
         if (afterEnemyTurn.ActivePlayerSide != "self") throw new Exception("Opponent turn did not come back.");
         if (afterEnemyTurn.EnemyLine.Count == 0) throw new Exception("Opponent driver did not deploy a unit.");
 
+        // Deployment is adjacency-locked by the engine (only slots next to occupied ones are legal), so a
+        // second card must take a *different* slot; free side choice awaits an engine rule change.
+        var second = _runner!.CurrentActions.PlayableUids.FirstOrDefault();
+        if (second is not null)
+        {
+            await _runner!.SubmitAsync(new PlayCard(second, 1));
+            await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
+            var left = _runner!.CurrentView!.SelfLine.First(c => c.Uid == second);
+            var right = _runner!.CurrentView!.SelfLine.First(c => c.Uid == uid);
+            if (left.SlotIndex == right.SlotIndex) throw new Exception("Two deployments landed on the same slot.");
+        }
+
         // Combat choreography: advance and strike the enemy HQ; the engine decides the outcome.
         var combatSeen = false;
         _runner!.CombatReady += (impacts, _, _) => combatSeen |= impacts.Count > 0;
@@ -186,10 +198,11 @@ public partial class Main : Control
         await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
         var attacker = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => !c.IsHq && c.Zone == "support")
             ?? throw new Exception("No unit on the support line to advance.");
-        await _runner!.SubmitAsync(new MoveUnit(attacker.Uid, "frontline"));
+        await _runner!.SubmitAsync(new MoveUnit(attacker.Uid, "frontline", 2));
         await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
-        if (_runner!.CurrentView!.SelfLine.First(c => c.Uid == attacker.Uid).Zone != "frontline")
-            throw new Exception("Real move did not reach the front line.");
+        var advanced = _runner!.CurrentView!.SelfLine.First(c => c.Uid == attacker.Uid);
+        if (advanced.Zone != "frontline" || advanced.SlotIndex != 2)
+            throw new Exception("Real move did not reach the requested front-line slot.");
         // A unit that moved cannot attack the same turn (engine rule); wait for its next turn.
         await _runner!.SubmitAsync(new EndTurn());
         await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
