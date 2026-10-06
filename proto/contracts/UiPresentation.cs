@@ -16,6 +16,10 @@ public enum UiCounterStage { Armed, Disarmed, Triggered }
 public sealed record UiCounterPresentation(string Side, UiCounterStage Stage, UiCardView? Card = null, UiCardView? BlockedCard = null) : UiPresentationStep;
 public enum UiStatusKind { Heal, Buff, Damaged, Suppressed, Cleared, CostChanged }
 public sealed record UiStatusPresentation(UiCardView Before, UiCardView After, UiStatusKind Status) : UiPresentationStep;
+
+/// <summary>Where a command-point change came from, so the bar can animate for the right reason.</summary>
+public enum UiResourceCause { Turn, Spend, Gain }
+public sealed record UiResourcePresentation(string Side, UiResourceCause Cause, int OldValue, int NewValue, int? OldSlots = null, int? NewSlots = null) : UiPresentationStep;
 public enum UiDiscardKind { Discard, Burn }
 public sealed record UiDiscardPresentation(string Side, UiCardView? Card, UiDiscardKind Kind) : UiPresentationStep;
 public sealed record UiMulliganPresentation(string Side, int Replaced, IReadOnlyList<UiCardView> Drawn) : UiPresentationStep;

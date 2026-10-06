@@ -1,4 +1,5 @@
 using Godot;
+using Kards.Ui.Contracts;
 
 namespace Kards.Ui;
 
@@ -29,13 +30,53 @@ public partial class KreditsDisplay : Control
         TooltipText = $"指挥点：{available?.ToString() ?? "未知"}\n指挥点槽：{slots?.ToString() ?? "未知"}";
         QueueRedraw();
     }
+
+    /// <summary>
+    /// Animates towards a new value. The turn's increment counts up and glows; a card's spend counts
+    /// down and dims, so the two read differently without needing a label.
+    /// </summary>
+    public void AnimateTo(int? available, int? slots, UiResourceCause cause)
+    {
+        if (available is not null) Available = available;
+        if (slots is not null) Slots = slots;
+        _from = _shown;
+        _to = Available ?? 0;
+        _cause = cause;
+        _age = 0;
+        _animating = _from != _to;
+        QueueRedraw();
+    }
+
+    private int _shown;
+    private int _from;
+    private int _to;
+    private double _age;
+    private bool _animating;
+    private UiResourceCause _cause = UiResourceCause.Turn;
+    private const double ResourceSeconds = .38;
+
+    public override void _Process(double delta)
+    {
+        if (!_animating) return;
+        _age += delta;
+        if (_age >= ResourceSeconds) { _shown = _to; _animating = false; QueueRedraw(); return; }
+        var t = (float)Math.Clamp(_age / ResourceSeconds, 0, 1);
+        var eased = t * t * (3 - 2 * t);
+        _shown = (int)Math.Round(_from + (_to - _from) * eased);
+        QueueRedraw();
+    }
+
     public override void _Draw()
     {
-        var text = Available?.ToString() ?? "?";
+        var text = (_animating ? _shown.ToString() : Available?.ToString()) ?? "?";
+        // While the number is moving, tint it by cause: gold for the turn's increment, red for a spend.
+        var ink = new Color("e99e2b");
+        if (_animating)
+            ink = _cause == UiResourceCause.Spend ? new Color("c9603f") : new Color("f2c14a");
         var width = Stencil.GetStringSize(text, HorizontalAlignment.Left, -1, 60).X;
         DrawString(Stencil, new(3, 62), text, HorizontalAlignment.Left, -1, 60, new Color(0, 0, 0, .65f));
-        DrawString(Stencil, new(1, 60), text, HorizontalAlignment.Left, -1, 60, new("e99e2b"));
-        DrawString(Stencil, new(width + 2, 33), "K", HorizontalAlignment.Left, -1, 22, new("e99e2b"));
+        DrawString(Stencil, new(1, 60), text, HorizontalAlignment.Left, -1, 60, ink);
+        DrawString(Stencil, new(width + 2, 33), "K", HorizontalAlignment.Left, -1, 22, ink);
         DrawLine(new(-10, 73), new(34, 73), new("dedac4"), 3);
         DrawLine(new(-5, 75), new(8, 75), new("dedac4"), 1);
         var slots = Slots?.ToString() ?? "?";

@@ -156,6 +156,13 @@ public partial class BattleScreen
                         if (_cards.TryGetValue(status.Before.Uid, out var statusCard) && statusCard.View?.Visibility == Visibility.Full)
                             await _sequence.StatusAsync(statusCard, status);
                         break;
+                    case UiResourcePresentation resource:
+                        // The bar counts to its new value; the authoritative render below re-binds it.
+                        if (resource.Side == "self" && resource.NewValue > 0)
+                            _selfResource.AnimateTo(resource.NewValue, resource.NewSlots, resource.Cause);
+                        else if (resource.Side == "enemy" && resource.NewSlots is not null)
+                            _enemyResource.AnimateTo(null, resource.NewSlots, resource.Cause);
+                        break;
                 }
             }
             // The match ending is a board-level event, not a step: it gets its own beat before the

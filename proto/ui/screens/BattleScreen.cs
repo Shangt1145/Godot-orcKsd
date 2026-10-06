@@ -844,6 +844,21 @@ public partial class BattleScreen : Control
             throw new Exception("Production UI executed a game rule.");
         ApplyProjection(projected with { MatchId = "unknown-kredits", EnemyKredits = null, EnemyMaxKredits = null }, new());
         if (_enemyResource.Available is not null || _enemyResource.Slots is not null) throw new Exception("Unknown resource was fabricated.");
+        // Resource steps carry the engine's old/new pair and a cause. A bare slot change with no
+        // preceding gain/loss is the turn increment and must not animate as a card effect.
+        var resourceView = _state;
+        var turnStep = new UiResourcePresentation("self", UiResourceCause.Turn, 0, 0, 4, 5);
+        var effectStep = new UiResourcePresentation("self", UiResourceCause.Gain, 3, 5, 5, 5);
+        var resourceResolution = UiSnapshots.Freeze(new UiPresentationResolution(
+            resourceView.MatchId, [turnStep, effectStep], resourceView));
+        _pendingPresentation = resourceResolution;
+        await PresentSequenceAsync(resourceResolution, _actions);
+        if (_selfResource.Available != resourceView.SelfKredits)
+            throw new Exception("The resource bar did not settle on the authoritative value.");
+        if (_selfResource.Slots != resourceView.SelfMaxKredits)
+            throw new Exception("The resource bar did not settle on the authoritative slot count.");
+        if (turnStep.Cause == UiResourceCause.Turn && turnStep.NewValue != 0 && turnStep.NewSlots is null)
+            throw new Exception("A turn increment reported a point delta but no slot delta.");
         // With no supplied result the panel must stay a bare "对局结束" — no reason, no turn count,
         // and above all no inferred victory.
         ApplyProjection(projected with { MatchId = "unknown-result", Phase = "over", EnemyHq = null }, new());

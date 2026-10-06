@@ -33,10 +33,33 @@ public sealed class OrcUpdateTranslator
         // guaranteed (stat.changed may arrive first), so collect the pairing first and apply it once
         // every impact of this segment is known.
         var assaults = new Dictionary<string, (string Attacker, int Amount)>();
+        // slot.gained / slot.lost are semantic pre-signals; slot.changed is the only signal the
+        // value really moved. Tracking which pre-signals arrived is what lets the bar animate a
+        // card effect differently from a turn increment, without playing the same change twice.
+        var slotEffect = 0;
+        var pointDelta = 0;
         foreach (var (update, payload) in updates)
         {
             switch (update)
             {
+                case GameUpdates.SlotGained:
+                case GameUpdates.SlotLost:
+                    slotEffect++;
+                    break;
+                case GameUpdates.PointGained:
+                    pointDelta += 1;
+                    break;
+                case GameUpdates.PointLost:
+                    pointDelta -= 1;
+                    break;
+                case GameUpdates.SlotChanged:
+                    AddResource(steps, payload, viewer, slotEffect > 0 ? UiResourceCause.Gain : UiResourceCause.Turn);
+                    break;
+                case GameUpdates.PointChanged:
+                    // point.changed only ever follows a card effect, so the cause follows whichever
+                    // pre-signal arrived; spending a card points down, gaining them up.
+                    AddResource(steps, payload, viewer, pointDelta < 0 ? UiResourceCause.Spend : UiResourceCause.Gain);
+                    break;
                 case GameUpdates.CardHandAdd:
                 case GameUpdates.CardDrawn:
                     AddDraw(steps, payload, viewer, after);
@@ -209,6 +232,24 @@ public sealed class OrcUpdateTranslator
         if (before is null && previous.EnemyHq?.Uid == uid) before = previous.EnemyHq;
         if (before?.Visibility != Visibility.Full) return (null, null);
         return (before, BoardView(card, after));
+    }
+
+    /// <summary>
+    /// A command-point change. The engine reports old and new, so the bar animates the actual delta
+    /// instead of guessing. Only the viewer-side change becomes a step; the opponent's bar follows
+    /// the board render, and inventing an animation for hidden information would leak it.
+    /// </summary>
+    private static void AddResource(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,
+        Player viewer, UiResourceCause cause)
+    {
+        if (payload.GetValueOrDefault(GameUpdates.PayloadPlayer) is not Player player) return;
+        var mine = ReferenceEquals(player, viewer);
+        var oldPoints = payload.GetValueOrDefault(GameUpdates.PayloadOldPoints) as int?;
+        var newPoints = payload.GetValueOrDefault(GameUpdates.PayloadNewPoints) as int?;
+        var oldSlots = payload.GetValueOrDefault(GameUpdates.PayloadOldSlots) as int?;
+        var newSlots = payload.GetValueOrDefault(GameUpdates.PayloadNewSlots) as int?;
+        if (mine) steps.Add(new UiResourcePresentation("self", cause, oldPoints ?? 0, newPoints ?? 0, oldSlots, newSlots));
+        else if (newSlots is not null) steps.Add(new UiResourcePresentation("enemy", cause, 0, 0, oldSlots, newSlots));
     }
 
     private void AddDiscard(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,

@@ -48,6 +48,8 @@ public static class UiSnapshots
                     : Array.Empty<UiCardView>()
             },
             UiTurnPresentation turn => turn,
+            // Pure numbers: the cause and the old/new pair are engine facts, and no card view crosses.
+            UiResourcePresentation resource => resource,
             _ => throw new ArgumentException("Unknown presentation step.")
         }))
     };
