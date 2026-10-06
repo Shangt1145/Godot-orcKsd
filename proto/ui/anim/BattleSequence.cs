@@ -19,9 +19,24 @@ public partial class BattleSequence : Control
     private double Time(double seconds) => Math.Max(.03, seconds * _clock.Scale);
     private async Task Wait(double seconds, int epoch)
     {
+        // See BattleCombat.Delay: a headless render does not advance the engine's frame clock, so a
+        // timer-based wait never returns. Step-driven capture counts rendered frames instead.
+        if (StepFrames > 0)
+        {
+            var frames = (int)Math.Max(1, Math.Round(seconds * 60));
+            for (var i = 0; i < frames; i++)
+            {
+                if (epoch != _epoch || !IsInsideTree()) throw new OperationCanceledException();
+                await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+            }
+            return;
+        }
         await ToSignal(GetTree().CreateTimer(Time(seconds)), SceneTreeTimer.SignalName.Timeout);
         if (epoch != _epoch || !IsInsideTree()) throw new OperationCanceledException();
     }
+
+    /// <summary>When &gt; 0, <see cref="Wait"/> counts rendered frames instead of using the engine timer.</summary>
+    public int StepFrames { get; set; }
     private BattleCard Paper(UiCardView? card, Vector2 at, Vector2 size, float rotation = 0)
     {
         var paper = new BattleCard { Position = at, Size = size, Rotation = rotation, PivotOffset = size / 2,

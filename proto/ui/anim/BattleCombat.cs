@@ -64,9 +64,25 @@ public partial class BattleCombat : Control
     }
     private async Task Delay(double seconds, int epoch)
     {
+        // Step-driven callers (frame capture) advance the clock themselves: the engine's timer is
+        // driven by the frame loop, which a headless render does not advance, so a plain timer wait
+        // would never return and the whole choreography would collapse into one frame.
+        if (StepFrames > 0)
+        {
+            var frames = (int)Math.Max(1, Math.Round(seconds * 60));
+            for (var i = 0; i < frames; i++)
+            {
+                if (epoch != _epoch || !IsInsideTree()) throw new OperationCanceledException();
+                await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+            }
+            return;
+        }
         await ToSignal(GetTree().CreateTimer(Time(seconds)), SceneTreeTimer.SignalName.Timeout);
         if (epoch != _epoch || !IsInsideTree()) throw new OperationCanceledException();
     }
+
+    /// <summary>When &gt; 0, <see cref="Delay"/> waits that many rendered frames instead of using the engine timer.</summary>
+    public int StepFrames { get; set; }
     public void Interrupt()
     {
         _epoch++; IsPlaying = false;
