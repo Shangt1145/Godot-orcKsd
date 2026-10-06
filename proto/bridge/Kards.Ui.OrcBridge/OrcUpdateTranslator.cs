@@ -29,6 +29,10 @@ public sealed class OrcUpdateTranslator
         var steps = new List<UiPresentationStep>();
         var impacts = new List<UiOrderImpact>();
         var died = new HashSet<string>();
+        // unit.damage.dealt carries the attacker and the engine's own amount. Signal order is not
+        // guaranteed (stat.changed may arrive first), so collect the pairing first and apply it once
+        // every impact of this segment is known.
+        var assaults = new Dictionary<string, (string Attacker, int Amount)>();
         foreach (var (update, payload) in updates)
         {
             switch (update)
@@ -42,6 +46,15 @@ public sealed class OrcUpdateTranslator
                     break;
                 case GameUpdates.CardStatChanged:
                     AddImpact(impacts, payload, previous, after);
+                    break;
+                case GameUpdates.CardDamaged:
+                    // The victim-side damage signal. It carries the engine's own amount, so no stat
+                    // diff is needed — and unlike stat.changed it fires for HQ damage too, which is
+                    // why combat feedback used to go missing on every attack that hit the HQ.
+                    AddDamage(impacts, payload, previous, after);
+                    break;
+                case GameUpdates.UnitDamageDealt:
+                    RecordAssault(assaults, payload);
                     break;
                 case GameUpdates.CardDied:
                     var lost = PayloadCard(payload);
@@ -60,9 +73,44 @@ public sealed class OrcUpdateTranslator
                     break;
             }
         }
+        impacts = ApplyAssaults(impacts, assaults, after);
         // Deaths already play inside the impact presentation; never play them twice.
         steps.RemoveAll(step => step is UiRemovalPresentation removal && died.Contains(removal.Card.Uid));
         return new OrcTranslation(steps, impacts);
+    }
+
+    /// <summary>
+    /// Notes who hit whom and by how much. Keyed by the victim's uid; one attacker per victim per
+    /// segment, because the engine resolves a single damage roll per target.
+    /// </summary>
+    private static void RecordAssault(Dictionary<string, (string Attacker, int Amount)> assaults,
+        IReadOnlyDictionary<string, object?> payload)
+    {
+        if (payload.GetValueOrDefault(GameUpdates.PayloadUnit) is not Card attacker) return;
+        if (payload.GetValueOrDefault(GameUpdates.PayloadCard) is not Card victim) return;
+        var amount = payload.GetValueOrDefault(GameUpdates.PayloadAmount) as int? ?? 0;
+        if (amount <= 0) return;
+        assaults[OrcRefs.KeyOf(victim)] = (OrcRefs.KeyOf(attacker), amount);
+    }
+
+    /// <summary>
+    /// Pairs each impact with its attacker and replaces the derived damage with the engine's amount.
+    /// An impact the engine never paired stays sourceless: it plays as a bare hit, no invented shot.
+    /// </summary>
+    private static List<UiOrderImpact> ApplyAssaults(List<UiOrderImpact> impacts,
+        Dictionary<string, (string Attacker, int Amount)> assaults, UiMatchView after)
+    {
+        if (assaults.Count == 0) return impacts;
+        var paired = new List<UiOrderImpact>(impacts.Count);
+        foreach (var impact in impacts)
+        {
+            if (!assaults.TryGetValue(impact.Before.Uid, out var hit)) { paired.Add(impact); continue; }
+            var source = after.SelfLine.Concat(after.EnemyLine).FirstOrDefault(c => c.Uid == hit.Attacker);
+            // The attacker's own view may already be gone (it died in the same segment); the impact
+            // then keeps the engine's amount but plays without a trajectory.
+            paired.Add(impact with { Damage = hit.Amount, Source = source });
+        }
+        return paired;
     }
 
     /// <summary>
@@ -111,29 +159,56 @@ public sealed class OrcUpdateTranslator
 
     /// <summary>
     /// A defense or HQ-health drop becomes a board impact: flash, damage number and death smoke, with the
-    /// damage read as the difference between the displayed before and after. No attacker trajectory exists
-    /// in the engine's update stream, so the hit lands on the target without a shot.
+    /// damage read as the difference between the displayed before and after. That derived number is only a
+    /// fallback — when unit.damage.dealt is present, <see cref="ApplyAssaults"/> replaces it with the
+    /// engine's own amount and attaches the attacker.
     /// </summary>
     private void AddImpact(List<UiOrderImpact> impacts, IReadOnlyDictionary<string, object?> payload,
         UiMatchView previous, UiMatchView after)
     {
         var card = PayloadCard(payload);
         if (card is null) return;
-        var uid = OrcRefs.KeyOf(card);
-        var before = previous.SelfLine.Concat(previous.EnemyLine).FirstOrDefault(c => c.Uid == uid);
-        if (before is null && previous.SelfHq?.Uid == uid) before = previous.SelfHq;
-        if (before is null && previous.EnemyHq?.Uid == uid) before = previous.EnemyHq;
-        if (before?.Visibility != Visibility.Full) return;
-
         var fields = payload.TryGetValue(GameUpdates.PayloadChangedFields, out var value) ? value as IReadOnlyList<string> : null;
         var healthHit = fields is null || fields.Contains(CardStatFields.Defense) || fields.Contains(CardStatFields.HqHealth);
         if (!healthHit) return;
 
-        var afterView = BoardView(card, after);
+        var (before, afterView) = Resolve(impacts, card, previous, after);
+        if (before is null) return;
         var damage = (before.Health ?? 0) - (afterView?.Health ?? 0);
         if (damage <= 0 && afterView is not null) return;
-        if (impacts.Any(i => i.Before.Uid == uid)) return;
         impacts.Add(new UiOrderImpact(before, afterView, Math.Max(0, damage)));
+    }
+
+    /// <summary>
+    /// The victim-side damage signal. The engine states the amount it actually applied, so the
+    /// displayed before/after pair is only used for the card snapshots, never for the number.
+    /// </summary>
+    private void AddDamage(List<UiOrderImpact> impacts, IReadOnlyDictionary<string, object?> payload,
+        UiMatchView previous, UiMatchView after)
+    {
+        var card = PayloadCard(payload);
+        if (card is null) return;
+        var amount = payload.GetValueOrDefault(GameUpdates.PayloadAmount) as int? ?? 0;
+        if (amount <= 0) return;
+        var (before, afterView) = Resolve(impacts, card, previous, after);
+        if (before is null) return;
+        impacts.Add(new UiOrderImpact(before, afterView, amount));
+    }
+
+    /// <summary>
+    /// Locates the hit card across the previous board and the fresh one, and refuses to report the
+    /// same victim twice in a segment (stat.changed and card.damaged can both describe one hit).
+    /// </summary>
+    private static (UiCardView? Before, UiCardView? After) Resolve(List<UiOrderImpact> impacts, Card card,
+        UiMatchView previous, UiMatchView after)
+    {
+        var uid = OrcRefs.KeyOf(card);
+        if (impacts.Any(i => i.Before.Uid == uid)) return (null, null);
+        var before = previous.SelfLine.Concat(previous.EnemyLine).FirstOrDefault(c => c.Uid == uid);
+        if (before is null && previous.SelfHq?.Uid == uid) before = previous.SelfHq;
+        if (before is null && previous.EnemyHq?.Uid == uid) before = previous.EnemyHq;
+        if (before?.Visibility != Visibility.Full) return (null, null);
+        return (before, BoardView(card, after));
     }
 
     private void AddDiscard(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,

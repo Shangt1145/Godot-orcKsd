@@ -172,6 +172,38 @@ public partial class BattleCombat : Control
     {
         AddChild(new CombatTrace { From = from, To = to, Kind = type, Duration = Time(life), Quiet = _clock.ReducedMotion });
     }
+    /// <summary>
+    /// Plays an attack that the engine attributed to a unit: the attacker's own weapon runs first,
+    /// then each impact lands. Sourceless impacts go through <see cref="PresentImpactsAsync"/> and
+    /// stay bare hits — no shot is invented for a hit the engine never paired.
+    /// </summary>
+    public async Task PresentAssaultAsync(BattleCard attacker, IReadOnlyList<(UiOrderImpact Impact, BattleCard Card)> targets)
+    {
+        if (attacker is not { Visible: true }) { await PresentImpactsAsync(targets); return; }
+        Interrupt(); var epoch = _epoch; IsPlaying = true;
+        PhaseChanged?.Invoke("assault");
+        var from = CenterOf(attacker);
+        var victims = targets.Where(t => t.Card != attacker).ToArray();
+        // Fire at each victim in order; a unit that struck two things shoots twice.
+        foreach (var (_, card) in victims)
+        {
+            if (epoch != _epoch) return;
+            if (!GodotObject.IsInstanceValid(card) || !card.Visible) continue;
+            await Shoot(attacker.View!, attacker, from, CenterOf(card), epoch);
+        }
+        if (epoch != _epoch) return;
+        foreach (var (impact, card) in victims)
+        {
+            if (epoch != _epoch) return;
+            if (!GodotObject.IsInstanceValid(card)) continue;
+            _actors.Add(card);
+            Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage);
+        }
+        PhaseChanged?.Invoke("assault-impact");
+        await Delay(victims.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : 1.22, epoch);
+        Interrupt();
+    }
+
     public async Task PresentImpactsAsync(IReadOnlyList<(UiOrderImpact Impact, BattleCard Card)> targets)
     {
         Interrupt(); var epoch = _epoch; IsPlaying = true;

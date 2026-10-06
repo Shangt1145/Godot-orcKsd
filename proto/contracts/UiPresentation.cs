@@ -3,7 +3,12 @@ namespace Kards.Ui.Contracts;
 /// <summary>Resolved presentation snapshots, supplied by an adapter. No rules or targeting are inferred.</summary>
 public abstract record UiPresentationStep;
 public sealed record UiDrawPresentation(string Side, int SlotIndex, UiCardView? Card = null) : UiPresentationStep;
-public sealed record UiOrderImpact(UiCardView Before, UiCardView? After, int Damage);
+/// <summary>
+/// One hit on the board. <paramref name="Source"/> is the attacker the engine reported
+/// (unit.damage.dealt), so the UI can play the weapon's own trajectory; null means the engine
+/// reported no attacker and the hit lands without a shot.
+/// </summary>
+public sealed record UiOrderImpact(UiCardView Before, UiCardView? After, int Damage, UiCardView? Source = null);
 public sealed record UiOrderPresentation(UiCardView Card, IReadOnlyList<UiOrderImpact> Impacts) : UiPresentationStep;
 public sealed record UiDeploymentPresentation(UiCardView Card, UiMatchView Deployed) : UiPresentationStep;
 public sealed record UiRemovalPresentation(UiCardView Card) : UiPresentationStep;

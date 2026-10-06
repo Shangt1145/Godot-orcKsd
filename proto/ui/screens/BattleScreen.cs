@@ -501,7 +501,18 @@ public partial class BattleScreen : Control
         var generation = _generation;
         try
         {
-            await _combat.PresentImpactsAsync(targets);
+            // Segment order preserved: the attack group plays before the counter group. Within a
+            // group the engine already told us who attacked, so that group gets the weapon's shot;
+            // a hit with no reported attacker stays a bare flash.
+            foreach (var group in targets.GroupBy(t => t.Impact.Source?.Uid))
+            {
+                if (generation != _generation) return;
+                var attacker = group.Key is null ? null : _cards.GetValueOrDefault(group.Key);
+                if (attacker is { Visible: true } && group.Any(t => t.Card != attacker))
+                    await _combat.PresentAssaultAsync(attacker, group.ToArray());
+                else
+                    await _combat.PresentImpactsAsync(group.ToArray());
+            }
             if (generation != _generation) return;
             Render(after, actions, true);
         }
