@@ -5,10 +5,14 @@
 > **本次交接状态**：拍桌部署动作已按原版逐帧核验重做并交付（见 `BATTLE_SLAM_REWORK.md`）。
 > P9（受击接真实伤害 + 攻击弹道）的改动**已从工作区剥离、未提交**，原因见§3。
 
-> ⚠️ **推送受阻**：`alpha.11`（`0a1280b`）与 `c787d44` 两个提交已在本地落地，
-> **尚未推到 origin**。原因是本机 HTTPS 代理 `127.0.0.1:5373` 对 `github.com:443`
-> 的 CONNECT 隧道一律返回 502（代理收请求后等满10 秒才回错），重试无效。
-> 代理恢复后执行 `git push origin main` 即可，**不要重新提交**。
+> ⚠️ **推送受阻**：`alpha.11`（`0a1280b`）、`c787d44` 与文档提交 `40235c4` 已在本地落地，
+> **尚未推到 origin**（`main` 领先 `origin/main` 3 个提交）。需要两件事：
+> 1. 在 Watt Toolkit（= `C:\Program Files\Steam++\Steam++.exe`）GUI 内**手动开启加速**
+>    （仅启动程序不够，无 CLI 开关，Agent 会话内无法代劳）；
+> 2. 完成 GitHub 认证（本机无 GCM 凭据缓存、无明文 token）。
+>
+> 之后执行 `git push origin main` 即可，**不要重新提交**。
+> 若需保险，`artifacts/p9-slam-alpha11.patch`（65KB）可从 `c787d44` 重放全部改动。
 
 ## 1. 项目是什么
 
