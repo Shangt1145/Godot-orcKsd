@@ -140,6 +140,104 @@ public sealed class OrcBridgeTests
     }
 
     [Fact]
+    public async Task InteractiveMulliganReplacesOnlyTheUnkeptCards()
+    {
+        // The panel path: the bridge parks the request, the UI submits a keep list, and the engine
+        // replaces exactly the rest. Everything here is the engine's own truth.
+        var parked = new TaskCompletionSource();
+        Orc.Game.Targeting.TargetingRequestDescription? description = null;
+        Orc.Game.Targeting.ITargetingResponder? responder = null;
+        Match? match = null;
+        var bridge = new OrcTargeterBridge(() => InteractablesOf(match), (d, r) =>
+        {
+            description = d; responder = r; parked.TrySetResult();
+        });
+        var definitions = new[]
+        {
+            new CardDefinitionEntry(InfantryId, new CardDefinition(
+                "步兵", deployCost: 1, operateCost: 1, attack: 2, defense: 5,
+                unitTypes: [UnitType.Infantry], faction: Faction.Germany, rarity: Rarity.Standard))
+        };
+        var deckA = new CardList(Enumerable.Repeat(InfantryId, 20));
+        var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
+        match = new Match(deckA, deckB, definitions, seed: 7, firstPlayerIndex: 0, targeterBridge: bridge);
+        var host = new OrcMatchHost(match, "orc-mulligan");
+        await host.InitializeAsync();
+
+        var opening = host.View.SelfHand.Select(c => c.Uid).ToArray();
+        Assert.Equal(4, opening.Length);
+        var deckBefore = host.View.SelfDeckCount;
+        await match.MulliganDone(match.Players[1]); // the opponent keeps
+        var self = match.BeginMulliganAsync(match.Players[0]);
+        await parked.Task; // the request must park, not auto-answer
+
+        var slot = description!.Slots[0];
+        Assert.Equal(Orc.Game.Targeting.TargetSlotKind.MulliganSelect, slot.Kind);
+        var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
+        Assert.Equal(opening.Length, allowed.Length);
+        var replace = OrcTargeterBridge.SelectReplace(allowed, opening.Take(3));
+        Assert.Single(replace);
+
+        responder!.Complete(description.RequestId,
+            new Dictionary<string, IReadOnlyList<Orc.Core.Ref<Orc.Core.Entity>>> { [slot.Name] = replace });
+        var result = await self;
+        Assert.True(result.IsSuccess, $"mulligan failed: {result.FailureReason}");
+        host.Pump();
+
+        var view = host.Refresh();
+        Assert.Equal("play", view.Phase); // both sides confirmed -> play
+        Assert.Equal(opening.Length, view.SelfHand.Count); // replace one = draw one
+        var uids = view.SelfHand.Select(c => c.Uid).ToHashSet();
+        Assert.Subset(uids, opening.Take(3).ToHashSet()); // kept cards are still there
+        // With an all-identical deck the draw may return the same instance, so uid absence is not
+        // assertable; the shuffle-back +1 / draw -1 pair leaves the deck count untouched.
+        Assert.Equal(deckBefore, view.SelfDeckCount);
+    }
+
+    [Fact]
+    public async Task KeepAllMulliganKeepsTheWholeOpeningHand()
+    {
+        var parked = new TaskCompletionSource();
+        Orc.Game.Targeting.TargetingRequestDescription? description = null;
+        Orc.Game.Targeting.ITargetingResponder? responder = null;
+        Match? match = null;
+        var bridge = new OrcTargeterBridge(() => InteractablesOf(match), (d, r) =>
+        {
+            description = d; responder = r; parked.TrySetResult();
+        });
+        var definitions = new[]
+        {
+            new CardDefinitionEntry(InfantryId, new CardDefinition(
+                "步兵", deployCost: 1, operateCost: 1, attack: 2, defense: 5,
+                unitTypes: [UnitType.Infantry], faction: Faction.Germany, rarity: Rarity.Standard))
+        };
+        match = new Match(
+            new CardList(Enumerable.Repeat(InfantryId, 20)), new CardList(Enumerable.Repeat(InfantryId, 20)),
+            definitions, seed: 7, firstPlayerIndex: 0, targeterBridge: bridge);
+        var host = new OrcMatchHost(match, "orc-mulligan-keep");
+        await host.InitializeAsync();
+        var opening = host.View.SelfHand.Select(c => c.Uid).ToArray();
+        await match.MulliganDone(match.Players[1]);
+        var self = match.BeginMulliganAsync(match.Players[0]);
+        await parked.Task;
+
+        var slot = description!.Slots[0];
+        responder!.Complete(description.RequestId,
+            new Dictionary<string, IReadOnlyList<Orc.Core.Ref<Orc.Core.Entity>>>
+            {
+                [slot.Name] = OrcTargeterBridge.SelectReplace(
+                    (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray(), opening)
+            });
+        var result = await self;
+        Assert.True(result.IsSuccess);
+        host.Pump();
+
+        var view = host.Refresh();
+        Assert.Equal("play", view.Phase);
+        Assert.Equal(opening, view.SelfHand.OrderBy(c => c.SlotIndex).Select(c => c.Uid).ToArray());
+    }
+
+    [Fact]
     public async Task OpponentDriverPlaysARealEnemyTurn()
     {
         var match = CreateMatch();

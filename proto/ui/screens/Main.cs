@@ -118,12 +118,14 @@ public partial class Main : Control
         else if (args.Contains("--capture-ui"))
             CallDeferred(MethodName.CaptureUi);
     }
-    /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.</summary>
-    public async Task StartRealMatchAsync()
+    /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
+    /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>
+    public async Task StartRealMatchAsync(bool interactiveMulligan = true)
     {
         if (_runner is not null) { _runner.Stop(); _runner = null; }
-        var runner = new OrcMatchRunner();
+        var runner = new OrcMatchRunner { InteractiveMulligan = interactiveMulligan };
         runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
+        runner.MulliganRequested += () => _battle.ShowMulliganPanel(runner.CurrentView);
         runner.PresentationReady += (resolution, actions) => _ = _battle.PresentSequenceAsync(resolution, actions);
         var matchId = runner.MatchId;
         runner.CombatReady += (impacts, after, actions) => _ = _battle.PresentBoardImpactsAsync(matchId, impacts, after, actions);
@@ -138,7 +140,7 @@ public partial class Main : Control
     private async Task VerifyBridgeAsync()
     {
         Show("battle");
-        await StartRealMatchAsync();
+        await StartRealMatchAsync(interactiveMulligan: false); // the keep-all policy keeps this verify deterministic
         var view = _runner?.CurrentView ?? throw new Exception("Real match produced no projection.");
         if (view.Phase != "play") throw new Exception($"Real match did not reach play: {view.Phase}.");
         if (view.SelfHand.Count != 4) throw new Exception($"Opening hand mismatch: {view.SelfHand.Count}.");
@@ -217,7 +219,67 @@ public partial class Main : Control
         GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable deploy endturn combat hq-damaged");
     }
 
-    /// <summary>Version comes from project.godot (single source of truth: root VERSION file).</summary>
+    /// <summary>
+    /// The mulligan panel end to end: the engine parks the request, the panel opens with the opening
+    /// hand, one card is marked, the keep list is submitted, and the match reaches play with the kept
+    /// cards intact and the hand size unchanged (replace one = draw one).
+    /// </summary>
+    private async Task VerifyMulliganPanelAsync()
+    {
+        Show("battle");
+        await StartRealMatchAsync(); // interactive
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!_battle.MulliganPanelVisible && DateTime.UtcNow < deadline) await Task.Delay(50);
+        if (!_battle.MulliganPanelVisible) throw new Exception("Mulligan panel never opened.");
+        var opening = _runner?.CurrentView ?? throw new Exception("Mulligan match produced no projection.");
+        if (opening.Phase != "mulligan" || opening.SelfHand.Count == 0) throw new Exception("Mulligan panel has no opening hand.");
+        var replaced = opening.SelfHand[0].Uid;
+        var kept = opening.SelfHand.Skip(1).Select(c => c.Uid).ToHashSet();
+        _battle.MarkMulliganReplacement(replaced);
+        _battle.ConfirmMulligan();
+        if (_battle.MulliganPanelVisible) throw new Exception("Mulligan panel stayed open after the submit.");
+        deadline = DateTime.UtcNow.AddSeconds(10);
+        while (_runner is not null && _runner.CurrentView?.Phase != "play" && DateTime.UtcNow < deadline) await Task.Delay(50);
+        var after = _runner?.CurrentView ?? throw new Exception("Mulligan submit produced no projection.");
+        if (after.Phase != "play") throw new Exception($"Mulligan submit did not reach play: {after.Phase}.");
+        if (after.SelfHand.Count != opening.SelfHand.Count) throw new Exception("Mulligan replacement changed the hand size.");
+        if (after.SelfDeckCount != opening.SelfDeckCount) throw new Exception("Mulligan replacement changed the deck size.");
+        // With an all-identical deck the replacement draw may return the very same instance, so the
+        // marked uid cannot be asserted absent; the kept cards and the two counts are the invariant.
+        var uids = after.SelfHand.Select(c => c.Uid).ToHashSet();
+        if (!uids.IsSupersetOf(kept)) throw new Exception("Mulligan lost a kept card.");
+        _runner!.Stop(); _runner = null;
+        _battle.ResetDemo();
+        GD.Print("MULLIGAN_VERIFY_OK panel marked=1 replaced keep-3 reach-play hand-size-stable");
+    }
+
+    /// <summary>Captures the mulligan panel: untouched, then with one ✕ stamp, from a real match.</summary>
+    private async Task CaptureMulliganFramesAsync(string dir)
+    {
+        Show("battle");
+        await StartRealMatchAsync();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!_battle.MulliganPanelVisible && DateTime.UtcNow < deadline) await Task.Delay(50);
+        if (!_battle.MulliganPanelVisible)
+        {
+            GD.PushError("[capture] mulligan panel never opened");
+            _runner?.Stop(); _runner = null;
+            _battle.ResetDemo();
+            return;
+        }
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        GetViewport().GetTexture().GetImage().SavePng(dir + "/battle-stage5-mulligan.png");
+        var first = _runner!.CurrentView!.SelfHand[0].Uid;
+        _battle.MarkMulliganReplacement(first);
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        GetViewport().GetTexture().GetImage().SavePng(dir + "/battle-stage5-mulligan-marked.png");
+        _battle.ConfirmMulligan();
+        _runner!.Stop(); _runner = null;
+        _battle.ResetDemo();
+        Show("battle");
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+    }
+
     private static string VersionSuffix()
     {
         var value = ProjectSettings.GetSetting("application/config/version", "").AsString();
@@ -356,6 +418,7 @@ public partial class Main : Control
             await _battle.VerifyCombatAsync();
             await _battle.VerifyPresentationAsync();
             await _battle.VerifyFeedbackAsync();
+            await VerifyMulliganPanelAsync();
             await VerifyBridgeAsync();
             OpenGallery();
             // Restoring the shell changes the container's transform; measure actors only after layout settles.
@@ -407,6 +470,7 @@ public partial class Main : Control
         await _battle.CaptureCombatFramesAsync(dir);
         await _battle.CapturePresentationFramesAsync(dir);
         await _battle.CaptureFeedbackFramesAsync(dir);
+        await CaptureMulliganFramesAsync(dir);
         OpenGallery();
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);

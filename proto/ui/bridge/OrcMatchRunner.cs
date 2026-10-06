@@ -28,14 +28,25 @@ public sealed class OrcMatchRunner
     private Match? _match;
     private string[]? _pendingSelection;
     private int? _pendingSlot;
+    private Task? _selfMulligan;
+    private (TargetingRequestDescription Description, ITargetingResponder Responder)? _pendingMulligan;
 
     public bool IsRunning => _host is not null;
     public string MatchId { get; } = "orc-live";
+
+    /// <summary>
+    /// When true the opening hand is answered by the mulligan panel instead of the conservative
+    /// keep-all policy; verify and headless paths keep the automatic answer.
+    /// </summary>
+    public bool InteractiveMulligan { get; init; }
 
     public event Action<UiMatchView, UiBattleActions>? ProjectionReady;
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
     public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
     public event Action<string>? ErrorRaised;
+
+    /// <summary>Raised when the engine parks a mulligan request: the panel may open now.</summary>
+    public event Action? MulliganRequested;
 
     /// <summary>Engine refusal / status text for the player. The wording is the engine's, not ours.</summary>
     public event Action<string>? HintRequested;
@@ -62,9 +73,16 @@ public sealed class OrcMatchRunner
         await _host.InitializeAsync(ct);
         Publish();
 
-        // Mulligan: the auto policy keeps the opening hand, then both sides confirm to enter play.
-        foreach (var player in _match.Players)
+        // Mulligan: the opponent (driver-side) keeps the opening hand; the viewer either answers
+        // through the panel (the request parks in Present until ChooseMulligan arrives) or the
+        // conservative policy keeps everything.
+        var viewer = _host.Viewer;
+        foreach (var player in _match.Players.Where(player => !ReferenceEquals(player, viewer)))
             await _match.MulliganDone(player, ct);
+        if (InteractiveMulligan)
+            _selfMulligan = _match.BeginMulliganAsync(viewer, ct);
+        else
+            await _match.MulliganDone(viewer, ct);
         Publish();
     }
 
@@ -83,6 +101,13 @@ public sealed class OrcMatchRunner
     {
         if (_match is null || _host is null) return;
         GD.Print($"[engine] submit {command.GetType().Name} phase={_match.Phase}");
+        // The mulligan answer is the only command that belongs to the mulligan phase; everything
+        // else is gated to play below.
+        if (command is ChooseMulligan keep)
+        {
+            await CompleteMulliganAsync(keep.KeepUids, ct);
+            return;
+        }
         if (_match.Phase != MatchPhase.Play)
         {
             HintRequested?.Invoke("当前阶段不接受该操作");
@@ -138,6 +163,28 @@ public sealed class OrcMatchRunner
             HintRequested?.Invoke(Reason(e.Message.Contains(' ') ? null : e.Message));
         }
         // The board is not refreshed here: Pump picks up the segment and the presentation plays first.
+    }
+
+    /// <summary>
+    /// Submits the panel's keep list to the parked mulligan request. The engine replaces everything
+    /// not kept (silent draw), confirms the side, and enters play once both sides have confirmed.
+    /// </summary>
+    private async Task CompleteMulliganAsync(IReadOnlyList<string> keepUids, CancellationToken ct)
+    {
+        var pending = _pendingMulligan;
+        if (_match is null || pending is null)
+        {
+            HintRequested?.Invoke("当前没有等待的换牌");
+            return;
+        }
+        _pendingMulligan = null;
+        var slot = pending.Value.Description.Slots[0];
+        var allowed = (slot.AllowedReferences ?? pending.Value.Description.AllowedTargets).Where(r => r.IsAlive).ToArray();
+        pending.Value.Responder.Complete(pending.Value.Description.RequestId,
+            Map(slot.Name, OrcTargeterBridge.SelectReplace(allowed, keepUids)));
+        if (_selfMulligan is not null) await _selfMulligan; // replacement + side confirm; both sides -> play
+        _selfMulligan = null;
+        Publish();
     }
 
     private async Task PlayAsync(string uid, int? supportIndex, CancellationToken ct)
@@ -232,6 +279,15 @@ public sealed class OrcMatchRunner
         }
         var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
 
+        // The mulligan panel owns this answer: park the request and let the UI open. The engine
+        // waits at Targeting() until the panel submits; nothing is decided here.
+        if (InteractiveMulligan && slot.Kind == TargetSlotKind.MulliganSelect)
+        {
+            _pendingMulligan = (description, responder);
+            MulliganRequested?.Invoke();
+            return;
+        }
+
         if (_pendingSelection is { Length: > 0 })
         {
             var picked = allowed.Where(r => _pendingSelection.Contains(OrcRefs.KeyOf(r.Value))).ToArray();
@@ -280,5 +336,7 @@ public sealed class OrcMatchRunner
         _host?.Detach();
         _host = null;
         _match = null;
+        _pendingMulligan = null;
+        _selfMulligan = null;
     }
 }

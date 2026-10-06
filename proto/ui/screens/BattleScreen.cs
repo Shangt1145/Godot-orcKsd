@@ -122,6 +122,7 @@ public partial class BattleScreen : Control
         _inspectStats = Text("", new(1027, 362), new(215, 23), 12, "e2dbc1"); _inspectStats.ZIndex = 161; _inspectStats.Visible = false; _canvas.AddChild(_inspectStats);
         _result = new Control { Position = new(445, 271), Size = new(390, 145), ZIndex = 250, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
         _canvas.AddChild(_result);
+        InitializeMulligan();
         _canvas.GuiInput += BoardInput;
         Resized += FitBoard;
         VisibilityChanged += () => { if (!IsVisibleInTree()) CancelSelection(); };
@@ -141,6 +142,7 @@ public partial class BattleScreen : Control
     }
     public void ResetDemo()
     {
+        MulliganProjection("demo"); // the panel must never outlive the match it belongs to
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
         _usingDemo = true; _demo.Reset(); _entries.Clear(); UiStyles.Clear(_history);
@@ -149,6 +151,7 @@ public partial class BattleScreen : Control
     }
     public void ApplyProjection(UiMatchView state, UiBattleActions actions)
     {
+        MulliganProjection(state.Phase);
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
         _usingDemo = false;

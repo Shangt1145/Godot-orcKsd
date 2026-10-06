@@ -71,4 +71,15 @@ public sealed class OrcTargeterBridge : ITargeterBridge
         }
         responder.Cancel(description.RequestId);
     }
+
+    /// <summary>
+    /// Translates the mulligan panel's keep list into the replacement set the engine expects:
+    /// every allowed reference whose UI uid is not kept is returned to the deck. The engine still
+    /// validates the submitted selection; this only does the uid mapping.
+    /// </summary>
+    public static IReadOnlyList<Ref<Entity>> SelectReplace(IEnumerable<Ref<Entity>> allowed, IEnumerable<string> keepUids)
+    {
+        var keep = keepUids.ToHashSet(StringComparer.Ordinal);
+        return allowed.Where(reference => !keep.Contains(OrcRefs.KeyOf(reference.Value))).ToArray();
+    }
 }
