@@ -52,6 +52,9 @@ public sealed class OrcMatchHost
     /// <summary>The player this host renders for.</summary>
     public Player Viewer => _viewer;
 
+    /// <summary>The running match; for adapter-side drivers (tests, demo harnesses), not for rules.</summary>
+    public Match Match => _match;
+
     /// <summary>uid -> engine card for the last read; commands arrive as uids.</summary>
     public IReadOnlyDictionary<string, Orc.Cards.Card> Index => _reader?.LastIndex ?? new Dictionary<string, Orc.Cards.Card>();
 

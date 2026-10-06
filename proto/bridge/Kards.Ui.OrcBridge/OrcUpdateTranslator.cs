@@ -50,6 +50,10 @@ public sealed class OrcUpdateTranslator
                 case GameUpdates.CardDiscarded:
                     AddDiscard(steps, payload, viewer, UiDiscardKind.Discard);
                     break;
+                case GameUpdates.CardBurned:
+                    // Burned is its own signal now (Kb): a hand-limit burn never walks the discard path.
+                    AddDiscard(steps, payload, viewer, UiDiscardKind.Burn);
+                    break;
                 case GameUpdates.TurnStartAfter:
                 case GameUpdates.TurnStart:
                     AddTurn(steps, payload, viewer, after);

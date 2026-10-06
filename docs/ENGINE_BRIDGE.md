@@ -76,6 +76,18 @@ dotnet test tests/Kards.Ui.Tests.csproj            # 36 项（含 8 项真实对
 - 目标选择：`OrcTargeterBridge` 优先用玩家意图（已点击的目标），换牌保留全部，其余取首个允许候选 —— 这是交互面板接入前的过渡策略。
 - 入口：战斗页齿轮菜单「真实对局（接入引擎）」。
 
+## 新架构适配（P6，引擎 32299c5）
+
+- **`card.burned`（第 18 条信号）**：满手爆牌不再发 `card.discarded`。桥接直接消费该信号 → `UiDiscardKind.Burn`；
+  "抽到未进手牌"的推断保留为兜底。端到端测试真实触发满手爆牌并断言信号与手牌/牌库计数。
+- **结果原因词表**：`Reason()` 按引擎新枚举全量映射
+  （`CommandFailureReason` 9 项 / `CommandBlockReason` 7 项 / `PlayFailureReason` 新词表——
+  `PrePlayPointShortage` / `PrePlayNoAvailableSlots` / `TargetSlotOccupied` / `UnitAlreadyUnitized` / `Counter*` 等）。
+- **卡牌数据组件化格式**（引擎侧已定稿）：`{ schemaVersion:1, id, name, components:[{component:"factionCost"|"battleStats"|"tagData"|"typeCategory"|"keywords"|"effects"}] }`；
+  `CardDefinition` 保留旧参数构造 → 桥接读面零改动。将来 UI 卡池导入可直接消费该 JSON。
+- `Match` 构造签名未变；`GetCommandAvailability` 未变；`AllowFirstTurnDraw`（先手首回合抽牌，缺省关）对 UI 透明。
+- 仍未解决：`damage-flow` 无结构化载荷 —— 攻击方弹道轨迹继续等待上游。
+
 ## 受击编排（P5）
 
 引擎的攻击/伤害**不发更新信号**（`damage-flow` 只写日志条目，且条目不带结构化载荷——没有攻击方身份、

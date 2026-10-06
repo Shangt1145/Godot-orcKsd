@@ -167,17 +167,35 @@ public sealed class OrcMatchRunner
         HintRequested?.Invoke(result.Status == CommandResultStatus.Cancelled ? "已取消" : Reason(result.FailureReason?.ToString()));
     }
 
-    /// <summary>Engine reason codes surfaced as player-readable text; no rule is inferred from them.</summary>
+    /// <summary>
+    /// Engine reason codes surfaced as player-readable text; no rule is inferred from them. The vocabulary
+    /// follows the engine's result enums (CommandFailureReason / CommandBlockReason / PlayFailureReason).
+    /// </summary>
     private static string Reason(string? reason) => reason switch
     {
-        "PointShortage" => "指挥点不足",
-        "PhaseBlocked" => "当前阶段不可执行",
-        "GameEnded" => "对局已结束",
-        "NoCandidates" => "没有可选目标",
-        "Suppressed" => "该单位被压制",
-        "UnitDead" => "该单位已阵亡",
+        // CommandFailureReason
         "NonOwnerTurn" => "不是你的回合",
         "OwnerInvalid" => "不是你的单位",
+        "UnitDead" => "该单位已阵亡",
+        "NoActionAvailable" => "该单位本回合没有可用行动",
+        "TargetingFailed" => "目标选择失败",
+        "ExecutionRejected" => "执行被拒绝",
+        "CommandFlowFault" => "指挥流程故障",
+        "GameEnded" => "对局已结束",
+        "PhaseBlocked" => "当前阶段不可执行",
+        // CommandBlockReason
+        "FlagFalse" => "该单位当前不能行动",
+        "PointShortage" => "指挥点不足",
+        "NoCandidates" => "没有可选目标",
+        "Suppressed" => "该单位被压制",
+        // PlayFailureReason
+        "PrePlayPointShortage" or "CounterPointShortage" or "PlayVerificationRejected" => "指挥点不足",
+        "PrePlayNoAvailableSlots" => "没有可用的空槽位",
+        "TargetSlotOccupied" => "目标槽位已被占用",
+        "UnitAlreadyUnitized" => "该单位已在场上",
+        "CounterNotOwnerTurn" => "不是你的回合",
+        "CounterRejected" => "无法激活该反制",
+        "PlayChainFault" => "打出流程故障",
         "BridgeNotAssembled" => "目标选择未接入",
         null => "操作被拒绝",
         _ => "操作被拒绝：" + reason

@@ -119,6 +119,34 @@ public sealed class OrcBridgeTests
     }
 
     [Fact]
+    public async Task HandLimitBurnUsesTheDedicatedBurnSignal()
+    {
+        var host = new OrcMatchHost(CreateMatch(), "orc-burn");
+        var updates = new List<string>();
+        host.ImmediateUpdate += updates.Add;
+        await host.InitializeAsync();
+
+        // Fill the hand to the engine's limit (9), then draw once more: the drawn card must burn.
+        var player = host.Match.Players[0];
+        for (var i = host.View.SelfHandCount; i < Orc.Game.Players.Player.HandLimit; i++)
+        {
+            var card = host.Match.CardLibrary.Instantiate(InfantryId);
+            await card.LoadAsync(player);
+            player.Hand.Add(card);
+        }
+        host.Refresh();
+
+        var burned = new List<string>();
+        host.ImmediateUpdate += update => burned.Add(update);
+        await host.Match.PlayerManager.DrawCard(player);
+
+        Assert.Contains(Orc.Game.GameUpdates.CardBurned, burned);
+        Assert.DoesNotContain(Orc.Game.GameUpdates.CardDiscarded, burned);
+        // The hand stays at the limit and the deck shrank by exactly the burned draw.
+        Assert.Equal(Orc.Game.Players.Player.HandLimit, host.Refresh().SelfHandCount);
+    }
+
+    [Fact]
     public async Task ImmediateUpdatesAreReceivedForTheOpeningAction()
     {
         var host = new OrcMatchHost(CreateMatch(), "orc-immediate");
