@@ -585,6 +585,40 @@ public partial class BattleScreen : Control
             || slamProbe.Modulate != Colors.White)
             throw new Exception("Slam left the card displaced.");
         if (_sequence.LiveCardCount != 0) throw new Exception("Slam retained temporary nodes.");
+        // Aim arrow geometry: a self-intersecting polygon makes Godot log
+        // "Invalid polygon data, triangulation failed" every redraw (only visible with a
+        // renderer; headless never sees it). Sweep the lengths the guard lets through.
+        for (var length = 20f; length <= 220f; length += 1f)
+        {
+            for (var deg = 0; deg < 360; deg += 5)
+            {
+                var a = Mathf.DegToRad(deg);
+                var from = new Vector2(300, 300);
+                var to = from + new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * length;
+                var dir = (to - from).Normalized();
+                var nrm = new Vector2(-dir.Y, dir.X);
+                Vector2[] poly;
+                if (length < 45f)
+                {
+                    var half = MathF.Min(6f, length * .28f);
+                    poly = [from + nrm * half, to, from - nrm * half];
+                }
+                else
+                {
+                    var tip = to - dir * 14;
+                    var sh = tip - dir * 27;
+                    poly = [from + nrm * 6, sh + nrm * 6, sh + nrm * 15, tip, sh - nrm * 15, sh - nrm * 6, from - nrm * 6];
+                }
+                for (var i = 0; i < poly.Length && i < 3; i++)
+                {
+                    var o = poly[i];
+                    var a2 = poly[(i + 1) % poly.Length];
+                    var b2 = poly[(i + 2) % poly.Length];
+                    if (MathF.Abs((a2 - o).Cross(b2 - o)) < 1e-4f)
+                        throw new Exception($"Aim arrow degenerates at length={length} deg={deg} vertex={i}.");
+                }
+            }
+        }
         ResetDemo();
         var uid = _actions.PlayableUids.First(); var oldHandCount = _state.SelfHand.Count;
         SelectCard(uid); TryDrop(new(640, 555));
