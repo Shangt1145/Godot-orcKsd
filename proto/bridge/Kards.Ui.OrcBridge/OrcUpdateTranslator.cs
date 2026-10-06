@@ -95,9 +95,10 @@ public sealed class OrcUpdateTranslator
     }
 
     /// <summary>
-    /// A deployment plays the paper fly-in. The staged board is the row the instant before the unit
-    /// landed (the same trick the demo fixture uses), so the flight starts from the hand, not from a
-    /// board that already shows the final row.
+    /// A deployment plays the paper fly-in. `Deployed` must be the board with the unit already on its
+    /// slot (the demo fixture's semantics): the presentation renders it, finds the landed card there and
+    /// flies a paper copy onto it. Staging a board *without* the unit makes that lookup fail and the
+    /// whole choreography is skipped.
     /// </summary>
     private void AddDeployment(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload, UiMatchView after)
     {
@@ -105,10 +106,7 @@ public sealed class OrcUpdateTranslator
         if (card is null) return;
         var view = BoardView(card, after);
         if (view is null) return;
-        var staged = view.OwnerSide == "self"
-            ? after with { SelfLine = after.SelfLine.Where(c => c.Uid != view.Uid).ToArray() }
-            : after with { EnemyLine = after.EnemyLine.Where(c => c.Uid != view.Uid).ToArray() };
-        steps.Add(new UiDeploymentPresentation(view, staged));
+        steps.Add(new UiDeploymentPresentation(view, after));
     }
 
     /// <summary>

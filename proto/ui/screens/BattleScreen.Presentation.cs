@@ -14,8 +14,15 @@ public partial class BattleScreen
         _sequence = new BattleSequence { Size = BoardSize, ZIndex = 210 };
         _sequence.Initialize(_textures, _clock, _sfx); _canvas.AddChild(_sequence);
         // The heaviest deployment slam shakes the table itself, not just the card.
-        _sequence.PhaseChanged += phase => { if (phase == "deployment-slam-2") ShakeBoard(); };
+        _sequence.PhaseChanged += phase =>
+        {
+            PresentationPhase?.Invoke(phase);
+            if (phase == "deployment-slam-2") ShakeBoard();
+        };
     }
+
+    /// <summary>Paper-layer choreography phases, for diagnostics and verification.</summary>
+    public event Action<string>? PresentationPhase;
     private void ShakeBoard()
     {
         if (_clock.ReducedMotion) return;

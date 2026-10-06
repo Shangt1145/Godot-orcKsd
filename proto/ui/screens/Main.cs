@@ -160,8 +160,13 @@ public partial class Main : Control
         var handBefore = settled.SelfHand.Count;
         var deployed = false;
         _runner!.PresentationReady += (resolution, _) => deployed |= resolution.Steps.Any(s => s is UiDeploymentPresentation);
+        var phases = new List<string>();
+        _battle.PresentationPhase += phase => phases.Add(phase);
         await _runner!.SubmitAsync(new PlayCard(uid));
         await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[bridge] presentation steps fired={deployed}, phases=[{string.Join(' ', phases)}]");
+        if (!phases.Contains("deployment-start") || !phases.Any(p => p.StartsWith("deployment-slam")))
+            throw new Exception("Deployment choreography never played.");
         var played = _runner!.CurrentView!;
         if (played.SelfHand.Count != handBefore - 1) throw new Exception("Playing a card did not consume it.");
         if (!played.SelfLine.Any(c => c.Uid == uid)) throw new Exception("Played unit never reached the board.");
