@@ -399,6 +399,28 @@ public partial class BattleSequence : Control
             if (GodotObject.IsInstanceValid(node) && node.GetParent() == this) { RemoveChild(node); node.QueueFree(); }
         PhaseChanged?.Invoke(burn ? "burn-exit" : "discard-exit");
     }
+    /// <summary>
+    /// The match is decided. A wide band sweeps in and holds for a beat before the result panel
+    /// takes over, so the ending lands as an event rather than a sudden repaint.
+    /// </summary>
+    public async Task ResultBannerAsync(bool victory, string reason)
+    {
+        var epoch = _epoch;
+        PhaseChanged?.Invoke(victory ? "result-victory" : "result-defeat");
+        var banner = new BattleResultBanner
+        {
+            Size = Size,
+            Caption = victory ? "胜利" : "失败",
+            Line = reason,
+            Ink = victory ? new("dec775") : new("b0655a"),
+            Duration = Time(1.5),
+            Quiet = _clock.ReducedMotion,
+        };
+        AddChild(banner);
+        await Wait(.85, epoch);
+        if (epoch != _epoch) throw new OperationCanceledException();
+    }
+
     public async Task TurnBannerAsync(UiTurnPresentation turn)
     {
         var epoch = _epoch;
@@ -483,6 +505,52 @@ public partial class BattleTurnBanner : Control
             HorizontalAlignment.Left, -1, 40, Ink with { A = alpha });
         DrawString(font, new Vector2(center.X - font.GetStringSize(Line, fontSize: 16).X / 2, center.Y + 36), Line,
             HorizontalAlignment.Left, -1, 16, new Color("cfc8b0") with { A = alpha });
+    }
+    private static float Ease(float t) { t = Math.Clamp(t, 0, 1); return t * t * (3 - 2 * t); }
+}
+
+/// <summary>
+/// The end-of-match band. Wipes in from the centre, holds, then fades — long enough to read the
+/// reason before the result panel settles over it.
+/// </summary>
+public partial class BattleResultBanner : Control
+{
+    public string Caption { get; set; } = "";
+    public string Line { get; set; } = "";
+    public Color Ink { get; set; }
+    public double Duration { get; set; }
+    public bool Quiet { get; set; }
+    private double _age;
+    public override void _Ready() { MouseFilter = MouseFilterEnum.Ignore; QueueRedraw(); }
+    public override void _Process(double delta)
+    {
+        _age += delta;
+        if (_age >= Duration) { GetParent()?.RemoveChild(this); QueueFree(); return; }
+        QueueRedraw();
+    }
+    public override void _Draw()
+    {
+        var p = (float)Math.Min(1, _age / Duration);
+        // Wipe in over the first third, hold, then fade the last third.
+        var open = Quiet ? 1f : Ease(Math.Min(p / .3f, 1));
+        var fade = Quiet ? 1f : Ease(Math.Min((1 - p) / .3f, 1));
+        var alpha = Math.Min(open * 2.4f, fade);
+        var center = new Vector2(Size.X / 2f, Size.Y / 2f);
+        var width = Mathf.Lerp(0, Size.X * .82f, open);
+        var rect = new Rect2(center.X - width / 2, center.Y - 74, width, 148);
+        DrawRect(rect, new Color(.09f, .10f, .08f, alpha * .88f));
+        DrawLine(rect.Position, rect.Position + new Vector2(width, 0), Ink with { A = alpha }, 3);
+        DrawLine(rect.Position + new Vector2(0, rect.Size.Y), rect.Position + new Vector2(width, rect.Size.Y), Ink with { A = alpha }, 3);
+        if (alpha <= .01f) return;
+        var font = GetThemeDefaultFont();
+        // DrawString takes an integer font size, so the wipe scales the drawn width rather than the glyphs:
+        // a growing offset from the centre reads as the band opening without touching the type.
+        var reveal = (int)Math.Round(font.GetStringSize(Caption, fontSize: 54).X * open);
+        DrawString(font, new Vector2(center.X - reveal / 2f, center.Y + 6), Caption,
+            HorizontalAlignment.Left, -1, 54, Ink with { A = alpha });
+        if (open > .5f)
+            DrawString(font, new Vector2(center.X - font.GetStringSize(Line, fontSize: 17).X / 2, center.Y + 46), Line,
+                HorizontalAlignment.Left, -1, 17, new Color("d8d1b8") with { A = alpha });
     }
     private static float Ease(float t) { t = Math.Clamp(t, 0, 1); return t * t * (3 - 2 * t); }
 }

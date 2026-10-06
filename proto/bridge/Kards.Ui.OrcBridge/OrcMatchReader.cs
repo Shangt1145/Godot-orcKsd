@@ -60,6 +60,8 @@ public sealed class OrcMatchReader
             EnemyPlayerName = "对手",
             Phase = phase,
             ResultTitle = ResultTitle(match, viewer),
+            ResultReason = ResultReasonOf(match),
+            FinalTurn = match.Winner is null ? null : TurnOf(match),
             ActivePlayerSide = ActiveSideOf(match, viewer, phase),
             SelfKredits = viewer.Points,
             SelfMaxKredits = viewer.PointSlots,
@@ -120,5 +122,15 @@ public sealed class OrcMatchReader
         // Only the engine's supplied winner is consumed; the UI never infers a result.
         var winner = match.Winner;
         return winner is null ? null : ReferenceEquals(winner, viewer) ? "胜利" : "失败";
+    }
+
+    /// <summary>
+    /// The engine records why a match ended alongside the winner. Passing the enum name through
+    /// keeps the reason engine-owned; the UI maps it to wording, never to a judgement.
+    /// </summary>
+    private static string? ResultReasonOf(Match match)
+    {
+        try { return match.EndReason?.ToString(); }
+        catch (InvalidOperationException) { return null; }
     }
 }

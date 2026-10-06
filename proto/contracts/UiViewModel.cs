@@ -138,6 +138,10 @@ public sealed record UiMatchView
     public string EnemyPlayerName { get; init; } = "对手";
     public string Phase { get; init; } = "mulligan";
     public string? ResultTitle { get; init; }
+    /// <summary>Why the match ended ("hq-zero" / "concede"), straight from the engine. Null while in play.</summary>
+    public string? ResultReason { get; init; }
+    /// <summary>How many turns the match ran; null when the match is still live.</summary>
+    public int? FinalTurn { get; init; }
     public string ActivePlayerSide { get; init; } = "self";
     public int SelfKredits
     {

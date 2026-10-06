@@ -158,6 +158,20 @@ public partial class BattleScreen
                         break;
                 }
             }
+            // The match ending is a board-level event, not a step: it gets its own beat before the
+            // authoritative state lands, so the result reads as a moment rather than a repaint.
+            if (generation == _generation && _pendingPresentation == resolution
+                && resolution.After.Phase == "over" && resolution.After.ResultTitle is not null)
+            {
+                var victory = resolution.After.ResultTitle == "胜利";
+                var reason = resolution.After.ResultReason switch
+                {
+                    "HqZero" => "总部被摧毁",
+                    "Concede" => "对手认输",
+                    _ => "对局结束",
+                };
+                await _sequence.ResultBannerAsync(victory, reason);
+            }
             if (generation != _generation || _pendingPresentation != resolution) return;
             ClearPresentation(); Render(resolution.After, actions, true);
         }

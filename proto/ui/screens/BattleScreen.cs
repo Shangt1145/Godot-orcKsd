@@ -120,7 +120,7 @@ public partial class BattleScreen : Control
         InitializePresentation();
         _detail = new Control { Position = new(1027, 103), Size = new(215, 275), MouseFilter = MouseFilterEnum.Ignore, ZIndex = 160, Visible = false }; _canvas.AddChild(_detail);
         _inspectStats = Text("", new(1027, 362), new(215, 23), 12, "e2dbc1"); _inspectStats.ZIndex = 161; _inspectStats.Visible = false; _canvas.AddChild(_inspectStats);
-        _result = new Control { Position = new(445, 271), Size = new(390, 145), ZIndex = 250, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
+        _result = new Control { Position = new(445, 228), Size = new(390, 232), ZIndex = 250, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
         _canvas.AddChild(_result);
         InitializeMulligan();
         _canvas.GuiInput += BoardInput;
@@ -185,12 +185,35 @@ public partial class BattleScreen : Control
         if (_result.Visible)
         {
             UiStyles.Clear(_result);
-            var paper = new Panel { Size = new(390, 160), MouseFilter = MouseFilterEnum.Ignore };
+            var paper = new Panel { Size = new(390, 232), MouseFilter = MouseFilterEnum.Ignore };
             paper.AddThemeStyleboxOverride("panel", UiStyles.Box(new Color(.12f, .13f, .11f, .94f), new("827c64"), 1, 8));
             _result.AddChild(paper);
-            var victory = Text(state.ResultTitle ?? "对局结束", new(0, 10), new(390, 75), 52, "e8dec1");
+            var victory = Text(state.ResultTitle ?? "对局结束", new(0, 14), new(390, 56), 48, "e8dec1");
             victory.HorizontalAlignment = HorizontalAlignment.Center; _result.AddChild(victory);
-            var restart = new Button { Text = "再来一局", Position = new(115, 104), Size = new(160, 38) };
+            // Why it ended, in the engine's own terms — the UI supplies wording, not the judgement.
+            var reason = state.ResultReason switch { "HqZero" => "总部被摧毁", "Concede" => "对手认输", _ => null };
+            if (reason is not null)
+            {
+                var why = Text(reason, new(0, 70), new(390, 22), 17, "b8b19a");
+                why.HorizontalAlignment = HorizontalAlignment.Center; _result.AddChild(why);
+            }
+            var turns = state.FinalTurn is { } t ? $"共 {t} 回合" : null;
+            if (turns is not null)
+            {
+                var line = Text(turns, new(0, 92), new(390, 20), 15, "8f8a76");
+                line.HorizontalAlignment = HorizontalAlignment.Center; _result.AddChild(line);
+            }
+            // Board state at the end — only once the engine actually ended the match. Without a
+            // supplied result this row would be narrating a game that is still running.
+            if (state.ResultTitle is not null)
+            {
+                var selfUnits = state.SelfLine.Count(c => c.Visibility == Visibility.Full);
+                var enemyUnits = state.EnemyLine.Count(c => c.Visibility == Visibility.Full);
+                var score = Text($"我方 总部 {state.SelfHq?.Health ?? 0} · 单位 {selfUnits}    对手 总部 {state.EnemyHq?.Health ?? 0} · 单位 {enemyUnits}",
+                    new(0, 118), new(390, 20), 15, "8f8a76");
+                score.HorizontalAlignment = HorizontalAlignment.Center; _result.AddChild(score);
+            }
+            var restart = new Button { Text = "再来一局", Position = new(115, 168), Size = new(160, 38) };
             foreach (var style in new[] { "normal", "hover", "pressed", "focus" }) restart.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
             restart.AddThemeColorOverride("font_color", new("e9e3cc"));
             restart.Pressed += () => { if (_usingDemo) ResetDemo(); else RealMatchRequested?.Invoke(); }; _result.AddChild(restart);
@@ -821,8 +844,25 @@ public partial class BattleScreen : Control
             throw new Exception("Production UI executed a game rule.");
         ApplyProjection(projected with { MatchId = "unknown-kredits", EnemyKredits = null, EnemyMaxKredits = null }, new());
         if (_enemyResource.Available is not null || _enemyResource.Slots is not null) throw new Exception("Unknown resource was fabricated.");
+        // With no supplied result the panel must stay a bare "对局结束" — no reason, no turn count,
+        // and above all no inferred victory.
         ApplyProjection(projected with { MatchId = "unknown-result", Phase = "over", EnemyHq = null }, new());
-        if (_result.GetChildren().OfType<Label>().Single().Text != "对局结束") throw new Exception("UI inferred victory without a supplied result.");
+        var bare = _result.GetChildren().OfType<Label>().Select(l => l.Text).ToArray();
+        if (bare.Length != 1 || bare[0] != "对局结束")
+            throw new Exception("UI inferred an outcome without a supplied result.");
+        // A supplied result shows the engine's reason and the turn the match ran to; neither is inferred.
+        ApplyProjection(projected with
+        {
+            MatchId = "hq-zero", Phase = "over", ResultTitle = "胜利", ResultReason = "HqZero", FinalTurn = 9,
+        }, new());
+        var resultLabels = _result.GetChildren().OfType<Label>().Select(l => l.Text).ToArray();
+        if (!resultLabels.Contains("胜利")) throw new Exception("The result panel ignored the supplied title.");
+        if (!resultLabels.Contains("总部被摧毁")) throw new Exception("The result panel ignored the engine's end reason.");
+        if (!resultLabels.Any(t => t.Contains('9'))) throw new Exception("The result panel ignored the final turn count.");
+        ApplyProjection(projected with { MatchId = "conceded", Phase = "over", ResultTitle = "失败", ResultReason = "Concede", FinalTurn = 4 }, new());
+        if (!_result.GetChildren().OfType<Label>().Any(l => l.Text == "对手认输"))
+            throw new Exception("A conceded match did not report the concession.");
+        if (_sequence.LiveCardCount != 0) throw new Exception("The result panel retained banner nodes.");
         _clock.SetSpeed(AnimClock.Speed.Faster); _clock.SetReducedMotion(true);
         StartScenario("fighter"); _demo.TryResolveAttack(new("self-front", "enemy-0"), out var reduced, out _);
         await PresentCombatAsync(reduced!, _demo.Actions);
