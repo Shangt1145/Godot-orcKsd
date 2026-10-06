@@ -5,13 +5,10 @@
 > **本次交接状态**：拍桌部署动作已按原版逐帧核验重做并交付（见 `BATTLE_SLAM_REWORK.md`）。
 > P9（受击接真实伤害 + 攻击弹道）的改动**已从工作区剥离、未提交**，原因见§3。
 
-> ⚠️ **推送受阻（仅剩认证一步）**：`alpha.11` 及后续共 6 个提交已在本地落地，
-> **尚未推到 origin**（`main` 领先 6 个）。
->
-> 网络链路已打通并固化到仓库配置（`http.sslBackend=openssl` +
-> `http.sslCAInfo=artifacts/combined-ca.pem`），现在只差 GitHub 账号认证
-> （返回 `HTTP/2 401`）。本机无凭据缓存，**认证必须用户本人完成**。
-> 认证后直接 `git push origin main`即可，**不要重新提交**。
+> ✅ **已全部推送**（2026-10-06 19:56，`601ae1a..cdae090`）。若未来再遇推送失败，
+> 先查 `git config --local --list | grep http.ssl` 是否还指向
+> `artifacts/combined-ca.pem`（Watt Toolkit CA 过期时需重新生成，方法见
+> `.workbuddy/memory/MEMORY.md` §网络），再确认 Watt Toolkit 加速已开。
 
 ## 1. 项目是什么
 
@@ -25,7 +22,9 @@
 
 | 提交 | 内容 |
 |---|---|
-| `（本次）` alpha.11 | **部署拍桌按原版逐帧核验重做**：`SlamStyle(defense)` 成为单一真源（防御力=身材，唯一输入）；删除兵种/家族分支（空军 ×1.25、舰船水花）与旧"跳起→砸下"曲线；新增 `--capture-slam` 录制钩子 + 5 支核验工具。详见 `BATTLE_SLAM_REWORK.md` |
+| `cdae090` alpha.11 | **部署拍桌按原版逐帧核验重做**：`SlamStyle(defense)` 成为单一真源（防御力=身材，唯一输入）；删除兵种/家族分支（空军 ×1.25、舰船水花）与旧"跳起→砸下"曲线；新增 `--capture-slam` 录制钩子 + 5 支核验工具。详见 `BATTLE_SLAM_REWORK.md` |
+| `0229db6` | **拍桌尘土可见性修复**：alpha 上限 .5→.72、环心上移 8%、新增 `Age` 属性让步进驱动显式推进淡出（此前帧时钟不推进导致环只有 .5×Diameter 且几乎不可见）。已量化验证（落地区域帧间亮度差） |
+| `93b011c` | **瞄准箭头短距离自交修复**：距离 20–44px 时杆长为负导致 Godot 三角化失败，936 组几何中 144 组报错；改用三点楔形后 936/936 通过。见 `ACCEPTANCE.md` §渲染期缺陷 |
 | `601ae1a` alpha.10 | **P8 换牌面板**：`MulliganSelect` 请求停泊等 UI、`ChooseMulligan` 命令通路、红 ✕ 印记面板（`BattleScreen.Stage5.cs`）、"敌方正在选择起手牌"横带；headless 保留自动应答（`InteractiveMulligan=false`） |
 | `c787d44` | `run.ps1` 补齐引擎 Roslyn 运行时闭包：Godot 只拷项目程序集，引擎 a24ef2d 起需要 `Microsoft.CodeAnalysis.*`（csx 效果脚本），用 `dotnet publish` 解析闭包后补拷到 `.godot\mono\temp\bin\Debug` |
 | 更早 | P0–P7 桥接七步（详见 `docs/ENGINE_BRIDGE.md`）：真实对局可读、命令映射、拖拽手势、拍桌、受击编排（diff 兜底版）、对手 AI 驱动、认输/终局、最近空槽回放 |
