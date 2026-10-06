@@ -5,14 +5,13 @@
 > **本次交接状态**：拍桌部署动作已按原版逐帧核验重做并交付（见 `BATTLE_SLAM_REWORK.md`）。
 > P9（受击接真实伤害 + 攻击弹道）的改动**已从工作区剥离、未提交**，原因见§3。
 
-> ⚠️ **推送受阻**：`alpha.11`（`0a1280b`）、`c787d44` 与文档提交 `40235c4` 已在本地落地，
-> **尚未推到 origin**（`main` 领先 `origin/main` 3 个提交）。需要两件事：
-> 1. 在 Watt Toolkit（= `C:\Program Files\Steam++\Steam++.exe`）GUI 内**手动开启加速**
->    （仅启动程序不够，无 CLI 开关，Agent 会话内无法代劳）；
-> 2. 完成 GitHub 认证（本机无 GCM 凭据缓存、无明文 token）。
+> ⚠️ **推送受阻（仅剩认证一步）**：`alpha.11` 及后续共 6 个提交已在本地落地，
+> **尚未推到 origin**（`main` 领先 6 个）。
 >
-> 之后执行 `git push origin main` 即可，**不要重新提交**。
-> 若需保险，`artifacts/p9-slam-alpha11.patch`（65KB）可从 `c787d44` 重放全部改动。
+> 网络链路已打通并固化到仓库配置（`http.sslBackend=openssl` +
+> `http.sslCAInfo=artifacts/combined-ca.pem`），现在只差 GitHub 账号认证
+> （返回 `HTTP/2 401`）。本机无凭据缓存，**认证必须用户本人完成**。
+> 认证后直接 `git push origin main`即可，**不要重新提交**。
 
 ## 1. 项目是什么
 
