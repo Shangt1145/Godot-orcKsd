@@ -16,6 +16,16 @@ try {
     if (($probeOutput -join "`n") -notmatch 'csharp=true') { throw 'Godot has no C# support. Use the .NET build.' }
     & dotnet build 'Kards.Ui.csproj' --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+    # Godot's build copies project assemblies only, but the engine's scripting satellite
+    # (Orc.Script) needs its Roslyn runtime closure next to the game assembly. Publish the bridge
+    # once to resolve the full closure and sync whatever the Godot output is missing.
+    $assemblyDir = Join-Path $BuildRoot '.godot\mono\temp\bin\Debug'
+    $runtimeOut = Join-Path $env:TEMP 'kards-ui-runtime'
+    & dotnet publish (Join-Path $PSScriptRoot '..\proto\bridge\Kards.Ui.OrcBridge\Kards.Ui.OrcBridge.csproj') -c Debug -o $runtimeOut --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'Runtime closure publish failed.' }
+    Get-ChildItem $runtimeOut -Filter '*.dll' |
+        Where-Object { -not (Test-Path (Join-Path $assemblyDir $_.Name)) } |
+        Copy-Item -Destination $assemblyDir -Force
     if ($Test) {
         & dotnet test 'tests\Kards.Ui.Tests.csproj' --nologo
         if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
