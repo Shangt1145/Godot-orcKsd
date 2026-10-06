@@ -27,12 +27,15 @@ public sealed class OrcMatchHost
     private UiMatchView? _view;
 
     /// <param name="viewerIndex">0 = first player. Resolved after initialization; players are not readable while preparing.</param>
-    public OrcMatchHost(Match match, string matchId, int viewerIndex = 0)
+    public OrcMatchHost(Match match, string matchId, int viewerIndex = 0, Func<string, string>? artLookup = null)
     {
         _match = match;
         _matchId = matchId;
         _viewerIndex = viewerIndex;
+        _artLookup = artLookup;
     }
+
+    private readonly Func<string, string>? _artLookup;
 
     /// <summary>
     /// Readers need the card library, which only exists once the match leaves <c>Preparing</c>.
@@ -41,7 +44,7 @@ public sealed class OrcMatchHost
     private void EnsureReaders()
     {
         if (_reader is not null) return;
-        _cards = new OrcCardReader(_match.CardLibrary);
+        _cards = new OrcCardReader(_match.CardLibrary, _artLookup);
         _reader = new OrcMatchReader(_cards);
         _translator = new OrcUpdateTranslator(_cards);
     }

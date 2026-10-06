@@ -40,6 +40,12 @@ public sealed class OrcMatchRunner
     /// </summary>
     public bool InteractiveMulligan { get; init; }
 
+    /// <summary>
+    /// Card id -> art path, supplied by the UI's own catalog. The engine has no art concept, so this
+    /// is how a real match gets the same card art the collection screen shows.
+    /// </summary>
+    public Func<string, string>? ArtLookup { get; init; }
+
     public event Action<UiMatchView, UiBattleActions>? ProjectionReady;
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
     public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
@@ -64,7 +70,7 @@ public sealed class OrcMatchRunner
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
         var bridge = new OrcTargeterBridge(CollectInteractable, Present);
         _match = new Match(deckA, deckB, definitions, seed: 20261005, firstPlayerIndex: 0, targeterBridge: bridge);
-        _host = new OrcMatchHost(_match, MatchId);
+        _host = new OrcMatchHost(_match, MatchId, artLookup: ArtLookup);
         _host.ImmediateUpdate += _ => { };
         _host.PresentationReady += (resolution, actions) => PresentationReady?.Invoke(resolution, actions);
         _host.CombatReady += (impacts, after, actions) => CombatReady?.Invoke(impacts, after, actions);

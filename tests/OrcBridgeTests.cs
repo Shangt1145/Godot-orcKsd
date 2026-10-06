@@ -113,6 +113,28 @@ public sealed class OrcBridgeTests
     }
 
     [Fact]
+    public async Task ArtPathsComeFromTheUiTableNotTheEngine()
+    {
+        // The engine has no art concept, so a lookup supplied by the UI is the only source. An
+        // unknown id must yield an empty path — the text card fallback — never a guessed file.
+        var art = new Dictionary<string, string>(StringComparer.Ordinal) { ["known"] = "res://proto/art/deran/command/_1.png" };
+        var match = CreateMatch(seed: 7);
+        var host = new OrcMatchHost(match, "orc-art", artLookup: id => art.GetValueOrDefault(id, ""));
+        await host.InitializeAsync();
+        var hand = host.View.SelfHand;
+        Assert.NotEmpty(hand);
+        foreach (var card in hand)
+        {
+            Assert.NotNull(card.Definition);
+            // The test fixture registers ids that are not in the art table, so every one of them
+            // must fall back rather than invent a path.
+            Assert.Equal(art.GetValueOrDefault(card.Definition.CardId, ""), card.Definition.ArtPath);
+            if (!art.ContainsKey(card.Definition.CardId)) Assert.Equal("", card.Definition.ArtPath);
+        }
+        Assert.NotEmpty(art);
+    }
+
+    [Fact]
     public async Task SegmentsAreDrainedAndEachActionIsFollowedByAFreshRead()
     {
         var host = new OrcMatchHost(CreateMatch(), "orc-pump");

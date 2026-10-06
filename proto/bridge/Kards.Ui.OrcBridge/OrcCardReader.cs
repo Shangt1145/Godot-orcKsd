@@ -17,8 +17,16 @@ namespace Kards.Ui.OrcBridge;
 public sealed class OrcCardReader
 {
     private readonly CardLibrary _library;
+    private readonly Func<string, string>? _artLookup;
 
-    public OrcCardReader(CardLibrary library) { _library = library; }
+    /// <param name="artLookup">
+    /// Maps a card id to a UI art path. The engine has no art concept, so the UI supplies its own
+    /// table; without it cards render with the text fallback rather than an invented path.
+    /// </param>
+    public OrcCardReader(CardLibrary library, Func<string, string>? artLookup = null)
+    {
+        _library = library; _artLookup = artLookup;
+    }
 
     /// <summary>
     /// Art lookup key. The engine carries no art path: the definition id is the registration key,
@@ -30,9 +38,10 @@ public sealed class OrcCardReader
     public UiCardDefinition ReadDefinition(CardBase card)
     {
         var definition = card.Definition;
+        var cardId = _library.TryGetRegisteredId(definition, out var id) ? id : definition.Name;
         return new UiCardDefinition
         {
-            CardId = _library.TryGetRegisteredId(definition, out var id) ? id : definition.Name,
+            CardId = cardId,
             Name = definition.Name,
             CardType = definition.Category switch
             {
@@ -43,7 +52,7 @@ public sealed class OrcCardReader
             UnitType = definition.UnitTypes.Count > 0 ? definition.UnitTypes[0].ToString() : "",
             Set = definition.Faction.ToString(),
             Rarity = definition.Rarity.ToString(),
-            ArtPath = "", // resolved by the UI from CardId; the engine has no art path.
+            ArtPath = _artLookup?.Invoke(cardId) ?? "",
             Cost = definition.DeployCost,
             BaseAttack = definition.Attack,
             BaseDefense = definition.Defense,

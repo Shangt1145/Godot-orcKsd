@@ -7,6 +7,8 @@ namespace Kards.Ui;
 public partial class Main : Control
 {
     private readonly CardCatalog _catalog = new();
+    /// <summary>Card id -> art path, built once the catalog loads. Empty ids fall back to the text card.</summary>
+    private Dictionary<string, string> _artById = new(StringComparer.Ordinal);
     private readonly TextureCache _textures = new();
     private readonly Dictionary<string, Control> _screens = new();
     private readonly Dictionary<string, Button> _nav = new();
@@ -38,6 +40,10 @@ public partial class Main : Control
             _catalog.Load(ProjectSettings.GlobalizePath("res://proto/data/nations"), CardCatalog.ResolveArtResource);
         }
         catch (Exception e) { GD.PushError(e.ToString()); AddChild(UiStyles.Label("卡池加载失败，请先运行 tools/prepare.ps1", 24)); return; }
+        // The engine knows nothing about art, so the catalog is the single place a card id becomes
+        // a texture path. A real match reads its art through this table, same as the collection does.
+        _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0)
+            .GroupBy(c => c.CardId).ToDictionary(g => g.Key, g => g.First().ArtPath, StringComparer.Ordinal);
         var root = new VBoxContainer();
         AddChild(root);
         root.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
@@ -125,7 +131,11 @@ public partial class Main : Control
     public async Task StartRealMatchAsync(bool interactiveMulligan = true)
     {
         if (_runner is not null) { _runner.Stop(); _runner = null; }
-        var runner = new OrcMatchRunner { InteractiveMulligan = interactiveMulligan };
+        var runner = new OrcMatchRunner
+        {
+            InteractiveMulligan = interactiveMulligan,
+            ArtLookup = id => _artById.GetValueOrDefault(id, ""),
+        };
         runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
         runner.MulliganRequested += () => _battle.ShowMulliganPanel(runner.CurrentView);
         runner.PresentationReady += (resolution, actions) => _ = _battle.PresentSequenceAsync(resolution, actions);

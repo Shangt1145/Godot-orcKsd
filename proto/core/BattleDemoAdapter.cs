@@ -9,6 +9,9 @@ public sealed class BattleDemoAdapter
     public UiMatchView State { get; private set; } = null!;
     public UiBattleActions Actions { get; private set; } = new();
     public BattleDemoAdapter(IReadOnlyList<UiCardDefinition> catalog) { _catalog = catalog; Reset(); }
+
+    /// <summary>The catalog backing the fixtures, so callers can audit the real definitions.</summary>
+    public IReadOnlyList<UiCardDefinition> Cards => _catalog;
     public void Reset()
     {
         var self = Units("UN/");
