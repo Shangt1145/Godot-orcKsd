@@ -5,6 +5,11 @@
 > **本次交接状态**：拍桌部署动作已按原版逐帧核验重做并交付（见 `BATTLE_SLAM_REWORK.md`）。
 > P9（受击接真实伤害 + 攻击弹道）的改动**已从工作区剥离、未提交**，原因见§3。
 
+> ⚠️ **推送受阻**：`alpha.11`（`0a1280b`）与 `c787d44` 两个提交已在本地落地，
+> **尚未推到 origin**。原因是本机 HTTPS 代理 `127.0.0.1:5373` 对 `github.com:443`
+> 的 CONNECT 隧道一律返回 502（代理收请求后等满10 秒才回错），重试无效。
+> 代理恢复后执行 `git push origin main` 即可，**不要重新提交**。
+
 ## 1. 项目是什么
 
 `H:\Working Folder\OrC-KSD.Godot`：Godot 4.7 .NET (C#) 的 KARDS 风格对战 UI。引擎在 `H:\Working Folder\OrC-KSD`（S1145 维护），UI 通过桥接层消费引擎真值——**UI 不算规则、不猜状态、不泄露隐藏信息**。
@@ -87,6 +92,14 @@ dotnet build -p:OrcEngineRoot='H:\...你自己的副本\src\Orc.Game'
 ```
 
 - 提交身份：`git -c user.name='OrC-KSD UI' -c user.email='ui@local' commit ...`（本机无全局身份）
-- 网络：github.com:443 时通时断（SSH 不通）；推送失败就稍后重试；raw.githubusercontent.com 的 API 只读取回可用
+- **网络（2026-10-06 实测）**：本机HTTPS 代理 `127.0.0.1:5373` 对 `github.com:443`
+  的 CONNECT 隧道一律 502，**git push 目前不可用**；同一代理下其他域名（腾讯 COS）
+  正常。`curl --noproxy '*' https://github.com` 可返回 200，但 git 直连会超时——
+  git 与curl 的连接方式不同，不能靠清空 `HTTP_PROXY` 绕过。SSH 22 端口可达但本机无 key。
+  代理恢复后 `git push origin main`。
+- `tools/run.ps1` 会吞输出（PowerShell 工具层取不到回显）。需要看验证输出时改为手工：
+  同步文件到 `H:\g\kards` → `dotnet build` →
+  `Godot_v4.7-stable_mono_win64_console.exe --headless --path H:/g/kards -- --verify-ui`
+- 跑测试前先清残留：`taskkill //F //IM testhost.exe`（多个后台跑会互锁文件，表现为"跑不动"）
 - 验收基线（全绿标志）：`MULLIGAN_VERIFY_OK ...`、`BRIDGE_VERIFY_OK ...`、`UI_VERIFY_OK screens=7 cards=315 texture_cache=64/64`、`已通过 41`
 - 同名单卡牌库注意：换出去的牌可能立刻被抽回（uid 合法重现），不变量断言用手牌数/牌库数，不用 uid 缺席
