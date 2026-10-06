@@ -115,6 +115,8 @@ public partial class Main : Control
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--verify-ui"))
             CallDeferred(MethodName.VerifyUi);
+        else if (args.Contains("--capture-slam"))
+            CallDeferred(MethodName.CaptureSlam);
         else if (args.Contains("--capture-ui"))
             CallDeferred(MethodName.CaptureUi);
     }
@@ -429,6 +431,21 @@ public partial class Main : Control
                 await _gallery.VerifyAllEffectsAsync();
             GD.Print($"UI_VERIFY_OK screens={_screens.Count} cards={_catalog.Cards.Count} texture_cache={_textures.Count}/{_textures.Capacity}");
             GetTree().Quit();
+        }
+        catch (Exception e) { GD.PushError(e.ToString()); GetTree().Quit(1); }
+    }
+    /// <summary>Records the three-tier deployment slam as per-frame PNGs for video assembly.</summary>
+    private async void CaptureSlam()
+    {
+        try
+        {
+            Show("battle");
+            _battle.ResetDemo();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+            var dir = ProjectSettings.GlobalizePath("res://artifacts/slam-film-v2");
+            System.IO.Directory.CreateDirectory(dir);
+            await _battle.CaptureSlamFilmAsync(dir);
         }
         catch (Exception e) { GD.PushError(e.ToString()); GetTree().Quit(1); }
     }

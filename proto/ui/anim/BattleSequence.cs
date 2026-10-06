@@ -148,60 +148,97 @@ public partial class BattleSequence : Control
     /// <summary>Light / medium / heavy, graded by defense: the original slams heavier units harder.</summary>
     public static int SlamTier(int? defense) => defense <= 2 ? 0 : defense <= 5 ? 1 : 2;
     /// <summary>
-    /// Deployment slam timing (seconds). Grades by defense (420 / 520 / 620 ms) and stretches air units
-    /// by 1.25x. These are presentation estimates, not extracted original timings.
+    /// Deployment landing, measured frame by frame from the reference match
+    /// (H:\Working Folder\8月9日.mp4, 04:12.2 = 252.2s, 60fps, 1920x1080).
+    /// The original does NOT hop and drop: the card moves from the dragged position to the
+    /// slot within a single frame (bottom edge 139 -> 149 px, card face brightens by ~8%), then
+    /// holds still. The perceived impact comes from that brightness step plus dust, not travel.
+    /// These numbers replace the earlier invented rise/fall curve.
     /// </summary>
-    public static double SlamSeconds(int? defense, string unitType)
+    /// <summary>
+    /// Build (body size) IS defense. Three tiers, and nothing else may influence the landing:
+    /// no unit type, no family, no air/ground distinction. Measured on the reference match
+    /// (H:\Working Folder\8月9日.mp4, 04:12.2 = 252.2s, 60fps, 1920x1080) — the card reaches
+    /// its slot within one frame and the perceived weight comes from the brightness step plus
+    /// dust, not from travel.
+    /// </summary>
+    public sealed record SlamProfile(
+        /// <summary>Frames spent travelling to the slot. One frame at 60fps, every tier.</summary>
+        int TravelFrames,
+        /// <summary>How long the card stays put bearing its own weight, in seconds.</summary>
+        double SettleSeconds,
+        /// <summary>Card-face brightness step on landing, added on top of the resting value.</summary>
+        float Flash,
+        /// <summary>Vertical squash on the landing frame only.</summary>
+        float Squash,
+        /// <summary>Dust ring diameter in pixels; zero raises none.</summary>
+        float Dust,
+        /// <summary>Table shake amplitude in pixels; zero stays still.</summary>
+        float Shake,
+        /// <summary>Sfx gain.</summary>
+        float Gain);
+
+    /// <summary>The one landing table. Defense is the only input; both gallery and board read this.</summary>
+    public static SlamProfile SlamStyle(int? defense)
     {
         var tier = SlamTier(defense);
-        var air = unitType is "fighter" or "bomber" or "spacefighter" or "space_fighter";
-        return (tier == 2 ? .62 : tier == 1 ? .52 : .42) * (air ? 1.25 : 1);
+        // Heavier builds read as heavier through flash, dust and shake — not through a longer
+        // animation and not through a bigger hop. Travel stays one frame for every tier.
+        return tier switch
+        {
+            0 => new(1, .12, .04f, .012f, 0f, 0f, .45f),
+            1 => new(1, .34, .09f, .045f, 44f, 2.5f, .75f),
+            _ => new(1, .48f, .14f, .075f, 68f, 5f, 1f),
+        };
     }
-    /// <summary>The landing itself. Tier 0 is placed gently; tiers 1–2 rise first, then slam down.</summary>
+
+    /// <summary>Total landing time. Graded by defense via the settle tail, not by travel.</summary>
+    public static double SlamSeconds(int? defense)
+    {
+        var s = SlamStyle(defense);
+        return s.TravelFrames / 60.0 + s.SettleSeconds;
+    }
+
+    /// <summary>The landing itself. The card is already at its slot; the impact is flash + dust.</summary>
     public Task SlamAsync(BattleCard card, UiCardView view) => SlamAsync(card, view, _epoch);
 
     private async Task SlamAsync(BattleCard card, UiCardView view, int epoch)
     {
         var defense = view.EffectiveDefense ?? view.Definition.BaseDefense;
-        var tier = SlamTier(defense);
-        var seconds = SlamSeconds(defense, view.Definition.UnitType);
+        var style = SlamStyle(defense);
         var rest = card.RestPosition;
+        card.Position = rest;
         if (_clock.ReducedMotion)
         {
-            card.Position = rest; card.Scale = Vector2.One; await Wait(.12, epoch); return;
+            card.Scale = Vector2.One; card.Modulate = Colors.White;
+            await Wait(.12, epoch); return;
         }
-        PhaseChanged?.Invoke("deployment-slam-" + tier);
-        // Louder with every tier: gently placed, then a thud, then the heaviest hit.
-        _sfx.Play("deploy", view, tier == 2 ? 1f : tier == 1 ? .75f : .45f);
-        var lift = tier == 0 ? 8f : tier == 1 ? 34f : 48f;
-        var squash = tier == 0 ? .02f : tier == 1 ? .085f : .12f;
-        SlamDust? dust = null;
-        var travel = CreateTween(); _tweens.Add(travel);
-        travel.TweenMethod(Callable.From<float>(p =>
+        PhaseChanged?.Invoke("deployment-slam-" + SlamTier(defense));
+        _sfx.Play("deploy", view, style.Gain);
+
+        // Travel: the original resolves the drop within one frame, so this is a single step.
+        if (style.TravelFrames > 0)
         {
-            float y;
-            if (tier == 0)
-            {
-                // Tier one never flies: the card is laid down where it lands.
-                y = -lift * (p < .5f ? 1 - p / .5f : 0);
-            }
-            else if (p < .3f) y = -lift * Ease(p / .3f);                              // rise
-            else if (p < .55f) y = -lift * (1 - Ease((p - .3f) / .25f));               // slam down
-            else y = 0;
-            card.Position = rest + new Vector2(0, y);
-            var bulge = p > .55f ? MathF.Sin((p - .55f) / .45f * MathF.PI) * squash : 0;
-            card.Scale = new Vector2(1 + bulge, 1 - bulge);
-            // Dust belongs to the landing frame, not to the flight; a gentle placement raises none.
-            if (dust is null && p >= .55f && tier >= 1)
-            {
-                dust = new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .92f),
-                    Diameter = 48 + tier * 24f, Duration = Time(.42) };
-                AddChild(dust);
-            }
-        }), 0f, 1f, Time(seconds));
-        await Wait(seconds, epoch);
-        card.Position = rest; card.Scale = Vector2.One;
-        await Wait(.18, epoch);
+            card.Position = rest + new Vector2(0, style.Squash * 260f);
+            card.Scale = new Vector2(1 + style.Squash, 1 - style.Squash);
+        }
+        var dust = style.Dust > 0
+            ? new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .92f),
+                Diameter = style.Dust, Duration = Time(.42) }
+            : null;
+        if (dust is not null) AddChild(dust);
+        // The brightness step is what sells the impact: a brief lift, then back to rest.
+        var flash = card.Modulate;
+        card.Modulate = new Color(1f + style.Flash, 1f + style.Flash, 1f + style.Flash, 1f);
+        await Wait(1 / 60.0, epoch);
+
+        card.Position = rest;
+        card.Scale = Vector2.One;
+        var settle = Motion();
+        settle.TweenProperty(card, "modulate", flash, Time(style.SettleSeconds * .55));
+        await Wait(style.SettleSeconds, epoch);
+
+        card.Position = rest; card.Scale = Vector2.One; card.Modulate = flash;
         if (dust is not null && GodotObject.IsInstanceValid(dust) && dust.GetParent() == this)
         { RemoveChild(dust); dust.QueueFree(); }
     }

@@ -543,12 +543,32 @@ public partial class BattleScreen : Control
 
     public async Task VerifyAsync()
     {
-        // Slam is graded by defense and stretched for aircraft (presentation estimates, not original timings).
-        if (BattleSequence.SlamSeconds(1, "infantry") >= BattleSequence.SlamSeconds(7, "infantry")
-            || BattleSequence.SlamSeconds(1, "infantry") >= BattleSequence.SlamSeconds(4, "infantry"))
-            throw new Exception("Deployment slam is not graded by defense.");
-        if (BattleSequence.SlamSeconds(4, "fighter") <= BattleSequence.SlamSeconds(4, "infantry"))
-            throw new Exception("Air deployment slam is not longer.");
+        // Landing shape comes from frame-by-frame measurement of the reference match
+        // (04:12.2 = 252.2s @60fps): the card reaches its slot within one frame and the
+        // perceived weight comes from the brightness step plus dust — not from travel.
+        // Build IS defense, and defense is the ONLY input: the profile table takes nothing else,
+        // so there is no unit-type / family / air-ground path that could change the landing.
+        var light = BattleSequence.SlamStyle(1);
+        var mid = BattleSequence.SlamStyle(4);
+        var heavy = BattleSequence.SlamStyle(7);
+        if (light.TravelFrames != 1 || mid.TravelFrames != 1 || heavy.TravelFrames != 1)
+            throw new Exception("Deployment travel must resolve in a single frame, as measured.");
+        if (!(light.Flash < mid.Flash && mid.Flash < heavy.Flash))
+            throw new Exception("Landing flash is not graded by build.");
+        if (!(light.Squash < mid.Squash && mid.Squash < heavy.Squash))
+            throw new Exception("Landing squash is not graded by build.");
+        if (light.Dust != 0f || heavy.Dust <= mid.Dust || heavy.Shake <= mid.Shake || mid.Shake <= 0f)
+            throw new Exception("Heavier builds must raise more dust and shake; the lightest raises none.");
+        if (!(heavy.SettleSeconds > mid.SettleSeconds && mid.SettleSeconds > light.SettleSeconds))
+            throw new Exception("Heavier builds hold their slot longer.");
+        // Same defense must always produce the same landing, whatever else the card carries.
+        for (var d = 1; d <= 9; d++)
+        {
+            var again = BattleSequence.SlamStyle(d);
+            if (again != BattleSequence.SlamStyle(d))
+                throw new Exception("Landing is not a pure function of defense.");
+            if (BattleSequence.SlamSeconds(d) <= 0) throw new Exception("Landing has no duration.");
+        }
         // Tier behaviour: tier 0 is laid down gently, tier 2 slams hardest and shakes the table.
         ResetDemo();
         var slamProbe = _cards.Values.First(c => c.View is { } v && !v.IsHq && v.Visibility == Visibility.Full);
@@ -561,7 +581,8 @@ public partial class BattleScreen : Control
         await _sequence.SlamAsync(slamProbe, slamProbe.View! with { EffectiveDefense = 7 });
         _sequence.PhaseChanged -= OnSlamPhase;
         if (!slamPhases.Contains("deployment-slam-2")) throw new Exception("The heaviest unit did not slam at tier two.");
-        if (slamProbe.Position != slamProbe.RestPosition || slamProbe.Scale != Vector2.One)
+        if (slamProbe.Position != slamProbe.RestPosition || slamProbe.Scale != Vector2.One
+            || slamProbe.Modulate != Colors.White)
             throw new Exception("Slam left the card displaced.");
         if (_sequence.LiveCardCount != 0) throw new Exception("Slam retained temporary nodes.");
         ResetDemo();

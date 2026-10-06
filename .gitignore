@@ -10,3 +10,9 @@ bin/
 obj/
 *.user
 .kards-ui-workspace
+
+# Test diagnostics (hang dumps can be hundreds of MB).
+tests/TestResults/
+
+# Agent workbench memory — local notes, not project source.
+.workbuddy/

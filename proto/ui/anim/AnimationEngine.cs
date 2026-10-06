@@ -275,19 +275,18 @@ public partial class AnimationEngine : Node
         "spacefighter" => new(2, 65, 160, 0, Fly: true),
         _ => new(3, 65, 120, 1.5f)
     };
-    public sealed record DeploymentStyle(double Milliseconds, float Gain, int Tier, string Family);
-    public static DeploymentStyle SlamProfile(int defense, string kind)
+    /// <summary>Gallery-facing view of the shared landing table. Defense is the only input.</summary>
+    public sealed record DeploymentStyle(double Milliseconds, float Gain, int Tier);
+    public static DeploymentStyle SlamProfile(int defense)
     {
-        var tier = defense <= 2 ? 0 : defense <= 5 ? 1 : 2;
-        var fam = FamilyOf(kind);
-        return new((tier == 2 ? 620 : tier == 1 ? 520 : 420) * (fam == "air" ? 1.25 : 1), tier == 2 ? 1 : tier == 1 ? .85f : .6f, tier, fam);
+        var s = BattleSequence.SlamStyle(defense);
+        return new(s.TravelFrames / 60.0 + s.SettleSeconds, s.Gain, BattleSequence.SlamTier(defense));
     }
     public async Task Slam(CardControl card)
     {
         var defense = card.View?.EffectiveDefense ?? card.Definition.BaseDefense ?? 1;
-        var style = SlamProfile(defense, KindOf(card.View));
-        var tier = style.Tier;
-        var fam = style.Family;
+        var style = SlamProfile(defense);
+        var s = BattleSequence.SlamStyle(defense);
         var ms = style.Milliseconds;
         Sfx.Play("deploy", card.View, style.Gain);
         if (Clock.ReducedMotion)
@@ -295,22 +294,30 @@ public partial class AnimationEngine : Node
             await Sleep(Clock.Ms(ms));
             return;
         }
-        var landed = false;
-        await Motion(card.Visual, ms, (t, l) =>
+        // Measured landing: the card is already on the slot, the weight arrives in one frame.
+        // Dust scales with build only — no unit-type or family branch.
+        await Motion(card.Visual, Clock.Ms(ms), (t, l) =>
         {
-            var drop = t < .55f ? 1 - Ease(t / .55f) : 0;
-            card.Visual.Position = l.Position + new Vector2(0, -(22 + tier * 14) * drop);
-            var squash = t > .55f ? Mathf.Sin((t - .55f) / .45f * Mathf.Pi) * (.04f + tier * .03f) : 0;
-            card.Visual.Scale = new(1 + squash, 1 - squash);
-            if (t >= .55f && !landed && fam != "air" && tier > 0)
+            if (t <= 0f)
             {
-                landed = true;
-                var point = card.GetGlobalRect().Position + card.Size * new Vector2(.5f, .85f);
-                Observe(fam == "ship" ? WakePuff(point) : DustPuff(point));
-                if (card.GetParent() is Control stage)
-                    Observe(Shake(stage, tier == 2 ? 6 : 3, tier == 2 ? 380 : 260));
+                card.Visual.Position = l.Position + new Vector2(0, s.Squash * 260f);
+                card.Visual.Scale = new(1 + s.Squash, 1 - s.Squash);
+                card.Visual.Modulate = new Color(1f + s.Flash, 1f + s.Flash, 1f + s.Flash, 1f);
+                if (s.Dust > 0)
+                {
+                    var point = card.GetGlobalRect().Position + card.Size * new Vector2(.5f, .85f);
+                    Observe(DustPuff(point));
+                }
+                if (s.Shake > 0 && card.GetParent() is Control stage) Observe(Shake(stage, s.Shake, s.Shake * 62));
+                return;
             }
+            var settle = t * Math.Max(ms, 1) / 60f / (s.TravelFrames / 60.0 + s.SettleSeconds);
+            var flash = s.Flash * (1f - Math.Min(1f, (float)settle));
+            card.Visual.Position = l.Position;
+            card.Visual.Scale = Vector2.One;
+            card.Visual.Modulate = new Color(1f + flash, 1f + flash, 1f + flash, 1f);
         });
+        card.Visual.Modulate = Colors.White;
     }
     private static async void Observe(Task task)
     {
