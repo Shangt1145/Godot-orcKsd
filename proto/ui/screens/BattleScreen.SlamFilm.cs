@@ -107,7 +107,10 @@ public partial class BattleScreen
             card.Position = rest;
             card.Scale = Vector2.One;
             card.Modulate = new Color(1f + flash, 1f + flash, 1f + flash, 1f);
-            if (dust is { } d && GodotObject.IsInstanceValid(d)) d.QueueRedraw();
+            // Step-driven frames advance far faster than the frame clock, so drive the
+            // dust fade explicitly — otherwise it stays pinned at progress 0 and never shows.
+            if (dust is { } dd && GodotObject.IsInstanceValid(dd))
+                dd.Age = Math.Min(.42, t * .42);
             await tick();
         }
         card.Position = rest; card.Scale = Vector2.One; card.Modulate = Colors.White;

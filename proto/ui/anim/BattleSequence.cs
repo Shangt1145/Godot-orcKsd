@@ -222,8 +222,10 @@ public partial class BattleSequence : Control
             card.Position = rest + new Vector2(0, style.Squash * 260f);
             card.Scale = new Vector2(1 + style.Squash, 1 - style.Squash);
         }
+        // Centre the ring on the card's footprint, not 8% below it: the card itself covers the middle
+        // of the ring, so anything under it reads as nothing at all.
         var dust = style.Dust > 0
-            ? new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .92f),
+            ? new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .86f),
                 Diameter = style.Dust, Duration = Time(.42) }
             : null;
         if (dust is not null) AddChild(dust);
@@ -421,7 +423,9 @@ public partial class SlamDust : Control
     public float Diameter { get; set; }
     public double Duration { get; set; }
     private double _age;
-    public override void _Ready() { MouseFilter = MouseFilterEnum.Ignore; }
+    /// <summary>Lets a step-driven caller (capture, replay) set the fade without waiting on the frame clock.</summary>
+    public double Age { set { _age = value; QueueRedraw(); } }
+    public override void _Ready() { MouseFilter = MouseFilterEnum.Ignore; QueueRedraw(); }
     public override void _Process(double delta)
     {
         _age += delta;
@@ -431,17 +435,19 @@ public partial class SlamDust : Control
     public override void _Draw()
     {
         const int segments = 18;
-        var progress = (float)(_age / Duration);
-        var alpha = (1 - progress) * .5f;
-        var width = Diameter * (.4f + progress * 1.2f);
-        var height = width * .32f;
+        var progress = Math.Clamp((float)(_age / Duration), 0f, 1f);
+        var alpha = (1 - progress) * .72f;
+        var width = Diameter * (.5f + progress * 1.1f);
+        var height = width * .3f;
         var points = new Vector2[segments];
         for (var i = 0; i < segments; i++)
         {
             var angle = i / (float)segments * MathF.PI * 2;
             points[i] = Center + new Vector2(MathF.Cos(angle) * width, MathF.Sin(angle) * height);
         }
-        DrawColoredPolygon(points, new Color(.80f, .76f, .64f, alpha));
+        // A pale scuffed ring on dark wood: low alpha reads as nothing at all.
+        DrawColoredPolygon(points, new Color(.86f, .82f, .70f, alpha));
+        DrawPolyline([.. points, points[0]], new Color(.92f, .88f, .76f, alpha * .9f), 1.5f, true);
     }
 }
 
