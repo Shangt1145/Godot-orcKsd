@@ -91,6 +91,21 @@ public sealed class OrcMatchHost
         _view = _reader.Read(_match, _viewer, _matchId);
     }
 
+    /// <summary>
+    /// Adopts a match that is already running, resolving this host's viewpoint from it. This is the
+    /// hotseat path: a second seat over the same live game. <see cref="InitializeAsync"/> cannot be
+    /// used because it would initialise the match a second time; a seat only needs its own viewer,
+    /// readers and view.
+    /// </summary>
+    public void AttachToLiveMatch()
+    {
+        if (_match.State == MatchState.Preparing)
+            throw new InvalidOperationException("The match is still preparing; initialise it first.");
+        _viewer = _match.Players[_viewerIndex];
+        EnsureReaders();
+        _view = _reader.Read(_match, _viewer, _matchId);
+    }
+
     /// <summary>Frame-loop entry point: drains segments, then re-reads the board.</summary>
     public void Pump()
     {

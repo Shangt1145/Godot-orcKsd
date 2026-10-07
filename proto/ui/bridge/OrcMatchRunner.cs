@@ -15,6 +15,7 @@ public sealed class OrcMatchRunner
     private const string InfantryId = "orc-demo-infantry";
 
     private OrcMatchSession? _session;
+    private OrcMatchHost? _secondSeat;
 
     public bool IsRunning => _session is not null;
     public string MatchId { get; } = "orc-live";
@@ -24,6 +25,41 @@ public sealed class OrcMatchRunner
 
     /// <summary>Card id to art path, supplied by the UI's own catalog. The engine has no art concept.</summary>
     public Func<string, string>? ArtLookup { get; init; }
+
+    /// <summary>
+    /// Deals from the shipped card catalog instead of the single probe card. A null pool falls back
+    /// to the probe card, so the verify paths keep working without a prepared catalog.
+    /// </summary>
+    public IReadOnlyList<UiCardDefinition>? CatalogCards { get; init; }
+
+    /// <summary>When set, the match is opened hotseat and this is the seat the screen starts on.</summary>
+    public bool Hotseat { get; init; }
+
+    /// <summary>
+    /// Deck seed. A verification run needs a hand it can actually play, and the opening is random —
+    /// with the shipped pool most hands hold nothing affordable on turn one. Fixing the seed makes
+    /// the run repeatable; it is not a product behaviour.
+    /// </summary>
+    public int? DeckSeed { get; init; }
+
+    /// <summary>Which seat is currently shown: 0 or 1. Only meaningful when <see cref="Hotseat"/>.</summary>
+    public int ActiveSeat { get; private set; }
+
+    /// <summary>True when it is the seat now on screen whose turn it is.</summary>
+    public bool ActiveSeatOnTurn => _session is not null
+        && Match.CurrentPlayer is not null
+        && Match.CurrentPlayer.Index == ActiveSeat;
+
+    private Orc.Game.Match Match => _session?.Host.Match
+        ?? throw new InvalidOperationException("The match is not running.");
+
+    /// <summary>Swaps the visible seat. The engine keeps one truth; only the viewpoint changes.</summary>
+    public void SwitchSeat()
+    {
+        if (!Hotseat || _session is null) return;
+        ActiveSeat = ActiveSeat == 0 ? 1 : 0;
+        Publish();
+    }
 
     public event Action<UiMatchView, UiBattleActions>? ProjectionReady;
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
@@ -37,8 +73,21 @@ public sealed class OrcMatchRunner
 
     public async Task StartAsync(CancellationToken ct = default)
     {
-        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, seed: 20261005,
-            matchId: MatchId, artLookup: ArtLookup, ct: ct);
+        // A real catalog means a real deck. The probe card is the fallback so the verify paths
+        // still run on a machine where the catalog has not been prepared.
+        var pool = CatalogCards is { Count: > 0 } ? CardPoolCompiler.Compile(CatalogCards).Entries : null;
+        OrcMatchSession session;
+        if (pool is { Count: > 0 })
+        {
+            var deck = DeckBuilder.Build(pool, seed: DeckSeed ?? 20261005);
+            session = await OrcMatchSession.CreateAsync(pool, deck, deck,
+                seed: DeckSeed ?? 20261005, matchId: MatchId, artLookup: ArtLookup, ct: ct);
+        }
+        else
+        {
+            session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, seed: DeckSeed ?? 20261005,
+                matchId: MatchId, artLookup: ArtLookup, ct: ct);
+        }
         _session = session;
         session.Host.ImmediateUpdate += _ => { };
         session.Host.PresentationReady += (resolution, actions) => PresentationReady?.Invoke(resolution, actions);
@@ -46,6 +95,15 @@ public sealed class OrcMatchRunner
         session.Host.ErrorRaised += message => ErrorRaised?.Invoke(message);
         // The engine parks on the mulligan slot; that is the moment the panel must open.
         session.MulliganRequested += () => MulliganRequested?.Invoke();
+
+        if (Hotseat)
+        {
+            // The other seat reads the same live match. It adopts rather than initialises, because
+            // the match is already running — one engine, one truth, two viewpoints.
+            _secondSeat = new OrcMatchHost(session.Host.Match, $"{MatchId}-seat1", viewerIndex: 1, ArtLookup);
+            _secondSeat.ImmediateUpdate += _ => { };
+            _secondSeat.AttachToLiveMatch();
+        }
 
         Publish();
 
@@ -59,7 +117,16 @@ public sealed class OrcMatchRunner
     }
 
     /// <summary>Frame-loop entry point. Segments are unbounded, so this must run every frame.</summary>
-    public void Pump() => _session?.Pump();
+    /// <summary>
+    /// Frame-loop entry point. Only the active seat drains segments: two hosts pumping the same
+    /// match would each consume the other's updates.
+    /// </summary>
+    public void Pump()
+    {
+        if (_session is null) return;
+        if (ActiveSeat == 0 || _secondSeat is null) _session.Pump();
+        else _secondSeat.Pump();
+    }
 
     /// <summary>Ends the match and detaches the host so no further segments are delivered.</summary>
     public void Stop()
@@ -69,9 +136,13 @@ public sealed class OrcMatchRunner
         _session = null;
     }
 
-    public UiMatchView? CurrentView => _session?.View;
+    /// <summary>The seat currently on screen. Null before the match starts.</summary>
+    public UiMatchView? CurrentView => (ActiveSeat == 0 || _secondSeat is null) ? _session?.View : _secondSeat.View;
 
-    public UiBattleActions CurrentActions => _session?.Actions ?? new UiBattleActions();
+    /// <summary>Actions for the seat on screen, so a hotseat player is never offered the other's moves.</summary>
+    public UiBattleActions CurrentActions => (ActiveSeat == 0 || _secondSeat is null)
+        ? _session?.Actions ?? new UiBattleActions()
+        : _secondSeat.Actions;
 
     /// <summary>
     /// Submits one contract command. The session owns the engine rules; this only reports refusals
@@ -140,7 +211,13 @@ public sealed class OrcMatchRunner
     private void Publish()
     {
         if (_session is null) return;
-        ProjectionReady?.Invoke(_session.View, _session.Actions);
+        if (ActiveSeat == 0 || _secondSeat is null)
+        {
+            ProjectionReady?.Invoke(_session.View, _session.Actions);
+            return;
+        }
+        _secondSeat.Pump();
+        ProjectionReady?.Invoke(_secondSeat.View, _secondSeat.Actions);
     }
 
 

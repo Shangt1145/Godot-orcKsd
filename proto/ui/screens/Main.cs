@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using Kards.Ui.Core;
 using Kards.Ui.Contracts;
 
@@ -86,6 +86,7 @@ public partial class Main : Control
             CommandRequested?.Invoke(command);
         };
         _battle.RealMatchRequested += () => _ = StartRealMatchAsync();
+        _battle.HotseatRequested += () => _ = StartRealMatchAsync(interactiveMulligan: true, hotseat: true);
         _battle.NavigationRequested += Show;
         AddScreen(content, "battle", _battle);
         AddScreen(content, "deck", Placeholder("卡组编辑", "卡组保存、数量限制与可用性将在卡组契约确定后接入。", "浏览卡牌", () => Show("collection")));
@@ -130,13 +131,18 @@ public partial class Main : Control
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>
-    public async Task StartRealMatchAsync(bool interactiveMulligan = true)
+    public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool hotseat = false, int? deckSeed = null)
     {
         if (_runner is not null) { _runner.Stop(); _runner = null; }
         var runner = new OrcMatchRunner
         {
             InteractiveMulligan = interactiveMulligan,
             ArtLookup = id => _artById.GetValueOrDefault(id, ""),
+            // Deal from the shipped catalog so a real match uses real cards; the runner falls back
+            // to its probe card when the catalog is missing, which keeps the verify paths working.
+            CatalogCards = _catalog.Cards,
+            Hotseat = hotseat,
+            DeckSeed = deckSeed,
         };
         runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
         runner.MulliganRequested += () => _battle.ShowMulliganPanel(runner.CurrentView);
@@ -147,6 +153,9 @@ public partial class Main : Control
         runner.HintRequested += message => _battle.ShowHint(message);
         _runner = runner;
         await runner.StartAsync();
+        _battle.ShowHotseatControls(hotseat, runner.ActiveSeat,
+            () => runner.SwitchSeat(),
+            () => runner.ActiveSeatOnTurn);
     }
 
     public override void _Process(double delta) => _runner?.Pump();
@@ -154,7 +163,10 @@ public partial class Main : Control
     private async Task VerifyBridgeAsync()
     {
         Show("battle");
-        await StartRealMatchAsync(interactiveMulligan: false); // the keep-all policy keeps this verify deterministic
+        // Seed 2 is known to deal a 1-cost unit, so the deployment choreography below has something legal
+        // to play. With the shipped pool most hands hold nothing affordable on turn one, and this
+        // verify must not depend on luck.
+        await StartRealMatchAsync(interactiveMulligan: false, deckSeed: 2);
         var view = _runner?.CurrentView ?? throw new Exception("Real match produced no projection.");
         if (view.Phase != "play") throw new Exception($"Real match did not reach play: {view.Phase}.");
         if (view.SelfHand.Count != 4) throw new Exception($"Opening hand mismatch: {view.SelfHand.Count}.");
@@ -172,15 +184,22 @@ public partial class Main : Control
         var actions = _runner!.CurrentActions;
         if (!actions.CanEndTurn || actions.PlayableUids.Count == 0)
             throw new Exception("Engine availability did not reach the UI.");
-        var uid = actions.PlayableUids[0];
+        // The engine's play entry point takes units; orders have no play path yet, and a card the
+        // player cannot afford is correctly refused. Both would look like a broken choreography.
+        var uid = settled.SelfHand.FirstOrDefault(c =>
+            actions.PlayableUids.Contains(c.Uid)
+            && c.Definition.CardType == "unit"
+            && c.Definition.Cost <= settled.SelfKredits)?.Uid
+            ?? actions.PlayableUids[0];
         var handBefore = settled.SelfHand.Count;
         var deployed = false;
         _runner!.PresentationReady += (resolution, _) => deployed |= resolution.Steps.Any(s => s is UiDeploymentPresentation);
         var phases = new List<string>();
         _battle.PresentationPhase += phase => phases.Add(phase);
-        await _runner!.SubmitAsync(new PlayCard(uid, 2));
+        await _runner!.SubmitAsync(new PlayCard(uid));
         await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
-        GD.Print($"[bridge] presentation steps fired={deployed}, phases=[{string.Join(' ', phases)}]");
+        GD.Print($"[bridge] play uid={uid} hand=[{string.Join(' ', settled.SelfHand.Select(c => $"{c.Definition.CardType}/{c.Definition.Cost}"))}] " +
+            $"kredits={settled.SelfKredits} steps fired={deployed}, phases=[{string.Join(' ', phases)}]");
         if (!phases.Contains("deployment-start") || !phases.Any(p => p.StartsWith("deployment-slam")))
             throw new Exception("Deployment choreography never played.");
         var played = _runner!.CurrentView!;
@@ -191,20 +210,28 @@ public partial class Main : Control
         await _runner!.SubmitAsync(new EndTurn());
         await ToSignal(GetTree().CreateTimer(2.2), SceneTreeTimer.SignalName.Timeout);
         // The opponent driver plays the enemy turn through the engine and passes straight back.
+        // Whether it deploys is the engine's business: with the shipped pool most hands hold
+        // nothing affordable, and a driver that correctly does nothing is still a driver that ran.
         var afterEnemyTurn = _runner!.CurrentView!;
         if (afterEnemyTurn.ActivePlayerSide != "self") throw new Exception("Opponent turn did not come back.");
-        if (afterEnemyTurn.EnemyLine.Count == 0) throw new Exception("Opponent driver did not deploy a unit.");
+        if (afterEnemyTurn.Turn <= view.Turn) throw new Exception("The turn counter did not advance past the opponent.");
 
         // Deployment is adjacency-locked by the engine (only slots next to occupied ones are legal), so a
-        // second card must take a *different* slot; free side choice awaits an engine rule change.
-        var second = _runner!.CurrentActions.PlayableUids.FirstOrDefault();
+        // second card must take a *different* slot. The engine decides whether the second play is
+        // legal at all — with the shipped pool it often is not — so this only checks the outcome
+        // when the card actually landed.
+        var second = _runner!.CurrentActions.PlayableUids
+            .Where(c => _runner!.CurrentView!.SelfHand.Any(h => h.Uid == c))
+            .FirstOrDefault();
         if (second is not null)
         {
-            await _runner!.SubmitAsync(new PlayCard(second, 1));
+            await _runner!.SubmitAsync(new PlayCard(second));
             await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
-            var left = _runner!.CurrentView!.SelfLine.First(c => c.Uid == second);
-            var right = _runner!.CurrentView!.SelfLine.First(c => c.Uid == uid);
-            if (left.SlotIndex == right.SlotIndex) throw new Exception("Two deployments landed on the same slot.");
+            var board = _runner!.CurrentView!.SelfLine;
+            var left = board.FirstOrDefault(c => c.Uid == second);
+            var right = board.FirstOrDefault(c => c.Uid == uid);
+            if (left is not null && right is not null && left.SlotIndex == right.SlotIndex)
+                throw new Exception("Two deployments landed on the same slot.");
         }
 
         // Combat choreography: advance and strike the enemy HQ; the engine decides the outcome.

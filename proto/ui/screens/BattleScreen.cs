@@ -18,6 +18,7 @@ public partial class BattleScreen : Control
     private KreditsDisplay _selfResource = null!, _enemyResource = null!;
     private Label _hint = null!;
     private Control _history = null!, _result = null!;
+    private Control _hotseat = null!;
     private BattleCombat _combat = null!;
     private SfxPlayer _sfx = null!;
     private UiCombatResolution? _pendingCombat;
@@ -43,11 +44,37 @@ public partial class BattleScreen : Control
     /// <summary>Raised by the gear menu: run the screen from a real engine match instead of the demo fixture.</summary>
     public event Action? RealMatchRequested;
 
+    /// <summary>Two people share one screen and take turns on the same match.</summary>
+    public event Action? HotseatRequested;
+
     /// <summary>Shows text supplied from outside (for example an engine refusal reason).</summary>
     public void ShowHint(string text)
     {
         _hint.Text = text;
         _hint.Visible = true;
+    }
+
+    /// <summary>
+    /// Shows the hotseat seat switcher. Two people share one screen, so the control has to say whose
+    /// turn it is — otherwise the player who is not on turn cannot tell whether the board is waiting
+    /// for them or for the other seat.
+    /// </summary>
+    public void ShowHotseatControls(bool hotseat, int seat, Action switchSeat, Func<bool> seatOnTurn)
+    {
+        UiStyles.Clear(_hotseat);
+        _hotseat.Visible = hotseat;
+        if (!hotseat) return;
+
+        var label = Text(seat == 0 ? "座位一（先手）" : "座位二（后手）", new(0, 0), new(210, 22), 16, "e9e4ce");
+        label.HorizontalAlignment = HorizontalAlignment.Center; _hotseat.AddChild(label);
+        var turn = Text(seatOnTurn() ? "轮到你行动" : "等待对手行动", new(0, 24), new(210, 20), 14, "b8b19a");
+        turn.HorizontalAlignment = HorizontalAlignment.Center; _hotseat.AddChild(turn);
+        var button = new Button { Text = "切换到座位" + (seat == 0 ? "二" : "一"), Position = new(5, 48), Size = new(200, 34) };
+        foreach (var style in new[] { "normal", "hover", "pressed", "focus" })
+            button.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
+        button.AddThemeColorOverride("font_color", new("e9e3cc"));
+        button.Pressed += () => { switchSeat(); ShowHotseatControls(true, seat == 0 ? 1 : 0, switchSeat, seatOnTurn); };
+        _hotseat.AddChild(button);
     }
     public void Initialize(CardCatalog catalog, TextureCache textures, AnimClock clock, SfxPlayer sfx)
     {
@@ -80,9 +107,11 @@ public partial class BattleScreen : Control
         popup.AddItem("反制触发演示", 20); popup.AddItem("治疗演示", 21); popup.AddItem("强化演示", 22);
         popup.AddItem("压制与解除演示", 23); popup.AddItem("费用变化演示", 24);
         popup.AddSeparator(); popup.AddItem("真实对局（接入引擎）", 25);
+        popup.AddItem("双人对局（同屏轮流）", 26);
         popup.IdPressed += id =>
         {
             if (id == 25) RealMatchRequested?.Invoke();
+            else if (id == 26) HotseatRequested?.Invoke();
             else if (id == 0) NavigationRequested?.Invoke("collection");
             else if (id == 1) NavigationRequested?.Invoke("settings");
             else if (id == 2) ResetDemo();
@@ -122,6 +151,10 @@ public partial class BattleScreen : Control
         _inspectStats = Text("", new(1027, 362), new(215, 23), 12, "e2dbc1"); _inspectStats.ZIndex = 161; _inspectStats.Visible = false; _canvas.AddChild(_inspectStats);
         _result = new Control { Position = new(445, 228), Size = new(390, 232), ZIndex = 250, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
         _canvas.AddChild(_result);
+        // Pass-through by default so the hidden control never eats board clicks; the button inside
+        // still receives them because it is its own control.
+        _hotseat = new Control { Position = new(530, 92), Size = new(210, 92), ZIndex = 240, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
+        _canvas.AddChild(_hotseat);
         InitializeMulligan();
         _canvas.GuiInput += BoardInput;
         Resized += FitBoard;
