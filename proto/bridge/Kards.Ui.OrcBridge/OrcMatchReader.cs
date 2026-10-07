@@ -72,6 +72,10 @@ public sealed class OrcMatchReader
             EnemyHandCount = opponent?.Hand.Count,
             EnemyDeckCount = opponent?.Deck.Count,
             SelfCounterCount = viewer.Hand.Count(h => h is CardBase c && c.TryGetData<CounterActivationData>(out var a) && a.IsActive),
+            // The board needs the real line widths: a drop position only means something relative to
+            // the slots that exist, and those are drawn only when occupied.
+            FrontLineSlotCount = match.Battlefield.FrontLine.Count,
+            SupportLineSlotCount = match.Battlefield.GetSupportLine(viewer.Index).Count,
             SelfHand = hand,
             SelfLine = selfLine,
             SelfHq = selfHq,

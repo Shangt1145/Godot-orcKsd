@@ -11,8 +11,12 @@ obj/
 *.user
 .kards-ui-workspace
 
+# Exported game builds (tools/release.ps1 writes here; players get these, git does not).
+dist/
+
 # Test diagnostics (hang dumps can be hundreds of MB).
 tests/TestResults/
 
 # Agent workbench memory — local notes, not project source.
 .workbuddy/
+.claude/

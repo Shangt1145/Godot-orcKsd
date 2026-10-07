@@ -22,6 +22,22 @@ public static class DeckRules
 /// </summary>
 public static class DeckBuilder
 {
+    /// <summary>Uniform reviewed pool selection; insufficient capacity fails instead of returning a short deck.</summary>
+    public static IReadOnlyList<string> BuildVerified(IReadOnlyList<CardDefinitionEntry> pool, int seed, int size = DeckRules.DeckSize)
+    {
+        if (size < DeckRules.MinUnits) throw new ArgumentOutOfRangeException(nameof(size));
+        if (pool.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count() != pool.Count)
+            throw new InvalidDataException("Duplicate definitions in card pool.");
+        var eligible = pool.Where(c => !c.Definition.Tags.Contains("token")).ToArray();
+        var random = new Random(seed);
+        var copies = eligible.SelectMany(e => Enumerable.Repeat(e, DeckRules.MaxCopiesPerCard))
+            .OrderBy(_ => random.Next()).ToList();
+        var units = copies.Where(e => e.Definition.Category == CardCategory.Unit).Take(DeckRules.MinUnits).ToArray();
+        if (copies.Count < size || units.Length < DeckRules.MinUnits)
+            throw new InvalidDataException("Reviewed pool cannot fill the requested deck with the copy limit and minimum units.");
+        foreach (var unit in units) copies.Remove(unit);
+        return units.Concat(copies.Take(size - units.Length)).OrderBy(_ => random.Next()).Select(e => e.Id).ToArray();
+    }
     /// <summary>
     /// Builds a playable deck. Two properties matter beyond legality:
     ///
@@ -36,6 +52,7 @@ public static class DeckBuilder
     /// </summary>
     public static IReadOnlyList<string> Build(IReadOnlyList<CardDefinitionEntry> pool, int seed, int size = DeckRules.DeckSize)
     {
+        pool = pool.Where(e => !e.Definition.Tags.Contains("token")).ToArray();
         var units = pool.Where(e => e.Definition.Category == CardCategory.Unit).ToArray();
         var orders = pool.Where(e => e.Definition.Category == CardCategory.Command).ToArray();
         if (units.Length == 0) throw new InvalidOperationException("The pool has no units to build a deck from.");
@@ -88,11 +105,11 @@ public static class DeckBuilder
     /// <see cref="Build"/> so a caller can hand a player an authored deck and get told what is
     /// wrong with it rather than a silent reshuffle.
     /// </summary>
-    public static IReadOnlyList<string> Validate(IReadOnlyList<string> deck, IReadOnlyList<CardDefinitionEntry> pool)
+    public static IReadOnlyList<string> Validate(IReadOnlyList<string> deck, IReadOnlyList<CardDefinitionEntry> pool, int size = DeckRules.DeckSize)
     {
         var problems = new List<string>();
         if (deck.Count == 0) { problems.Add("牌组为空"); return problems; }
-        if (deck.Count != DeckRules.DeckSize) problems.Add($"牌组应为 {DeckRules.DeckSize} 张，实为 {deck.Count} 张");
+        if (deck.Count != size) problems.Add($"牌组应为 {size} 张，实为 {deck.Count} 张");
 
         var known = pool.Select(e => e.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var id in deck.Where(id => !known.Contains(id)).Distinct())
@@ -106,8 +123,8 @@ public static class DeckBuilder
         var units = deck.Count(id => category.GetValueOrDefault(id) == CardCategory.Unit);
         if (units < DeckRules.MinUnits)
             problems.Add($"单位只有 {units} 张，至少需要 {DeckRules.MinUnits} 张");
-        if (deck.Any(id => category.GetValueOrDefault(id) == CardCategory.Command) == false)
-            problems.Add("牌组里没有指令卡");
+        foreach (var entry in pool.Where(e => deck.Contains(e.Id) && e.Definition.Tags.Contains("token")))
+            problems.Add($"生成卡不能组牌 {entry.Id}");
         return problems;
     }
 }

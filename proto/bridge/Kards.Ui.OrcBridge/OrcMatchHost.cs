@@ -2,6 +2,7 @@ using Orc.Core;
 using Orc.Game;
 using Orc.Game.Players;
 using Kards.Ui.Contracts;
+using Kards.Ui.Core;
 
 namespace Kards.Ui.OrcBridge;
 
@@ -16,7 +17,7 @@ namespace Kards.Ui.OrcBridge;
 public sealed class OrcMatchHost
 {
     private readonly Match _match;
-    private readonly int _viewerIndex;
+    private int _viewerIndex;
     private readonly string _matchId;
     private Player _viewer = null!;
     private OrcCardReader _cards = null!;
@@ -25,6 +26,11 @@ public sealed class OrcMatchHost
     private readonly OrcActionReader _actions = new();
     private IDisposable? _immediate;
     private UiMatchView? _view;
+    private bool _detached;
+    private bool _observer;
+    private readonly Queue<(UiPresentationResolution Resolution, UiBattleActions Actions,
+        IReadOnlyList<UiOrderImpact> Impacts, string[] Errors)> _captured = new();
+    public bool HistoricalStatesVerified { get; private set; } = true;
 
     /// <param name="viewerIndex">0 = first player. Resolved after initialization; players are not readable while preparing.</param>
     public OrcMatchHost(Match match, string matchId, int viewerIndex = 0, Func<string, string>? artLookup = null)
@@ -70,7 +76,7 @@ public sealed class OrcMatchHost
     /// <summary>One resolved action: steps to animate plus the authoritative board after it.</summary>
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
 
-    /// <summary>Board impacts (hit flash, damage number, death) take precedence over steps in the same segment.</summary>
+    /// <summary>Diagnostic combat projection. UI playback uses the complete PresentationReady sequence.</summary>
     public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
 
     /// <summary>Error entries ride along in segments; surfaced here for a UI toast.</summary>
@@ -79,6 +85,7 @@ public sealed class OrcMatchHost
     /// <summary>Must run before <see cref="InitializeAsync"/>.</summary>
     public void Attach()
     {
+        _detached = false;
         _immediate ??= _match.Engine.OnImmediateUpdate((updateType, _) => ImmediateUpdate?.Invoke(updateType));
     }
 
@@ -89,6 +96,7 @@ public sealed class OrcMatchHost
         _viewer = _match.Players[_viewerIndex];
         EnsureReaders();
         _view = _reader.Read(_match, _viewer, _matchId);
+        CaptureCompletedActions();
     }
 
     /// <summary>
@@ -102,38 +110,75 @@ public sealed class OrcMatchHost
         if (_match.State == MatchState.Preparing)
             throw new InvalidOperationException("The match is still preparing; initialise it first.");
         _viewer = _match.Players[_viewerIndex];
+        _observer = true;
         EnsureReaders();
         _view = _reader.Read(_match, _viewer, _matchId);
+    }
+
+    public void SelectViewer(int index)
+    {
+        if (_detached) return;
+        _viewerIndex = index;
+        _viewer = _match.Players[index];
+        _captured.Clear(); // a viewpoint switch settles the board, not the previous seat's animation
+        Refresh();
+    }
+
+    /// <summary>A full projection settles past presentations, including a silent phase change.</summary>
+    public void SettleProjection()
+    {
+        if (_detached) return;
+        CaptureCompletedActions();
+        foreach (var item in _captured)
+            foreach (var error in item.Errors) ErrorRaised?.Invoke(error);
+        _captured.Clear();
+        Refresh();
     }
 
     /// <summary>Frame-loop entry point: drains segments, then re-reads the board.</summary>
     public void Pump()
     {
-        if (_view is null || _viewer is null) return;
+        if (_detached) return;
+        if (_observer) { Refresh(); return; }
+        CaptureCompletedActions();
+        while (!_detached && _captured.TryDequeue(out var item))
+        {
+            foreach (var error in item.Errors) ErrorRaised?.Invoke(error);
+            // Kept for adapter diagnostics. The UI consumes PresentationReady only, including hits.
+            if (item.Impacts.Count > 0) CombatReady?.Invoke(item.Impacts, item.Resolution.After, item.Actions);
+            PresentationReady?.Invoke(item.Resolution, item.Actions);
+        }
+    }
+
+    /// <summary>
+    /// Freeze at the end of each adapter-driven engine action, before another action can mutate it.
+    /// There is no engine segment-completed callback in this version. Multiple segments collected
+    /// after external calls cannot recover their individual historical boards; expose that limitation.
+    /// This is the sole engine-queue consumer. Delivery to the scene happens later in Pump.
+    /// </summary>
+    public void CaptureCompletedActions()
+    {
+        if (_detached || _observer || _view is null || _viewer is null) return;
         EnsureReaders();
-        foreach (var segment in _match.Engine.TakeSegments())
+        var segments = _match.Engine.TakeSegments();
+        if (segments.Count > 1) HistoricalStatesVerified = false;
+        foreach (var segment in segments)
         {
             var updates = segment.Entries
                 .Where(e => e.Kind == LogEntryKind.Update)
                 .Select(e => (Update: e.Message, Payload: e.Data))
                 .ToArray();
-            foreach (var entry in segment.Entries.Where(e => e.Level == LogLevel.Error))
-                ErrorRaised?.Invoke(entry.Message);
-
-            var after = _reader.Read(_match, _viewer, _matchId);
+            var errors = segment.Entries.Where(e => e.Level == LogLevel.Error).Select(e => e.Message).ToArray();
+            var after = UiSnapshots.Freeze(_reader.Read(_match, _viewer, _matchId));
             var translation = _translator.Translate(updates, _viewer, _view ?? after, after);
             _view = after;
-            if (translation.Impacts.Count > 0)
-            {
-                // Combat impacts win; any draw/order steps in the same segment settle through the
-                // impact presentation's final render instead of their own choreography.
-                CombatReady?.Invoke(translation.Impacts, after, Actions);
-                continue;
-            }
-            // Steps choreograph the transition; an empty list still settles the board through the
-            // presentation's animated render. Publishing earlier would overwrite the animation.
-            PresentationReady?.Invoke(new UiPresentationResolution(_matchId, translation.Steps, after), Actions);
+            var resolution = UiSnapshots.Freeze(new UiPresentationResolution(_matchId, translation.Steps, after)
+                { Sequence = segment.Sequence });
+            _captured.Enqueue((resolution, UiSnapshots.Freeze(Actions), translation.Impacts, errors));
         }
+        // Phase changes and mulligan replacements can be silent in the current engine.
+        // Keep the live projection fresh without changing already frozen action snapshots.
+        if (segments.Count == 0) Refresh();
     }
 
     /// <summary>
@@ -148,6 +193,8 @@ public sealed class OrcMatchHost
 
     public void Detach()
     {
+        _detached = true;
+        _captured.Clear();
         _immediate?.Dispose();
         _immediate = null;
     }

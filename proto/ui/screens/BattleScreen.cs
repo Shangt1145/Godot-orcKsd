@@ -8,7 +8,22 @@ namespace Kards.Ui;
 public partial class BattleScreen : Control
 {
     private static readonly Vector2 BoardSize = new(1280, 720);
+    private static readonly Vector2 FieldCardSize = new(112, 150);
     private static readonly Rect2 SelfArea = new(260, 439, 760, 165), FrontArea = new(260, 267, 760, 164);
+    private static readonly Rect2 EnemyArea = new(260, 82, 760, 165);
+
+    /// <summary>
+    /// Where a drop counts as landing on a line: the band's height picks the line, the x picks the slot.
+    ///
+    /// The x range spans the board rather than the drawn row. A row is drawn packed and centred, so a free
+    /// slot's position is derived from the nearest card by whole card widths — with one card standing on a
+    /// five-slot line, the slots span four widths to either side of it and reach well past the middle.
+    /// Clipping x to the drawn row left the outer slots unreachable: a drop there read as "outside the row",
+    /// so the gesture cancelled instead of placing the unit. The two rectangles deliberately share a height
+    /// and differ only in width; the row rectangles stay the drawing anchors.
+    /// </summary>
+    private static readonly Rect2 FrontBand = new(0, FrontArea.Position.Y, BoardSize.X, FrontArea.Size.Y);
+    private static readonly Rect2 SelfBand = new(0, SelfArea.Position.Y, BoardSize.X, SelfArea.Size.Y);
     private TextureCache _textures = null!;
     private AnimClock _clock = null!;
     private BattleDemoAdapter _demo = null!;
@@ -28,6 +43,28 @@ public partial class BattleScreen : Control
     private PopupMenu _menu = null!;
     private BattleAim _aim = null!;
     private BattlePaper _paper = null!;
+    /// <summary>Slots a dragged card can land on, with the slot the pointer currently names.</summary>
+    private Control _slotLayer = null!;
+    private readonly List<(int Slot, float X)> _slotHints = new();
+    private readonly List<string> _attackHints = new();
+    private int _slotHintAim = -1;
+    private float _slotHintY;
+
+    /// <summary>
+    /// The order the front line is drawn in — the player's order, not the engine's slot numbering.
+    ///
+    /// A five-slot line that already holds four units still has a free slot, and a drop into it should put
+    /// the unit where the player pointed with the others making room, instead of the one slot the engine
+    /// happens to have left. Nothing in the rules reads a slot index on this line: a front-line unit may
+    /// only strike the enemy support line, an adjacent slot across the line, whatever number it happens to
+    /// carry (Orc.Game's <c>CombatRangeJudicator</c>; the only index-aware rule in the engine is the
+    /// headquarters guard, and that reads the support line). So the order is presentation, and this list is
+    /// that presentation. The engine is still handed a real empty slot — it is just not the one the player
+    /// is looking at, and nothing downstream can tell.
+    /// </summary>
+    private readonly List<string> _frontOrder = new();
+    private sealed record FrontPlacement(int Rank, string? BeforeUid, string? AfterUid, bool AtEnd);
+    private readonly Dictionary<string, FrontPlacement> _frontPlacements = new();
     private readonly Dictionary<string, BattleCard> _cards = new();
     private readonly List<Tween> _tweens = new();
     private readonly List<BattleCard> _ghosts = new();
@@ -144,6 +181,11 @@ public partial class BattleScreen : Control
         _hint.HorizontalAlignment = HorizontalAlignment.Center; _hint.Visible = false; _canvas.AddChild(_hint);
         _cardLayer = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore }; _canvas.AddChild(_cardLayer);
         _aim = new BattleAim { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore, Visible = false, ZIndex = 180 }; _canvas.AddChild(_aim);
+        // Where a drop can land, drawn only while a card is being dragged. A packed row shows no slot
+        // positions of its own — the cards sit next to each other — so without this the player is aiming
+        // blind: a drop at one end and a drop in the middle look the same before the card is released.
+        _slotLayer = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore, ZIndex = 60 };
+        _slotLayer.Draw += DrawSlotHints; _canvas.AddChild(_slotLayer);
         _combat = new BattleCombat { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore, ZIndex = 200 };
         _canvas.AddChild(_combat); _combat.Initialize(clock, textures, sfx);
         InitializePresentation();
@@ -175,7 +217,11 @@ public partial class BattleScreen : Control
     }
     public void ResetDemo()
     {
+        StopDemoPlayback();
+        _liveInputView = null; _liveInputActions = null;
         MulliganProjection("demo"); // the panel must never outlive the match it belongs to
+        _frontOrder.Clear();         // the arrangement belongs to the board being reset
+        _frontPlacements.Clear(); ReleaseGestureWaiter();
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
         _usingDemo = true; _demo.Reset(); _entries.Clear(); UiStyles.Clear(_history);
@@ -184,6 +230,10 @@ public partial class BattleScreen : Control
     }
     public void ApplyProjection(UiMatchView state, UiBattleActions actions)
     {
+        StopDemoPlayback();
+        _liveInputView = null; _liveInputActions = null;
+        _frontPlacements.Clear(); ReleaseGestureWaiter();
+        if (_state?.MatchId != state.MatchId) _frontOrder.Clear();
         MulliganProjection(state.Phase);
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
@@ -193,12 +243,12 @@ public partial class BattleScreen : Control
     private void FinishMotion()
     {
         foreach (var tween in _tweens) if (GodotObject.IsInstanceValid(tween)) tween.Kill();
-        _tweens.Clear();
+        _tweens.Clear(); _handMotion.Clear();
         foreach (var ghost in _ghosts) if (GodotObject.IsInstanceValid(ghost) && !ghost.IsQueuedForDeletion()) { ghost.GetParent()?.RemoveChild(ghost); ghost.QueueFree(); }
         _ghosts.Clear(); _busy = false;
         foreach (var c in _cards.Values) { c.Position = c.RestPosition; c.Rotation = c.RestRotation; c.Scale = Vector2.One; c.Visible = true; }
     }
-    private void Render(UiMatchView state, UiBattleActions actions, bool animate)
+    private void Render(UiMatchView state, UiBattleActions actions, bool animate, string? deploymentActorUid = null)
     {
         _generation++;
         var previous = _cards.ToDictionary(p => p.Key, p => (RestPosition: p.Value.Position, p.Value.Size, RestRotation: p.Value.Rotation, p.Value.Mode, p.Value.View));
@@ -211,8 +261,7 @@ public partial class BattleScreen : Control
         _selfResource.Bind(state.SelfKredits, state.SelfMaxKredits, state.SelfPlayerName);
         _enemyResource.Bind(state.EnemyKredits, state.EnemyMaxKredits, state.EnemyPlayerName);
         _deckCount.Text = state.SelfDeckCount.ToString();
-        _endTurn.Text = state.Phase == "over" ? "对局结束" : state.ActivePlayerSide == "self" ? "结束回合" : "对手回合";
-        _endTurn.Disabled = !actions.CanEndTurn;
+        UpdateEndTurnButton();
         _result.Visible = state.Phase == "over";
         foreach (var id in Enumerable.Range(2, 23)) _menu.SetItemDisabled(_menu.GetItemIndex(id), !_usingDemo);
         if (_result.Visible)
@@ -253,9 +302,9 @@ public partial class BattleScreen : Control
         }
         _paper.FrontOwnedBySelf = state.SelfLine.Any(c => c.Zone == "frontline");
         _paper.FrontOccupied = state.SelfLine.Concat(state.EnemyLine).Any(c => c.Zone == "frontline"); _paper.QueueRedraw();
-        AddRow(state.EnemyHq, state.EnemyLine.Where(c => c.Zone != "frontline"), 82);
-        AddRow(null, state.EnemyLine.Concat(state.SelfLine).Where(c => c.Zone == "frontline"), 266);
-        AddRow(state.SelfHq, state.SelfLine.Where(c => c.Zone != "frontline"), 442);
+        AddRow(state.EnemyHq, state.EnemyLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), EnemyArea);
+        AddRow(null, OrderFront(state.EnemyLine.Concat(state.SelfLine).Where(c => c.Zone == "frontline")), FrontArea);
+        AddRow(state.SelfHq, state.SelfLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), SelfArea);
         var hand = state.SelfHand.OrderBy(c => c.SlotIndex).ToArray();
         var spacing = Math.Min(98, 590f / Math.Max(1, hand.Length - 1));
         for (var i = 0; i < hand.Length; i++)
@@ -277,6 +326,8 @@ public partial class BattleScreen : Control
             var generation = _generation;
             foreach (var (uid, card) in _cards)
             {
+                // The dedicated deployment sequence owns this card's visual until landing.
+                if (uid == deploymentActorUid) continue;
                 if (!previous.TryGetValue(uid, out var old)) continue;
                 if (old.Mode == BattleCardMode.Hand && card.Mode == BattleCardMode.Field)
                 {
@@ -296,19 +347,84 @@ public partial class BattleScreen : Control
                     var t = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
                     t.TweenProperty(card, "position", card.RestPosition, .32 * _clock.Scale);
                     t.TweenProperty(card, "rotation", card.RestRotation, .32 * _clock.Scale); _tweens.Add(t);
+                    if (card.Mode == BattleCardMode.Hand) _handMotion[card.Uid] = t;
                 }
             }
         }
         UpdateSelection();
     }
-    private void AddRow(UiCardView? hq, IEnumerable<UiCardView> units, float y)
+    /// <summary>
+    /// Draws one line of the board: the cards sit next to each other and the row as a whole is centred on
+    /// the board. Empty slots deliberately leave no hole — a row of two cards always looks like a row of
+    /// two cards, never like a card stranded at one end of a mostly empty line.
+    ///
+    /// Nothing about a card's place in the row is drawn, so a drop cannot read a slot off the picture; the
+    /// drop point is converted with <see cref="PackAnchor"/> instead. Drawing the slots out as a fixed
+    /// grid was tried and reverted: it put the two headquarters in different columns and left gaps in the
+    /// lines that read as missing cards.
+    /// </summary>
+    private void AddRow(UiCardView? hq, IReadOnlyList<UiCardView> units, Rect2 area)
     {
-        var row = units.OrderBy(c => c.SlotIndex).ToList();
-        if (hq is not null) row.Insert(hq.SlotIndex < 0 ? row.Count / 2 : Math.Clamp(hq.SlotIndex, 0, row.Count), hq);
-        var width = row.Count * 112 + Math.Max(0, row.Count - 1) * 17;
+        var row = units.ToList();
+        if (hq is not null)
+        {
+            // The headquarters is placed by its *slot*, not at its slot number read as a position in this
+            // list. Those are two different numberings — the row is drawn packed, one card per occupied
+            // slot — and inserting at the raw slot index put the headquarters after every unit as soon as
+            // one was deployed to its right. The unit was then drawn to the left of the headquarters it
+            // had just been placed to the right of. Both rows here hold only occupied slots, so the
+            // headquarters goes in front of the first card whose slot number is higher.
+            var at = row.FindIndex(c => c.SlotIndex > hq.SlotIndex);
+            row.Insert(hq.SlotIndex < 0 ? row.Count / 2 : at < 0 ? row.Count : at, hq);
+        }
+        var left = BoardSize.X / 2f - (row.Count * SlotPitch - (SlotPitch - FieldCardSize.X)) / 2f;
         for (var i = 0; i < row.Count; i++)
-            AddCard(row[i], row[i].IsHq ? BattleCardMode.Hq : BattleCardMode.Field, new(112, 150), new(640 - width / 2f + i * 129, y), 0);
+            AddCard(row[i], row[i].IsHq ? BattleCardMode.Hq : BattleCardMode.Field, FieldCardSize,
+                new(left + i * SlotPitch, area.Position.Y), 0);
     }
+
+    /// <summary>Distance between neighbouring cards: the field card's width plus a 17px gutter.</summary>
+    private static readonly float SlotPitch = FieldCardSize.X + 17;
+
+    /// <summary>
+    /// The front line in the order the player arranged it. Cards the player has not placed by hand — a
+    /// fresh line, or one that arrived from the engine — are appended in slot order, so the list converges
+    /// on something stable instead of reshuffling on every projection.
+    /// </summary>
+    private IReadOnlyList<UiCardView> OrderFront(IEnumerable<UiCardView> front)
+    {
+        var present = front.ToArray();
+        var index = present.ToDictionary(c => c.Uid, c => c);
+        _frontOrder.RemoveAll(uid => !index.ContainsKey(uid));
+        foreach (var card in present.OrderBy(c => c.SlotIndex))
+            if (!_frontOrder.Contains(card.Uid)) _frontOrder.Add(card.Uid);
+        foreach (var (uid, placement) in _frontPlacements.ToArray())
+        {
+            if (!index.ContainsKey(uid)) continue;
+            var before = placement.BeforeUid is null ? -1 : _frontOrder.IndexOf(placement.BeforeUid);
+            var after = placement.AfterUid is null ? -1 : _frontOrder.IndexOf(placement.AfterUid);
+            PlaceOnFront(uid, before >= 0 ? before : after >= 0 ? after + 1 : placement.AtEnd ? _frontOrder.Count : placement.Rank);
+            _frontPlacements.Remove(uid);
+        }
+        return _frontOrder.Select(uid => index[uid]).ToArray();
+    }
+
+    /// <summary>Records where the player put a unit on the front line, so the row is drawn that way.</summary>
+    private void PlaceOnFront(string uid, int rank)
+    {
+        _frontOrder.Remove(uid);
+        _frontOrder.Insert(Math.Clamp(rank, 0, _frontOrder.Count), uid);
+    }
+
+    /// <summary>
+    /// Whether the drawn front line is exactly the arrangement the player asked for. Its slot numbers need
+    /// not ascend — arranging the line is the whole point — but the picture and the arrangement must not
+    /// drift apart, or a drop would put a unit somewhere the board never shows again.
+    /// </summary>
+    public bool FrontOrderHonoured() => _cards.Values
+        .Where(c => c.View?.Zone == "frontline" && c.Mode != BattleCardMode.Hand)
+        .OrderBy(c => c.RestPosition.X).Select(c => c.View!.Uid)
+        .SequenceEqual(_frontOrder);
     private BattleCard AddCard(UiCardView view, BattleCardMode mode, Vector2 size, Vector2 at, float rotation)
     {
         var card = new BattleCard { Size = size, Position = at, RestPosition = at, RestRotation = rotation, Rotation = rotation };
@@ -318,30 +434,32 @@ public partial class BattleScreen : Control
     }
     public void SelectCard(string uid)
     {
-        if (_busy || !_cards.TryGetValue(uid, out var card) || card.View?.Visibility != Visibility.Full) return;
+        if (!_cards.TryGetValue(uid, out var card) || card.View?.Visibility != Visibility.Full) return;
+        if (InteractionCard(uid) is null) return;
         if (card.View.OwnerSide != "self" || card.View.IsHq) return;
-        if (card.Mode == BattleCardMode.Hand && !_actions.PlayableUids.Contains(uid))
-        { CancelSelection(); ShowDetail(card); Hint(card.View.BlockedReasons.FirstOrDefault() ?? "这张牌当前不可部署"); return; }
-        if (card.Mode == BattleCardMode.Field && !_actions.Moves.Any(m => m.Uid == uid) && !_actions.AttackPreviews.Any(p => p.AttackerUid == uid))
-        { CancelSelection(); ShowDetail(card); Hint("此单位当前没有可用行动"); return; }
+        if (card.Mode == BattleCardMode.Hand && !InteractionActions.PlayableUids.Contains(uid))
+        { CancelGesture(); ShowDetail(card); Hint(InteractionCard(uid)?.BlockedReasons.FirstOrDefault() ?? "这张牌当前不可部署"); return; }
+        if (card.Mode == BattleCardMode.Field && !InteractionActions.Moves.Any(m => m.Uid == uid) && !InteractionActions.AttackPreviews.Any(p => p.AttackerUid == uid))
+        { CancelGesture(); ShowDetail(card); Hint("此单位当前没有可用行动"); return; }
         _selected = uid; _detail.Visible = _inspectStats.Visible = false;
         Hint(card.Mode == BattleCardMode.Hand ? "拖动卡牌到我方支援线部署；右键取消" : "拖动单位到前线移动，或拖到敌方卡牌发动攻击；右键取消");
         UpdateSelection();
     }
     private void CardPressed(BattleCard card, Vector2 viewportPosition)
     {
-        if (_busy) return;
         // Actions are drag-only. A click never deploys, moves or attacks; it only selects and previews.
         if (card.View?.OwnerSide == "enemy")
         {
             ShowDetail(card);
-            if (_selected is not null && !_actions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == card.Uid))
+            if (_selected is not null && !InteractionActions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == card.Uid))
                 Hint("该目标当前不可选");
             return;
         }
         if (card.View?.IsHq == true) return;
         var position = card.Position; var rotation = card.Rotation;
-        FinishMotion(); SelectCard(card.Uid);
+        if (_pendingPresentation is null && _pendingCombat is null) FinishMotion();
+        else StopHandMotion(card.Uid);
+        SelectCard(card.Uid);
         if (_selected != card.Uid) return;
         if (card.Mode == BattleCardMode.Hand) { card.Position = position; card.Rotation = rotation; card.ZIndex = 100; }
         _pressed = card; _pressAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * viewportPosition;
@@ -349,12 +467,12 @@ public partial class BattleScreen : Control
     }
     private void CardHovered(BattleCard card, bool on)
     {
-        if (_busy) return;
         if (on)
         {
             _hovered = card;
-            if (!_busy && !_dragging && card.Mode == BattleCardMode.Hand)
+            if (!_dragging && card.Mode == BattleCardMode.Hand)
             {
+                StopHandMotion(card.Uid);
                 card.Position = card.RestPosition + new Vector2(0, -90); card.Rotation = 0; card.ZIndex = 100;
             }
             if (_selected is null && !_dragging) ShowDetail(card);
@@ -382,7 +500,7 @@ public partial class BattleScreen : Control
     public void PreviewTarget(string uid)
     {
         if (_selected is null || !_cards.TryGetValue(_selected, out var source) || !_cards.TryGetValue(uid, out var target)) return;
-        var preview = _actions.AttackPreviews.FirstOrDefault(p => p.AttackerUid == _selected && p.DefenderUid == uid);
+        var preview = InteractionActions.AttackPreviews.FirstOrDefault(p => p.AttackerUid == _selected && p.DefenderUid == uid);
         if (preview is null || target.View?.Visibility != Visibility.Full) return;
         foreach (var c in _cards.Values) { c.Targeted = c == target; c.QueueRedraw(); }
         _aim.From = source.Position + source.Size / 2; _aim.To = target.Position + target.Size / 2;
@@ -393,11 +511,12 @@ public partial class BattleScreen : Control
         foreach (var c in _cards.Values)
         {
             c.Selected = c.Uid == _selected; c.Targeted = false;
-            c.Available = _actions.PlayableUids.Contains(c.Uid) || _actions.Moves.Any(m => m.Uid == c.Uid) || _actions.AttackPreviews.Any(p => p.AttackerUid == c.Uid);
+            c.Available = (InteractionActions.HandPlayabilityKnown && InteractionActions.PlayableUids.Contains(c.Uid))
+                || InteractionActions.Moves.Any(m => m.Uid == c.Uid) || InteractionActions.AttackPreviews.Any(p => p.AttackerUid == c.Uid);
             c.QueueRedraw();
         }
-        _paper.DeployHint = _selected is not null && _actions.PlayableUids.Contains(_selected);
-        _paper.MoveHint = _selected is not null && _actions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"); _paper.QueueRedraw();
+        _paper.DeployHint = _selected is not null && InteractionActions.PlayableUids.Contains(_selected);
+        _paper.MoveHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"); _paper.QueueRedraw();
     }
     public void CancelSelection()
     {
@@ -416,45 +535,278 @@ public partial class BattleScreen : Control
         else _combat.Interrupt();
         FinishMotion(); _pressed = null; _hovered = null; _dragging = false; _selected = null;
         _aim.Visible = false; _aim.Preview = null; _detail.Visible = _inspectStats.Visible = false;
-        UpdateSelection(); _hint.Visible = false;
+        ClearSlotHints(); UpdateSelection(); _hint.Visible = false;
+        ReleaseGestureWaiter();
     }
     private void BoardInput(InputEvent e)
     {
         // Clicking the board never commits an action; dragging is the only way to deploy, move or attack.
-        if (e is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } || _pressed is not null || _busy) return;
-        if (_selected is not null) CancelSelection();
+        if (e is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } || _pressed is not null) return;
+        if (_selected is not null) CancelGesture();
     }
     private void TryDrop(Vector2 at)
     {
+        ClearSlotHints();
         if (_selected is null) return;
-        var target = _cards.Values.FirstOrDefault(c => c.View?.OwnerSide == "enemy" && new Rect2(c.Position, c.Size).HasPoint(at)
-            && _actions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == c.Uid));
-        if (target is not null && _actions.AttacksEnabled) Submit(new AttackUnit(_selected, target.Uid));
-        else if (SelfArea.HasPoint(at) && _actions.PlayableUids.Contains(_selected))
+        var pointed = _cards.Values.FirstOrDefault(c => c.View?.OwnerSide == "enemy" && new Rect2(c.Position, c.Size).HasPoint(at));
+        if (pointed is not null)
         {
-            var index = _cards.Values.Count(c => c.View?.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support") && c.Mode != BattleCardMode.Hand
-                && c.RestPosition.X + c.Size.X / 2 < at.X);
-            Submit(new PlayCard(_selected, index));
+            // Pointed at a unit: say what was pointed at and let the engine say whether it is a legal
+            // attack. Filtering the preview here instead swallowed every illegal drop whole — no reason,
+            // no feedback — which is what "nothing happens when I drag onto that one" was.
+            Submit(new CommandUnit(_selected, pointed.View!.Uid));
         }
-        else if (FrontArea.HasPoint(at) && _actions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"))
+        else if (SelfBand.HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected))
         {
-            // The front line is a shared row: the drop point picks the slot, so a unit can enter to the
-            // left or the right of whatever already stands there instead of always landing on one side.
-            var slot = _cards.Values.Count(c => c.View?.Zone == "frontline" && c.Mode != BattleCardMode.Hand
-                && c.RestPosition.X + c.Size.X / 2 < at.X);
-            Submit(new MoveUnit(_selected, "frontline", slot));
+            Submit(new PlayCard(_selected, DropSlot(at.X, InteractionView.SupportLineSlotCount,
+                _cards.Values.Where(c => c.View?.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support")), SupportOccupancy())));
         }
-        else { CancelSelection(); Hint("已取消，卡牌返回原位"); }
+        else if (FrontBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"))
+        {
+            // The front line is a box of five places the player arranges: the drop picks a position in the
+            // row as drawn, and the engine is handed a free slot that position maps onto.
+            var slot = FrontDrop(at.X, InteractionView.FrontLineSlotCount,
+                _cards.Values.Where(c => c.View?.Zone == "frontline"), out var rank, FrontCandidateSlots(_selected));
+            var row = _cards.Values.Where(c => c.View?.Zone == "frontline").OrderBy(c => c.RestPosition.X).ToArray();
+            _frontPlacements[_selected] = new(rank, row.ElementAtOrDefault(rank)?.Uid, row.ElementAtOrDefault(rank - 1)?.Uid,
+                rank == row.Length && at.X >= BoardSize.X / 2f);
+            Submit(new CommandUnit(_selected, null, slot));
+        }
+        else { CancelGesture(); Hint("已取消，卡牌返回原位"); }
     }
+
+    /// <summary>
+    /// The slot the player released over, read as an insertion rank within the line: dropping to the left
+    /// of a card means "in front of it", and to the right of the last card means "behind everything".
+    /// The rank is then spent on the line's free slots in ascending order, which is what makes the result
+    /// read back correctly — the row is drawn packed and centred, so a unit inserted ahead of the others
+    /// is drawn to their left.
+    ///
+    /// Reading the drop as an insertion rank and then spending it on the free slots was the defect, and it
+    /// was wrong in both directions. The rank counts *cards* while the answer has to be a *slot*, and once
+    /// the low slots are taken the two disagree: every drop came to rest to the right of the cards already
+    /// on the line, which is what "it always ends up on the right" was. And on an empty line there are no
+    /// cards to rank against, so the rank was always zero and the first unit was forced into one slot
+    /// wherever it was dropped.
+    ///
+    /// What the picture does carry is spacing: one slot is exactly one card pitch. So the drop is anchored
+    /// to the nearest card and stepped outwards — just past a card's right edge is that card's slot plus
+    /// one, a whole pitch clear of the leftmost card is its slot minus one — and an empty line is measured
+    /// from the board's middle, which is where the line itself is centred. Both sides of the units already
+    /// standing there are reachable, which is the whole point of dropping at one end.
+    ///
+    /// Occupied slots are stepped over, nearest first and looking towards the side the drop came from first,
+    /// so the engine is never handed a slot it cannot accept. Nothing else is validated: a real match may
+    /// ask for a slot the rules exclude, and the session refuses it rather than silently placing elsewhere.
+    /// </summary>
+    private static int DropSlot(float x, int capacity, IEnumerable<BattleCard> row, int[]? occupancy = null)
+    {
+        var cards = row.Where(c => c.Mode != BattleCardMode.Hand && c.View is not null)
+            .OrderBy(c => c.RestPosition.X).ToArray();
+        if (capacity <= 0)   // the demo fixture publishes no slot count; its rows are its slot numbers
+            return cards.Count(c => c.RestPosition.X + c.Size.X / 2 < x);
+
+        int aimed;
+        if (cards.Length == 0)
+        {
+            // Nothing to anchor to: the line is centred on the board, so the board's middle is slot
+            // (capacity - 1) / 2 and one pitch is one slot either side of it.
+            aimed = Mathf.RoundToInt((x - BoardSize.X / 2f) / SlotPitch + (capacity - 1) / 2f);
+        }
+        else
+        {
+            var left = cards.LastOrDefault(c => c.RestPosition.X + c.Size.X / 2f <= x);
+            var right = cards.FirstOrDefault(c => c.RestPosition.X + c.Size.X / 2f > x);
+            if (left is null)
+            {
+                var edge = cards[0].RestPosition.X + cards[0].Size.X / 2f;
+                aimed = cards[0].View!.SlotIndex - Mathf.CeilToInt((edge - x) / SlotPitch);
+            }
+            else if (right is null)
+            {
+                var edge = left.RestPosition.X + left.Size.X / 2f;
+                aimed = left.View!.SlotIndex + Mathf.CeilToInt((x - edge) / SlotPitch);
+            }
+            else
+            {
+                // Between two cards: interpolate by the drawn distance, since one pitch is one slot.
+                var lx = left.RestPosition.X + left.Size.X / 2f;
+                var rx = right.RestPosition.X + right.Size.X / 2f;
+                var span = right.View!.SlotIndex - left.View!.SlotIndex;
+                aimed = left.View.SlotIndex + Mathf.RoundToInt((x - lx) / (rx - lx) * span);
+            }
+        }
+
+        aimed = Math.Clamp(aimed, 0, capacity - 1);
+        var taken = (occupancy ?? cards.Select(c => c.View!.SlotIndex).ToArray()).ToHashSet();
+        if (!taken.Contains(aimed)) return aimed;
+
+        // Occupied: take the nearest free slot, looking first on the side the drop came from, so a drop to
+        // the left of the line does not silently become a unit standing on its right.
+        var preferLeft = x < BoardSize.X / 2f;
+        for (var step = 1; step <= capacity; step++)
+        {
+            var first = preferLeft ? aimed - step : aimed + step;
+            var second = preferLeft ? aimed + step : aimed - step;
+            if (first >= 0 && first < capacity && !taken.Contains(first)) return first;
+            if (second >= 0 && second < capacity && !taken.Contains(second)) return second;
+        }
+        return aimed;
+    }
+
+    /// <summary>
+    /// Where a unit dropped on the front line goes: the position the player pointed at, and a slot for the
+    /// engine. The two are separate on purpose.
+    ///
+    /// The position is read the same way as on any line — anchored to the nearest drawn card and stepped
+    /// outwards by whole card widths — but against the card's *index in the row the player arranged*, not
+    /// its engine slot. That is what lets a line with one free slot out of five still take a drop anywhere:
+    /// the row is a box, the new unit goes where it was pointed and the others give way, because <see cref="_frontOrder"/>
+    /// is what gets drawn.
+    ///
+    /// The slot handed to the engine can then be any free one. No rule on this line reads a slot index —
+    /// <c>CombatRangeJudicator</c> matches by line, not by number — so which one is immaterial, and picking
+    /// the one at the same ordinal keeps the engine's own view as close to the picture as it can be.
+    /// </summary>
+    private int[]? FrontCandidateSlots(string uid)
+    {
+        var options = InteractionActions.Moves.Where(m => m.Uid == uid && m.ToZone == "frontline").ToArray();
+        return options.Any(m => m.SlotIndex is null) ? null : options.Select(m => m.SlotIndex!.Value).ToArray();
+    }
+
+    private static int FrontDrop(float x, int capacity, IEnumerable<BattleCard> row, out int rank,
+        int[]? candidates = null)
+    {
+        var cards = row.Where(c => c.Mode != BattleCardMode.Hand && c.View is not null)
+            .OrderBy(c => c.RestPosition.X).ToArray();
+        if (capacity <= 0) { rank = cards.Length; return cards.Length; }
+
+        // Canvas/window transforms can move an exact centre by a fraction of a pixel.
+        rank = cards.Count(c => c.RestPosition.X + c.Size.X / 2f <= x + .01f);
+
+        var taken = cards.Select(c => c.View!.SlotIndex).ToHashSet();
+        var free = Enumerable.Range(0, capacity)
+            .Where(slot => candidates is null ? !taken.Contains(slot) : candidates.Contains(slot)).ToArray();
+        if (free.Length == 0) return -1;
+        // The engine owns slot legality; the pending visual rank is applied only after acceptance.
+        return free[0]; // front-line placement order is presentation; slot identity is independent
+    }
+
+    /// <summary>
+    /// Shows where a dragged card can land: every free slot of the row the pointer is over, drawn at the
+    /// place on screen that slot answers to, with the one the pointer currently names picked out.
+    ///
+    /// This is the pre-deploy state. A line is drawn packed and centred, so a card carries no slot number
+    /// and a drop at one end looks exactly like a drop in the middle right up until it is released and the
+    /// unit appears somewhere. Drawing the positions first turns the gesture into a choice rather than a
+    /// guess — and it also makes a line with one free slot left say so, instead of looking like a board
+    /// that has stopped responding.
+    /// </summary>
+    private void UpdateSlotHints(Vector2 at)
+    {
+        _slotHints.Clear(); _slotHintAim = -1;
+        _attackHints.Clear();
+        var moving = _selected is not null && FrontBand.HasPoint(at)
+            && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline");
+        var deploying = _selected is not null && SelfBand.HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected);
+        // The union the engine will actually offer: where a unit can be put, and what it can be put on.
+        // A drag shows both, because the gesture does not say which it is — the engine decides that from
+        // the drop. Showing only the empty slots left the targets the unit can strike invisible.
+        if (_selected is not null)
+            _attackHints.AddRange(InteractionActions.AttackPreviews
+                .Where(p => p.AttackerUid == _selected && _cards.ContainsKey(p.DefenderUid))
+                .Select(p => p.DefenderUid));
+        if (!moving && !deploying) { _slotLayer.QueueRedraw(); return; }
+
+        var capacity = moving ? InteractionView.FrontLineSlotCount : InteractionView.SupportLineSlotCount;
+        if (capacity <= 0) { _slotLayer.QueueRedraw(); return; }
+        var row = _cards.Values.Where(c => c.Mode != BattleCardMode.Hand && c.View is not null
+            && (moving
+                ? c.View.Zone == "frontline"
+                : c.View.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support"))).ToArray();
+        var cards = row.OrderBy(c => c.RestPosition.X).ToArray();
+        _slotHintY = (moving ? FrontArea : SelfArea).Position.Y;
+        if (moving)
+        {
+            if (FrontDrop(at.X, capacity, row, out _slotHintAim, FrontCandidateSlots(_selected!)) < 0)
+            { _slotLayer.QueueRedraw(); return; }
+            for (var rank = 0; rank <= cards.Length; rank++)
+                _slotHints.Add((rank, BoardSize.X / 2f + (rank - cards.Length / 2f) * SlotPitch));
+            _slotLayer.QueueRedraw();
+            return;
+        }
+        var taken = SupportOccupancy().ToHashSet();
+        for (var slot = 0; slot < capacity; slot++)
+            if (!taken.Contains(slot)) _slotHints.Add((slot, SlotX(slot, cards, capacity)));
+        _slotHintAim = DropSlot(at.X, capacity, row, SupportOccupancy());
+        _slotLayer.QueueRedraw();
+    }
+
+    private void DrawSlotHints()
+    {
+        // Where a strike can land, outlined in red: same gesture, other half of the candidate union.
+        foreach (var uid in _attackHints)
+        {
+            if (!_cards.TryGetValue(uid, out var target) || target.View?.OwnerSide != "enemy") continue;
+            var box = new Rect2(target.Position, target.Size);
+            _slotLayer.DrawRect(box, new Color(1f, .42f, .3f, .14f));
+            _slotLayer.DrawRect(box, new Color(1f, .48f, .36f, .9f), false, 3);
+        }
+        foreach (var (slot, x) in _slotHints)
+        {
+            var aimed = slot == _slotHintAim;
+            // One marker per free slot rather than a card-sized box per slot: several free slots can sit
+            // between two cards that are drawn next to each other, and full-width boxes would land on top of
+            // one another — the row would look like it had a single option when it had three.
+            _slotLayer.DrawRect(new Rect2(x - 3, _slotHintY, 6, FieldCardSize.Y),
+                new Color(1f, .93f, .72f, aimed ? .95f : .40f));
+            if (!aimed) continue;
+            var box = new Rect2(x - FieldCardSize.X / 2f, _slotHintY, FieldCardSize.X, FieldCardSize.Y);
+            _slotLayer.DrawRect(box, new Color(1f, .93f, .72f, .16f));
+            _slotLayer.DrawRect(box, new Color(1f, .93f, .72f, .95f), false, 3);
+        }
+    }
+
+    /// <summary>Drops the landing-position overlay; a released card has nothing left to preview.</summary>
+    private void ClearSlotHints()
+    {
+        if (_slotHints.Count == 0 && _attackHints.Count == 0 && _slotHintAim < 0) return;
+        _slotHints.Clear(); _attackHints.Clear(); _slotHintAim = -1; _slotLayer.QueueRedraw();
+    }
+
+    /// <summary>
+    /// Where a slot sits on screen, given the cards already on the line. The inverse of
+    /// <see cref="DropSlot"/> and deliberately read off the same rule: one slot is one card pitch away from
+    /// the nearest drawn card, and an empty line is measured from the board's middle. Deriving both from
+    /// one rule is what keeps the highlighted position and the slot a drop actually reaches in step — the
+    /// two drifting apart is exactly the "it landed somewhere I did not point at" complaint.
+    /// </summary>
+    private static float SlotX(int slot, BattleCard[] cards, int capacity)
+    {
+        if (cards.Length == 0)
+            return BoardSize.X / 2f + (slot - (capacity - 1) / 2f) * SlotPitch;
+        var left = cards.LastOrDefault(c => c.View!.SlotIndex < slot);
+        var right = cards.FirstOrDefault(c => c.View!.SlotIndex > slot);
+        if (left is null)
+            return cards[0].RestPosition.X + cards[0].Size.X / 2f
+                - (cards[0].View!.SlotIndex - slot) * SlotPitch;
+        if (right is null)
+            return left.RestPosition.X + left.Size.X / 2f + (slot - left.View!.SlotIndex) * SlotPitch;
+        var lx = left.RestPosition.X + left.Size.X / 2f;
+        var rx = right.RestPosition.X + right.Size.X / 2f;
+        var span = right.View!.SlotIndex - left.View!.SlotIndex;
+        return lx + (slot - left.View!.SlotIndex) / (float)span * (rx - lx);
+    }
+
     public override void _Input(InputEvent e)
     {
         if (!IsVisibleInTree() || _canvas is null) return;
         if (e is InputEventKey { Keycode: Key.Escape, Pressed: true } || e is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
-        { CancelSelection(); return; }
+        { CancelGesture(); return; }
         if (e is InputEventMouseMotion motion)
         {
             var at = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * motion.Position;
-            if (_pressed is not null && !_busy)
+            if (_pressed is not null)
             {
                 if (at.DistanceTo(_pressAt) > 8) _dragging = true;
                 _detail.Visible = _inspectStats.Visible = false;
@@ -469,13 +821,17 @@ public partial class BattleScreen : Control
             if (_selected is not null && _cards.TryGetValue(_selected, out var selected) && selected.Mode == BattleCardMode.Field)
             {
                 _aim.From = selected.Position + selected.Size / 2;
-                if (_hovered is not null && _actions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == _hovered.Uid)) PreviewTarget(_hovered.Uid);
+                if (_hovered is not null && InteractionActions.AttackPreviews.Any(p => p.AttackerUid == _selected && p.DefenderUid == _hovered.Uid)) PreviewTarget(_hovered.Uid);
                 else
                 {
                     _aim.Preview = null; _aim.To = at; _aim.Visible = true;
-                    _aim.Moving = FrontArea.HasPoint(at) && _actions.Moves.Any(m => m.Uid == _selected); _aim.QueueRedraw();
+                    _aim.Moving = FrontBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected); _aim.QueueRedraw();
                 }
             }
+            // Pre-deploy: while the gesture is still in flight nothing has been committed, so every legal
+            // landing position is shown, with the one under the pointer picked out.
+            if (_dragging) UpdateSlotHints(at);
+            else ClearSlotHints();
         }
         if (e is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false } release && _pressed is not null)
         {
@@ -484,21 +840,31 @@ public partial class BattleScreen : Control
             _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
             _pressed = null; _dragging = false;
             if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position);
+            else ClearSlotHints();
+            ReleaseGestureWaiter();
         }
     }
     private void Submit(UiCommand command)
     {
-        if (_busy) return;
-        if (!_usingDemo) { CommandRequested?.Invoke(command); CancelSelection(); Hint("等待对局状态更新"); return; }
+        if (!_usingDemo) { CancelGesture(); CommandRequested?.Invoke(command); return; }
+        CancelGesture();
+        if (command is CommandUnit gesture)
+        {
+            // The demo fixture predates the engine's single drag entry point and still wants to be told
+            // which of the two it is. A real match hands the gesture over and lets the engine dispatch.
+            command = gesture.TargetUid is { } target
+                ? new AttackUnit(gesture.Uid, target)
+                : new MoveUnit(gesture.Uid, "frontline", gesture.SlotIndex);
+        }
         if (command is AttackUnit attack)
         {
             if (_demo.TryResolveAttack(attack, out var resolution, out _) && resolution is not null)
-                _ = PresentCombatAsync(resolution, _demo.Actions);
+                QueueDemoPlayback(resolution);
             return;
         }
-        var oldCard = command switch { PlayCard p => _cards.GetValueOrDefault(p.Uid)?.View, MoveUnit m => _cards.GetValueOrDefault(m.Uid)?.View, _ => null };
-        if (!_demo.TrySubmit(command, out var message)) { CancelSelection(); Hint("当前无法执行该行动"); return; }
-        Render(_demo.State, _demo.Actions, true); Hint(message);
+        var oldCard = command switch { PlayCard p => InteractionCard(p.Uid), MoveUnit m => InteractionCard(m.Uid), _ => null };
+        if (!_demo.TrySubmit(command, out var message)) { RefuseCommand(command); Hint("当前无法执行该行动"); return; }
+        QueueDemoPlayback(); Hint(message);
         if (oldCard is not null)
         {
             _sfx.Play(command is PlayCard ? "deploy" : "move", oldCard); Record(oldCard, message);
@@ -506,13 +872,13 @@ public partial class BattleScreen : Control
     }
     private async void EndTurnClicked()
     {
-        if (!_actions.CanEndTurn || _busy) return;
+        if (!CanEndTurnNow) return;
         Submit(new EndTurn());
         if (!_usingDemo) return;
-        var generation = _generation;
+        var epoch = _demoPlaybackEpoch;
         await ToSignal(GetTree().CreateTimer(1.1), SceneTreeTimer.SignalName.Timeout);
-        if (!IsInsideTree() || generation != _generation || !_usingDemo) return;
-        _demo.BeginNextTurn(); Render(_demo.State, _demo.Actions, false); Hint("我方回合，资源已刷新");
+        if (!IsInsideTree() || epoch != _demoPlaybackEpoch || !_usingDemo) return;
+        _demo.BeginNextTurn(); QueueDemoPlayback(); Hint("我方回合，资源已刷新");
     }
     private void Hint(string text)
     {
@@ -530,7 +896,7 @@ public partial class BattleScreen : Control
     public void StartScenario(string kind, bool hq = false, string? targetType = null)
     {
         ResetDemo(); _demo.ResetCombatScenario(kind, hq, targetType); Render(_demo.State, _demo.Actions, false);
-        var attack = _actions.AttackPreviews.First(p => p.AttackerUid == "self-front" && p.DefenderUid == (hq ? "enemy-hq" : "enemy-0"));
+        var attack = InteractionActions.AttackPreviews.First(p => p.AttackerUid == "self-front" && p.DefenderUid == (hq ? "enemy-hq" : "enemy-0"));
         SelectCard(attack.AttackerUid); PreviewTarget(attack.DefenderUid);
     }
     /// <summary>
@@ -553,7 +919,7 @@ public partial class BattleScreen : Control
                 && card.Visible && card.View?.Visibility == Visibility.Full)
             .GroupBy(i => i.Before.Uid).Select(g => (Impact: g.First(), Card: _cards[g.Key])).ToArray();
         if (targets.Length == 0) { Render(after, actions, true); return; }
-        _busy = true; _endTurn.Disabled = true;
+        _busy = true; UpdateEndTurnButton();
         var generation = _generation;
         try
         {
@@ -576,9 +942,28 @@ public partial class BattleScreen : Control
         catch (Exception e) { GD.PushError(e.ToString()); if (generation == _generation) CancelSelection(); }
     }
 
+    private async Task PlayBoardImpactsAsync(IReadOnlyList<UiOrderImpact> impacts)
+    {
+        var targets = impacts.Where(i => i.Before.Visibility == Visibility.Full
+                && _cards.TryGetValue(i.Before.Uid, out var c) && c.Visible && c.View?.Visibility == Visibility.Full)
+            .Select(i => (Impact: i, Card: _cards[i.Before.Uid])).ToArray();
+        var generation = _generation;
+        foreach (var group in targets.GroupBy(t => t.Impact.Source?.Uid))
+        {
+            if (generation != _generation) return;
+            var attacker = group.Key is null ? null : _cards.GetValueOrDefault(group.Key);
+            if (attacker is { Visible: true } && group.Any(t => t.Card != attacker))
+                await _combat.PresentAssaultAsync(attacker, group.ToArray());
+            else await _combat.PresentImpactsAsync(group.ToArray());
+        }
+    }
+
     public async Task PresentCombatAsync(UiCombatResolution supplied, UiBattleActions afterActions)
     {
         if (supplied.MatchId != _state.MatchId || supplied.After.MatchId != supplied.MatchId) return;
+        var initialGeneration = _generation;
+        await WaitForGestureReleaseAsync();
+        if (!IsInsideTree() || initialGeneration != _generation || supplied.MatchId != _state.MatchId) return;
         // The presentation accepts resolved state from its adapter; it never calculates combat damage.
         CancelSelection();
         var resolution = UiSnapshots.Freeze(supplied); var actions = UiSnapshots.Freeze(afterActions);
@@ -586,7 +971,7 @@ public partial class BattleScreen : Control
             || attacker.View?.Visibility != Visibility.Full || defender.View?.Visibility != Visibility.Full
             || resolution.Attacker.Visibility != Visibility.Full || resolution.Defender.Visibility != Visibility.Full)
         { Render(resolution.After, actions, false); return; }
-        _pendingCombat = resolution; _pendingActions = actions; _busy = true; _endTurn.Disabled = true;
+        _pendingCombat = resolution; _pendingActions = actions; _busy = true; UpdateEndTurnButton();
         _selfResource.Bind(resolution.After.SelfKredits, resolution.After.SelfMaxKredits, resolution.After.SelfPlayerName);
         _enemyResource.Bind(resolution.After.EnemyKredits, resolution.After.EnemyMaxKredits, resolution.After.EnemyPlayerName);
         var generation = _generation;
@@ -595,8 +980,13 @@ public partial class BattleScreen : Control
         {
             await _combat.PlayAsync(resolution, attacker, defender);
             if (generation != _generation || _pendingCombat != resolution) return;
-            _pendingCombat = null; _pendingActions = null;
-            Render(resolution.After, actions, true);
+            await WaitForGestureReleaseAsync();
+            if (!IsInsideTree() || generation != _generation || _pendingCombat != resolution) return;
+            Render(resolution.After, actions, true); generation = _generation;
+            while (IsInsideTree() && generation == _generation && _pendingCombat == resolution
+                && _tweens.Any(t => GodotObject.IsInstanceValid(t) && t.IsRunning()))
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            if (generation == _generation && _pendingCombat == resolution) { _pendingCombat = null; _pendingActions = null; }
         }
         catch (OperationCanceledException) { /* The interrupt path already settled the authoritative after-state. */ }
         catch (Exception e)
@@ -606,7 +996,7 @@ public partial class BattleScreen : Control
         }
     }
     private void PreferencesChanged() { CancelSelection(); }
-    public override void _ExitTree() { if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); FinishMotion(); }
+    public override void _ExitTree() { StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); FinishMotion(); ReleaseGestureWaiter(); }
 
     public async Task VerifyAsync()
     {
@@ -687,26 +1077,28 @@ public partial class BattleScreen : Control
             }
         }
         ResetDemo();
-        var uid = _actions.PlayableUids.First(); var oldHandCount = _state.SelfHand.Count;
+        var uid = InteractionActions.PlayableUids.First(); var oldHandCount = _state.SelfHand.Count;
         SelectCard(uid); TryDrop(new(640, 555));
         await ToSignal(GetTree().CreateTimer(.55), SceneTreeTimer.SignalName.Timeout);
         if (_state.SelfHand.Count != oldHandCount - 1 || !_cards.TryGetValue(uid, out var deployed) || deployed.Mode != BattleCardMode.Field || _ghosts.Count != 0)
             throw new Exception("Battle deployment/identity/transition verification failed.");
-        var move = _actions.Moves.First(); SelectCard(move.Uid); TryDrop(new(640, 350));
+        var move = InteractionActions.Moves.First(); SelectCard(move.Uid); TryDrop(new(640, 350));
         await ToSignal(GetTree().CreateTimer(.4), SceneTreeTimer.SignalName.Timeout);
         if (_state.SelfLine.First(c => c.Uid == move.Uid).Zone != "frontline") throw new Exception("Battle move failed.");
         // Entering the front line must respect the side the card was dropped on, not always the right.
+        // The front line is drawn in the player's arrangement (_frontOrder), so that is what "the side" is
+        // measured against; the engine's own slot numbering is an implementation detail nothing reads.
         ResetDemo();
-        var entering = _actions.Moves.First().Uid;
+        var entering = InteractionActions.Moves.First().Uid;
         var anchor = _cards.Values.First(c => c.View?.Zone == "frontline");
         SelectCard(entering); TryDrop(new(anchor.RestPosition.X - 30, 350));
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         await ToSignal(GetTree().CreateTimer(.4), SceneTreeTimer.SignalName.Timeout);
         var entered = _state.SelfLine.First(c => c.Uid == entering);
-        var anchored = _state.SelfLine.First(c => c.Uid == anchor.Uid);
-        if (entered.Zone != "frontline" || entered.SlotIndex > anchored.SlotIndex)
+        if (entered.Zone != "frontline" || _frontOrder.IndexOf(entering) > _frontOrder.IndexOf(anchor.Uid))
             throw new Exception("Front-line entry ignored the side it was dropped on.");
         ResetDemo();
-        var preview = _actions.AttackPreviews.First(); SelectCard(preview.AttackerUid); PreviewTarget(preview.DefenderUid);
+        var preview = InteractionActions.AttackPreviews.First(); SelectCard(preview.AttackerUid); PreviewTarget(preview.DefenderUid);
         if (!_aim.Visible || _aim.Preview != preview) throw new Exception("Battle preview failed.");
         CancelSelection();
         if (_aim.Visible || _selected is not null || _cards.Values.Any(c => c.Position.DistanceTo(c.RestPosition) > .1f)) throw new Exception("Battle cancel failed.");
@@ -719,7 +1111,7 @@ public partial class BattleScreen : Control
         ResetDemo();
         foreach (var left in new[] { true, false })
         {
-            var placingUid = _actions.PlayableUids.First();
+            var placingUid = InteractionActions.PlayableUids.First();
             await DragFixtureAsync(placingUid, new(left ? 315 : 965, 549));
             var placed = _cards[placingUid]; var headquarters = _cards["self-hq"];
             if (left ? placed.RestPosition.X >= headquarters.RestPosition.X : placed.RestPosition.X <= headquarters.RestPosition.X)
@@ -728,15 +1120,15 @@ public partial class BattleScreen : Control
         }
         // Exercise the real Godot GUI press/drag/release path, not only the public selection helpers.
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-        var draggingUid = _actions.PlayableUids.First();
+        var draggingUid = InteractionActions.PlayableUids.First();
         await DragFixtureAsync(draggingUid, new(885, 549));
         if (_state.SelfHand.Any(c => c.Uid == draggingUid)) throw new Exception("Battle GUI drag deployment failed.");
         ResetDemo();
-        draggingUid = _actions.PlayableUids.First();
-        await DragFixtureAsync(draggingUid, new(1050, 500));
+        draggingUid = InteractionActions.PlayableUids.First();
+        await DragFixtureAsync(draggingUid, new(1050, 664));
         if (!_state.SelfHand.Any(c => c.Uid == draggingUid) || _selected is not null || _cards[draggingUid].Position != _cards[draggingUid].RestPosition)
             throw new Exception("Battle invalid drop did not restore the hand.");
-        var movingUid = _actions.Moves.First().Uid;
+        var movingUid = InteractionActions.Moves.First().Uid;
         // A click must never commit an action: dragging is the only gesture that moves a unit.
         SelectCard(movingUid);
         await ClickFixtureAsync(new(890, 350));
@@ -746,22 +1138,22 @@ public partial class BattleScreen : Control
         if (_state.SelfLine.First(c => c.Uid == movingUid).Zone != "frontline") throw new Exception("Battle GUI drag move failed.");
         // A board unit keeps its slot and draws an arrow; a hand card is the one that travels.
         ResetDemo();
-        var arrowUid = _actions.Moves.First().Uid;
+        var arrowUid = InteractionActions.Moves.First().Uid;
         await DragBeginFixtureAsync(arrowUid, new(880, 340));
         if (_cards[arrowUid].Position != _cards[arrowUid].RestPosition) throw new Exception("Dragging a board unit moved the card instead of drawing an arrow.");
         if (!_aim.Visible) throw new Exception("Dragging a board unit did not draw an arrow.");
         await DragEndFixtureAsync(new(880, 340));
         if (_state.SelfLine.First(c => c.Uid == arrowUid).Zone != "frontline") throw new Exception("Releasing the arrow did not move the unit.");
         ResetDemo();
-        var handUid = _actions.PlayableUids.First();
+        var handUid = InteractionActions.PlayableUids.First();
         await DragBeginFixtureAsync(handUid, new(700, 520));
         if (_cards[handUid].Position == _cards[handUid].RestPosition) throw new Exception("Dragging a hand card did not move the card.");
         await DragEndFixtureAsync(new(700, 520));
         ResetDemo();
-        SelectCard(_actions.PlayableUids.First());
+        SelectCard(InteractionActions.PlayableUids.First());
         GetViewport().PushInput(new InputEventKey { Keycode = Key.Escape, Pressed = true }, true);
         if (_selected is not null) throw new Exception("Battle escape cancellation failed.");
-        var interruptUid = _actions.PlayableUids.First(); SelectCard(interruptUid); TryDrop(new(640, 555)); CancelSelection();
+        var interruptUid = InteractionActions.PlayableUids.First(); SelectCard(interruptUid); TryDrop(new(640, 555)); CancelSelection();
         if (_ghosts.Count != 0 || !_cards[interruptUid].Visible || _cards[interruptUid].Position != _cards[interruptUid].RestPosition)
             throw new Exception("Battle transition interruption failed.");
         ResetDemo(); GD.Print("BATTLE_STAGE1_VERIFY_OK deploy move preview hidden gui-drag invalid-drop gui-click escape interrupt");
@@ -811,7 +1203,7 @@ public partial class BattleScreen : Control
     public void CapturePreview()
     {
         ResetDemo();
-        var p = _actions.AttackPreviews.FirstOrDefault(p => p.DefenderDies) ?? _actions.AttackPreviews.First();
+        var p = InteractionActions.AttackPreviews.FirstOrDefault(p => p.DefenderDies) ?? InteractionActions.AttackPreviews.First();
         SelectCard(p.AttackerUid); PreviewTarget(p.DefenderUid);
     }
     public void CaptureHandInspect()
@@ -839,13 +1231,13 @@ public partial class BattleScreen : Control
                 throw new Exception("Combat mutated old state or retained effects.");
         }
         ResetDemo();
-        var survives = _actions.AttackPreviews.First(p => !p.DefenderDies && !p.AttackerDies);
+        var survives = InteractionActions.AttackPreviews.First(p => !p.DefenderDies && !p.AttackerDies);
         _demo.TryResolveAttack(new(survives.AttackerUid, survives.DefenderUid), out var surviving, out _);
         await PresentCombatAsync(surviving!, _demo.Actions);
         if (_cards[survives.DefenderUid].View?.Health != surviving!.DefenderAfter?.Health
             || _cards[survives.AttackerUid].View?.Health != surviving.AttackerAfter?.Health) throw new Exception("Surviving damage badges did not consume supplied health.");
         ResetDemo();
-        var mutual = _actions.AttackPreviews.First(p => p.DefenderDies && p.AttackerDies);
+        var mutual = InteractionActions.AttackPreviews.First(p => p.DefenderDies && p.AttackerDies);
         _demo.TryResolveAttack(new(mutual.AttackerUid, mutual.DefenderUid), out var bothDead, out _);
         await PresentCombatAsync(bothDead!, _demo.Actions);
         if (_cards.ContainsKey(mutual.AttackerUid) || _cards.ContainsKey(mutual.DefenderUid)) throw new Exception("Mutual death projection failed.");
@@ -872,7 +1264,9 @@ public partial class BattleScreen : Control
         CommandRequested += OnCommand;
         await DragFixtureAsync("self-front", _cards["enemy-0"].RestPosition + _cards["enemy-0"].Size / 2);
         CommandRequested -= OnCommand;
-        if (sent.Count != 1 || sent[0] is not AttackUnit || _state.SelfKredits != projected.SelfKredits || !_cards.ContainsKey("enemy-0")
+        // One drag, one request — and the request states the gesture, not the decision: a unit dragged onto
+        // an enemy is a single command carrying what it was pointed at, for the engine to accept or refuse.
+        if (sent.Count != 1 || sent[0] is not CommandUnit { TargetUid: not null } || _state.SelfKredits != projected.SelfKredits || !_cards.ContainsKey("enemy-0")
             || _state.EnemyLine[0].Health != projected.EnemyLine[0].Health || _combat.IsPlaying)
             throw new Exception("Production UI executed a game rule.");
         ApplyProjection(projected with { MatchId = "unknown-kredits", EnemyKredits = null, EnemyMaxKredits = null }, new());
@@ -927,7 +1321,7 @@ public partial class BattleScreen : Control
         _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); ResetDemo();
         GD.Print("BATTLE_STAGE2_VERIFY_OK weapons=5 counter damage death mutual-death hq interrupt reset external-request unknown-kredits supplied-result reduced-motion effects=0");
     }
-    private bool MatchesProjection(UiMatchView expected) => _state.MatchId == expected.MatchId && _state.Phase == expected.Phase
+    public bool MatchesProjection(UiMatchView expected) => _state.MatchId == expected.MatchId && _state.Phase == expected.Phase
         && _state.SelfKredits == expected.SelfKredits
         && _state.SelfLine.Select(c => (c.Uid, c.Health, c.Zone)).SequenceEqual(expected.SelfLine.Select(c => (c.Uid, c.Health, c.Zone)))
         && _state.EnemyLine.Select(c => (c.Uid, c.Health, c.Zone)).SequenceEqual(expected.EnemyLine.Select(c => (c.Uid, c.Health, c.Zone)))

@@ -30,6 +30,9 @@ public sealed class BattleDemoAdapter
             SelfPlayerName = "联合指挥官", EnemyPlayerName = "德兰指挥官",
             SelfKredits = 8, SelfMaxKredits = 8, EnemyKredits = 5, EnemyMaxKredits = 7,
             SelfDeckCount = 24, EnemyDeckCount = 26, EnemyHandCount = 5, SelfHandCount = 5,
+            // The board needs its real line widths. A drop position means nothing without them: the board
+            // reads a drop as a slot index, and with a width of zero every drop resolves to "off the line".
+            FrontLineSlotCount = 5, SupportLineSlotCount = 5,
             SelfHq = Hq("self", "联合总部", "UN", 20), EnemyHq = Hq("enemy", "德兰总部", "deran", 12),
             SelfHand = Enumerable.Range(0, 5).Select(i => Unit(self[(i + 3) % self.Count], $"hand-{i}", "self", "hand", i)).ToArray(),
             SelfLine = new[] { Unit(self[0], "self-0", "self", "support", 0), Unit(self[1], "self-1", "self", "support", 1), Unit(self[2], "self-front", "self", "frontline", 0) with { Health = Math.Min(2, self[2].BaseDefense ?? 2) } },

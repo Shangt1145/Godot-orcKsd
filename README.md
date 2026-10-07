@@ -4,6 +4,8 @@
 
 Godot 4.7 .NET + C# 原型，入口为 `proto/scenes/Main.tscn`。
 
+当前交付为 **6A + 6B1**：连续操作不等待动画，动画按顺序播放；真实入口只采用经过源码声明审核的 9 种单位卡，使用 24 张验证牌组。315 张仍可在图鉴浏览，150 张仅表示结构可映射，不表示效果已实现。阶段计划、支持清单与验收见 [STAGE_6B1_ACCEPTANCE.md](docs/STAGE_6B1_ACCEPTANCE.md)。
+
 当前源码在 `H:/Working Folder/OrC-KSD.Godot`，实际构建和运行副本在 **`H:/g/kards`**。只在源码目录编辑，使用脚本同步；短路径中的 `.godot`、bin、obj 不会复制回源码。参考项目与引擎源码均保持只读。
 
 ## 启动
@@ -57,6 +59,6 @@ Godot 4.7 .NET + C# 原型，入口为 `proto/scenes/Main.tscn`。
 
 ## 契约与后续接入
 
-`proto/contracts/README.md` 是给上游的提案草稿，尚未发送。**本项目只做 UI，主引擎架构尚未完成。** UI 消费值对象；真实引擎对象、规则与 Ref 映射留在适配层。演示攻击通过独立本地夹具驱动；外部模式只发请求并消费 `UiCombatResolution` 和 `UiPresentationResolution`，不计算伤害或胜负。尚无生产引擎连接、联机、卡组合法性或存档协议；后续继续起手、选择、回合反馈及专用状态素材。
+`proto/contracts/README.md` 保留上游契约提案。基础真实对局已接入 OrC-KSD；UI 消费值对象，规则、效果执行、Ref 和引擎对象留在桥接层。默认演示攻击使用本地夹具，真实入口使用经审核支持集；效果卡、联机及存档协议仍未完成。引擎收到用户更新提醒后才拉取，当前基线见 [ENGINE_INTEGRATION_BASELINE.md](docs/ENGINE_INTEGRATION_BASELINE.md)。
 
 引擎状态读面、可见性与历史值投影确认后，再用真实适配器替换 mock。不能将当前事件段当作存档，也不能从日志活引用延迟推断当时的数值。

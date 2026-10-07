@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using Kards.Ui.Core;
 using Kards.Ui.Contracts;
 
@@ -23,6 +23,8 @@ public partial class Main : Control
     private string _active = "battle";
     private UiMatchView? _match;
     private OrcMatchRunner? _runner;
+    private PresentationPlayer? _presentations;
+
     public override void _Ready()
     {
         Theme = UiStyles.CreateTheme();
@@ -82,7 +84,11 @@ public partial class Main : Control
         _battle.Initialize(_catalog, _textures, _clock, sfx);
         _battle.CommandRequested += command =>
         {
-            if (_runner?.IsRunning == true) _ = _runner.SubmitAsync(command);
+            if (_runner is { IsRunning: true } runner)
+            {
+                _ = runner.SubmitAsync(command);
+                if (runner.CurrentView is { } view) _battle.UpdateInputProjection(view, runner.CurrentActions);
+            }
             CommandRequested?.Invoke(command);
         };
         _battle.RealMatchRequested += () => _ = StartRealMatchAsync();
@@ -122,51 +128,115 @@ public partial class Main : Control
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--verify-ui"))
             CallDeferred(MethodName.VerifyUi);
+        else if (args.Contains("--verify-card-pool"))
+            CallDeferred(MethodName.VerifyCardPool);
+        else if (args.Contains("--verify-deployment"))
+            CallDeferred(MethodName.VerifyDeployment);
         else if (args.Contains("--capture-slam"))
             CallDeferred(MethodName.CaptureSlam);
         else if (args.Contains("--capture-p11"))
             CallDeferred(MethodName.CaptureP11);
         else if (args.Contains("--capture-ui"))
             CallDeferred(MethodName.CaptureUi);
+        else if (args.Contains("--capture-real"))
+            CallDeferred(MethodName.CaptureReal);
+        else if (args.Contains("--capture-placement"))
+            CallDeferred(MethodName.CapturePlacement);
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>
-    public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool hotseat = false, int? deckSeed = null)
+    public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool hotseat = false,
+        int? deckSeed = null, bool demoOpeningHand = false, bool probe = false)
     {
-        if (_runner is not null) { _runner.Stop(); _runner = null; }
+        StopRealMatch();
         var runner = new OrcMatchRunner
         {
             InteractiveMulligan = interactiveMulligan,
             ArtLookup = id => _artById.GetValueOrDefault(id, ""),
             // Deal from the shipped catalog so a real match uses real cards; the runner falls back
             // to its probe card when the catalog is missing, which keeps the verify paths working.
-            CatalogCards = _catalog.Cards,
+            CatalogCards = probe ? null : _catalog.Cards,
+            CatalogSourceDirectory = ProjectSettings.GlobalizePath("res://proto/data/nations"),
             Hotseat = hotseat,
             DeckSeed = deckSeed,
+            // Pinning the hand is a demonstration aid, not the default: the verify and capture paths
+            // need the engine's own deal, so they leave this off.
+            OpeningHand = demoOpeningHand ? new[] { "USG/units/_4", "av76/units/13", "deran/units/_6q", "av76/units/18" } : null,
         };
-        runner.ProjectionReady += (view, actions) => _battle.ApplyProjection(view, actions);
-        runner.MulliganRequested += () => _battle.ShowMulliganPanel(runner.CurrentView);
-        runner.PresentationReady += (resolution, actions) => _ = _battle.PresentSequenceAsync(resolution, actions);
-        var matchId = runner.MatchId;
-        runner.CombatReady += (impacts, after, actions) => _ = _battle.PresentBoardImpactsAsync(matchId, impacts, after, actions);
-        runner.ErrorRaised += message => GD.PushError("[engine] " + message);
-        runner.HintRequested += message => _battle.ShowHint(message);
-        _runner = runner;
-        await runner.StartAsync();
+        BindRunner(runner);
+        try { await runner.StartAsync(); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception error)
+        {
+            if (_runner != runner) return;
+            StopRealMatch(); _battle.ResetDemo();
+            _battle.ShowHint($"真实对局未启动：{error.Message}"); GD.PushError(error.ToString());
+            return;
+        }
+        if (_runner != runner || !IsInsideTree()) return;
+        if (runner.CardPoolReport is { } report)
+            _battle.ShowHint($"审核支持集 {report.Verified} 种卡 · 验证牌组 24 张");
         _battle.ShowHotseatControls(hotseat, runner.ActiveSeat,
             () => runner.SwitchSeat(),
             () => runner.ActiveSeatOnTurn);
     }
 
-    public override void _Process(double delta) => _runner?.Pump();
+    private void BindRunner(OrcMatchRunner runner)
+    {
+        _runner = runner;
+        runner.ProjectionReady += (view, actions) => ApplyRunnerProjection(runner, view, actions);
+        runner.MulliganRequested += () => { if (_runner == runner) _battle.ShowMulliganPanel(runner.CurrentView); };
+        runner.PresentationReady += (resolution, actions) =>
+        {
+            if (_runner != runner) return;
+            if (runner.CurrentView is { } view) _battle.UpdateInputProjection(view, runner.CurrentActions);
+            _presentations?.Enqueue(resolution, actions);
+        };
+        runner.CommandRefused += command => { if (_runner == runner) _battle.RefuseCommand(command); };
+        runner.ErrorRaised += message => { if (_runner == runner) GD.PushError("[engine] " + message); };
+        runner.HintRequested += message => { if (_runner == runner) _battle.ShowHint(message); };
+    }
+
+    private void ApplyRunnerProjection(OrcMatchRunner runner, UiMatchView view, UiBattleActions actions)
+    {
+        if (_runner != runner) return;
+        _presentations?.Dispose();
+        _battle.ApplyProjection(view, actions);
+        _battle.UpdateInputProjection(view, actions);
+        _presentations = new PresentationPlayer(runner.MatchId, (resolution, available, ct) =>
+        {
+            ct.ThrowIfCancellationRequested();
+            return _runner == runner ? _battle.PresentSequenceAsync(resolution, available) : Task.CompletedTask;
+        });
+        _presentations.Failed += e => GD.PushError($"[presentation] {e}");
+    }
+
+    public override void _Process(double delta)
+    {
+        var runner = _runner;
+        runner?.Pump();
+        if (_runner == runner && runner?.CurrentView is { } view)
+            _battle.UpdateInputProjection(view, runner.CurrentActions);
+    }
+
+    private void StopRealMatch()
+    {
+        var runner = _runner;
+        _runner = null;
+        _presentations?.Dispose();
+        _presentations = null;
+        runner?.Stop();
+        if (GodotObject.IsInstanceValid(_battle)) _battle.CancelSelection();
+    }
+
+    public override void _ExitTree() => StopRealMatch();
 
     private async Task VerifyBridgeAsync()
     {
         Show("battle");
-        // Seed 2 is known to deal a 1-cost unit, so the deployment choreography below has something legal
-        // to play. With the shipped pool most hands hold nothing affordable on turn one, and this
-        // verify must not depend on luck.
-        await StartRealMatchAsync(interactiveMulligan: false, deckSeed: 2);
+        // Keep the generic engine lifecycle probe independent of the reviewed catalog's costs.
+        // VerifyCardPoolStageAsync separately exercises the production catalog and mouse path.
+        await StartRealMatchAsync(interactiveMulligan: false, deckSeed: 2, probe: true);
         var view = _runner?.CurrentView ?? throw new Exception("Real match produced no projection.");
         if (view.Phase != "play") throw new Exception($"Real match did not reach play: {view.Phase}.");
         if (view.SelfHand.Count != 4) throw new Exception($"Opening hand mismatch: {view.SelfHand.Count}.");
@@ -179,6 +249,9 @@ public partial class Main : Control
         var settled = _runner!.CurrentView!;
         if (settled.MatchId != view.MatchId || settled.Phase != "play" || settled.SelfHand.Count != view.SelfHand.Count)
             throw new Exception("Pump mutated the authoritative projection.");
+        await AwaitIdleAsync(30);
+        if (!_battle.MatchesProjection(settled))
+            throw new Exception("Opening presentation restored a stale mulligan board.");
 
         // Playable loop: submit a real play and a real end-turn; the engine decides both outcomes.
         var actions = _runner!.CurrentActions;
@@ -234,25 +307,41 @@ public partial class Main : Control
                 throw new Exception("Two deployments landed on the same slot.");
         }
 
-        // Combat choreography: advance and strike the enemy HQ; the engine decides the outcome.
+        // Real movement: advance a unit to a front slot the board says is free, and require it to land
+        // there. The slot is chosen from the projection, not assumed, because the front line is shared.
+        await _runner!.SubmitAsync(new EndTurn());
+        await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+        var mover = _runner!.CurrentActions.Moves.Select(m => m.Uid).FirstOrDefault();
+        if (mover is not null)
+        {
+            var board = _runner!.CurrentView!;
+            var occupied = board.SelfLine.Concat(board.EnemyLine)
+                .Where(c => c.Zone == "frontline").Select(c => c.SlotIndex).ToHashSet();
+            var free = Enumerable.Range(0, board.FrontLineSlotCount).Where(i => !occupied.Contains(i)).ToArray();
+            if (free.Length > 0)
+            {
+                var wanted = free[0];
+                await _runner!.SubmitAsync(new MoveUnit(mover, "frontline", wanted));
+                await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+                var moved = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => c.Uid == mover);
+                if (moved is null || moved.Zone != "frontline" || moved.SlotIndex != wanted)
+                    throw new Exception($"Real move asked for front slot {wanted} but landed on " +
+                        $"{(moved is null ? "<gone>" : $"{moved.Zone}[{moved.SlotIndex}]")}.");
+            }
+        }
+
+        // Combat choreography: strike the enemy HQ; the engine decides the outcome. The striker is
+        // taken from the engine's own availability rather than remembered from earlier in the script:
+        // the opponent attacks units too, so a unit named three turns ago may no longer be alive or
+        // may have already acted.
         var combatSeen = false;
         _runner!.CombatReady += (impacts, _, _) => combatSeen |= impacts.Count > 0;
         await _runner!.SubmitAsync(new EndTurn());
         await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
-        var attacker = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => !c.IsHq && c.Zone == "support")
-            ?? throw new Exception("No unit on the support line to advance.");
-        await _runner!.SubmitAsync(new MoveUnit(attacker.Uid, "frontline", 2));
-        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
-        var advanced = _runner!.CurrentView!.SelfLine.First(c => c.Uid == attacker.Uid);
-        if (advanced.Zone != "frontline" || advanced.SlotIndex != 2)
-            throw new Exception("Real move did not reach the requested front-line slot.");
-        // A unit that moved cannot attack the same turn (engine rule); wait for its next turn.
-        await _runner!.SubmitAsync(new EndTurn());
-        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
-        await _runner!.SubmitAsync(new EndTurn());
-        await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
         var hqUid = _runner!.CurrentView!.EnemyHq!.Uid;
-        await _runner!.SubmitAsync(new AttackUnit(attacker.Uid, hqUid));
+        var strike = _runner!.CurrentActions.AttackPreviews.FirstOrDefault(p => p.DefenderUid == hqUid)
+            ?? throw new Exception("No unit can attack the enemy headquarters.");
+        await _runner!.SubmitAsync(new AttackUnit(strike.AttackerUid, hqUid));
         await ToSignal(GetTree().CreateTimer(2.4), SceneTreeTimer.SignalName.Timeout);
         if (!combatSeen) throw new Exception("Attack produced no impact presentation.");
         var hqHealth = _runner!.CurrentView!.EnemyHq!.Health;
@@ -289,7 +378,7 @@ public partial class Main : Control
         // marked uid cannot be asserted absent; the kept cards and the two counts are the invariant.
         var uids = after.SelfHand.Select(c => c.Uid).ToHashSet();
         if (!uids.IsSupersetOf(kept)) throw new Exception("Mulligan lost a kept card.");
-        _runner!.Stop(); _runner = null;
+        StopRealMatch();
         _battle.ResetDemo();
         GD.Print("MULLIGAN_VERIFY_OK panel marked=1 replaced keep-3 reach-play hand-size-stable");
     }
@@ -304,7 +393,7 @@ public partial class Main : Control
         if (!_battle.MulliganPanelVisible)
         {
             GD.PushError("[capture] mulligan panel never opened");
-            _runner?.Stop(); _runner = null;
+            StopRealMatch();
             _battle.ResetDemo();
             return;
         }
@@ -315,7 +404,7 @@ public partial class Main : Control
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
         GetViewport().GetTexture().GetImage().SavePng(dir + "/battle-stage5-mulligan-marked.png");
         _battle.ConfirmMulligan();
-        _runner!.Stop(); _runner = null;
+        StopRealMatch();
         _battle.ResetDemo();
         Show("battle");
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -415,6 +504,10 @@ public partial class Main : Control
     {
         try
         {
+            if (typeof(Main).Assembly.GetReferencedAssemblies().Any(a => a.Name == "Orc"
+                || a.Name?.StartsWith("Orc.", StringComparison.Ordinal) == true))
+                throw new Exception("UI assembly directly references engine types.");
+            GD.Print("UI_BOUNDARY_VERIFY_OK");
             foreach (var id in _screens.Keys)
             {
                 Show(id);
@@ -457,10 +550,15 @@ public partial class Main : Control
             Show("battle");
             await _battle.VerifyAsync();
             await _battle.VerifyCombatAsync();
+            await _battle.VerifyFrontPlacementAsync();
             await _battle.VerifyPresentationAsync();
             await _battle.VerifyFeedbackAsync();
+            await _battle.VerifyDeploymentVisualsAsync();
+            await _battle.VerifyDemoNonBlockingAsync();
             await VerifyMulliganPanelAsync();
             await VerifyBridgeAsync();
+            await VerifyCardPoolStageAsync();
+            await VerifyNonBlockingInputAsync();
             OpenGallery();
             // Restoring the shell changes the container's transform; measure actors only after layout settles.
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -548,5 +646,374 @@ public partial class Main : Control
         GetViewport().GetTexture().GetImage().SavePng(dir + "/animation-gallery.png");
         GD.Print("UI_CAPTURE_OK");
         GetTree().Quit();
+    }
+
+    // ---------- real-machine audit (--capture-real) ----------
+    //
+    // Why this exists: --verify-ui answers the engine by calling OrcMatchRunner.SubmitAsync directly.
+    // That skips BattleScreen.TryDrop, SlotAfterDrop and OrcMatchSession.AnswerParked — exactly the
+    // layer the player touches. The suite stayed green while the board was unusable, so the audit
+    // below drives the shipped match through the UI's own input pipeline and saves a frame per action.
+
+    private readonly List<string> _audit = new();
+    private readonly List<int> _deploySlots = new(), _moveSlots = new();
+
+    private void Audit(string line)
+    {
+        _audit.Add(line);
+        GD.Print("[audit] " + line);
+        try
+        {
+            var dir = ProjectSettings.GlobalizePath("res://artifacts/real-audit");
+            System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.WriteAllLines(dir + "/audit.txt", _audit);
+        }
+        catch { /* the log is a convenience; never let it abort the run */ }
+    }
+
+    private static string Short(string uid) => uid.Length <= 8 ? uid : uid[..8];
+
+    /// <summary>Waits until no presentation owns the board, or the deadline passes.</summary>
+    private async Task<bool> AwaitIdleAsync(double seconds)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!_battle.IsBusy && _presentations?.IsBusy != true) return true;
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
+        return false;
+    }
+
+    private async Task<bool> AwaitBoardAsync(Func<bool> ready, double seconds)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (ready()) return true;
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
+        return false;
+    }
+
+    private async Task AwaitSelfTurnAsync(double seconds) => await AwaitBoardAsync(
+        () => _runner?.CurrentView is { Phase: "play", ActivePlayerSide: "self" }
+            && !_battle.IsBusy && _presentations?.IsBusy != true, seconds);
+
+    private async Task ShotAsync(string dir, string name)
+    {
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        GetViewport().GetTexture().GetImage().SavePng($"{dir}/{name}.png");
+    }
+
+    private async void CapturePlacement()
+    {
+        try
+        {
+            StopRealMatch(); Show("battle");
+            var size = GetWindow().Size;
+            var dir = ProjectSettings.GlobalizePath($"res://artifacts/stage6a-placement-{size.X}x{size.Y}");
+            System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.WriteAllText(dir + "/.gdignore", "");
+            await _battle.VerifyFrontPlacementAsync(name => ShotAsync(dir, name));
+            GD.Print("PLACEMENT_CAPTURE_OK"); GetTree().Quit();
+        }
+        catch (Exception error) { GD.PushError(error.ToString()); GetTree().Quit(1); }
+    }
+
+    /// <summary>Runs the shipped real match and drives it with simulated mouse input, frame by frame.</summary>
+    private async void CaptureReal()
+    {
+        var dir = ProjectSettings.GlobalizePath("res://artifacts/real-audit");
+        try
+        {
+            System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.WriteAllText(dir + "/.gdignore", "");
+            Show("battle");
+            await StartRealMatchAsync(interactiveMulligan: false, deckSeed: 2, demoOpeningHand: true);
+            if (!await AwaitBoardAsync(() => _runner?.CurrentView?.Phase == "play", 30))
+                throw new Exception("Real match never reached play.");
+            await AwaitIdleAsync(6);
+            // Engine refusals only ever reached the screen as a transient hint; log them, because a drop
+            // that is refused and a drop that was never recognised look identical in the frame.
+            _runner!.HintRequested += message => Audit("hint=" + message);
+
+            var opening = _runner!.CurrentView!;
+            Audit("coords " + _battle.CoordinateReport());
+            Audit($"opening turn={opening.Turn} active={opening.ActivePlayerSide} kredits={opening.SelfKredits}/{opening.SelfMaxKredits} " +
+                  $"hand={opening.SelfHand.Count} supportSlots={opening.SupportLineSlotCount} frontSlots={opening.FrontLineSlotCount}");
+            foreach (var c in opening.SelfHand.OrderBy(c => c.SlotIndex))
+                Audit($"  hand {c.Definition.Name} uid={Short(c.Uid)} cost={c.Definition.Cost} def={c.Definition.BaseDefense} " +
+                      $"playable={_runner.CurrentActions.PlayableUids.Contains(c.Uid)}");
+            Audit($"  board self={opening.SelfLine.Count} enemy={opening.EnemyLine.Count} " +
+                  $"playable={_runner.CurrentActions.PlayableUids.Count} moves={_runner.CurrentActions.Moves.Count} " +
+                  $"attackPreviews={_runner.CurrentActions.AttackPreviews.Count} canEndTurn={_runner.CurrentActions.CanEndTurn}");
+            await ShotAsync(dir, "real-01-opening");
+            CheckPaint("opening");
+
+            // Gestures, not abstract ranks: a player drops at the end of a line or next to a named card.
+            // Testing what the hand actually does is the only way to catch a mapping that is merely
+            // self-consistent.
+            var plan = new (string Kind, string Anchor, string Label)[]
+            {
+                ("idle", "", "let-opponent-advance-1"), ("idle", "", "let-opponent-advance-2"),
+                ("deploy", "left", "left-of-hq"), ("deploy", "after-hq", "right-of-hq"),
+                // Strikes between deploying and advancing, for two reasons at once. The opponent has had
+                // turns to come up, so there is something to strike; and a unit that has moved cannot
+                // attack again, so striking before anything advances measures the chain rather than
+                // the engine's action gate.
+                ("attack", "unit", "unit"), ("attack", "hq", "hq"),
+                ("deploy", "right", "row-end"),
+                ("move", "middle", "row-middle"),
+                ("move", "left", "left-of-it"), ("move", "right", "right-of-it"),
+            };
+            var index = 0;
+            for (var turn = 0; turn < 16 && index < plan.Length; turn++)
+            {
+                if (_runner?.CurrentView is not { Phase: "play" } before) break;
+                var (kind, anchor, label) = plan[index];
+                var handled = kind switch
+                {
+                    "deploy" => await DeployAuditAsync(dir, anchor, label),
+                    "move" => await MoveAuditAsync(dir, anchor, label),
+                    "attack" => await AttackAuditAsync(dir, anchor == "hq"),
+                    "pack" => await PackFrontAsync(dir, label),
+                    "idle" => true,   // end the turn and let the opponent build up, nothing to measure
+                    _ => false,
+                };
+                Audit($"-- turn {before.Turn} step={kind}[{label}] handled={handled} " +
+                      $"kredits={_runner.CurrentView!.SelfKredits} enemyHq={_runner.CurrentView.EnemyHq?.Health} " +
+                      $"selfUnits={_runner.CurrentView.SelfLine.Count(c => !c.IsHq)}");
+                if (handled) index++;
+                if (_runner.CurrentView.Phase != "play") break;
+                await _battle.ClickAsync(_battle.EndTurnPoint());
+                Audit($"endturn click channels={_battle.ChannelTrace}");
+                await AwaitIdleAsync(12);
+                await AwaitSelfTurnAsync(40);
+            }
+
+            // Slot identity alone cannot prove visual placement. Slots can also be reused after death.
+            Audit($"ENGINE_SLOTS deploy=[{string.Join(',', _deploySlots)}] move=[{string.Join(',', _moveSlots)}]");
+            Audit($"PAINT checked={_paintChecked} broken={_paintBroken}");
+            Audit($"REALCAPTURE end steps={index}/{plan.Length} enemyHq={_runner?.CurrentView?.EnemyHq?.Health} " +
+                  $"selfHq={_runner?.CurrentView?.SelfHq?.Health} phase={_runner?.CurrentView?.Phase}");
+            GD.Print("REALCAPTURE_DONE");
+        }
+        catch (Exception e) { GD.PushError("[capture-real] " + e); }
+        finally { GetTree().Quit(); }
+    }
+
+    /// <summary>The drop point for a named gesture, in board coordinates.</summary>
+    private Vector2 DropFor(bool front, string anchor) => anchor switch
+    {
+        "left" => _battle.DropAtRowEdge(front, right: false),
+        "middle" => _battle.DropAtRowMiddle(front),
+        "right" => _battle.DropAtRowEdge(front, right: true),
+        "after-hq" => _battle.DropRightOf(_battle.SelfHqUid()),
+        "after-self" => _battle.DropRightOf(_battle.SelfFrontUid()),
+        _ => _battle.DropAtRowEdge(front, right: true),
+    };
+
+    /// <summary>Drops the cheapest affordable unit card at the named place in the support row.</summary>
+    private async Task<bool> DeployAuditAsync(string dir, string anchor, string label, bool record = true)
+    {
+        var view = _runner!.CurrentView!;
+        // Units only: the action projection lists every hand card as attemptable, so picking the cheapest
+        // "playable" one can pick an order card — which the bridge then refuses as an unknown unit, and
+        // the audit would sit on the same step for ever.
+        var card = view.SelfHand
+            .Where(c => c.Definition.CardType == "unit" && _runner.CurrentActions.PlayableUids.Contains(c.Uid))
+            .OrderBy(c => c.Definition.Cost ?? 99).FirstOrDefault();
+        if (card is null)
+        {
+            Audit($"deploy[{label}] SKIPPED kredits={view.SelfKredits} hand=[" +
+                  string.Join(' ', view.SelfHand.Select(c => $"{c.Definition.Name}({c.Definition.CardType},{c.Definition.Cost})")) + "]");
+            return false;
+        }
+        var drop = DropFor(front: false, anchor);
+        Audit($"deploy[{label}] anchor={anchor} drop=({drop.X:0},{drop.Y:0}) {_battle.AreaHit(drop)} " +
+              $"card={card.Definition.Name} cost={card.Definition.Cost} row=[{_battle.RowLayout(front: false)}]");
+        Audit($"deploy[{label}] trace {_battle.DropTrace(front: false, drop.X)}");
+        await _battle.DragAsync(card.Uid, drop, async () =>
+        {
+            Audit($"deploy[{label}] overlay {_battle.SlotHintReport()}");
+            await ShotAsync(dir, $"real-hold-deploy-{label}");
+        });
+        Audit($"deploy[{label}] drag={_battle.ChannelTrace} state=[{_battle.Interaction}]");
+        await AwaitIdleAsync(8);
+        var landed = await AwaitLandedAsync(card.Uid, 30);
+        var after = _runner.CurrentView!;
+        Audit($"deploy[{label}] landed={(landed is null ? "<still in hand>" : $"{landed.Zone}[{landed.SlotIndex}]")} " +
+              $"want={Short(card.Uid)} line=[{string.Join(',', after.SelfLine.Select(c => Short(c.Uid)))}] " +
+              $"row=[{_battle.RowLayout(front: false)}]");
+        if (record && landed is not null) _deploySlots.Add(landed.SlotIndex);
+        await ShotAsync(dir, $"real-deploy-{label}");
+        CheckPaint($"deploy-{label}");
+        return landed is not null;
+    }
+
+    /// <summary>Drags a movable unit to the named place in the shared front line.</summary>
+    private async Task<bool> MoveAuditAsync(string dir, string anchor, string label, bool record = true)
+    {
+        var view = _runner!.CurrentView!;
+        var move = _runner.CurrentActions.Moves.FirstOrDefault();
+        if (move is null)
+        {
+            Audit($"move[{label}] NOT_TESTED (the engine offers no movement this turn)");
+            return false;
+        }
+        var from = view.SelfLine.FirstOrDefault(c => c.Uid == move.Uid);
+        var drop = DropFor(front: true, anchor);
+        var expectedPicture = _battle.RenderedFrontUids().Where(uid => uid != move.Uid).ToList();
+        var expectedRank = expectedPicture.Count(uid => _battle.CardPoint(uid).X <= drop.X + .01f);
+        expectedPicture.Insert(expectedRank, move.Uid);
+        Audit($"move[{label}] anchor={anchor} drop=({drop.X:0},{drop.Y:0}) {_battle.AreaHit(drop)} " +
+              $"unit={from?.Definition.Name} from={from?.Zone}[{from?.SlotIndex}] row=[{_battle.RowLayout(front: true)}]");
+        Audit($"move[{label}] trace {_battle.DropTrace(front: true, drop.X)}");
+        await _battle.DragAsync(move.Uid, drop, async () =>
+        {
+            Audit($"move[{label}] overlay {_battle.SlotHintReport()}");
+            await ShotAsync(dir, $"real-hold-{label}");
+        });
+        Audit($"move[{label}] drag={_battle.ChannelTrace} state=[{_battle.Interaction}]");
+        await AwaitIdleAsync(10);
+        // A move is only done when the unit reports the front line; finding it on the board at all proves
+        // nothing, because a unit waiting on the support line is on the board too.
+        var landed = await AwaitLandedAsync(move.Uid, 30, "frontline")
+            ?? _runner.CurrentView!.SelfLine.FirstOrDefault(c => c.Uid == move.Uid);
+        Audit($"move[{label}] landed={landed?.Zone}[{landed?.SlotIndex}] row=[{_battle.RowLayout(front: true)}]");
+        if (record && landed?.Zone == "frontline") _moveSlots.Add(landed.SlotIndex);
+        await ShotAsync(dir, $"real-move-{label}");
+        CheckPaint($"move-{label}");
+        var actualPicture = _battle.RenderedFrontUids();
+        var pictureHonoured = actualPicture.SequenceEqual(expectedPicture);
+        Audit($"VISUAL_MOVE[{label}] expected=[{string.Join(',', expectedPicture)}] actual=[{string.Join(',', actualPicture)}] honoured={pictureHonoured}");
+        return landed?.Zone == "frontline" && pictureHonoured;
+    }
+
+    /// <summary>
+    /// Fills the front line as far as one turn allows: deploy, advance, repeat, until four units stand on
+    /// it or the hand runs out. Done inside a single turn on purpose — spread over turns the opponent gets
+    /// turns in between and kills the units off before the line is ever crowded, which is why an earlier
+    /// attempt to reach this state spread over turns never reached it.
+    /// </summary>
+    private async Task<bool> PackFrontAsync(string dir, string label)
+    {
+        var any = false;
+        for (var i = 0; i < 4; i++)
+        {
+            if (FrontCount() >= 4) break;
+            if (!await DeployAuditAsync(dir, "middle", $"{label}-deploy{i}", record: false)) break;
+            await AwaitIdleAsync(6);
+            if (!await MoveAuditAsync(dir, "right", $"{label}-move{i}", record: false)) break;
+            await AwaitIdleAsync(8);
+            any = true;
+        }
+        Audit($"pack[{label}] front=[{string.Join(' ', _runner!.CurrentView!.EnemyLine.Concat(_runner.CurrentView.SelfLine)
+            .Where(c => c.Zone == "frontline").Select(c => $"{c.OwnerSide}:{c.Definition.Name}[{c.SlotIndex}]"))}] " +
+            $"slots={_runner.CurrentView.FrontLineSlotCount}");
+        return any;
+    }
+
+    private int FrontCount() => _runner?.CurrentView is not { } v ? 0 : v.EnemyLine.Count(c => c.Zone == "frontline")
+        + v.SelfLine.Count(c => c.Zone == "frontline");
+
+    /// <summary>
+    /// Waits until a card shows up on the board, or the frame budget runs out.
+    ///
+    /// A fixed number of frames is not enough: a submission is asynchronous (the command goes out to the
+    /// engine and the projection comes back on a later frame), so reading the board a set number of frames
+    /// after the drop can still see the state from before it. That misreads a successful deploy as "still
+    /// in hand", and the audit then re-deploys the same card until the line is full.
+    /// </summary>
+    private async Task<UiCardView?> AwaitLandedAsync(string uid, int frames, string? zone = null)
+    {
+        for (var i = 0; i < frames; i++)
+        {
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            var found = _runner?.CurrentView?.SelfLine.FirstOrDefault(c => c.Uid == uid);
+            if (found is not null && (zone is null || found.Zone == zone)) return found;
+        }
+        return null;
+    }
+
+    private int _paintChecked, _paintBroken;
+
+    /// <summary>
+    /// Checks that every drawn line is painted in ascending slot order.
+    ///
+    /// A packed row has no visible slot positions, so this ordering is the only thing tying a card's place
+    /// on screen to the slot the engine holds it in. The audit reading the right slot number back proves
+    /// nothing about it: a unit can land on slot 3 and still be painted to the left of a headquarters on
+    /// slot 2 — which is what "it only ever deploys to the left" turned out to be.
+    /// </summary>
+    private void CheckPaint(string label)
+    {
+        var self = _battle.RowSlotOrder(front: false);
+        var front = _battle.RowSlotOrder(front: true);
+        _paintChecked++;
+        // Two different questions. The support line is anchored — the headquarters holds its slot — so its
+        // drawing order and its slot order have to agree. The front line is the player's arrangement, and
+        // its numbers deliberately do not ascend. Check membership here; MoveAuditAsync checks the
+        // gesture's expected picture order independently of the layout's private ordering list.
+        var expectedFront = _runner?.CurrentView?.SelfLine.Concat(_runner.CurrentView.EnemyLine)
+            .Where(c => c.Zone == "frontline").Select(c => c.Uid).ToHashSet() ?? new();
+        if (Ascending(self) && expectedFront.SetEquals(_battle.RenderedFrontUids())) return;
+        _paintBroken++;
+        Audit($"PAINT[{label}] BROKEN self=[{string.Join(',', self)}] front=[{string.Join(',', front)}] " +
+              $"layout self=[{_battle.RowLayout(front: false)}] front=[{_battle.RowLayout(front: true)}]");
+
+        static bool Ascending(int[] slots)
+        {
+            for (var i = 1; i < slots.Length; i++) if (slots[i] <= slots[i - 1]) return false;
+            return true;
+        }
+    }
+
+    /// <summary>Drags an attacker onto the target the engine offers, and reports both health bars.</summary>
+    private async Task<bool> AttackAuditAsync(string dir, bool preferHq)
+    {
+        var view = _runner!.CurrentView!;
+        var previews = _runner.CurrentActions.AttackPreviews;
+        if (previews.Count == 0)
+        {
+            Audit($"attack[{(preferHq ? "hq" : "unit")}] SKIPPED (nothing in range this turn — reported, not retried)");
+            return false;
+        }
+        var hq = view.EnemyHq;
+        var hqPreview = hq is null ? null : previews.FirstOrDefault(p => p.DefenderUid == hq.Uid);
+        var unitTarget = view.EnemyLine.FirstOrDefault(u => previews.Any(p => p.DefenderUid == u.Uid));
+        var wantsHq = preferHq && hqPreview is not null;
+        if (!wantsHq && unitTarget is null) { Audit("attack[unit] NOT_TESTED (no unit target offered)"); return false; }
+        if (wantsHq && hq is null) return false;
+
+        var targetUid = wantsHq ? hq!.Uid : unitTarget!.Uid;
+        // A unit that has already moved this turn cannot attack again (the engine clears CanAttack in
+        // FinalizeMoveAsync), so aiming at one measures the gate rather than the chain. Prefer a unit
+        // that has not acted; fall back only when nothing else is offered.
+        var attackerUid = previews.FirstOrDefault(p => p.DefenderUid == targetUid
+            && view.SelfLine.FirstOrDefault(c => c.Uid == p.AttackerUid)?.CanMoveAndAttack == true)?.AttackerUid
+            ?? previews.First(p => p.DefenderUid == targetUid).AttackerUid;
+        var attacker = view.SelfLine.FirstOrDefault(c => c.Uid == attackerUid);
+        Audit($"attack[{(wantsHq ? "hq" : "unit")}] attacker={attacker?.Definition.Name}@{attacker?.Zone}[{attacker?.SlotIndex}] " +
+              $"atk={attacker?.EffectiveAttack} -> {(wantsHq ? "ENEMY-HQ" : unitTarget!.Definition.Name)} " +
+              $"targetHp={(wantsHq ? hq!.Health : unitTarget!.Health)} enemyHq={hq?.Health} offered={previews.Count}");
+        await _battle.DragAsync(attackerUid, _battle.CardPoint(targetUid), async () =>
+        {
+            Audit($"attack[{(wantsHq ? "hq" : "unit")}] overlay {_battle.SlotHintReport()}");
+            await ShotAsync(dir, $"real-hold-attack-{(wantsHq ? "hq" : "unit")}");
+        });
+        Audit($"attack channels={_battle.ChannelTrace} state=[{_battle.Interaction}]");
+        await AwaitIdleAsync(12);
+        var after = _runner.CurrentView!;
+        var afterUnit = after.EnemyLine.FirstOrDefault(c => c.Uid == targetUid);
+        Audit($"    after target={(wantsHq ? "HQ" : afterUnit?.Definition.Name ?? "<gone>")} " +
+              $"targetHp={(wantsHq ? after.EnemyHq?.Health : afterUnit?.Health)} enemyHq={after.EnemyHq?.Health}");
+        await ShotAsync(dir, $"real-attack-{(wantsHq ? "hq" : "unit")}");
+        var hurt = wantsHq
+            ? after.EnemyHq?.Health is not null && hq!.Health is not null && after.EnemyHq.Health < hq.Health
+            : afterUnit is null || (unitTarget!.Health is not null && afterUnit.Health is not null && afterUnit.Health < unitTarget.Health);
+        return hurt;
     }
 }

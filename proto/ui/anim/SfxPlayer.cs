@@ -41,7 +41,7 @@ public partial class SfxPlayer : Node
             return;
         if (Clock.Muted || Clock.Volume <= 0)
             return;
-        var kind = card?.Definition.UnitType ?? "infantry";
+        var kind = (card?.Definition.UnitType ?? "infantry").ToLowerInvariant();
         var specialized = eventName is "attack" or "deploy" or "move";
         var prefix = eventName switch
         {
@@ -79,9 +79,10 @@ public partial class SfxPlayer : Node
             if (typeVariants.Length > 0) variants = typeVariants;
         }
         stem = variants[Random.Shared.Next(variants.Length)];
-        if (eventName == "hit" && target?.Definition.UnitType is "tank" or "cruiser" or "landcruiser")
+        var targetKind = target?.Definition.UnitType.ToLowerInvariant();
+        if (eventName == "hit" && targetKind is "tank" or "cruiser" or "landcruiser")
             stem = "hit1";
-        else if (eventName == "hit" && target?.Definition.UnitType is "structure" or "artillery")
+        else if (eventName == "hit" && targetKind is "structure" or "artillery")
             stem = "hit2";
         else if (eventName == "hit" && target is not null)
             stem = "hit3";

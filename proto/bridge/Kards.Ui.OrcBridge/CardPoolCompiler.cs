@@ -19,8 +19,8 @@ public sealed record CardPoolRejection(string CardId, string Reason);
 public static class CardPoolCompiler
 {
     /// <summary>
-    /// Compiles every catalog card the engine can represent. Cards with an unmapped faction or
-    /// category are reported instead of thrown, so one odd card cannot cost us the whole pool.
+    /// Structural compilation for diagnostics and projection fixtures. This does not assemble
+    /// source effects or prove semantic support; catalog matches must use VerifiedCardPool.
     /// </summary>
     public static (IReadOnlyList<CardDefinitionEntry> Entries, IReadOnlyList<CardPoolRejection> Rejected)
         Compile(IReadOnlyList<UiCardDefinition> catalog)

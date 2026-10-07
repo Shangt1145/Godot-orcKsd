@@ -49,15 +49,18 @@ public partial class BattleScreen
         for (var i = 0; i < cards.Length; i++)
         {
             var card = cards[i];
+            if (card == _pressed) continue;
             var slot = self ? after.SelfHand.FirstOrDefault(c => c.Uid == card.Uid)?.SlotIndex : i;
             if (slot is null) continue;
             var pose = HandPose(slot.Value, self ? after.SelfHand.Count : Math.Clamp(after.EnemyHandCount ?? 0, 0, 9), self);
             if (_clock.ReducedMotion) { card.Position = pose.Position; card.Rotation = pose.Rotation; }
             else
             {
+                if (self) StopHandMotion(card.Uid);
                 var t = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
                 t.TweenProperty(card, "position", pose.Position, .32 * _clock.Scale);
                 t.TweenProperty(card, "rotation", pose.Rotation, .32 * _clock.Scale); _tweens.Add(t);
+                if (self) _handMotion[card.Uid] = t;
             }
         }
     }
@@ -70,10 +73,13 @@ public partial class BattleScreen
     public async Task PresentSequenceAsync(UiPresentationResolution supplied, UiBattleActions afterActions)
     {
         if (supplied.MatchId != _state.MatchId || supplied.After.MatchId != supplied.MatchId) return;
+        var initialGeneration = _generation;
+        await WaitForGestureReleaseAsync();
+        if (!IsInsideTree() || initialGeneration != _generation || supplied.MatchId != _state.MatchId) return;
         CancelSelection();
         var resolution = UiSnapshots.Freeze(supplied); var actions = UiSnapshots.Freeze(afterActions);
         _pendingPresentation = resolution; _pendingPresentationActions = actions;
-        _busy = true; _endTurn.Disabled = true; var generation = _generation;
+        _busy = true; UpdateEndTurnButton(); var generation = _generation;
         _selfResource.Bind(resolution.After.SelfKredits, resolution.After.SelfMaxKredits, resolution.After.SelfPlayerName);
         _enemyResource.Bind(resolution.After.EnemyKredits, resolution.After.EnemyMaxKredits, resolution.After.EnemyPlayerName);
         _deckCount.Text = resolution.After.SelfDeckCount.ToString();
@@ -84,7 +90,12 @@ public partial class BattleScreen
                 var step = resolution.Steps[stepIndex];
                 switch (step)
                 {
+                    case UiBoardImpactsPresentation hits:
+                        await PlayBoardImpactsAsync(hits.Impacts);
+                        break;
                     case UiDeploymentPresentation deployment when deployment.Deployed.MatchId == resolution.MatchId:
+                        await WaitForGestureReleaseAsync();
+                        if (!IsInsideTree() || generation != _generation || _pendingPresentation != resolution) return;
                         var deployFrom = deployment.Card.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628);
                         if (_cards.TryGetValue(deployment.Card.Uid, out var deployingHand)) deployFrom = deployingHand.Position;
                         else if (deployment.Card.OwnerSide == "enemy")
@@ -92,8 +103,8 @@ public partial class BattleScreen
                             var back = _cardLayer.GetChildren().OfType<BattleCard>().LastOrDefault(c => c.View is null && c.Mode == BattleCardMode.Hidden && c.Visible);
                             if (back is not null) deployFrom = back.Position;
                         }
-                        Render(deployment.Deployed, new(), true); generation = _generation;
-                        _busy = true; _endTurn.Disabled = true;
+                        Render(deployment.Deployed, new(), true, deployment.Card.Uid); generation = _generation;
+                        _busy = true; UpdateEndTurnButton();
                         if (deployment.Card.Visibility == Visibility.Full && _cards.TryGetValue(deployment.Card.Uid, out var deployedCard)
                             && deployedCard.View?.Visibility == Visibility.Full)
                             await _sequence.DeployAsync(deployment.Card, deployedCard, deployFrom);
@@ -152,6 +163,16 @@ public partial class BattleScreen
                         if (_cards.TryGetValue(removed.Card.Uid, out var removedActor) && removedActor.View?.Visibility == Visibility.Full)
                             await _combat.PresentRemovalAsync(removed.Card, removedActor);
                         break;
+                    case UiDiscardPresentation discard:
+                        // Discarded and hand-limit-burned cards leave the table. The bridge has always
+                        // emitted this step; the switch used to drop it, so the burn cue never played.
+                        _cards.TryGetValue(discard.Card?.Uid ?? "", out var discardedSource);
+                        await _sequence.DiscardAsync(discard.Card, discardedSource, discard.Kind);
+                        break;
+                    case UiTurnPresentation turn:
+                        // "Your turn" / "opponent's turn". Also always emitted, always dropped.
+                        await _sequence.TurnBannerAsync(turn);
+                        break;
                     case UiStatusPresentation status when status.Before.Uid == status.After.Uid && status.Before.Visibility == Visibility.Full && status.After.Visibility == Visibility.Full:
                         if (_cards.TryGetValue(status.Before.Uid, out var statusCard) && statusCard.View?.Visibility == Visibility.Full)
                             await _sequence.StatusAsync(statusCard, status);
@@ -180,7 +201,14 @@ public partial class BattleScreen
                 await _sequence.ResultBannerAsync(victory, reason);
             }
             if (generation != _generation || _pendingPresentation != resolution) return;
-            ClearPresentation(); Render(resolution.After, actions, true);
+            await WaitForGestureReleaseAsync();
+            if (!IsInsideTree() || generation != _generation || _pendingPresentation != resolution) return;
+            Render(resolution.After, actions, true); generation = _generation;
+            // Layout movements belong to this item too; a later item must not kill them on render.
+            while (IsInsideTree() && generation == _generation && _pendingPresentation == resolution
+                && _tweens.Any(t => GodotObject.IsInstanceValid(t) && t.IsRunning()))
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            if (generation == _generation && _pendingPresentation == resolution) ClearPresentation();
         }
         catch (OperationCanceledException) { /* Interrupt already settled or replaced the supplied state. */ }
         catch (Exception e) { GD.PushError(e.ToString()); if (generation == _generation) CancelSelection(); }

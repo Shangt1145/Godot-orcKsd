@@ -15,10 +15,11 @@ public sealed class OrcMatchRunner
     private const string InfantryId = "orc-demo-infantry";
 
     private OrcMatchSession? _session;
-    private OrcMatchHost? _secondSeat;
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool _stopped;
 
     public bool IsRunning => _session is not null;
-    public string MatchId { get; } = "orc-live";
+    public string MatchId { get; } = $"orc-{Guid.NewGuid():N}";
 
     /// <summary>The opening hand is answered through the panel rather than kept automatically.</summary>
     public bool InteractiveMulligan { get; init; }
@@ -31,6 +32,8 @@ public sealed class OrcMatchRunner
     /// to the probe card, so the verify paths keep working without a prepared catalog.
     /// </summary>
     public IReadOnlyList<UiCardDefinition>? CatalogCards { get; init; }
+    public string? CatalogSourceDirectory { get; init; }
+    public UiCardPoolReport? CardPoolReport => _session?.CardPoolReport;
 
     /// <summary>When set, the match is opened hotseat and this is the seat the screen starts on.</summary>
     public bool Hotseat { get; init; }
@@ -42,22 +45,26 @@ public sealed class OrcMatchRunner
     /// </summary>
     public int? DeckSeed { get; init; }
 
+    /// <summary>
+    /// Pins the cards the player opens with, replacing whatever was dealt. A demonstration aid: it
+    /// lets the deployment slam be observed at every size tier in a real match. Null deals normally.
+    /// </summary>
+    public IReadOnlyList<string>? OpeningHand { get; init; }
+
     /// <summary>Which seat is currently shown: 0 or 1. Only meaningful when <see cref="Hotseat"/>.</summary>
     public int ActiveSeat { get; private set; }
 
     /// <summary>True when it is the seat now on screen whose turn it is.</summary>
-    public bool ActiveSeatOnTurn => _session is not null
-        && Match.CurrentPlayer is not null
-        && Match.CurrentPlayer.Index == ActiveSeat;
-
-    private Orc.Game.Match Match => _session?.Host.Match
-        ?? throw new InvalidOperationException("The match is not running.");
+    public bool ActiveSeatOnTurn => _session?.IsViewerOnTurn == true;
 
     /// <summary>Swaps the visible seat. The engine keeps one truth; only the viewpoint changes.</summary>
     public void SwitchSeat()
     {
         if (!Hotseat || _session is null) return;
+        if (_session.MulliganPending) { HintRequested?.Invoke("请先完成换牌"); return; }
+        if (_session.IsSubmitting) { HintRequested?.Invoke("上一操作尚未完成"); return; }
         ActiveSeat = ActiveSeat == 0 ? 1 : 0;
+        _session.SelectViewer(ActiveSeat);
         Publish();
     }
 
@@ -73,22 +80,25 @@ public sealed class OrcMatchRunner
 
     public async Task StartAsync(CancellationToken ct = default)
     {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        ct = linked.Token;
         // A real catalog means a real deck. The probe card is the fallback so the verify paths
         // still run on a machine where the catalog has not been prepared.
-        var pool = CatalogCards is { Count: > 0 } ? CardPoolCompiler.Compile(CatalogCards).Entries : null;
         OrcMatchSession session;
-        if (pool is { Count: > 0 })
+        if (CatalogCards is { Count: > 0 })
         {
-            var deck = DeckBuilder.Build(pool, seed: DeckSeed ?? 20261005);
-            session = await OrcMatchSession.CreateAsync(pool, deck, deck,
-                seed: DeckSeed ?? 20261005, matchId: MatchId, artLookup: ArtLookup, ct: ct);
+            session = await OrcMatchSession.CreateFromCatalogAsync(CatalogCards,
+                seed: DeckSeed ?? 20261005, matchId: MatchId, fallbackCardId: InfantryId, artLookup: ArtLookup, ct: ct,
+                openingHand: OpeningHand, sourceDirectory: CatalogSourceDirectory);
         }
         else
         {
-            session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, seed: DeckSeed ?? 20261005,
+            session = await OrcMatchSession.CreateDefaultProbeAsync(InfantryId, 20, seed: DeckSeed ?? 20261005,
                 matchId: MatchId, artLookup: ArtLookup, ct: ct);
         }
+        if (_stopped) { session.Dispose(); return; }
         _session = session;
+        session.DriveOpponent = !Hotseat;
         session.Host.ImmediateUpdate += _ => { };
         session.Host.PresentationReady += (resolution, actions) => PresentationReady?.Invoke(resolution, actions);
         session.Host.CombatReady += (impacts, after, actions) => CombatReady?.Invoke(impacts, after, actions);
@@ -96,53 +106,40 @@ public sealed class OrcMatchRunner
         // The engine parks on the mulligan slot; that is the moment the panel must open.
         session.MulliganRequested += () => MulliganRequested?.Invoke();
 
-        if (Hotseat)
-        {
-            // The other seat reads the same live match. It adopts rather than initialises, because
-            // the match is already running — one engine, one truth, two viewpoints.
-            _secondSeat = new OrcMatchHost(session.Host.Match, $"{MatchId}-seat1", viewerIndex: 1, ArtLookup);
-            _secondSeat.ImmediateUpdate += _ => { };
-            _secondSeat.AttachToLiveMatch();
-        }
-
         Publish();
 
         // The opponent side is answered by the driver; the viewer either answers through the panel
         // (the request parks until ChooseMulligan arrives) or keeps everything.
         await session.SettleMulliganAsync(InteractiveMulligan, ct);
-        // Only the answered path needs a pump: draining segments while the mulligan request is
-        // still parked would consume state that task is waiting on. The frame loop covers the rest.
-        if (!InteractiveMulligan) session.Pump();
+        // Publish the settled baseline; initialization snapshots must not replay over the new phase.
+        if (_stopped) return;
         Publish();
     }
 
-    /// <summary>Frame-loop entry point. Segments are unbounded, so this must run every frame.</summary>
-    /// <summary>
-    /// Frame-loop entry point. Only the active seat drains segments: two hosts pumping the same
-    /// match would each consume the other's updates.
-    /// </summary>
+    /// <summary>Frame-loop entry point. One host drains the queue for either viewpoint.</summary>
     public void Pump()
     {
         if (_session is null) return;
-        if (ActiveSeat == 0 || _secondSeat is null) _session.Pump();
-        else _secondSeat.Pump();
+        _session.Pump();
     }
 
     /// <summary>Ends the match and detaches the host so no further segments are delivered.</summary>
     public void Stop()
     {
-        _session?.Host.Detach();
+        if (_stopped) return;
+        _stopped = true;
+        _lifetime.Cancel();
         _session?.Dispose();
         _session = null;
     }
 
     /// <summary>The seat currently on screen. Null before the match starts.</summary>
-    public UiMatchView? CurrentView => (ActiveSeat == 0 || _secondSeat is null) ? _session?.View : _secondSeat.View;
+    public UiMatchView? CurrentView => _session?.View;
 
     /// <summary>Actions for the seat on screen, so a hotseat player is never offered the other's moves.</summary>
-    public UiBattleActions CurrentActions => (ActiveSeat == 0 || _secondSeat is null)
-        ? _session?.Actions ?? new UiBattleActions()
-        : _secondSeat.Actions;
+    public UiBattleActions CurrentActions => _session?.Actions ?? new();
+
+    public event Action<UiCommand>? CommandRefused;
 
     /// <summary>
     /// Submits one contract command. The session owns the engine rules; this only reports refusals
@@ -151,28 +148,34 @@ public sealed class OrcMatchRunner
     public async Task SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
         if (_session is null) return;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        ct = linked.Token;
         GD.Print($"[engine] submit {command.GetType().Name}");
         if (command is ChooseMulligan keep)
         {
             await CompleteMulliganAsync(keep.KeepUids, ct);
             return;
         }
-        if (command is MoveUnit move) _session.NoteSlot(move.SlotIndex);
-        if (command is AttackUnit attack) _session.NoteSelection(attack.DefenderUid);
-
+        var session = _session;
         UiSubmitOutcome outcome;
         try
         {
-            outcome = await _session.SubmitAsync(command, ct);
+            outcome = await session.SubmitAsync(command, ct);
         }
         catch (Exception e)
         {
+            if (_stopped || session != _session) return;
             // Engine entry points mostly report through result objects; the few that throw (phase
             // gates) must not die silently in a fire-and-forget task.
             GD.PushError($"[engine] {command.GetType().Name}: {e.Message}");
+            CommandRefused?.Invoke(command);
             HintRequested?.Invoke(Reason(e.Message.Contains(' ') ? null : e.Message));
             return;
         }
+
+        if (_stopped || session != _session) return;
+        if (outcome is not UiSubmitOutcome.Applied)
+            CommandRefused?.Invoke(command); // refusal does not interrupt another action's animation
 
         switch (outcome)
         {
@@ -186,7 +189,10 @@ public sealed class OrcMatchRunner
                 HintRequested?.Invoke("找不到该单位");
                 break;
             case UiSubmitOutcome.Rejected:
-                HintRequested?.Invoke("引擎拒绝了该操作");
+                HintRequested?.Invoke(Reason(session.LastRejectionReason));
+                break;
+            case UiSubmitOutcome.Busy:
+                HintRequested?.Invoke("上一操作尚未完成");
                 break;
         }
         // The board is not refreshed here: Pump picks up the segment and the presentation plays first.
@@ -201,23 +207,20 @@ public sealed class OrcMatchRunner
         if (_session is null) { HintRequested?.Invoke("当前没有等待的换牌"); return; }
         // No MulliganRequested here: that event means "a request arrived", and re-raising it after
         // answering would pop the panel a second time.
-        var outcome = await _session.CompleteMulliganAsync(keepUids, ct);
+        var session = _session;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        var outcome = await session.CompleteMulliganAsync(keepUids, linked.Token);
+        if (_stopped || _session != session) return;
         if (outcome != UiSubmitOutcome.Applied) HintRequested?.Invoke("当前没有等待的换牌");
         // Answering produces a segment; the refreshed view (and the play phase) arrives on Pump.
-        _session.Pump();
-        Publish();
+        if (!_stopped) Publish();
     }
 
     private void Publish()
     {
         if (_session is null) return;
-        if (ActiveSeat == 0 || _secondSeat is null)
-        {
-            ProjectionReady?.Invoke(_session.View, _session.Actions);
-            return;
-        }
-        _secondSeat.Pump();
-        ProjectionReady?.Invoke(_secondSeat.View, _secondSeat.Actions);
+        _session.SettleProjection();
+        ProjectionReady?.Invoke(_session.View, _session.Actions);
     }
 
 
@@ -225,6 +228,13 @@ public sealed class OrcMatchRunner
     private static string Reason(string? reason) => reason switch
     {
         null or "" => "引擎拒绝了该操作",
-        _ => reason,
+        "SelectedTargetUnavailable" => "所选目标已失效或不是合法目标",
+        "SelectedSlotUnavailable" => "所选位置不可用",
+        "SelectionRequired" => "请指定目标或位置",
+        "SelectionRejected" => "引擎拒绝了这次选择",
+        "PrePlayPointShortage" or "CounterPointShortage" => "指挥点不足",
+        "PrePlayNoAvailableSlots" => "没有可部署的位置",
+        "PlayVerificationRejected" => "引擎未通过打出复验",
+        _ => $"引擎拒绝了该操作：{reason}",
     };
 }

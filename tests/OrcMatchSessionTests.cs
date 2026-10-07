@@ -1,4 +1,4 @@
-using Kards.Ui.Contracts;
+﻿using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
 using Orc.Game;
 using Orc.Game.Cards;
@@ -89,20 +89,7 @@ public sealed class OrcMatchSessionTests
     [Fact]
     public async Task AMulliganReplacesTheCardsThePlayerDidNotKeep()
     {
-        var kept = new List<string>();
-        OrcMatchSession? session = null;
-        session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 17, "session-mulligan",
-            present: (description, responder) =>
-            {
-                if (description.Slots.Count > 0
-                    && description.Slots[0].Kind == Orc.Game.Targeting.TargetSlotKind.MulliganSelect)
-                {
-                    session!.NotePendingRequest(description, responder);
-                    // Keep everything, so the hand after the answer must equal the opening hand.
-                    kept.AddRange(description.AllowedTargets.Select(t => t.Value.Id.ToString("N")));
-                }
-                else OrcTargeterBridge.AutoRespond(description, responder);
-            });
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 17, "session-mulligan");
         try
         {
             await session.SettleMulliganAsync(interactive: true);

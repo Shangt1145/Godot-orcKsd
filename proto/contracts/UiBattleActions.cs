@@ -9,6 +9,8 @@ public sealed record UiCombatResolution(string MatchId, UiCardView Attacker, UiC
 public sealed record UiBattleActions
 {
     public IReadOnlyList<string> PlayableUids { get; init; } = Array.Empty<string>();
+    /// <summary>False means PlayableUids is a legacy attemptable set, not a confirmed legality query.</summary>
+    public bool HandPlayabilityKnown { get; init; } = true;
     public IReadOnlyList<UiMoveOption> Moves { get; init; } = Array.Empty<UiMoveOption>();
     public IReadOnlyList<UiAttackPreview> AttackPreviews { get; init; } = Array.Empty<UiAttackPreview>();
     public bool CanEndTurn { get; init; }

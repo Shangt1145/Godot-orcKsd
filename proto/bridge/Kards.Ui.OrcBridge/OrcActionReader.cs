@@ -1,6 +1,7 @@
 using Orc.Cards;
 using Orc.Game;
 using Orc.Game.Cards;
+using Orc.Game.Board;
 using Orc.Game.Players;
 using Kards.Ui.Contracts;
 
@@ -38,7 +39,10 @@ public sealed class OrcActionReader
         {
             var availability = match.CommandManager.GetCommandAvailability(unit);
             var uid = OrcRefs.KeyOf(unit);
-            if (availability.Move.CanUse) moves.Add(new UiMoveOption(uid, "frontline"));
+            if (availability.Move.CanUse)
+                foreach (var candidate in availability.Move.Candidates)
+                    if (candidate.IsAlive && candidate.Value is Slot slot)
+                        moves.Add(new UiMoveOption(uid, "frontline", slot.Index));
             foreach (var candidate in availability.Attack.Candidates)
             {
                 if (!candidate.IsAlive) continue;
@@ -51,6 +55,7 @@ public sealed class OrcActionReader
             CanEndTurn = true,
             AttacksEnabled = true,
             PlayableUids = playable,
+            HandPlayabilityKnown = false,
             Moves = moves,
             AttackPreviews = previews
         };

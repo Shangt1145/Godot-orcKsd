@@ -413,10 +413,16 @@ public sealed class BridgeContractTests
         var match = CreateMatch();
         await match.Initialize();
         var line = match.Battlefield.FrontLine;
-        // The UI computes a drop target by counting cards to the left, so indices must be dense.
+        // A drop is resolved by position within the line, so the indices must be dense.
         Assert.Equal([0, 1, 2, 3, 4], line.Select(s => s.Index).ToArray());
-        // Support lines hold the headquarters in slot 0 and leave three deployable slots.
-        Assert.Equal(4, match.Battlefield.PlayerASupportLine.Count);
-        Assert.Equal(4, match.Battlefield.PlayerBSupportLine.Count);
+        // The support line holds the headquarters in a fixed middle slot, which is what leaves room on
+        // both of its sides. Asserted through the engine's own constant rather than a copied number: the
+        // point of the guard is that a deployment can go to either side of the headquarters.
+        var support = match.Battlefield.PlayerASupportLine;
+        Assert.Equal(5, support.Count);
+        Assert.Equal(5, match.Battlefield.PlayerBSupportLine.Count);
+        Assert.Equal(Battlefield.HqSlotIndex, Battlefield.IndexOfHq(support));
+        Assert.True(Battlefield.HqSlotIndex >= 2, "no room to the left of the headquarters");
+        Assert.True(support.Count - Battlefield.HqSlotIndex - 1 >= 2, "no room to the right of the headquarters");
     }
 }

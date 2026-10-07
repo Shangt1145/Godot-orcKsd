@@ -17,7 +17,8 @@ public static class OrcOpponentDriver
 {
     private const int MaxActions = 12;
 
-    public static async Task PlayTurnAsync(Match match, Player opponent, Action<string>? log = null, CancellationToken ct = default)
+    public static async Task PlayTurnAsync(Match match, Player opponent, Action<string>? log = null,
+        CancellationToken ct = default, Action? actionCompleted = null)
     {
         ArgumentNullException.ThrowIfNull(match);
         ArgumentNullException.ThrowIfNull(opponent);
@@ -25,21 +26,26 @@ public static class OrcOpponentDriver
         while (match.State == MatchState.InProgress && match.Phase == MatchPhase.Play
             && ReferenceEquals(match.CurrentPlayer, opponent) && actions < MaxActions)
         {
-            if (!await TryOneActionAsync(match, opponent, log, ct)) break;
+            if (!await TryOneActionAsync(match, opponent, log, ct, actionCompleted)) break;
             actions++;
             await Task.Delay(80, ct);
         }
         if (match.State == MatchState.InProgress && ReferenceEquals(match.CurrentPlayer, opponent))
+        {
             await match.EndTurn(ct);
+            actionCompleted?.Invoke();
+        }
     }
 
-    private static async Task<bool> TryOneActionAsync(Match match, Player opponent, Action<string>? log, CancellationToken ct)
+    private static async Task<bool> TryOneActionAsync(Match match, Player opponent, Action<string>? log,
+        CancellationToken ct, Action? actionCompleted)
     {
         // 1) Deploy the cheapest affordable unit in hand.
         foreach (var card in opponent.Hand.OfType<UnitCard>().OrderBy(c => DeployCost(c)))
         {
             if (DeployCost(card) > opponent.Points) continue;
             var play = await match.PlayManager.BeginUnitPrePlayAsync(card, ct);
+            actionCompleted?.Invoke();
             log?.Invoke($"deploy {card.Name} -> {play.Status} {play.FailureReason}");
             if (play.Status == PlayResultStatus.Success) return true;
         }
@@ -49,6 +55,7 @@ public static class OrcOpponentDriver
             var availability = match.CommandManager.GetCommandAvailability(unit);
             if (!availability.Move.CanUse) continue;
             var move = await match.CommandManager.BeginMoveAsync(unit, ct);
+            actionCompleted?.Invoke();
             if (move.Status == CommandResultStatus.Success) return true;
         }
         // 3) Attack the first legal target.
@@ -57,6 +64,7 @@ public static class OrcOpponentDriver
             var availability = match.CommandManager.GetCommandAvailability(unit);
             if (!availability.Attack.CanUse) continue;
             var strike = await match.CommandManager.BeginAttackAsync(unit, ct);
+            actionCompleted?.Invoke();
             if (strike.Status == CommandResultStatus.Success) return true;
         }
         return false;

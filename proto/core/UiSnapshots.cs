@@ -21,13 +21,18 @@ public static class UiSnapshots
         DefenderAfter = r.DefenderAfter is null ? null : Freeze(r.DefenderAfter), After = Freeze(r.After)
     };
     public static UiEvent Freeze(UiEvent e) => e with { Card = e.Card is null ? null : Freeze(e.Card) };
+    public static UiOrderImpact Freeze(UiOrderImpact impact) => impact with
+    {
+        Before = Freeze(impact.Before), After = impact.After is null ? null : Freeze(impact.After),
+        Source = impact.Source is null ? null : Freeze(impact.Source)
+    };
     public static UiPresentationResolution Freeze(UiPresentationResolution r) => r with
     {
         After = Freeze(r.After), Steps = List(r.Steps.Select(step => step switch
         {
             UiDrawPresentation draw => (UiPresentationStep)(draw with { Card = draw.Side == "self" && draw.Card is not null ? Freeze(draw.Card) : null }),
-            UiOrderPresentation order => order with { Card = Freeze(order.Card), Impacts = List(order.Impacts.Select(i => i with
-                { Before = Freeze(i.Before), After = i.After is null ? null : Freeze(i.After) })) },
+            UiOrderPresentation order => order with { Card = Freeze(order.Card), Impacts = List(order.Impacts.Select(Freeze)) },
+            UiBoardImpactsPresentation hits => hits with { Impacts = List(hits.Impacts.Select(Freeze)) },
             UiCounterPresentation counter => counter with
             {
                 Card = counter.Side == "enemy" && counter.Stage != UiCounterStage.Triggered ? null : counter.Card is null ? null : Freeze(counter.Card),

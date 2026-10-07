@@ -9,6 +9,7 @@ public sealed record UiDrawPresentation(string Side, int SlotIndex, UiCardView? 
 /// reported no attacker and the hit lands without a shot.
 /// </summary>
 public sealed record UiOrderImpact(UiCardView Before, UiCardView? After, int Damage, UiCardView? Source = null);
+public sealed record UiBoardImpactsPresentation(IReadOnlyList<UiOrderImpact> Impacts) : UiPresentationStep;
 public sealed record UiOrderPresentation(UiCardView Card, IReadOnlyList<UiOrderImpact> Impacts) : UiPresentationStep;
 public sealed record UiDeploymentPresentation(UiCardView Card, UiMatchView Deployed) : UiPresentationStep;
 public sealed record UiRemovalPresentation(UiCardView Card) : UiPresentationStep;
@@ -25,4 +26,7 @@ public sealed record UiDiscardPresentation(string Side, UiCardView? Card, UiDisc
 public sealed record UiMulliganPresentation(string Side, int Replaced, IReadOnlyList<UiCardView> Drawn) : UiPresentationStep;
 public enum UiTurnKind { TurnStarted, Fatigue }
 public sealed record UiTurnPresentation(string Side, int Turn, UiTurnKind Kind = UiTurnKind.TurnStarted, int? Damage = null) : UiPresentationStep;
-public sealed record UiPresentationResolution(string MatchId, IReadOnlyList<UiPresentationStep> Steps, UiMatchView After);
+public sealed record UiPresentationResolution(string MatchId, IReadOnlyList<UiPresentationStep> Steps, UiMatchView After)
+{
+    public long Sequence { get; init; }
+}

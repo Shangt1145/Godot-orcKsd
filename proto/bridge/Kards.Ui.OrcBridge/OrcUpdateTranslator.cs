@@ -29,6 +29,13 @@ public sealed class OrcUpdateTranslator
         var steps = new List<UiPresentationStep>();
         var impacts = new List<UiOrderImpact>();
         var died = new HashSet<string>();
+        // The engine reports one arrival through two signals: card.drawn ("this was taken") and
+        // card.hand.add ("this landed in hand") — see PlayerManager.DrawCard. Both describe the same
+        // card, so only the first may choreograph; handling both plays the draw animation twice.
+        var arrived = new HashSet<string>(StringComparer.Ordinal);
+        // turn.start and turn.start.after describe one turn change the same way (TurnManager), so the
+        // banner must be built once or it plays twice per turn.
+        var turnAnnounced = false;
         // unit.damage.dealt carries the attacker and the engine's own amount. Signal order is not
         // guaranteed (stat.changed may arrive first), so collect the pairing first and apply it once
         // every impact of this segment is known.
@@ -62,19 +69,27 @@ public sealed class OrcUpdateTranslator
                     break;
                 case GameUpdates.CardHandAdd:
                 case GameUpdates.CardDrawn:
-                    AddDraw(steps, payload, viewer, after);
-                    break;
+                    {
+                        // One draw, two signals. Keep whichever arrives first and drop the other, or
+                        // a single card animates into the hand twice.
+                        var arrival = PayloadCard(payload);
+                        if (arrival is null || !arrived.Add(OrcRefs.KeyOf(arrival))) break;
+                        AddDraw(steps, payload, viewer, after);
+                        break;
+                    }
                 case GameUpdates.UnitDeployed:
                     AddDeployment(steps, payload, after);
                     break;
                 case GameUpdates.CardStatChanged:
                     AddImpact(impacts, payload, previous, after);
+                    AppendNewImpacts(steps, impacts);
                     break;
                 case GameUpdates.CardDamaged:
                     // The victim-side damage signal. It carries the engine's own amount, so no stat
                     // diff is needed — and unlike stat.changed it fires for HQ damage too, which is
                     // why combat feedback used to go missing on every attack that hit the HQ.
                     AddDamage(impacts, payload, previous, after);
+                    AppendNewImpacts(steps, impacts);
                     break;
                 case GameUpdates.UnitDamageDealt:
                     RecordAssault(assaults, payload);
@@ -92,14 +107,32 @@ public sealed class OrcUpdateTranslator
                     break;
                 case GameUpdates.TurnStartAfter:
                 case GameUpdates.TurnStart:
+                    // Both signals describe one turn change; announce it once.
+                    if (turnAnnounced) break;
+                    turnAnnounced = true;
                     AddTurn(steps, payload, viewer, after);
                     break;
             }
         }
         impacts = ApplyAssaults(impacts, assaults, after);
+        for (var i = 0; i < steps.Count; i++)
+            if (steps[i] is UiBoardImpactsPresentation hits)
+                steps[i] = hits with { Impacts = hits.Impacts.Select(hit =>
+                    impacts.First(paired => paired.Before.Uid == hit.Before.Uid)).ToArray() };
         // Deaths already play inside the impact presentation; never play them twice.
         steps.RemoveAll(step => step is UiRemovalPresentation removal && died.Contains(removal.Card.Uid));
         return new OrcTranslation(steps, impacts);
+    }
+
+    private static void AppendNewImpacts(List<UiPresentationStep> steps, List<UiOrderImpact> impacts)
+    {
+        var reported = steps.OfType<UiBoardImpactsPresentation>().SelectMany(s => s.Impacts)
+            .Select(i => i.Before.Uid).ToHashSet(StringComparer.Ordinal);
+        var fresh = impacts.Where(i => !reported.Contains(i.Before.Uid)).ToArray();
+        if (fresh.Length == 0) return;
+        if (steps.LastOrDefault() is UiBoardImpactsPresentation previous)
+            steps[^1] = previous with { Impacts = previous.Impacts.Concat(fresh).ToArray() };
+        else steps.Add(new UiBoardImpactsPresentation(fresh));
     }
 
     /// <summary>
