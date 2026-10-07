@@ -1,49 +1,28 @@
-using Godot;
+﻿using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
-using Orc.Cards;
-using Orc.Core;
-using Orc.Game;
-using Orc.Game.Board;
-using Orc.Game.Cards;
-using Orc.Game.Collections;
-using Orc.Game.Commanding;
-using Orc.Game.Players;
-using Orc.Game.Targeting;
 
 namespace Kards.Ui;
 
 /// <summary>
-/// Godot-side wiring for a real engine match. Rules stay in the engine; this class only
-///   - builds the match and hands the UI's targeter bridge to it,
-///   - pumps the segment queue from the frame loop,
-///   - translates UI commands into engine entry points and reports the engine's own refusal reasons.
-/// It never decides legality, damage or outcomes.
+/// Drives a real match for the Godot layer. Every engine conversation goes through
+/// <see cref="OrcMatchSession"/>: this type holds no engine types of its own, so an upstream change
+/// lands in the bridge instead of rippling into the screens. It only adds what the bridge
+/// deliberately leaves out — Godot diagnostics and the player-facing hint strings.
 /// </summary>
 public sealed class OrcMatchRunner
 {
     private const string InfantryId = "orc-demo-infantry";
 
-    private OrcMatchHost? _host;
-    private Match? _match;
-    private string[]? _pendingSelection;
-    private int? _pendingSlot;
-    private Task? _selfMulligan;
-    private (TargetingRequestDescription Description, ITargetingResponder Responder)? _pendingMulligan;
+    private OrcMatchSession? _session;
 
-    public bool IsRunning => _host is not null;
+    public bool IsRunning => _session is not null;
     public string MatchId { get; } = "orc-live";
 
-    /// <summary>
-    /// When true the opening hand is answered by the mulligan panel instead of the conservative
-    /// keep-all policy; verify and headless paths keep the automatic answer.
-    /// </summary>
+    /// <summary>The opening hand is answered through the panel rather than kept automatically.</summary>
     public bool InteractiveMulligan { get; init; }
 
-    /// <summary>
-    /// Card id -> art path, supplied by the UI's own catalog. The engine has no art concept, so this
-    /// is how a real match gets the same card art the collection screen shows.
-    /// </summary>
+    /// <summary>Card id to art path, supplied by the UI's own catalog. The engine has no art concept.</summary>
     public Func<string, string>? ArtLookup { get; init; }
 
     public event Action<UiMatchView, UiBattleActions>? ProjectionReady;
@@ -51,298 +30,124 @@ public sealed class OrcMatchRunner
     public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
     public event Action<string>? ErrorRaised;
 
-    /// <summary>Raised when the engine parks a mulligan request: the panel may open now.</summary>
+    /// <summary>Raised when the engine parks on a request the UI must answer (the mulligan panel).</summary>
     public event Action? MulliganRequested;
 
-    /// <summary>Engine refusal / status text for the player. The wording is the engine's, not ours.</summary>
     public event Action<string>? HintRequested;
 
     public async Task StartAsync(CancellationToken ct = default)
     {
-        var definitions = new[]
-        {
-            new CardDefinitionEntry(InfantryId, new CardDefinition(
-                "步兵", deployCost: 1, operateCost: 1, attack: 2, defense: 5,
-                unitTypes: [UnitType.Infantry], faction: Faction.Germany, rarity: Rarity.Standard))
-        };
-        // Each side owns its own CardList instance: deck entries are bound to card instances at load time.
-        var deckA = new CardList(Enumerable.Repeat(InfantryId, 20));
-        var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
-        var bridge = new OrcTargeterBridge(CollectInteractable, Present);
-        _match = new Match(deckA, deckB, definitions, seed: 20261005, firstPlayerIndex: 0, targeterBridge: bridge);
-        _host = new OrcMatchHost(_match, MatchId, artLookup: ArtLookup);
-        _host.ImmediateUpdate += _ => { };
-        _host.PresentationReady += (resolution, actions) => PresentationReady?.Invoke(resolution, actions);
-        _host.CombatReady += (impacts, after, actions) => CombatReady?.Invoke(impacts, after, actions);
-        _host.ErrorRaised += message => ErrorRaised?.Invoke(message);
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, seed: 20261005,
+            matchId: MatchId, artLookup: ArtLookup, ct: ct);
+        _session = session;
+        session.Host.ImmediateUpdate += _ => { };
+        session.Host.PresentationReady += (resolution, actions) => PresentationReady?.Invoke(resolution, actions);
+        session.Host.CombatReady += (impacts, after, actions) => CombatReady?.Invoke(impacts, after, actions);
+        session.Host.ErrorRaised += message => ErrorRaised?.Invoke(message);
+        // The engine parks on the mulligan slot; that is the moment the panel must open.
+        session.MulliganRequested += () => MulliganRequested?.Invoke();
 
-        await _host.InitializeAsync(ct);
         Publish();
 
-        // Mulligan: the opponent (driver-side) keeps the opening hand; the viewer either answers
-        // through the panel (the request parks in Present until ChooseMulligan arrives) or the
-        // conservative policy keeps everything.
-        var viewer = _host.Viewer;
-        foreach (var player in _match.Players.Where(player => !ReferenceEquals(player, viewer)))
-            await _match.MulliganDone(player, ct);
-        if (InteractiveMulligan)
-            _selfMulligan = _match.BeginMulliganAsync(viewer, ct);
-        else
-            await _match.MulliganDone(viewer, ct);
+        // The opponent side is answered by the driver; the viewer either answers through the panel
+        // (the request parks until ChooseMulligan arrives) or keeps everything.
+        await session.SettleMulliganAsync(InteractiveMulligan, ct);
+        // Only the answered path needs a pump: draining segments while the mulligan request is
+        // still parked would consume state that task is waiting on. The frame loop covers the rest.
+        if (!InteractiveMulligan) session.Pump();
         Publish();
     }
 
     /// <summary>Frame-loop entry point. Segments are unbounded, so this must run every frame.</summary>
-    public void Pump() => _host?.Pump();
+    public void Pump() => _session?.Pump();
 
-    public UiMatchView? CurrentView => _host is null ? null : _host.View;
+    /// <summary>Ends the match and detaches the host so no further segments are delivered.</summary>
+    public void Stop()
+    {
+        _session?.Host.Detach();
+        _session?.Dispose();
+        _session = null;
+    }
 
-    public UiBattleActions CurrentActions => _host?.Actions ?? new UiBattleActions();
+    public UiMatchView? CurrentView => _session?.View;
+
+    public UiBattleActions CurrentActions => _session?.Actions ?? new UiBattleActions();
 
     /// <summary>
-    /// Commands are submitted to the engine and the result is consumed as-is. Nothing is validated here:
-    /// a refused play shows the engine's own reason.
+    /// Submits one contract command. The session owns the engine rules; this only reports refusals
+    /// in the player's language and keeps the board out of the way until Pump delivers the segment.
     /// </summary>
     public async Task SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
-        if (_match is null || _host is null) return;
-        GD.Print($"[engine] submit {command.GetType().Name} phase={_match.Phase}");
-        // The mulligan answer is the only command that belongs to the mulligan phase; everything
-        // else is gated to play below.
+        if (_session is null) return;
+        GD.Print($"[engine] submit {command.GetType().Name}");
         if (command is ChooseMulligan keep)
         {
             await CompleteMulliganAsync(keep.KeepUids, ct);
             return;
         }
-        if (_match.Phase != MatchPhase.Play)
-        {
-            HintRequested?.Invoke("当前阶段不接受该操作");
-            return;
-        }
-        // Ending the turn is how the shell engine passes the opponent's turn too, so it is always allowed;
-        // every other action belongs to the player in turn.
-        if (command is not EndTurn && !ReferenceEquals(_match.CurrentPlayer, _host.Viewer))
-        {
-            HintRequested?.Invoke("等待对手行动");
-            return;
-        }
+        if (command is MoveUnit move) _session.NoteSlot(move.SlotIndex);
+        if (command is AttackUnit attack) _session.NoteSelection(attack.DefenderUid);
+
+        UiSubmitOutcome outcome;
         try
         {
-            switch (command)
-            {
-                case PlayCard play:
-                    await PlayAsync(play.Uid, play.SupportIndex, ct);
-                    break;
-                case MoveUnit move:
-                    if (Resolve(move.Uid) is not UnitCard unit)
-                    { GD.Print($"[engine] move resolve failed: {move.Uid} -> {Resolve(move.Uid)?.GetType().Name ?? "null"}"); HintRequested?.Invoke("找不到该单位"); return; }
-                    // The player chose a front-line slot; replay it when the engine asks where to go.
-                    _pendingSlot = move.SlotIndex;
-                    Report(await _match.CommandManager.BeginMoveAsync(unit, ct));
-                    _pendingSlot = null;
-                    break;
-                case AttackUnit attack:
-                    if (Resolve(attack.AttackerUid) is not UnitCard attacker)
-                    { GD.Print($"[engine] attack resolve failed: {attack.AttackerUid} -> {Resolve(attack.AttackerUid)?.GetType().Name ?? "null"}"); HintRequested?.Invoke("找不到该单位"); return; }
-                    // The player already picked the target; the engine asks again, so the choice is replayed.
-                    _pendingSelection = [attack.DefenderUid];
-                    Report(await _match.CommandManager.BeginAttackAsync(attacker, ct));
-                    _pendingSelection = null;
-                    break;
-                case EndTurn:
-                    await _match.EndTurn(ct);
-                    // The engine has no AI: passing the turn hands play to the opponent driver, which plays
-                    // the enemy turn through the same engine entry points and then passes back.
-                    if (_match.State == MatchState.InProgress && !ReferenceEquals(_match.CurrentPlayer, _host.Viewer))
-                        await OrcOpponentDriver.PlayTurnAsync(_match, _match.CurrentPlayer, ct: ct);
-                    break;
-                default:
-                    HintRequested?.Invoke("该操作尚未接入引擎");
-                    return;
-            }
+            outcome = await _session.SubmitAsync(command, ct);
         }
         catch (Exception e)
         {
-            // Engine entry points mostly report through result objects; the few that throw (phase gates)
-            // must not die silently in a fire-and-forget task.
+            // Engine entry points mostly report through result objects; the few that throw (phase
+            // gates) must not die silently in a fire-and-forget task.
             GD.PushError($"[engine] {command.GetType().Name}: {e.Message}");
             HintRequested?.Invoke(Reason(e.Message.Contains(' ') ? null : e.Message));
+            return;
+        }
+
+        switch (outcome)
+        {
+            case UiSubmitOutcome.NotYourTurn:
+                HintRequested?.Invoke("等待对手行动");
+                break;
+            case UiSubmitOutcome.WrongPhase:
+                HintRequested?.Invoke("当前阶段不接受该操作");
+                break;
+            case UiSubmitOutcome.UnknownCard:
+                HintRequested?.Invoke("找不到该单位");
+                break;
+            case UiSubmitOutcome.Rejected:
+                HintRequested?.Invoke("引擎拒绝了该操作");
+                break;
         }
         // The board is not refreshed here: Pump picks up the segment and the presentation plays first.
     }
 
     /// <summary>
-    /// Submits the panel's keep list to the parked mulligan request. The engine replaces everything
-    /// not kept (silent draw), confirms the side, and enters play once both sides have confirmed.
+    /// Submits the panel's keep list. The engine replaces everything not kept (silent draw),
+    /// confirms the side, and enters play once both sides have confirmed.
     /// </summary>
     private async Task CompleteMulliganAsync(IReadOnlyList<string> keepUids, CancellationToken ct)
     {
-        var pending = _pendingMulligan;
-        if (_match is null || pending is null)
-        {
-            HintRequested?.Invoke("当前没有等待的换牌");
-            return;
-        }
-        _pendingMulligan = null;
-        var slot = pending.Value.Description.Slots[0];
-        var allowed = (slot.AllowedReferences ?? pending.Value.Description.AllowedTargets).Where(r => r.IsAlive).ToArray();
-        pending.Value.Responder.Complete(pending.Value.Description.RequestId,
-            Map(slot.Name, OrcTargeterBridge.SelectReplace(allowed, keepUids)));
-        if (_selfMulligan is not null) await _selfMulligan; // replacement + side confirm; both sides -> play
-        _selfMulligan = null;
+        if (_session is null) { HintRequested?.Invoke("当前没有等待的换牌"); return; }
+        // No MulliganRequested here: that event means "a request arrived", and re-raising it after
+        // answering would pop the panel a second time.
+        var outcome = await _session.CompleteMulliganAsync(keepUids, ct);
+        if (outcome != UiSubmitOutcome.Applied) HintRequested?.Invoke("当前没有等待的换牌");
+        // Answering produces a segment; the refreshed view (and the play phase) arrives on Pump.
+        _session.Pump();
         Publish();
     }
 
-    private async Task PlayAsync(string uid, int? supportIndex, CancellationToken ct)
-    {
-        if (_match is null) return;
-        switch (Resolve(uid))
-        {
-            case UnitCard unit:
-                // The player dropped the card at a spot; replay that spot when the engine asks for a slot.
-                _pendingSlot = supportIndex;
-                Report(await _match.PlayManager.BeginUnitPrePlayAsync(unit, ct));
-                _pendingSlot = null;
-                break;
-            case CommandCard order:
-                Report(await _match.PlayManager.BeginCommandPrePlayAsync(order, ct));
-                break;
-            default:
-                HintRequested?.Invoke("这张牌当前不可打出");
-                break;
-        }
-    }
-
-    private void Report(PlayResult result)
-    {
-        GD.Print($"[engine] play -> {result.Status} {result.FailureReason}");
-        if (result.Status == PlayResultStatus.Success) return;
-        HintRequested?.Invoke(result.Status == PlayResultStatus.Cancelled ? "已取消" : Reason(result.FailureReason?.ToString()));
-    }
-
-    private void Report(CommandResult result)
-    {
-        GD.Print($"[engine] command -> {result.Status} {result.FailureReason}");
-        if (result.Status == CommandResultStatus.Success) return;
-        HintRequested?.Invoke(result.Status == CommandResultStatus.Cancelled ? "已取消" : Reason(result.FailureReason?.ToString()));
-    }
-
-    /// <summary>
-    /// Engine reason codes surfaced as player-readable text; no rule is inferred from them. The vocabulary
-    /// follows the engine's result enums (CommandFailureReason / CommandBlockReason / PlayFailureReason).
-    /// </summary>
-    private static string Reason(string? reason) => reason switch
-    {
-        // CommandFailureReason
-        "NonOwnerTurn" => "不是你的回合",
-        "OwnerInvalid" => "不是你的单位",
-        "UnitDead" => "该单位已阵亡",
-        "NoActionAvailable" => "该单位本回合没有可用行动",
-        "TargetingFailed" => "目标选择失败",
-        "ExecutionRejected" => "执行被拒绝",
-        "CommandFlowFault" => "指挥流程故障",
-        "GameEnded" => "对局已结束",
-        "PhaseBlocked" => "当前阶段不可执行",
-        // CommandBlockReason
-        "FlagFalse" => "该单位当前不能行动",
-        "PointShortage" => "指挥点不足",
-        "NoCandidates" => "没有可选目标",
-        "Suppressed" => "该单位被压制",
-        // PlayFailureReason
-        "PrePlayPointShortage" or "CounterPointShortage" or "PlayVerificationRejected" => "指挥点不足",
-        "PrePlayNoAvailableSlots" => "没有可用的空槽位",
-        "TargetSlotOccupied" => "目标槽位已被占用",
-        "UnitAlreadyUnitized" => "该单位已在场上",
-        "CounterNotOwnerTurn" => "不是你的回合",
-        "CounterRejected" => "无法激活该反制",
-        "PlayChainFault" => "打出流程故障",
-        "BridgeNotAssembled" => "目标选择未接入",
-        null => "操作被拒绝",
-        _ => "操作被拒绝：" + reason
-    };
-
-    private Card? Resolve(string uid) => _host?.Index.GetValueOrDefault(uid);
-
     private void Publish()
     {
-        if (_host is null) return;
-        _host.Refresh();
-        ProjectionReady?.Invoke(_host.View, _host.Actions);
+        if (_session is null) return;
+        ProjectionReady?.Invoke(_session.View, _session.Actions);
     }
 
-    /// <summary>
-    /// Answers the engine when it asks the player to choose. The UI's own intent (a clicked target) wins;
-    /// mulligan keeps the hand; a pending single choice takes the first allowed candidate until the
-    /// interactive panel exists.
-    /// </summary>
-    private void Present(TargetingRequestDescription description, ITargetingResponder responder)
+
+
+    private static string Reason(string? reason) => reason switch
     {
-        var slot = description.Slots.Count > 0 ? description.Slots[0] : null;
-        if (slot is null)
-        {
-            responder.Cancel(description.RequestId);
-            return;
-        }
-        var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
-
-        // The mulligan panel owns this answer: park the request and let the UI open. The engine
-        // waits at Targeting() until the panel submits; nothing is decided here.
-        if (InteractiveMulligan && slot.Kind == TargetSlotKind.MulliganSelect)
-        {
-            _pendingMulligan = (description, responder);
-            MulliganRequested?.Invoke();
-            return;
-        }
-
-        if (_pendingSelection is { Length: > 0 })
-        {
-            var picked = allowed.Where(r => _pendingSelection.Contains(OrcRefs.KeyOf(r.Value))).ToArray();
-            if (picked.Length > 0)
-            {
-                responder.Complete(description.RequestId, Map(slot.Name, picked));
-                return;
-            }
-        }
-        // A placement or move: honour the slot the player dropped on. The exact slot may be occupied
-        // (adjacent units), so the nearest empty slot wins instead of a fixed side.
-        if (_pendingSlot is { } index)
-        {
-            var chosen = allowed
-                .Select(r => (Ref: r, Slot: OrcRefs.EntityOf(r.Value) as Slot))
-                .Where(x => x.Slot is not null)
-                .OrderBy(x => Math.Abs(x.Slot!.Index - index))
-                .Select(x => x.Ref)
-                .FirstOrDefault();
-            if (chosen is not null)
-            {
-                responder.Complete(description.RequestId, Map(slot.Name, [chosen]));
-                return;
-            }
-        }
-        // No pending player intent: the shared conservative policy answers (mulligan keeps, else first allowed).
-        OrcTargeterBridge.AutoRespond(description, responder);
-    }
-
-    private static IReadOnlyDictionary<string, IReadOnlyList<Ref<Entity>>> Map(string slot, IEnumerable<Ref<Entity>> selected)
-        => new Dictionary<string, IReadOnlyList<Ref<Entity>>>(StringComparer.Ordinal) { [slot] = selected.ToArray() };
-
-    private IReadOnlyList<object?> CollectInteractable()
-    {
-        if (_match is null || _match.State == MatchState.Preparing) return Array.Empty<object?>();
-        var references = new List<object?>();
-        foreach (var line in new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine })
-            foreach (var slot in line)
-                references.Add(slot.Ref);
-        foreach (var player in _match.Players) references.Add(player.Hq.Ref);
-        return references;
-    }
-
-    public void Stop()
-    {
-        _host?.Detach();
-        _host = null;
-        _match = null;
-        _pendingMulligan = null;
-        _selfMulligan = null;
-    }
+        null or "" => "引擎拒绝了该操作",
+        _ => reason,
+    };
 }
