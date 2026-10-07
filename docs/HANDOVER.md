@@ -1,4 +1,4 @@
-# 交接文档 — 对战 UI（OrC-KSD.Godot）
+﻿# 交接文档 — 对战 UI（OrC-KSD.Godot）
 
 交接日期：2026-10-06。当前版本：`0.0.0-alpha.11`。
 
@@ -31,54 +31,53 @@
 
 文档索引：`ENGINE_BRIDGE.md`（桥接全程+引擎缺口）、`KARDS_SELECTION_RESEARCH.md`（原版交互调研，含 2026-10-06 完整对局录像逐帧核验：换牌面板、瞄准灰化、回合横幅等）、`BATTLE_STAGE5.md`（换牌面板交付）、`VERSIONING.md`。
 
-## 3.暂缓：P9 受击接真实伤害 + 攻击演出（改动已剥离，未提交）
+## 3. P9 已完成（作为 P11-1 的一部分）
 
-### 结论：不是死锁，是 testhost 崩溃
+**旧结论「testhost 崩溃、疑似引擎栈溢出」已证伪三次**，最终真因是测试自身写错：
 
-2026-10-06 复现并定位（原交接文档的判断有误，更正如下）：
+- `BeginUnitPrePlayAsync` 会在 `SingleSelect` 槽位上 **park 等玩家选择**
+  （`PlayManager` 类注释里写明了会进交互）。
+- 探针的 `OrcTargeterBridge` 只记录请求、从不调 `OrcTargeterBridge.AutoRespond` 提交答案
+  → 引擎无限等待 → testhost 挂起。**不是引擎 bug。**
+- 更早两次误判（"Initialize 之前访问 Players"、"引擎目标解析挂死"）也都是探针自身缺陷。
 
-- **现象**：`dotnet test --filter ~AttackImpacts` 报"测试主机进程崩溃"，不是挂起。
-  `--blame --blame-hang-timeout60s` 产出166MB 转储（`tests/TestResults/`，已 gitignore）。
-- **面包屑推翻旧结论**：旧文档称"连第一行 `Mark("test entered")` 都没出现，
-  推断卡在 `new Match(...)` 构造"。实测面包屑**完整走到 `mulligan done`**，
-  说明 `new Match`、`InitializeAsync`、读手牌、`MulliganDone` 全部正常完成。
-- **实际卡点**：崩在下一行 `match.PlayManager.BeginUnitPrePlayAsync(unit)`（部署）。
-  `OrcOpponentDriver` 尚未被调用，不是嫌疑。转储分析未取到托管栈（进程直接死，
-  疑似栈溢出级），指向引擎侧 EffectParsing/EffectRuntime 装配。
-- **`seed` 不是原因**：`seed: 11` 改`seed: 7`（与通过的Mulligan 测试一致）后仍崩溃。
-- **引擎侧待查**：`Orc.Game` 中 `PlayManager.BeginUnitPrePlayAsync` 的执行路径，
-  与 a24ef2d 新增的效果解析流水线的关系。此项属引擎范畴，不阻塞 UI 发版。
+**P9 未按原计划恢复，而是作废重写**：旧实现基于 `stat` 差值倒推伤害，
+而引擎新信号 `unit.damage.dealt{Unit, Card, Amount}` 直接携带攻击者与真实伤害。
+重写时还发现更深的问题：**`card.damaged` 信号从未被消费**（翻译器只认 `card.stat.changed`），
+导致每次攻击 HQ 都产生 0 个 impact。现已修复，见 P11-1（提交 `ca6e172`）。
 
-### 已剥离的改动（保存在 `artifacts/p9-worktree-backup.patch`，695 行）
+**教训**：写测试前先看 `tests/OrcBridgeTests.cs` 里同类测试怎么写，照抄就不会错；
+别自己发明调用序列。诊断前读引擎源码（含注释）+ grep 项目内已有辅助方法，再写探针。
 
-| 文件 | 内容 |
-|---|---|
-| `proto/contracts/UiPresentation.cs` | `UiOrderImpact.Source`（攻击者视图，null=无弹道） |
-| `proto/core/UiSnapshots.cs` | `UiSnapshots.FreezeImpact` 冻结 Source |
-| `proto/bridge/.../OrcUpdateTranslator.cs` | `card.damaged`（用引擎 `Amount`，不再 diff 倒推）、`unit.acted`、`PairActor` 段内配对 |
-| `proto/ui/anim/BattleCombat.cs` | `PresentAssaultAsync`：按兵种弹道（机枪连射/坦克炮弹/火炮抛物线/投弹）逐目标开火 + 命中红字 |
-| `proto/ui/screens/BattleScreen.cs` | 按 Source 分组、按段序播放 |
-| `tests/OrcBridgeTests.cs` | `AttackImpactsCarryTheEngineAmountAndThePairedAttacker`（真引擎全链路断言） |
+## 4. 引擎能力与UI 消费状况（引擎已同步到 `40bb95b`）
 
-恢复方式：`git apply artifacts/p9-worktree-backup.patch`（需先解决与拍桌改动的重叠）。
+- `GameUpdates` 共 45 条信号，UI 已消费：`card.damaged`、`unit.damage.dealt`、
+  `slot.gained/lost/changed`、`point.gained/lost/changed`（P11-3，**已按来源处理避免重复播放**）、
+  `counter.triggered`、`unit.combat.survived` 尚待消费。
+- 效果解析流水线（词表 JSON + 模板 + csx）：纯引擎内部，UI 无 API 面。
 
-> 该测试还应加一道保险：`await parked.Task` 换成
-> `Task.WhenAny(parked.Task, Task.Delay(20s))` 并在超时时抛 `TimeoutException`，
-> 避免请求未park 时永久挂起整个测试进程。
+### 真正的缺口：支援线与钳击 🔴
 
-### P9 完成标准（引擎侧修复后再继续）
+引擎有完整钳击体系，但 **UI 完全看不到**：
 
-1. 引擎 `BeginUnitPrePlayAsync` 的崩溃修复后，42/42 测试全绿
-2. `VerifyBridgeAsync` 补断言：攻击 HQ 的 impact 有 `Source` 且 `Damage == 20 - hqHealth`
-3. `tools/run.ps1 -Verify` 全绿（MULLIGAN/BRIDGE/UI_VERIFY_OK）
-4. 可选：`-Capture` 加攻击弹道帧
-5. 另开阶段发版（`alpha.11` 已用于拍桌重做）
+- `Battlefield.PlayerASupportLine` / `PlayerBSupportLine`：各 4 槽，仅 `[0]` 被 HQ 占位
+- `PincerSystem` / `PincerKeywordComponent`：配对关系在 `internal PincerPair`
+- **`GameUpdates` 里钳击信号为 0**；`PincerRules` 唯一入口 `TryFormPairAsync` 是 `internal`
 
-## 4. 引擎新能力（a24ef2d，UI 尚未消费的部分）
+结论：**钳击配对关系目前在 internal 边界内，桥接层读不到**。
+P12 若要播钳击演出，需要引擎侧暴露查询面或发信号——**开工前先确认，别假设**。
 
-- **新增 8 条信号**（`GameUpdates` 共 26 条）：`card.damaged {Card, Amount}`、`unit.acted {Unit}`（P9 已实现但暂缓，见 §3）；`slot.gained/lost/changed`、`point.gained/lost/changed`（E1-25：槽/点分离，回合开始递增只发 `slot.changed`，打牌扣费现在也走 `point.changed`——**翻译器后续要按来源处理，避免演出重复**）
-- 效果解析流水线（词表 JSON+模板+csx）：纯引擎内部，UI 无 API 面
-- 待办遗留（按优先级）：**交互式选择第二段**（指向性指令拖拽打出、部署带指向自动弹箭头——原版实例待补证，见调研文档 §6）、多选候选面板（`PendingChoices` 仍自动应答）、资源条动画接 `point/slot.changed`、换牌补抽飞入演出（`MulliganReturnAsync/EnemyAsync` 已写好未接）、卡图映射
+UI 侧现状：`BattleScreen` 只渲染 HQ 占位的前置槽，其余 3 个前置位没有视图，
+`MoveUnit(uid, "supportline", slot)` 没有任何发出路径。**整类前置卡牌在 UI 里没法用。**
+
+### 其余待办
+
+- 交互式选择第二段（指向性指令拖拽打出、部署带指向自动弹箭头——原版实例待补证，
+  见 `KARDS_SELECTION_RESEARCH.md` §6）
+- 多选候选面板（`PendingChoices` 仍走 `AutoRespond` 取第一个合法候选）
+- 换牌补抽飞入演出（`MulliganReturnAsync` / `EnemyAsync` 已写好未接）
+- 🔴 **`TurnBannerAsync` 是死代码**：有定义零调用点，回合横幅从未播放过。
+  接上或删掉，别留着假装有
 
 ## 5. 操作手册
 
