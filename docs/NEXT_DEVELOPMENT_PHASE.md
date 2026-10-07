@@ -1,5 +1,7 @@
 # 下一开发阶段：基于 OrC-KSD 的真实对战闭环
 
+最新增量：6B2 代表指令效果、条件反制与随机发牌已交付 `0.0.0-alpha.13`，支持集为 21 种，生产牌组恢复 30 张。下一步扩展已审核效果，并核对部署打断、亡计打断、致命攻击转移所需的引擎接口；疲劳及完整热座换牌仍未完成。详细支持边界见 [STAGE_6B2_ACCEPTANCE.md](STAGE_6B2_ACCEPTANCE.md)。下文阶段拆分与旧状态保留作规划依据。
+
 日期：2026-10-07。状态：6A 当前引擎可支持的客户端修复已实施；6B1 卡池准入审核与安全组牌已完成，版本 `0.0.0-alpha.12`；下一子阶段是 6B2 效果转换装配。段完成历史快照仍受上游限制，6C–6D 尚未完成。调研依据：[KARDS_RESEARCH_2026-10-07.md](KARDS_RESEARCH_2026-10-07.md)。验收见 [STAGE_6A_ACCEPTANCE.md](STAGE_6A_ACCEPTANCE.md)、[STAGE_6B1_ACCEPTANCE.md](STAGE_6B1_ACCEPTANCE.md)，接入基线见 [ENGINE_INTEGRATION_BASELINE.md](ENGINE_INTEGRATION_BASELINE.md)。
 
 目标：玩家通过真实输入完成换牌、部署、移动、攻击、已支持的指令与选择，并能到达真实终局；桥接正确处理事件顺序、取消、隐藏信息与引擎升级。阶段编号采用 6A–6D，避免与现有 P13/P14 编号混淆。

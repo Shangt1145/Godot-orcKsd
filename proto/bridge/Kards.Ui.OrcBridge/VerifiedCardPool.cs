@@ -11,8 +11,8 @@ namespace Kards.Ui.OrcBridge;
 /// <summary>Explicitly reviewed source declarations. Structural compilation alone is never admission.</summary>
 public static class VerifiedCardPool
 {
-    public const string ReviewVersion = "6B1-2026-10-07";
-    public const int ValidationDeckSize = 24; // Nine complete definitions cannot fill the normal 30-card policy.
+    public const string ReviewVersion = "6B2-2026-10-07";
+    public const int ValidationDeckSize = 24; // Retained for the 6B1 fixture; production now uses DeckRules.DeckSize.
     private sealed record Review(string CardId, string Sha256);
     private static readonly IReadOnlyDictionary<string, string> Reviews = LoadReviews();
 
@@ -30,13 +30,14 @@ public static class VerifiedCardPool
         c.Keywords, Values = c.KeywordValues.OrderBy(p => p.Key, StringComparer.Ordinal).ToArray()
     });
 
-    public static (IReadOnlyList<CardDefinitionEntry> Entries, UiCardPoolReport Report) Compile(
+    public static (IReadOnlyList<CardDefinitionEntry> Entries, UiCardPoolReport Report,
+        IReadOnlyDictionary<string, JsonElement> Effects) Compile(
         IReadOnlyList<UiCardDefinition> cards, string sourceDirectory)
     {
         // Source declarations remain in the import layer, not in UI definitions or runtime effects.
         var sourceCatalog = new CardCatalog(); sourceCatalog.Load(sourceDirectory);
         var definitions = sourceCatalog.Cards.ToDictionary(c => c.CardId, StringComparer.Ordinal);
-        var sources = new Dictionary<string, (string Hash, bool Effects)>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, (string Hash, bool Effects, JsonElement Declaration)>(StringComparer.Ordinal);
         foreach (var file in Directory.EnumerateFiles(sourceDirectory, "*.json").OrderBy(p => p, StringComparer.Ordinal))
         {
             using var document = JsonDocument.Parse(File.ReadAllText(file));
@@ -46,10 +47,11 @@ public static class VerifiedCardPool
                 var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(entry.Value.GetRawText())));
                 var effects = !entry.Value.TryGetProperty("effects", out var effectsValue)
                     || effectsValue.ValueKind != JsonValueKind.Array || effectsValue.GetArrayLength() != 0;
-                if (!sources.TryAdd(entry.Name, (hash, effects))) throw new InvalidDataException($"Duplicate source card: {entry.Name}");
+                if (!sources.TryAdd(entry.Name, (hash, effects, entry.Value.Clone()))) throw new InvalidDataException($"Duplicate source card: {entry.Name}");
             }
         }
         var accepted = new List<CardDefinitionEntry>(); var rows = new List<UiCardPoolRow>(); var structural = 0;
+        var plans = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var card in cards.OrderBy(c => c.CardId, StringComparer.Ordinal))
         {
             var representable = CardPoolCompiler.TryCompile(card, out var compiled, out var reason);
@@ -61,18 +63,24 @@ public static class VerifiedCardPool
             { support = UiCardSupport.SourceChanged; reason = "Source declaration is missing."; }
             else if (DefinitionSignature(card) != DefinitionSignature(original))
             { support = UiCardSupport.SourceChanged; reason = "UI definition differs from its source declaration."; }
-            else if (source.Effects) { support = UiCardSupport.Unsupported; reason = "Effect declarations are not assembled in this stage."; }
-            else if (card.CardType != "unit" || card.HasVariableStats || card.Cost is null or < 0
-                || card.BaseAttack is null or < 0 || card.BaseDefense is null or <= 0 || card.BaseOpCost is null or < 0
-                || !Enum.TryParse<UnitType>(card.UnitType, true, out var unitType) || !Enum.IsDefined(unitType))
+            else if (source.Effects && !SourceEffectAssembly.Supports(card.CardId))
+            { support = UiCardSupport.Unsupported; reason = "Effect declaration has no reviewed complete engine adapter."; }
+            else if (card.HasVariableStats || card.Cost is null or < 0
+                || (card.CardType == "unit" && (card.BaseAttack is null or < 0 || card.BaseDefense is null or <= 0 || card.BaseOpCost is null or < 0
+                || !Enum.TryParse<UnitType>(card.UnitType, true, out var unitType) || !Enum.IsDefined(unitType))))
             { support = UiCardSupport.Unsupported; reason = "Incomplete stats, variable stats, category or unit type."; }
             else if (!Reviews.TryGetValue(card.CardId, out var reviewedHash))
             { reason = "Not in the reviewed semantic support set."; }
             else if (reviewedHash != source.Hash)
             { support = UiCardSupport.SourceChanged; reason = "Reviewed source changed; review it before admission."; }
-            else { support = UiCardSupport.Verified; reason = "Reviewed base stats and supported engine keywords; no scripted effects."; accepted.Add(compiled!); }
+            else
+            {
+                support = UiCardSupport.Verified; accepted.Add(compiled!);
+                reason = source.Effects ? "Reviewed source effects assembled through engine targeting and runtime." : "Reviewed base stats and engine keywords.";
+                if (source.Effects) plans.Add(card.CardId, source.Declaration.GetProperty("effects").Clone());
+            }
             rows.Add(new(card.CardId, card.Name, support, reason!));
         }
-        return (accepted.AsReadOnly(), new(ReviewVersion, cards.Count, structural, rows.AsReadOnly()));
+        return (accepted.AsReadOnly(), new(ReviewVersion, cards.Count, structural, rows.AsReadOnly()), plans);
     }
 }

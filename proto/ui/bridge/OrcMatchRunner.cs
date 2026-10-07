@@ -19,6 +19,8 @@ public sealed class OrcMatchRunner
     private bool _stopped;
 
     public bool IsRunning => _session is not null;
+    public bool IsSubmitting => _session?.IsSubmitting == true;
+    public bool TargetPending => _session?.TargetPending == true;
     public string MatchId { get; } = $"orc-{Guid.NewGuid():N}";
 
     /// <summary>The opening hand is answered through the panel rather than kept automatically.</summary>
@@ -75,6 +77,8 @@ public sealed class OrcMatchRunner
 
     /// <summary>Raised when the engine parks on a request the UI must answer (the mulligan panel).</summary>
     public event Action? MulliganRequested;
+    public event Action<UiTargetRequest, IUiTargetResponder>? TargetRequested;
+    public event Action? TargetClosed;
 
     public event Action<string>? HintRequested;
 
@@ -88,12 +92,12 @@ public sealed class OrcMatchRunner
         if (CatalogCards is { Count: > 0 })
         {
             session = await OrcMatchSession.CreateFromCatalogAsync(CatalogCards,
-                seed: DeckSeed ?? 20261005, matchId: MatchId, fallbackCardId: InfantryId, artLookup: ArtLookup, ct: ct,
+                seed: DeckSeed ?? Random.Shared.Next(), matchId: MatchId, fallbackCardId: InfantryId, artLookup: ArtLookup, ct: ct,
                 openingHand: OpeningHand, sourceDirectory: CatalogSourceDirectory);
         }
         else
         {
-            session = await OrcMatchSession.CreateDefaultProbeAsync(InfantryId, 20, seed: DeckSeed ?? 20261005,
+            session = await OrcMatchSession.CreateDefaultProbeAsync(InfantryId, 20, seed: DeckSeed ?? Random.Shared.Next(),
                 matchId: MatchId, artLookup: ArtLookup, ct: ct);
         }
         if (_stopped) { session.Dispose(); return; }
@@ -105,6 +109,8 @@ public sealed class OrcMatchRunner
         session.Host.ErrorRaised += message => ErrorRaised?.Invoke(message);
         // The engine parks on the mulligan slot; that is the moment the panel must open.
         session.MulliganRequested += () => MulliganRequested?.Invoke();
+        session.TargetRequested += (request, responder) => TargetRequested?.Invoke(request, responder);
+        session.TargetClosed += () => TargetClosed?.Invoke();
 
         Publish();
 
@@ -137,7 +143,7 @@ public sealed class OrcMatchRunner
     public UiMatchView? CurrentView => _session?.View;
 
     /// <summary>Actions for the seat on screen, so a hotseat player is never offered the other's moves.</summary>
-    public UiBattleActions CurrentActions => _session?.Actions ?? new();
+    public UiBattleActions CurrentActions => _session?.TargetPending == true ? new() : _session?.Actions ?? new();
 
     public event Action<UiCommand>? CommandRefused;
 
@@ -186,7 +192,7 @@ public sealed class OrcMatchRunner
                 HintRequested?.Invoke("当前阶段不接受该操作");
                 break;
             case UiSubmitOutcome.UnknownCard:
-                HintRequested?.Invoke("找不到该单位");
+                HintRequested?.Invoke("找不到该卡牌");
                 break;
             case UiSubmitOutcome.Rejected:
                 HintRequested?.Invoke(Reason(session.LastRejectionReason));
@@ -232,6 +238,8 @@ public sealed class OrcMatchRunner
         "SelectedSlotUnavailable" => "所选位置不可用",
         "SelectionRequired" => "请指定目标或位置",
         "SelectionRejected" => "引擎拒绝了这次选择",
+        "NoAvailableCandidates" => "没有符合这张指令条件的目标",
+        "PlayerCancelled" or "Cancelled" => "已取消出牌",
         "PrePlayPointShortage" or "CounterPointShortage" => "指挥点不足",
         "PrePlayNoAvailableSlots" => "没有可部署的位置",
         "PlayVerificationRejected" => "引擎未通过打出复验",

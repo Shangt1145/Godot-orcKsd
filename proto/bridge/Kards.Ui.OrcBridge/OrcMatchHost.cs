@@ -42,6 +42,11 @@ public sealed class OrcMatchHost
     }
 
     private readonly Func<string, string>? _artLookup;
+    internal void SetSourceDefinitions(IReadOnlyList<UiCardDefinition> definitions)
+    {
+        EnsureReaders(); _cards.SourceDefinitions = definitions.ToDictionary(c => c.CardId, StringComparer.Ordinal);
+        Refresh();
+    }
 
     /// <summary>
     /// Readers need the card library, which only exists once the match leaves <c>Preparing</c>.

@@ -203,7 +203,7 @@ public sealed record UiMatchView
 }
 
 public abstract record UiCommand;
-public sealed record PlayCard(string Uid, int? SupportIndex = null) : UiCommand;
+public sealed record PlayCard(string Uid, int? SupportIndex = null, string? TargetUid = null) : UiCommand;
 public sealed record MoveUnit(string Uid, string ToZone, int? SlotIndex = null) : UiCommand;
 /// <summary>
 /// A drag on a unit the player owns. The gesture is stated, the decision is not: the engine merges the

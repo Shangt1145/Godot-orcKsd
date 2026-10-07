@@ -58,8 +58,10 @@ public partial class BattleScreen
     public Vector2 GrabPoint(string uid)
     {
         if (!_cards.TryGetValue(uid, out var card)) return new Vector2(-1, -1);
-        var local = new Vector2(card.Size.X / 2, Mathf.Min(card.Size.Y / 2, 40));
-        return card.Position + local;
+        // Fan cards overlap and rotate. Press the exposed left strip in the card's actual
+        // transform instead of an unrotated centre that can hit its neighbour in a full hand.
+        var local = new Vector2(card.Mode == BattleCardMode.Hand ? 22 : card.Size.X / 2, Mathf.Min(card.Size.Y / 2, 40));
+        return _canvas.GetGlobalTransformWithCanvas().AffineInverse() * (card.GetGlobalTransformWithCanvas() * local);
     }
 
     /// <summary>Board-space centre of a card.</summary>

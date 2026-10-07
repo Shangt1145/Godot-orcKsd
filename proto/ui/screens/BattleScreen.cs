@@ -198,6 +198,7 @@ public partial class BattleScreen : Control
         _hotseat = new Control { Position = new(530, 92), Size = new(210, 92), ZIndex = 240, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
         _canvas.AddChild(_hotseat);
         InitializeMulligan();
+        InitializeTargetChoices();
         _canvas.GuiInput += BoardInput;
         Resized += FitBoard;
         VisibilityChanged += () => { if (!IsVisibleInTree()) CancelSelection(); };
@@ -442,7 +443,10 @@ public partial class BattleScreen : Control
         if (card.Mode == BattleCardMode.Field && !InteractionActions.Moves.Any(m => m.Uid == uid) && !InteractionActions.AttackPreviews.Any(p => p.AttackerUid == uid))
         { CancelGesture(); ShowDetail(card); Hint("此单位当前没有可用行动"); return; }
         _selected = uid; _detail.Visible = _inspectStats.Visible = false;
-        Hint(card.Mode == BattleCardMode.Hand ? "拖动卡牌到我方支援线部署；右键取消" : "拖动单位到前线移动，或拖到敌方卡牌发动攻击；右键取消");
+        Hint(card.Mode != BattleCardMode.Hand ? "拖动单位到前线移动，或拖到敌方卡牌发动攻击；右键取消"
+            : card.View.Definition.CardType == "counter" ? (InteractionCard(uid)?.IsCounterArmed == true ? "拖到战场取消反制，退还预留费用" : "拖到战场激活反制，满足条件后自动触发")
+            : card.View.Definition.CardType == "order" ? "拖到目标使用指令，或拖到战场后选择目标；右键取消"
+            : "拖动卡牌到我方支援线部署；右键取消");
         UpdateSelection();
     }
     private void CardPressed(BattleCard card, Vector2 viewportPosition)
@@ -548,6 +552,17 @@ public partial class BattleScreen : Control
     {
         ClearSlotHints();
         if (_selected is null) return;
+        if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" })
+        {
+            if (at.Y is >= 120 and <= 600 && InteractionActions.PlayableUids.Contains(_selected))
+            {
+                var target = _cards.Values.FirstOrDefault(c => c.View?.Zone != "hand"
+                    && new Rect2(c.Position, c.Size).HasPoint(at));
+                Submit(new PlayCard(_selected, TargetUid: target?.View?.Uid));
+            }
+            else { CancelGesture(); Hint("已取消，卡牌返回原位"); }
+            return;
+        }
         var pointed = _cards.Values.FirstOrDefault(c => c.View?.OwnerSide == "enemy" && new Rect2(c.Position, c.Size).HasPoint(at));
         if (pointed is not null)
         {
@@ -708,7 +723,8 @@ public partial class BattleScreen : Control
         _attackHints.Clear();
         var moving = _selected is not null && FrontBand.HasPoint(at)
             && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline");
-        var deploying = _selected is not null && SelfBand.HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected);
+        var deploying = _selected is not null && InteractionCard(_selected)?.Definition.CardType == "unit"
+            && SelfBand.HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected);
         // The union the engine will actually offer: where a unit can be put, and what it can be put on.
         // A drag shows both, because the gesture does not say which it is — the engine decides that from
         // the drop. Showing only the empty slots left the targets the unit can strike invisible.
@@ -800,6 +816,12 @@ public partial class BattleScreen : Control
 
     public override void _Input(InputEvent e)
     {
+        if (_choicePanel?.Visible == true)
+        {
+            if (e is InputEventKey { Keycode: Key.Escape, Pressed: true }
+                || e is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }) CancelTargetChoice();
+            return;
+        }
         if (!IsVisibleInTree() || _canvas is null) return;
         if (e is InputEventKey { Keycode: Key.Escape, Pressed: true } || e is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
         { CancelGesture(); return; }

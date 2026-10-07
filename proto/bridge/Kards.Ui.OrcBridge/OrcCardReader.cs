@@ -18,6 +18,7 @@ public sealed class OrcCardReader
 {
     private readonly CardLibrary _library;
     private readonly Func<string, string>? _artLookup;
+    internal IReadOnlyDictionary<string, UiCardDefinition>? SourceDefinitions { get; set; }
 
     /// <param name="artLookup">
     /// Maps a card id to a UI art path. The engine has no art concept, so the UI supplies its own
@@ -39,6 +40,7 @@ public sealed class OrcCardReader
     {
         var definition = card.Definition;
         var cardId = _library.TryGetRegisteredId(definition, out var id) ? id : definition.Name;
+        if (SourceDefinitions?.TryGetValue(cardId, out var source) == true) return source;
         return new UiCardDefinition
         {
             CardId = cardId,

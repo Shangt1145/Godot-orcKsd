@@ -22,7 +22,7 @@ public enum UiSubmitOutcome { Applied, NotYourTurn, WrongPhase, UnknownCard, Rej
 /// This exists so that "the UI depends on the engine" stays a fact about one file. Upstream changes
 /// land here instead of rippling into screens and widgets.
 /// </summary>
-public sealed class OrcMatchSession : IDisposable
+public sealed partial class OrcMatchSession : IDisposable
 {
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _commands = new(1, 1);
@@ -34,6 +34,9 @@ public sealed class OrcMatchSession : IDisposable
     private (TargetingRequestDescription Description, ITargetingResponder Responder)? _pendingMulligan;
     private string[]? _pendingSelection;
     private int? _pendingSlot;
+    private SourceEffectAssembly? _effects;
+    private bool _interactiveCommand;
+    private CancellationToken _activeCommandToken;
 
     private OrcMatchSession(OrcMatchHost host, Match match,
         Func<Match?, IReadOnlyList<object?>> interactables)
@@ -75,6 +78,8 @@ public sealed class OrcMatchSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _lifetime.Cancel();
+        CancelTargetChoice();
+        _effects?.Dispose();
         if (_pendingMulligan is { } pending) pending.Responder.Cancel(pending.Description.RequestId);
         _pendingMulligan = null;
         _mulliganRequest = null;
@@ -97,15 +102,22 @@ public sealed class OrcMatchSession : IDisposable
         IReadOnlyList<string>? openingHand = null, string? sourceDirectory = null)
     {
         if (sourceDirectory is null) throw new InvalidDataException("Catalog admission requires its source directory.");
-        var (pool, report) = VerifiedCardPool.Compile(cards, sourceDirectory);
+        var (pool, report, effects) = VerifiedCardPool.Compile(cards, sourceDirectory);
         if (pool.Count == 0) throw new InvalidDataException("No reviewed cards are available; probe fallback is not a catalog match.");
         if (openingHand is not null && openingHand.Any(id => !pool.Any(e => e.Id == id)))
             throw new InvalidDataException("The requested opening hand contains unreviewed cards.");
-        var deck = DeckBuilder.BuildVerified(pool, seed, VerifiedCardPool.ValidationDeckSize);
-        var session = await CreateAsync(pool, deck, deck, seed, matchId,
+        var deck = DeckBuilder.BuildVerified(pool, seed);
+        var opponentDeck = DeckBuilder.BuildVerified(pool, unchecked(seed + 1));
+        var session = await CreateAsync(pool, deck, opponentDeck, seed, matchId,
             artLookup: artLookup, ct: ct, openingHand: openingHand);
-        session.CardPoolReport = report;
-        return session;
+        try
+        {
+            session._effects = new SourceEffectAssembly(session.Match, effects, reason => session.LastRejectionReason ??= reason);
+            session._host.SetSourceDefinitions(cards);
+            session.CardPoolReport = report;
+            return session;
+        }
+        catch { session.Dispose(); throw; }
     }
 
     /// <summary>
@@ -279,6 +291,16 @@ public sealed class OrcMatchSession : IDisposable
         if (_disposed) { responder.Cancel(description.RequestId); return; }
         if (description.Slots.Count == 0) { ClearIntent(); Refuse(responder, description); return; }
         var slot = description.Slots[0];
+        if (slot.Kind == TargetSlotKind.OptionSelect)
+        {
+            if (_automaticChoice)
+            {
+                responder.Complete(description.RequestId, new Dictionary<string, IReadOnlyList<TargetSelection>>
+                    { [slot.Name] = [TargetSelection.FromIdentifier(slot.Options![0].Id)] });
+            }
+            else PresentTargetChoice(description, responder);
+            return;
+        }
         var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
 
         // 1) A target the player clicked: answer with exactly that reference.
@@ -311,6 +333,7 @@ public sealed class OrcMatchSession : IDisposable
 
         ClearIntent();
         if (_automaticChoice) OrcTargeterBridge.AutoRespond(description, responder);
+        else if (_interactiveCommand) PresentTargetChoice(description, responder);
         else { LastRejectionReason = "SelectionRequired"; Refuse(responder, description); }
     }
 
@@ -454,11 +477,14 @@ public sealed class OrcMatchSession : IDisposable
         {
             LastRejectionReason = null;
             ct = linked.Token;
+            _activeCommandToken = ct;
+            using var cancelChoice = ct.Register(CancelTargetChoice);
             if (Match.Phase != MatchPhase.Play) return UiSubmitOutcome.WrongPhase;
             if (!IsViewerOnTurn) return UiSubmitOutcome.NotYourTurn;
             switch (command)
             {
                 case PlayCard play:
+                    _pendingSelection = play.TargetUid is { } selected ? [selected] : null;
                     return await PlayAsync(play.Uid, play.SupportIndex, ct);
                 case MoveUnit move:
                 {
@@ -510,7 +536,10 @@ public sealed class OrcMatchSession : IDisposable
         catch (OperationCanceledException) { return UiSubmitOutcome.Interrupted; }
         finally
         {
+            CancelTargetChoice();
             ClearIntent();
+            _interactiveCommand = false;
+            _activeCommandToken = default;
             if (!_disposed) _host.CaptureCompletedActions();
             _commands.Release();
         }
@@ -521,6 +550,13 @@ public sealed class OrcMatchSession : IDisposable
 
     private async Task<UiSubmitOutcome> PlayAsync(string uid, int? supportIndex, CancellationToken ct)
     {
+        if (Resolve(uid) is CommandCard order)
+        {
+            _interactiveCommand = true;
+            return Report(await Match.PlayManager.BeginCommandPrePlayAsync(order, ct));
+        }
+        if (Resolve(uid) is CounterCard counter)
+            return Report(await Match.PlayManager.UseCounterAsync(counter, ct));
         if (Resolve(uid) is not UnitCard unit) return UiSubmitOutcome.UnknownCard;
         // The position is the player's, expressed through the engine's own interaction: its candidate set
         // for a support deployment is every empty slot of the line (Orc.Game Managers/PlayManager.cs, the

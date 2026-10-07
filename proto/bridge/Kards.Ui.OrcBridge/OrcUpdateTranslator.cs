@@ -80,6 +80,19 @@ public sealed class OrcUpdateTranslator
                 case GameUpdates.UnitDeployed:
                     AddDeployment(steps, payload, after);
                     break;
+                case GameUpdates.CardPlayed:
+                    if (PayloadCard(payload) is CommandCard order)
+                        steps.Add(new UiOrderPresentation(_cards.Read(order, viewer, "hand", 0), []));
+                    break;
+                case GameUpdates.CounterTriggered:
+                    if (PayloadCard(payload) is CounterCard counter)
+                    {
+                        var triggered = payload.GetValueOrDefault("UiCounterStage") as string == "triggered";
+                        var side = counter.Owner == viewer ? "self" : "enemy";
+                        var card = side == "self" || triggered ? _cards.Read(counter, viewer, "hand", 0) : null;
+                        steps.Add(new UiCounterPresentation(side, triggered ? UiCounterStage.Triggered : UiCounterStage.Armed, card));
+                    }
+                    break;
                 case GameUpdates.CardStatChanged:
                     AddImpact(impacts, payload, previous, after);
                     AppendNewImpacts(steps, impacts);
@@ -121,6 +134,9 @@ public sealed class OrcUpdateTranslator
                     impacts.First(paired => paired.Before.Uid == hit.Before.Uid)).ToArray() };
         // Deaths already play inside the impact presentation; never play them twice.
         steps.RemoveAll(step => step is UiRemovalPresentation removal && died.Contains(removal.Card.Uid));
+        foreach (var armed in previous.SelfHand.Where(c => c.IsCounterArmed))
+            if (after.SelfHand.Any(c => c.Uid == armed.Uid && !c.IsCounterArmed))
+                steps.Add(new UiCounterPresentation("self", UiCounterStage.Disarmed, armed));
         return new OrcTranslation(steps, impacts);
     }
 

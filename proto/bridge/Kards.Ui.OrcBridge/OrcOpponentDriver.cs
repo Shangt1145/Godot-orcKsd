@@ -49,6 +49,20 @@ public static class OrcOpponentDriver
             log?.Invoke($"deploy {card.Name} -> {play.Status} {play.FailureReason}");
             if (play.Status == PlayResultStatus.Success) return true;
         }
+        // Use source-assembled commands and reserve counters through the same engine entry points.
+        foreach (var card in opponent.Hand.OfType<CardBase>().ToArray())
+        {
+            if (card.Modifiers.GetEffectiveValue(CardStatFields.DeployCost) > opponent.Points) continue;
+            PlayResult? result = card switch
+            {
+                CommandCard order => await match.PlayManager.BeginCommandPrePlayAsync(order, ct),
+                CounterCard counter when !counter.GetData<CounterActivationData>().IsActive => await match.PlayManager.UseCounterAsync(counter, ct),
+                _ => null
+            };
+            if (result is null) continue;
+            actionCompleted?.Invoke();
+            if (result.IsSuccess) return true;
+        }
         // 2) Advance units that may move.
         foreach (var unit in BoardUnits(match, opponent))
         {

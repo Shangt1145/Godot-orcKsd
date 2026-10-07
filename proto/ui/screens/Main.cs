@@ -142,26 +142,29 @@ public partial class Main : Control
             CallDeferred(MethodName.CaptureReal);
         else if (args.Contains("--capture-placement"))
             CallDeferred(MethodName.CapturePlacement);
+        else if (args.Contains("--verify-orders"))
+            CallDeferred(MethodName.VerifyOrders);
+        else
+            _ = StartRealMatchAsync();
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>
     public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool hotseat = false,
-        int? deckSeed = null, bool demoOpeningHand = false, bool probe = false)
+        int? deckSeed = null, bool demoOpeningHand = false, bool probe = false, IReadOnlyList<string>? verificationHand = null)
     {
         StopRealMatch();
         var runner = new OrcMatchRunner
         {
             InteractiveMulligan = interactiveMulligan,
             ArtLookup = id => _artById.GetValueOrDefault(id, ""),
-            // Deal from the shipped catalog so a real match uses real cards; the runner falls back
-            // to its probe card when the catalog is missing, which keeps the verify paths working.
+            // Production uses the admitted source catalog; only explicit verification uses a probe.
             CatalogCards = probe ? null : _catalog.Cards,
             CatalogSourceDirectory = ProjectSettings.GlobalizePath("res://proto/data/nations"),
             Hotseat = hotseat,
             DeckSeed = deckSeed,
             // Pinning the hand is a demonstration aid, not the default: the verify and capture paths
             // need the engine's own deal, so they leave this off.
-            OpeningHand = demoOpeningHand ? new[] { "USG/units/_4", "av76/units/13", "deran/units/_6q", "av76/units/18" } : null,
+            OpeningHand = verificationHand ?? (demoOpeningHand ? new[] { "USG/units/_4", "av76/units/13", "deran/units/_6q", "av76/units/18" } : null),
         };
         BindRunner(runner);
         try { await runner.StartAsync(); }
@@ -175,7 +178,7 @@ public partial class Main : Control
         }
         if (_runner != runner || !IsInsideTree()) return;
         if (runner.CardPoolReport is { } report)
-            _battle.ShowHint($"审核支持集 {report.Verified} 种卡 · 验证牌组 24 张");
+            _battle.ShowHint($"可用 {report.Verified} 种卡 · 随机发牌 · 30 张牌组");
         _battle.ShowHotseatControls(hotseat, runner.ActiveSeat,
             () => runner.SwitchSeat(),
             () => runner.ActiveSeatOnTurn);
@@ -186,6 +189,9 @@ public partial class Main : Control
         _runner = runner;
         runner.ProjectionReady += (view, actions) => ApplyRunnerProjection(runner, view, actions);
         runner.MulliganRequested += () => { if (_runner == runner) _battle.ShowMulliganPanel(runner.CurrentView); };
+        runner.TargetRequested += (request, responder) => Callable.From(() =>
+        { if (_runner == runner && runner.TargetPending) _battle.ShowTargetChoice(request, responder); else responder.Cancel(request.RequestId); }).CallDeferred();
+        runner.TargetClosed += () => Callable.From(() => { if (_runner == runner) _battle.CloseTargetChoice(); }).CallDeferred();
         runner.PresentationReady += (resolution, actions) =>
         {
             if (_runner != runner) return;
@@ -226,6 +232,7 @@ public partial class Main : Control
         _presentations?.Dispose();
         _presentations = null;
         runner?.Stop();
+        _battle?.CloseTargetChoice();
         if (GodotObject.IsInstanceValid(_battle)) _battle.CancelSelection();
     }
 
@@ -558,6 +565,7 @@ public partial class Main : Control
             await VerifyMulliganPanelAsync();
             await VerifyBridgeAsync();
             await VerifyCardPoolStageAsync();
+            await VerifyOrdersStageAsync();
             await VerifyNonBlockingInputAsync();
             OpenGallery();
             // Restoring the shell changes the container's transform; measure actors only after layout settles.
