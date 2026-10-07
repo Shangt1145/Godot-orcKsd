@@ -69,7 +69,6 @@ public sealed class OrcMatchSession
     public static async Task<OrcMatchSession> CreateProbeAsync(
         string cardId, int copies, int seed, string matchId, int viewerIndex = 0,
         Func<Match?, IReadOnlyList<object?>>? interactables = null,
-        Action<Orc.Game.Targeting.TargetingRequestDescription, Orc.Game.Targeting.ITargetingResponder>? present = null,
         Func<string, string>? artLookup = null, CancellationToken ct = default)
     {
         var definitions = new[]
@@ -78,24 +77,38 @@ public sealed class OrcMatchSession
                 "步兵", deployCost: 1, operateCost: 1, attack: 2, defense: 5,
                 unitTypes: [UnitType.Infantry], faction: Faction.Germany, rarity: Rarity.Standard))
         };
-        return await CreateAsync(definitions, copies, copies, seed, matchId, viewerIndex,
-            interactables, present, artLookup, ct);
+        var probe = Enumerable.Repeat(cardId, copies).ToArray();
+        return await CreateAsync(definitions, probe, probe, seed, matchId, viewerIndex,
+            interactables, artLookup, ct);
     }
 
     /// <summary>
     /// Creates and initialises a match. Each side gets its own card list because deck entries bind
     /// to card instances at load time.
     /// </summary>
+    /// <summary>
+    /// Creates and initialises a match over a real deck. Every id in either deck must have a
+    /// definition. Each side gets its own CardList because deck entries bind to card instances at
+    /// load time — sharing one would bind both sides to the same card objects.
+    /// </summary>
     public static async Task<OrcMatchSession> CreateAsync(
-        IReadOnlyList<CardDefinitionEntry> definitions, int deckACopies, int deckBCopies,
+        IReadOnlyList<CardDefinitionEntry> definitions,
+        IReadOnlyList<string> deckA, IReadOnlyList<string> deckB,
         int seed, string matchId, int viewerIndex = 0,
         Func<Match?, IReadOnlyList<object?>>? interactables = null,
-        Action<Orc.Game.Targeting.TargetingRequestDescription, Orc.Game.Targeting.ITargetingResponder>? present = null,
         Func<string, string>? artLookup = null, CancellationToken ct = default)
     {
-        // Each side owns its own CardList instance: deck entries are bound to card instances at load time.
-        var deckA = new Orc.Game.Collections.CardList(Enumerable.Repeat(definitions[0].Id, deckACopies));
-        var deckB = new Orc.Game.Collections.CardList(Enumerable.Repeat(definitions[0].Id, deckBCopies));
+        if (deckA.Count == 0 || deckB.Count == 0)
+            throw new ArgumentException("Both decks must have at least one card.", nameof(deckA));
+        var known = definitions.Select(d => d.Id).ToHashSet(StringComparer.Ordinal);
+        var missing = deckA.Concat(deckB).Where(id => !known.Contains(id)).Distinct().ToArray();
+        if (missing.Length > 0)
+            throw new ArgumentException($"The deck references undefined card(s): {string.Join(", ", missing)}", nameof(deckA));
+
+        var listA = new Orc.Game.Collections.CardList();
+        listA.AddRange(deckA);
+        var listB = new Orc.Game.Collections.CardList();
+        listB.AddRange(deckB);
         Match? match = null;
         Func<Match?, IReadOnlyList<object?>> collect = interactables ?? DefaultInteractables;
         OrcMatchSession? session = null;
@@ -111,7 +124,7 @@ public sealed class OrcMatchSession
             }
             session.AnswerParked(d, r);
         });
-        match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge);
+        match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge);
         var host = new OrcMatchHost(match, matchId, viewerIndex, artLookup);
         session = new OrcMatchSession(host, match, collect) { MatchId = matchId };
         await host.InitializeAsync(ct);
