@@ -214,11 +214,14 @@ public partial class BattleScreen : Control
     {
         if (_canvas is null || Size.X <= 0 || Size.Y <= 0) return;
         var scale = Math.Min(Size.X / BoardSize.X, Size.Y / BoardSize.Y);
+        _canvas.Rotation = 0;
         _canvas.Scale = Vector2.One * scale; _canvas.Position = (Size - BoardSize * scale) / 2;
     }
     public void ResetDemo()
     {
         StopDemoPlayback();
+        ClearRemovalActors();
+        _deploymentOrigins.Clear();
         _liveInputView = null; _liveInputActions = null;
         MulliganProjection("demo"); // the panel must never outlive the match it belongs to
         _frontOrder.Clear();         // the arrangement belongs to the board being reset
@@ -232,6 +235,8 @@ public partial class BattleScreen : Control
     public void ApplyProjection(UiMatchView state, UiBattleActions actions)
     {
         StopDemoPlayback();
+        ClearRemovalActors();
+        _deploymentOrigins.Clear();
         _liveInputView = null; _liveInputActions = null;
         _frontPlacements.Clear(); ReleaseGestureWaiter();
         if (_state?.MatchId != state.MatchId) _frontOrder.Clear();
@@ -245,15 +250,18 @@ public partial class BattleScreen : Control
     {
         foreach (var tween in _tweens) if (GodotObject.IsInstanceValid(tween)) tween.Kill();
         _tweens.Clear(); _handMotion.Clear();
+        FitBoard();
         foreach (var ghost in _ghosts) if (GodotObject.IsInstanceValid(ghost) && !ghost.IsQueuedForDeletion()) { ghost.GetParent()?.RemoveChild(ghost); ghost.QueueFree(); }
         _ghosts.Clear(); _busy = false;
         foreach (var c in _cards.Values) { c.Position = c.RestPosition; c.Rotation = c.RestRotation; c.Scale = Vector2.One; c.Visible = true; }
+        RestorePendingDeploymentPoses();
     }
     private void Render(UiMatchView state, UiBattleActions actions, bool animate, string? deploymentActorUid = null)
     {
         _generation++;
         var previous = _cards.ToDictionary(p => p.Key, p => (RestPosition: p.Value.Position, p.Value.Size, RestRotation: p.Value.Rotation, p.Value.Mode, p.Value.View));
         FinishMotion();
+        SyncRemovalActors(state);
         _selected = null; _pressed = null; _hovered = null; _dragging = false; _aim.Visible = false;
         _detail.Visible = _inspectStats.Visible = false;
         _hint.Visible = false;
@@ -301,11 +309,13 @@ public partial class BattleScreen : Control
             restart.AddThemeColorOverride("font_color", new("e9e3cc"));
             restart.Pressed += () => { if (_usingDemo) ResetDemo(); else RealMatchRequested?.Invoke(); }; _result.AddChild(restart);
         }
-        _paper.FrontOwnedBySelf = state.SelfLine.Any(c => c.Zone == "frontline");
-        _paper.FrontOccupied = state.SelfLine.Concat(state.EnemyLine).Any(c => c.Zone == "frontline"); _paper.QueueRedraw();
-        AddRow(state.EnemyHq, state.EnemyLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), EnemyArea);
-        AddRow(null, OrderFront(state.EnemyLine.Concat(state.SelfLine).Where(c => c.Zone == "frontline")), FrontArea);
-        AddRow(state.SelfHq, state.SelfLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), SelfArea);
+        var selfLine = state.SelfLine.Where(c => !_removalActors.ContainsKey(c.Uid)).ToArray();
+        var enemyLine = state.EnemyLine.Where(c => !_removalActors.ContainsKey(c.Uid)).ToArray();
+        _paper.FrontOwnedBySelf = selfLine.Any(c => c.Zone == "frontline");
+        _paper.FrontOccupied = selfLine.Concat(enemyLine).Any(c => c.Zone == "frontline"); _paper.QueueRedraw();
+        AddRow(state.EnemyHq, enemyLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), EnemyArea);
+        AddRow(null, OrderFront(enemyLine.Concat(selfLine).Where(c => c.Zone == "frontline")), FrontArea);
+        AddRow(state.SelfHq, selfLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), SelfArea);
         var hand = state.SelfHand.OrderBy(c => c.SlotIndex).ToArray();
         var spacing = Math.Min(98, 590f / Math.Max(1, hand.Length - 1));
         for (var i = 0; i < hand.Length; i++)
@@ -352,6 +362,7 @@ public partial class BattleScreen : Control
                 }
             }
         }
+        RestorePendingDeploymentPoses();
         UpdateSelection();
     }
     /// <summary>
@@ -435,6 +446,7 @@ public partial class BattleScreen : Control
     }
     public void SelectCard(string uid)
     {
+        if (_deploymentOrigins.ContainsKey(uid)) return;
         if (!_cards.TryGetValue(uid, out var card) || card.View?.Visibility != Visibility.Full) return;
         if (InteractionCard(uid) is null) return;
         if (card.View.OwnerSide != "self" || card.View.IsHq) return;
@@ -471,6 +483,7 @@ public partial class BattleScreen : Control
     }
     private void CardHovered(BattleCard card, bool on)
     {
+        if (_deploymentOrigins.ContainsKey(card.Uid)) return;
         if (on)
         {
             _hovered = card;
@@ -548,9 +561,10 @@ public partial class BattleScreen : Control
         if (e is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } || _pressed is not null) return;
         if (_selected is not null) CancelGesture();
     }
-    private void TryDrop(Vector2 at)
+    private void TryDrop(Vector2 at, DeploymentPose? releasedPose = null)
     {
         ClearSlotHints();
+        if (!IsFriendlyTurn) { CancelGesture(); return; }
         if (_selected is null) return;
         if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" })
         {
@@ -573,6 +587,11 @@ public partial class BattleScreen : Control
         }
         else if (SelfBand.HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected))
         {
+            if (releasedPose is { } pose && InteractionCard(_selected)?.Definition.CardType == "unit")
+            {
+                _deploymentOrigins[_selected] = pose;
+                RestorePendingDeploymentPoses();
+            }
             Submit(new PlayCard(_selected, DropSlot(at.X, InteractionView.SupportLineSlotCount,
                 _cards.Values.Where(c => c.View?.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support")), SupportOccupancy())));
         }
@@ -858,16 +877,18 @@ public partial class BattleScreen : Control
         if (e is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false } release && _pressed is not null)
         {
             var wasDragging = _dragging;
+            var releasedPose = wasDragging && _pressed.Mode == BattleCardMode.Hand ? DeploymentPose.From(_pressed) : (DeploymentPose?)null;
             _pressed.Position = _pressed.RestPosition; _pressed.Rotation = _pressed.RestRotation;
             _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
             _pressed = null; _dragging = false;
-            if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position);
+            if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position, releasedPose);
             else ClearSlotHints();
             ReleaseGestureWaiter();
         }
     }
     private void Submit(UiCommand command)
     {
+        if (!IsFriendlyTurn) { RefuseCommand(command); CancelGesture(); return; }
         if (!_usingDemo) { CancelGesture(); CommandRequested?.Invoke(command); return; }
         CancelGesture();
         if (command is CommandUnit gesture)
@@ -886,10 +907,13 @@ public partial class BattleScreen : Control
         }
         var oldCard = command switch { PlayCard p => InteractionCard(p.Uid), MoveUnit m => InteractionCard(m.Uid), _ => null };
         if (!_demo.TrySubmit(command, out var message)) { RefuseCommand(command); Hint("当前无法执行该行动"); return; }
-        QueueDemoPlayback(); Hint(message);
+        var deployedUnit = command is PlayCard played && oldCard?.Definition.CardType == "unit"
+            ? _demo.State.SelfLine.FirstOrDefault(c => c.Uid == played.Uid) : null;
+        QueueDemoPlayback(deployment: deployedUnit, direct: command is PlayCard or MoveUnit); Hint(message);
         if (oldCard is not null)
         {
-            _sfx.Play(command is PlayCard ? "deploy" : "move", oldCard); Record(oldCard, message);
+            if (deployedUnit is null) _sfx.Play(command is PlayCard ? "deploy" : "move", oldCard);
+            Record(oldCard, message);
         }
     }
     private async void EndTurnClicked()
@@ -900,7 +924,7 @@ public partial class BattleScreen : Control
         var epoch = _demoPlaybackEpoch;
         await ToSignal(GetTree().CreateTimer(1.1), SceneTreeTimer.SignalName.Timeout);
         if (!IsInsideTree() || epoch != _demoPlaybackEpoch || !_usingDemo) return;
-        _demo.BeginNextTurn(); QueueDemoPlayback(); Hint("我方回合，资源已刷新");
+        _demo.BeginNextTurn(); QueueDemoPlayback(direct: false); Hint("我方回合，资源已刷新");
     }
     private void Hint(string text)
     {
@@ -1018,34 +1042,16 @@ public partial class BattleScreen : Control
         }
     }
     private void PreferencesChanged() { CancelSelection(); }
-    public override void _ExitTree() { StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); FinishMotion(); ReleaseGestureWaiter(); }
+    public override void _ExitTree() { StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); ClearRemovalActors(); FinishMotion(); ReleaseGestureWaiter(); }
 
     public async Task VerifyAsync()
     {
-        // Landing shape comes from frame-by-frame measurement of the reference match
-        // (04:12.2 = 252.2s @60fps): the card reaches its slot within one frame and the
-        // perceived weight comes from the brightness step plus dust — not from travel.
-        // Build IS defense, and defense is the ONLY input: the profile table takes nothing else,
-        // so there is no unit-type / family / air-ground path that could change the landing.
-        var light = BattleSequence.SlamStyle(1);
-        var mid = BattleSequence.SlamStyle(4);
-        var heavy = BattleSequence.SlamStyle(7);
-        if (light.TravelFrames != 1 || mid.TravelFrames != 1 || heavy.TravelFrames != 1)
-            throw new Exception("Deployment travel must resolve in a single frame, as measured.");
-        if (!(light.Flash < mid.Flash && mid.Flash < heavy.Flash))
-            throw new Exception("Landing flash is not graded by build.");
-        if (!(light.Squash < mid.Squash && mid.Squash < heavy.Squash))
-            throw new Exception("Landing squash is not graded by build.");
-        if (light.Dust != 0f || heavy.Dust <= mid.Dust || heavy.Shake <= mid.Shake || mid.Shake <= 0f)
-            throw new Exception("Heavier builds must raise more dust and shake; the lightest raises none.");
-        if (!(heavy.SettleSeconds > mid.SettleSeconds && mid.SettleSeconds > light.SettleSeconds))
-            throw new Exception("Heavier builds hold their slot longer.");
-        // Same defense must always produce the same landing, whatever else the card carries.
-        for (var d = 1; d <= 9; d++)
+        // The new reference samples straddle the user-specified defense thresholds of 4 and 7.
+        if (BattleSequence.SlamTier(3) != 0 || BattleSequence.SlamTier(4) != 1
+            || BattleSequence.SlamTier(6) != 1 || BattleSequence.SlamTier(7) != 2)
+            throw new Exception("Deployment defense thresholds must be 4 and 7.");
+        for (var d = 1; d <= 10; d++)
         {
-            var again = BattleSequence.SlamStyle(d);
-            if (again != BattleSequence.SlamStyle(d))
-                throw new Exception("Landing is not a pure function of defense.");
             if (BattleSequence.SlamSeconds(d) <= 0) throw new Exception("Landing has no duration.");
         }
         // Tier behaviour: tier 0 is laid down gently, tier 2 slams hardest and shakes the table.
@@ -1101,7 +1107,7 @@ public partial class BattleScreen : Control
         ResetDemo();
         var uid = InteractionActions.PlayableUids.First(); var oldHandCount = _state.SelfHand.Count;
         SelectCard(uid); TryDrop(new(640, 555));
-        await ToSignal(GetTree().CreateTimer(.55), SceneTreeTimer.SignalName.Timeout);
+        await (_demoPresentations?.Completion ?? Task.CompletedTask);
         if (_state.SelfHand.Count != oldHandCount - 1 || !_cards.TryGetValue(uid, out var deployed) || deployed.Mode != BattleCardMode.Field || _ghosts.Count != 0)
             throw new Exception("Battle deployment/identity/transition verification failed.");
         var move = InteractionActions.Moves.First(); SelectCard(move.Uid); TryDrop(new(640, 350));

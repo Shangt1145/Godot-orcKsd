@@ -128,6 +128,8 @@ public partial class Main : Control
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--verify-ui"))
             CallDeferred(MethodName.VerifyUi);
+        else if (args.Contains("--verify-input-scheduling"))
+            CallDeferred(MethodName.VerifyInputScheduling);
         else if (args.Contains("--verify-card-pool"))
             CallDeferred(MethodName.VerifyCardPool);
         else if (args.Contains("--verify-deployment"))
@@ -213,7 +215,7 @@ public partial class Main : Control
         {
             ct.ThrowIfCancellationRequested();
             return _runner == runner ? _battle.PresentSequenceAsync(resolution, available) : Task.CompletedTask;
-        });
+        }, view);
         _presentations.Failed += e => GD.PushError($"[presentation] {e}");
     }
 
@@ -567,6 +569,7 @@ public partial class Main : Control
             await VerifyCardPoolStageAsync();
             await VerifyOrdersStageAsync();
             await VerifyNonBlockingInputAsync();
+            await _battle.VerifyTurnAndPriorityAsync();
             OpenGallery();
             // Restoring the shell changes the container's transform; measure actors only after layout settles.
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -603,7 +606,7 @@ public partial class Main : Control
             _battle.ResetDemo();
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-            var dir = ProjectSettings.GlobalizePath("res://artifacts/slam-film-v2");
+            var dir = ProjectSettings.GlobalizePath("res://artifacts/deployment-reference-20261008");
             System.IO.Directory.CreateDirectory(dir);
             await _battle.CaptureSlamFilmAsync(dir);
         }

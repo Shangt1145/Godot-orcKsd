@@ -37,11 +37,12 @@ public partial class BattleSequence : Control
 
     /// <summary>When &gt; 0, <see cref="Wait"/> counts rendered frames instead of using the engine timer.</summary>
     public int StepFrames { get; set; }
-    private BattleCard Paper(UiCardView? card, Vector2 at, Vector2 size, float rotation = 0)
+    private BattleCard Paper(UiCardView? card, Vector2 at, Vector2 size, float rotation = 0,
+        BattleCardMode mode = BattleCardMode.Inspect)
     {
         var paper = new BattleCard { Position = at, Size = size, Rotation = rotation, PivotOffset = size / 2,
             MouseFilter = MouseFilterEnum.Ignore };
-        paper.Bind(card, card is null ? BattleCardMode.Hidden : BattleCardMode.Inspect, _textures);
+        paper.Bind(card, card is null ? BattleCardMode.Hidden : mode, _textures);
         AddChild(paper); return paper;
     }
     private Tween Motion() { var tween = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut); _tweens.Add(tween); return tween; }
@@ -144,120 +145,227 @@ public partial class BattleSequence : Control
         if (_orderPaper is { } retired && GodotObject.IsInstanceValid(retired)) { RemoveChild(retired); retired.QueueFree(); }
         _orderPaper = null; PhaseChanged?.Invoke("order-retired");
     }
-    public async Task DeployAsync(UiCardView card, BattleCard field, Vector2 from)
+    /// <summary>One actor owns the card from the released hand pose through impact.</summary>
+    public Task DeployAsync(UiCardView card, BattleCard field, Vector2 from) =>
+        DeployAsync(card, field, new DeploymentPose(from, new(144, 202), Vector2.One, 0));
+
+    public async Task DeployAsync(UiCardView card, BattleCard field, DeploymentPose from)
     {
-        var epoch = _epoch; field.Visible = false;
-        var paper = Paper(card, from, new(144, 202), card.OwnerSide == "enemy" ? -.15f : .15f);
-        PhaseChanged?.Invoke("deployment-start");
-        if (!_clock.ReducedMotion)
+        var epoch = _epoch;
+        var style = SlamStyle(card.EffectiveDefense ?? card.Definition.BaseDefense);
+        var enemy = card.OwnerSide == "enemy";
+        field.Visible = false;
+        var paper = Paper(card, from.Position, from.Size, from.Rotation,
+            enemy ? BattleCardMode.Hidden : BattleCardMode.Inspect);
+        paper.Scale = from.Scale;
+        var completed = false;
+        try
         {
-            var move = Motion();
-            move.TweenProperty(paper, "position", field.RestPosition + field.Size / 2 - paper.Size / 2, Time(.46));
-            move.TweenProperty(paper, "scale", field.Size / paper.Size, Time(.46));
-            move.TweenProperty(paper, "rotation", 0f, Time(.46)); await Wait(.46, epoch);
+            PhaseChanged?.Invoke("deployment-start");
+            if (_clock.ReducedMotion)
+            {
+                paper.Bind(card, BattleCardMode.Field, _textures);
+                paper.Size = field.Size; paper.PivotOffset = paper.Size / 2;
+                paper.Position = field.RestPosition; paper.Scale = Vector2.One; paper.Rotation = 0;
+                _sfx.Play("deploy", card, style.Gain);
+                await Wait(.12, epoch);
+            }
+            else
+            {
+                var center = from.Center;
+                var width = from.Size.X * from.Scale.X;
+                var destination = field.RestPosition + field.Size / 2;
+                // The opponent exposes a card from its hidden hand before the same landing.
+                // This reveal is separate from the defense-dependent impact profile.
+                if (enemy)
+                {
+                    var reveal = destination + new Vector2(-field.Size.X * .65f, -field.Size.Y * .12f);
+                    var start = center;
+                    var hiddenWidth = width;
+                    var revealWidth = Math.Max(width, field.Size.X * 1.5f);
+                    var revealed = false;
+                    await Track(.30, p =>
+                    {
+                        if (!revealed && p >= .5f)
+                        {
+                            paper.Bind(card, BattleCardMode.Inspect, _textures);
+                            revealed = true;
+                            PhaseChanged?.Invoke("deployment-reveal");
+                        }
+                        var q = Ease(p);
+                        center = start.Lerp(reveal, q);
+                        width = Mathf.Lerp(hiddenWidth, revealWidth, q);
+                        paper.Position = center - paper.Size / 2;
+                        var scale = width / paper.Size.X;
+                        paper.Scale = new Vector2(Math.Max(.025f, MathF.Abs(MathF.Cos(p * MathF.PI))) * scale, scale);
+                        paper.Rotation = Mathf.Lerp(from.Rotation, 0, q);
+                        paper.PaperShear = MathF.Sin(p * MathF.PI * 2) * .08f;
+                        paper.DeploymentElevation = .65f;
+                        paper.QueueRedraw();
+                    }, epoch);
+                    paper.PaperShear = 0;
+                }
+
+                var releaseCenter = center;
+                var releaseWidth = width;
+                if (style.LiftSeconds > 0)
+                {
+                    PhaseChanged?.Invoke("deployment-lift");
+                    await Track(style.LiftSeconds, p =>
+                    {
+                        var q = 1 - MathF.Pow(1 - p, 3);
+                        center = releaseCenter + new Vector2(0, -style.Lift * q);
+                        width = releaseWidth * Mathf.Lerp(1, style.LiftScale, q);
+                        SetPaperPose(paper, center, width, Mathf.Lerp(from.Rotation, 0, q), q);
+                    }, epoch);
+                }
+                if (style.HoldSeconds > 0)
+                {
+                    PhaseChanged?.Invoke("deployment-hold");
+                    var peakCenter = center;
+                    var peakWidth = width;
+                    await Track(style.HoldSeconds, p =>
+                    {
+                        // The heavy sample gently relaxes from its enlarged peak before snapping down.
+                        center = peakCenter.Lerp(releaseCenter + new Vector2(0, -style.Lift * .72f), Ease(p));
+                        width = Mathf.Lerp(peakWidth, releaseWidth * (1 + (style.LiftScale - 1) * .78f), Ease(p));
+                        SetPaperPose(paper, center, width, 0, style.LiftSeconds > 0 ? 1 : .55f);
+                    }, epoch);
+                }
+
+                var collapseCenter = center;
+                var collapseWidth = width;
+                var rotation = paper.Rotation;
+                var compact = false;
+                PhaseChanged?.Invoke("deployment-collapse");
+                await Track(style.CollapseSeconds, p =>
+                {
+                    // Light units become field cards at the start of the gentle resize;
+                    // medium/heavy units keep their large face until the terminal snap.
+                    if (!compact && (SlamTier(card.EffectiveDefense ?? card.Definition.BaseDefense) == 0 || p >= .98f))
+                    {
+                        paper.Bind(card, BattleCardMode.Field, _textures);
+                        paper.Size = field.Size; paper.PivotOffset = paper.Size / 2;
+                        compact = true;
+                        PhaseChanged?.Invoke("deployment-field-form");
+                    }
+                    var q = Ease(p);
+                    SetPaperPose(paper, collapseCenter.Lerp(destination, q),
+                        Mathf.Lerp(collapseWidth, field.Size.X, q), Mathf.Lerp(rotation, 0, q), 1 - q);
+                }, epoch);
+                paper.Position = field.RestPosition; paper.Scale = Vector2.One; paper.Rotation = 0;
+                paper.DeploymentElevation = 0; paper.QueueRedraw();
+                PhaseChanged?.Invoke("deployment-landed");
+                await ImpactAsync(paper, card, style, epoch);
+            }
+            completed = true;
         }
-        RemoveChild(paper); paper.QueueFree(); field.Visible = true;
-        PhaseChanged?.Invoke("deployment-settled");
-        await SlamAsync(field, card, epoch);
-    }
-    /// <summary>Light / medium / heavy, graded by defense: the original slams heavier units harder.</summary>
-    public static int SlamTier(int? defense) => defense <= 2 ? 0 : defense <= 5 ? 1 : 2;
-    /// <summary>
-    /// Deployment landing, measured frame by frame from the reference match
-    /// (H:\Working Folder\8月9日.mp4, 04:12.2 = 252.2s, 60fps, 1920x1080).
-    /// The original does NOT hop and drop: the card moves from the dragged position to the
-    /// slot within a single frame (bottom edge 139 -> 149 px, card face brightens by ~8%), then
-    /// holds still. The perceived impact comes from that brightness step plus dust, not travel.
-    /// These numbers replace the earlier invented rise/fall curve.
-    /// </summary>
-    /// <summary>
-    /// Build (body size) IS defense. Three tiers, and nothing else may influence the landing:
-    /// no unit type, no family, no air/ground distinction. Measured on the reference match
-    /// (H:\Working Folder\8月9日.mp4, 04:12.2 = 252.2s, 60fps, 1920x1080) — the card reaches
-    /// its slot within one frame and the perceived weight comes from the brightness step plus
-    /// dust, not from travel.
-    /// </summary>
-    public sealed record SlamProfile(
-        /// <summary>Frames spent travelling to the slot. One frame at 60fps, every tier.</summary>
-        int TravelFrames,
-        /// <summary>How long the card stays put bearing its own weight, in seconds.</summary>
-        double SettleSeconds,
-        /// <summary>Card-face brightness step on landing, added on top of the resting value.</summary>
-        float Flash,
-        /// <summary>Vertical squash on the landing frame only.</summary>
-        float Squash,
-        /// <summary>Dust ring diameter in pixels; zero raises none.</summary>
-        float Dust,
-        /// <summary>Table shake amplitude in pixels; zero stays still.</summary>
-        float Shake,
-        /// <summary>Sfx gain.</summary>
-        float Gain);
-
-    /// <summary>The one landing table. Defense is the only input; both gallery and board read this.</summary>
-    public static SlamProfile SlamStyle(int? defense)
-    {
-        var tier = SlamTier(defense);
-        // Heavier builds read as heavier through flash, dust and shake — not through a longer
-        // animation and not through a bigger hop. Travel stays one frame for every tier.
-        return tier switch
+        finally
         {
-            0 => new(1, .12, .04f, .012f, 0f, 0f, .45f),
-            1 => new(1, .34, .09f, .045f, 44f, 2.5f, .75f),
-            _ => new(1, .48f, .14f, .075f, 68f, 5f, 1f),
-        };
-    }
-
-    /// <summary>Total landing time. Graded by defense via the settle tail, not by travel.</summary>
-    public static double SlamSeconds(int? defense)
-    {
-        var s = SlamStyle(defense);
-        return s.TravelFrames / 60.0 + s.SettleSeconds;
-    }
-
-    /// <summary>The landing itself. The card is already at its slot; the impact is flash + dust.</summary>
-    public Task SlamAsync(BattleCard card, UiCardView view) => SlamAsync(card, view, _epoch);
-
-    private async Task SlamAsync(BattleCard card, UiCardView view, int epoch)
-    {
-        var defense = view.EffectiveDefense ?? view.Definition.BaseDefense;
-        var style = SlamStyle(defense);
-        var rest = card.RestPosition;
-        card.Position = rest;
-        if (_clock.ReducedMotion)
-        {
-            card.Scale = Vector2.One; card.Modulate = Colors.White;
-            await Wait(.12, epoch); return;
+            if (GodotObject.IsInstanceValid(paper) && paper.GetParent() == this)
+            { RemoveChild(paper); paper.QueueFree(); }
+            // A cancelled historical projection must never reveal a discarded field node.
+            if (epoch == _epoch && GodotObject.IsInstanceValid(field))
+            {
+                field.Visible = true;
+                if (completed) PhaseChanged?.Invoke("deployment-settled");
+            }
         }
-        PhaseChanged?.Invoke("deployment-slam-" + SlamTier(defense));
+    }
+
+    private static void SetPaperPose(BattleCard paper, Vector2 center, float width, float rotation, float elevation)
+    {
+        paper.Position = center - paper.Size / 2;
+        paper.Scale = Vector2.One * (width / paper.Size.X);
+        paper.Rotation = rotation;
+        paper.DeploymentElevation = elevation;
+        paper.QueueRedraw();
+    }
+
+    /// <summary>Frame capture and live playback use the same pose evaluator.</summary>
+    private async Task Track(double seconds, Action<float> step, int epoch)
+    {
+        step(0);
+        if (StepFrames > 0)
+        {
+            var frames = Math.Max(1, (int)Math.Round(seconds * 60));
+            for (var i = 1; i <= frames; i++)
+            {
+                if (epoch != _epoch || !IsInsideTree()) throw new OperationCanceledException();
+                step(i / (float)frames);
+                await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+            }
+        }
+        else
+        {
+            var tween = CreateTween(); _tweens.Add(tween);
+            tween.TweenMethod(Callable.From<float>(step), 0f, 1f, Time(seconds));
+            try { await Wait(seconds, epoch); step(1); }
+            finally
+            {
+                if (GodotObject.IsInstanceValid(tween)) tween.Kill();
+                _tweens.Remove(tween);
+            }
+        }
+    }
+
+    /// <summary>User supplied body boundaries: defense 1–3 / 4–6 / 7+.</summary>
+    public static int SlamTier(int? defense) => (defense ?? 1) < 4 ? 0 : defense < 7 ? 1 : 2;
+
+    /// <summary>
+    /// Visible phases in the original-speed 30fps reference 8月9日(1).mp4:
+    /// defense 3 resizes over 8 frames; defense 6 holds its exposed face for 13 frames
+    /// then resizes/slides over 11; defense 10 enlarges about 18%, relaxes, and snaps
+    /// compact over 2 frames. Effect strengths below are scaled to our 1280×720 board.
+    /// The medium sample is an opponent reveal; its own-side anticipation is an approximation.
+    /// </summary>
+    public sealed record SlamProfile(double LiftSeconds, double HoldSeconds, double CollapseSeconds,
+        float LiftScale, float Lift, double SettleSeconds, double DustDelay, float Dust,
+        float Shake, float Gain)
+    {
+        public double AnticipationSeconds => LiftSeconds + HoldSeconds;
+        public double Seconds => AnticipationSeconds + CollapseSeconds + SettleSeconds;
+    }
+
+    /// <summary>Defense is the sole input for weight, timing, dust and table shake.</summary>
+    public static SlamProfile SlamStyle(int? defense) => SlamTier(defense) switch
+    {
+        0 => new(0, 0, 8 / 30.0, 1, 0, .70, .27, 28, 0, .45f),
+        1 => new(0, 13 / 30.0, 11 / 30.0, 1, 0, .80, .30, 52, 4.5f, .75f),
+        _ => new(15 / 30.0, 8 / 30.0, 2 / 30.0, 1.18f, 9, 1.0, .30, 90, 12.5f, 1),
+    };
+
+    public static double SlamSeconds(int? defense) => SlamStyle(defense).Seconds;
+
+    /// <summary>A field card that has already landed receives only impact feedback.</summary>
+    public async Task SlamAsync(BattleCard card, UiCardView view)
+    {
+        var style = SlamStyle(view.EffectiveDefense ?? view.Definition.BaseDefense);
+        card.Position = card.RestPosition;
+        if (_clock.ReducedMotion) { _sfx.Play("deploy", view, style.Gain); await Wait(.12, _epoch); return; }
+        await ImpactAsync(card, view, style, _epoch);
+    }
+
+    private async Task ImpactAsync(BattleCard card, UiCardView view, SlamProfile style, int epoch)
+    {
+        PhaseChanged?.Invoke("deployment-slam-" + SlamTier(view.EffectiveDefense ?? view.Definition.BaseDefense));
         _sfx.Play("deploy", view, style.Gain);
-
-        // Travel: the original resolves the drop within one frame, so this is a single step.
-        if (style.TravelFrames > 0)
+        SlamDust? dust = null;
+        try
         {
-            card.Position = rest + new Vector2(0, style.Squash * 260f);
-            card.Scale = new Vector2(1 + style.Squash, 1 - style.Squash);
+            if (style.DustDelay > 0) await Wait(style.DustDelay, epoch);
+            dust = new SlamDust { Size = Size, Center = card.Position + card.Size / 2,
+                Footprint = card.Size, Diameter = style.Dust, Tier = SlamTier(view.EffectiveDefense ?? view.Definition.BaseDefense),
+                Duration = Time(.50), ManualAge = true, ZIndex = -1 };
+            AddChild(dust);
+            await Track(style.SettleSeconds - style.DustDelay,
+                p => dust.Age = p * Time(style.SettleSeconds - style.DustDelay), epoch);
         }
-        // Centre the ring on the card's footprint, not 8% below it: the card itself covers the middle
-        // of the ring, so anything under it reads as nothing at all.
-        var dust = style.Dust > 0
-            ? new SlamDust { Size = Size, Center = rest + card.Size * new Vector2(.5f, .86f),
-                Diameter = style.Dust, Duration = Time(.42) }
-            : null;
-        if (dust is not null) AddChild(dust);
-        // The brightness step is what sells the impact: a brief lift, then back to rest.
-        var flash = card.Modulate;
-        card.Modulate = new Color(1f + style.Flash, 1f + style.Flash, 1f + style.Flash, 1f);
-        await Wait(1 / 60.0, epoch);
-
-        card.Position = rest;
-        card.Scale = Vector2.One;
-        var settle = Motion();
-        settle.TweenProperty(card, "modulate", flash, Time(style.SettleSeconds * .55));
-        await Wait(style.SettleSeconds, epoch);
-
-        card.Position = rest; card.Scale = Vector2.One; card.Modulate = flash;
-        if (dust is not null && GodotObject.IsInstanceValid(dust) && dust.GetParent() == this)
-        { RemoveChild(dust); dust.QueueFree(); }
+        finally
+        {
+            if (dust is not null && GodotObject.IsInstanceValid(dust) && dust.GetParent() == this)
+            { RemoveChild(dust); dust.QueueFree(); }
+        }
     }
     private static float Ease(float t) { t = Math.Clamp(t, 0, 1); return t * t * (3 - 2 * t); }
     public async Task CounterAsync(UiCounterPresentation counter, BattleCard? handCard, Func<Task>? resolve = null)
@@ -296,10 +404,10 @@ public partial class BattleSequence : Control
         await Wait(.28, epoch); RemoveChild(paper); paper.QueueFree();
         await RetireOrderAsync(); PhaseChanged?.Invoke("counter-retired");
     }
-    public async Task StatusAsync(BattleCard card, UiStatusPresentation change)
+    public async Task StatusAsync(BattleCard card, UiStatusPresentation change, UiCardView? visibleAfter = null)
     {
         var epoch = _epoch;
-        card.UpdateView(change.After);
+        card.UpdateView(visibleAfter ?? change.After);
         var caption = change.Status switch
         {
             UiStatusKind.Heal => "治疗 " + change.After.Health,
@@ -457,34 +565,50 @@ public partial class BattleSequence : Control
 public partial class SlamDust : Control
 {
     public Vector2 Center { get; set; }
+    public Vector2 Footprint { get; set; } = new(92, 129);
     public float Diameter { get; set; }
+    public int Tier { get; set; }
     public double Duration { get; set; }
+    public bool ManualAge { get; set; }
     private double _age;
     /// <summary>Lets a step-driven caller (capture, replay) set the fade without waiting on the frame clock.</summary>
     public double Age { set { _age = value; QueueRedraw(); } }
     public override void _Ready() { MouseFilter = MouseFilterEnum.Ignore; QueueRedraw(); }
     public override void _Process(double delta)
     {
+        if (ManualAge) return;
         _age += delta;
         if (_age >= Duration) { GetParent()?.RemoveChild(this); QueueFree(); return; }
         QueueRedraw();
     }
     public override void _Draw()
     {
-        const int segments = 18;
         var progress = Math.Clamp((float)(_age / Duration), 0f, 1f);
-        var alpha = (1 - progress) * .72f;
-        var width = Diameter * (.5f + progress * 1.1f);
-        var height = width * .3f;
-        var points = new Vector2[segments];
-        for (var i = 0; i < segments; i++)
+        var fade = MathF.Sin(progress * MathF.PI) * (1 - progress);
+        // Uneven diffuse brown/gray clouds around the footprint, with no solid impact disc.
+        for (var i = 0; i < 17; i++)
         {
-            var angle = i / (float)segments * MathF.PI * 2;
-            points[i] = Center + new Vector2(MathF.Cos(angle) * width, MathF.Sin(angle) * height);
+            var angle = i * 2.399963f;
+            var variation = .65f + .35f * MathF.Sin(i * 7.31f + .8f);
+            var radius = Diameter * (.09f + progress * .18f) * variation;
+            var offset = new Vector2(MathF.Cos(angle) * (Footprint.X * .48f + progress * Diameter * .53f),
+                MathF.Sin(angle) * (Footprint.Y * .47f + progress * Diameter * .34f));
+            var point = Center + offset;
+            for (var layer = 5; layer > 0; layer--)
+                DrawCircle(point, radius * layer / 3f,
+                    new Color(.56f, .49f, .36f, fade * (Tier == 0 ? .023f : .033f)));
         }
-        // A pale scuffed ring on dark wood: low alpha reads as nothing at all.
-        DrawColoredPolygon(points, new Color(.86f, .82f, .70f, alpha));
-        DrawPolyline([.. points, points[0]], new Color(.92f, .88f, .76f, alpha * .9f), 1.5f, true);
+        if (Tier < 2) return;
+        // The heavy sample adds short orange flecks outside the card, delayed after landing.
+        for (var i = 0; i < 22; i++)
+        {
+            var angle = i * 2.399963f + .3f;
+            var variation = .65f + .35f * MathF.Sin(i * 4.71f);
+            var direction = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
+            var point = Center + direction * Footprint * .48f + direction * Diameter * (.12f + progress * .8f) * variation;
+            var alpha = fade * (.50f + variation * .4f);
+            DrawLine(point, point - direction * (2 + variation * 3), new Color(.93f, .48f, .17f, alpha), 1.2f, true);
+        }
     }
 }
 

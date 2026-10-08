@@ -5,6 +5,19 @@ namespace Kards.Ui;
 
 public partial class Main
 {
+    private async void VerifyInputScheduling()
+    {
+        try
+        {
+            StopRealMatch(); Show("battle");
+            await _battle.VerifyTurnAndPriorityAsync();
+            await _battle.VerifyDemoNonBlockingAsync();
+            await VerifyNonBlockingInputAsync();
+            GD.Print("INPUT_SCHEDULING_VERIFY_OK"); GetTree().Quit();
+        }
+        catch (Exception error) { GD.PushError(error.ToString()); GetTree().Quit(1); }
+    }
+
     private async Task VerifyNonBlockingInputAsync()
     {
         StopRealMatch(); Show("battle");

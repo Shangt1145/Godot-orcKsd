@@ -18,6 +18,7 @@ public partial class BattleCard : Control
     public float RestRotation { get; set; }
     public Vector2 FlightOffset { get; private set; }
     public float PaperShear { get; set; }
+    public float DeploymentElevation { get; set; }
     private float _flightTilt;
     public void SetFlightPose(Vector2 offset, float tilt) { FlightOffset = offset; _flightTilt = tilt; QueueRedraw(); }
     private Texture2D? _texture;
@@ -67,7 +68,9 @@ public partial class BattleCard : Control
         var yAxis = Vector2.FromAngle(_flightTilt + MathF.PI / 2 + PaperShear);
         DrawSetTransformMatrix(new Transform2D(xAxis, yAxis, PivotOffset + FlightOffset - xAxis * PivotOffset.X - yAxis * PivotOffset.Y));
         var bounds = new Rect2(Vector2.Zero, Size);
-        DrawStyleBox(UiStyles.Box(new Color(0, 0, 0, .45f), Colors.Transparent, 4, 0), new Rect2(new Vector2(5, 7), Size));
+        var elevation = Math.Clamp(DeploymentElevation, 0, 1);
+        DrawStyleBox(UiStyles.Box(new Color(0, 0, 0, .36f + elevation * .12f), Colors.Transparent, 4, 0),
+            new Rect2(new Vector2(5 + elevation * 4, 7 + elevation * 16), Size));
         var edge = Selected || Targeted ? new Color("d9c281") : _hover ? new Color("e0dcc5") : new Color("a9a186");
         var paper = UiStyles.Box(new Color("c6bea3"), edge, 3, 0);
         paper.BorderWidthLeft = paper.BorderWidthTop = paper.BorderWidthRight = paper.BorderWidthBottom = Selected || Targeted ? 3 : 1;

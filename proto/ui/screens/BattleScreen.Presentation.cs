@@ -4,34 +4,94 @@ using Kards.Ui.Core;
 
 namespace Kards.Ui;
 
+/// <summary>A released card's pose in board coordinates, retained until its queued deployment begins.</summary>
+public readonly record struct DeploymentPose(Vector2 Position, Vector2 Size, Vector2 Scale, float Rotation)
+{
+    public Vector2 Center => Position + Size / 2;
+    public static DeploymentPose From(BattleCard card) => new(card.Position, card.Size, card.Scale, card.Rotation);
+}
+
 public partial class BattleScreen
 {
     private BattleSequence _sequence = null!;
     private UiPresentationResolution? _pendingPresentation;
     private UiBattleActions? _pendingPresentationActions;
+    private readonly Dictionary<string, DeploymentPose> _deploymentOrigins = new();
+    // Defeated units waiting for their low-priority removal keep a visual at their old pose,
+    // outside the board's occupied-slot layout and input hit tests.
+    private readonly Dictionary<string, BattleCard> _removalActors = new();
+
+    private void ClearRemovalActors()
+    {
+        foreach (var card in _removalActors.Values)
+            if (GodotObject.IsInstanceValid(card)) { card.GetParent()?.RemoveChild(card); card.QueueFree(); }
+        _removalActors.Clear();
+    }
+
+    private void SyncRemovalActors(UiMatchView state)
+    {
+        var defeated = state.SelfLine.Concat(state.EnemyLine).Where(c => c.Health == 0 && !c.IsHq)
+            .ToDictionary(c => c.Uid);
+        foreach (var uid in _removalActors.Keys.Where(uid => !defeated.ContainsKey(uid)).ToArray())
+        {
+            var old = _removalActors[uid]; old.GetParent()?.RemoveChild(old); old.QueueFree(); _removalActors.Remove(uid);
+        }
+        foreach (var (uid, view) in defeated)
+        {
+            if (_removalActors.ContainsKey(uid) || !_cards.TryGetValue(uid, out var source)) continue;
+            var pose = DeploymentPose.From(source);
+            var card = new BattleCard { Position = pose.Position, RestPosition = pose.Position, Size = pose.Size,
+                Rotation = pose.Rotation, RestRotation = pose.Rotation, Scale = pose.Scale, MouseFilter = MouseFilterEnum.Ignore };
+            card.PivotOffset = pose.Size / 2; card.Bind(view, BattleCardMode.Field, _textures);
+            var parent = _cardLayer.GetParent(); parent.AddChild(card); parent.MoveChild(card, _cardLayer.GetIndex());
+            _removalActors[uid] = card;
+        }
+    }
+
+    private void RestorePendingDeploymentPoses()
+    {
+        foreach (var (uid, pose) in _deploymentOrigins)
+        {
+            if (!_cards.TryGetValue(uid, out var card) || card.Mode != BattleCardMode.Hand) continue;
+            StopHandMotion(uid);
+            card.Size = pose.Size; card.PivotOffset = pose.Size / 2;
+            card.Position = pose.Position; card.Rotation = pose.Rotation; card.Scale = pose.Scale;
+            card.ZIndex = 140; card.MouseFilter = MouseFilterEnum.Ignore;
+        }
+    }
     private void InitializePresentation()
     {
         _sequence = new BattleSequence { Size = BoardSize, ZIndex = 210 };
         _sequence.Initialize(_textures, _clock, _sfx); _canvas.AddChild(_sequence);
-        // The heaviest deployment slam shakes the table itself, not just the card.
+        // The field card and board move together after impact; weight comes from defense.
         _sequence.PhaseChanged += phase =>
         {
             PresentationPhase?.Invoke(phase);
-            if (phase == "deployment-slam-2") ShakeBoard();
+            if (phase == "deployment-slam-1") ShakeBoard(BattleSequence.SlamStyle(4));
+            if (phase == "deployment-slam-2") ShakeBoard(BattleSequence.SlamStyle(7));
         };
     }
 
     /// <summary>Paper-layer choreography phases, for diagnostics and verification.</summary>
     public event Action<string>? PresentationPhase;
-    private void ShakeBoard()
+    private void ShakeBoard(BattleSequence.SlamProfile style)
     {
         if (_clock.ReducedMotion) return;
         var basePosition = _canvas.Position;
+        var scale = _canvas.Scale.X;
+        var center = BoardSize / 2;
         var shake = CreateTween();
-        foreach (var offset in new[] { new Vector2(-7, 4), new Vector2(6, -5), new Vector2(-4, 3), new Vector2(3, -2), new Vector2(-1, 1) })
-            shake.TweenProperty(_canvas, "position", basePosition + offset, .045);
-        shake.TweenProperty(_canvas, "position", basePosition, .05);
-        shake.Finished += FitBoard; _tweens.Add(shake);
+        var duration = style.Shake >= 10 ? 1.0 : .47;
+        shake.TweenMethod(Callable.From<float>(p =>
+        {
+            var fade = MathF.Pow(1 - p, 1.4f);
+            var offset = new Vector2(MathF.Sin(p * 79), MathF.Sin(p * 103 + .8f)) * style.Shake * fade;
+            var roll = MathF.Sin(p * 67) * style.Shake * .00035f * fade;
+            _canvas.Rotation = roll;
+            _canvas.Position = basePosition + (offset + center - center.Rotated(roll)) * scale;
+        }), 0f, 1f, duration * _clock.Scale);
+        shake.Finished += () => { _canvas.Rotation = 0; FitBoard(); _tweens.Remove(shake); };
+        _tweens.Add(shake);
     }
     private void ClearPresentation()
     { _pendingPresentation = null; _pendingPresentationActions = null; _sequence?.Interrupt(); }
@@ -49,7 +109,7 @@ public partial class BattleScreen
         for (var i = 0; i < cards.Length; i++)
         {
             var card = cards[i];
-            if (card == _pressed) continue;
+            if (card == _pressed || _deploymentOrigins.ContainsKey(card.Uid)) continue;
             var slot = self ? after.SelfHand.FirstOrDefault(c => c.Uid == card.Uid)?.SlotIndex : i;
             if (slot is null) continue;
             var pose = HandPose(slot.Value, self ? after.SelfHand.Count : Math.Clamp(after.EnemyHandCount ?? 0, 0, 9), self);
@@ -91,23 +151,25 @@ public partial class BattleScreen
                 switch (step)
                 {
                     case UiBoardImpactsPresentation hits:
-                        await PlayBoardImpactsAsync(hits.Impacts);
+                        await PlayBoardImpactsAsync(VisibleImpacts(hits.Impacts, resolution.After));
                         break;
                     case UiDeploymentPresentation deployment when deployment.Deployed.MatchId == resolution.MatchId:
                         await WaitForGestureReleaseAsync();
                         if (!IsInsideTree() || generation != _generation || _pendingPresentation != resolution) return;
-                        var deployFrom = deployment.Card.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628);
-                        if (_cards.TryGetValue(deployment.Card.Uid, out var deployingHand)) deployFrom = deployingHand.Position;
+                        var deployPose = new DeploymentPose(deployment.Card.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628),
+                            new(144, 202), Vector2.One, deployment.Card.OwnerSide == "enemy" ? -.15f : .15f);
+                        if (_deploymentOrigins.Remove(deployment.Card.Uid, out var releasedPose)) deployPose = releasedPose;
+                        else if (_cards.TryGetValue(deployment.Card.Uid, out var deployingHand)) deployPose = DeploymentPose.From(deployingHand);
                         else if (deployment.Card.OwnerSide == "enemy")
                         {
                             var back = _cardLayer.GetChildren().OfType<BattleCard>().LastOrDefault(c => c.View is null && c.Mode == BattleCardMode.Hidden && c.Visible);
-                            if (back is not null) deployFrom = back.Position;
+                            if (back is not null) deployPose = DeploymentPose.From(back);
                         }
                         Render(deployment.Deployed, new(), true, deployment.Card.Uid); generation = _generation;
                         _busy = true; UpdateEndTurnButton();
                         if (deployment.Card.Visibility == Visibility.Full && _cards.TryGetValue(deployment.Card.Uid, out var deployedCard)
                             && deployedCard.View?.Visibility == Visibility.Full)
-                            await _sequence.DeployAsync(deployment.Card, deployedCard, deployFrom);
+                            await _sequence.DeployAsync(deployment.Card, deployedCard, deployPose);
                         break;
                     case UiDrawPresentation draw when draw.Side is "self" or "enemy":
                         var self = draw.Side == "self";
@@ -115,7 +177,7 @@ public partial class BattleScreen
                         if (draw.SlotIndex < 0 || draw.SlotIndex >= count) break;
                         MakeHandRoom(resolution.After, self);
                         var pose = HandPose(draw.SlotIndex, count, self);
-                        var consecutive = (stepIndex > 0 && resolution.Steps[stepIndex - 1] is UiDrawPresentation previousDraw && previousDraw.Side == draw.Side)
+                        var consecutive = draw.Consecutive || (stepIndex > 0 && resolution.Steps[stepIndex - 1] is UiDrawPresentation previousDraw && previousDraw.Side == draw.Side)
                             || (stepIndex + 1 < resolution.Steps.Count && resolution.Steps[stepIndex + 1] is UiDrawPresentation nextDraw && nextDraw.Side == draw.Side);
                         await _sequence.DrawAsync(draw, pose.Position, pose.Rotation, consecutive);
                         break;
@@ -130,7 +192,7 @@ public partial class BattleScreen
                         MakeHandRoom(resolution.After, order.Card.OwnerSide != "enemy");
                         await _sequence.RevealOrderAsync(order.Card, from);
                         if (order.Card.Visibility == Visibility.Full) Record(order.Card, order.Card.Definition.Name);
-                        var targets = order.Impacts
+                        var targets = VisibleImpacts(order.Impacts, resolution.After)
                             .Where(i => i.Before.Visibility == Visibility.Full && _cards.TryGetValue(i.Before.Uid, out var card)
                                 && card.Visible && card.View?.Visibility == Visibility.Full)
                             .GroupBy(i => i.Before.Uid).Select(g => (Impact: g.First(), Card: _cards[g.Key])).ToArray();
@@ -150,7 +212,8 @@ public partial class BattleScreen
                             ? resolution.Steps[stepIndex + 1] as UiRemovalPresentation : null;
                         async Task RemoveCounterTarget()
                         {
-                            if (removal?.Card.Visibility == Visibility.Full && _cards.TryGetValue(removal.Card.Uid, out var removedCard)
+                            var removedCard = removal is null ? null : _cards.GetValueOrDefault(removal.Card.Uid) ?? _removalActors.GetValueOrDefault(removal.Card.Uid);
+                            if (removal?.Card.Visibility == Visibility.Full && removedCard is not null
                                 && removedCard.View?.Visibility == Visibility.Full)
                                 await _combat.PresentRemovalAsync(removal.Card, removedCard);
                         }
@@ -160,7 +223,8 @@ public partial class BattleScreen
                             Record(counter.Card, counter.Card.Definition.Name);
                         break;
                     case UiRemovalPresentation removed when removed.Card.Visibility == Visibility.Full:
-                        if (_cards.TryGetValue(removed.Card.Uid, out var removedActor) && removedActor.View?.Visibility == Visibility.Full)
+                        var removedActor = _cards.GetValueOrDefault(removed.Card.Uid) ?? _removalActors.GetValueOrDefault(removed.Card.Uid);
+                        if (removedActor?.View?.Visibility == Visibility.Full)
                             await _combat.PresentRemovalAsync(removed.Card, removedActor);
                         break;
                     case UiDiscardPresentation discard:
@@ -175,13 +239,13 @@ public partial class BattleScreen
                         break;
                     case UiStatusPresentation status when status.Before.Uid == status.After.Uid && status.Before.Visibility == Visibility.Full && status.After.Visibility == Visibility.Full:
                         if (_cards.TryGetValue(status.Before.Uid, out var statusCard) && statusCard.View?.Visibility == Visibility.Full)
-                            await _sequence.StatusAsync(statusCard, status);
+                            await _sequence.StatusAsync(statusCard, status, PresentationCard(resolution.After, status.After.Uid));
                         break;
                     case UiResourcePresentation resource:
                         // The bar counts to its new value; the authoritative render below re-binds it.
-                        if (resource.Side == "self" && resource.NewValue > 0)
+                        if (resource.Side == "self" && resource.NewValue > 0 && resource.NewValue == resolution.After.SelfKredits)
                             _selfResource.AnimateTo(resource.NewValue, resource.NewSlots, resource.Cause);
-                        else if (resource.Side == "enemy" && resource.NewSlots is not null)
+                        else if (resource.Side == "enemy" && resource.NewSlots is not null && resource.NewSlots == resolution.After.EnemyMaxKredits)
                             _enemyResource.AnimateTo(null, resource.NewSlots, resource.Cause);
                         break;
                 }
@@ -213,6 +277,12 @@ public partial class BattleScreen
         catch (OperationCanceledException) { /* Interrupt already settled or replaced the supplied state. */ }
         catch (Exception e) { GD.PushError(e.ToString()); if (generation == _generation) CancelSelection(); }
     }
+    private static UiCardView? PresentationCard(UiMatchView view, string uid) => view.SelfHand.Concat(view.SelfLine)
+        .Concat(view.EnemyLine).Concat(new[] { view.SelfHq, view.EnemyHq }.OfType<UiCardView>()).FirstOrDefault(c => c.Uid == uid);
+
+    private static IReadOnlyList<UiOrderImpact> VisibleImpacts(IReadOnlyList<UiOrderImpact> impacts, UiMatchView visibleAfter) =>
+        impacts.Select(i => i.After is null ? i : i with { After = PresentationCard(visibleAfter, i.Before.Uid) ?? i.After }).ToArray();
+
     public async Task StartPresentationScenarioAsync(string kind)
     {
         if (!_usingDemo) return;

@@ -175,10 +175,11 @@ public sealed class OrcMatchHost
                 .ToArray();
             var errors = segment.Entries.Where(e => e.Level == LogLevel.Error).Select(e => e.Message).ToArray();
             var after = UiSnapshots.Freeze(_reader.Read(_match, _viewer, _matchId));
-            var translation = _translator.Translate(updates, _viewer, _view ?? after, after);
+            var before = _view ?? after;
+            var translation = _translator.Translate(updates, _viewer, before, after);
             _view = after;
             var resolution = UiSnapshots.Freeze(new UiPresentationResolution(_matchId, translation.Steps, after)
-                { Sequence = segment.Sequence });
+                { Sequence = segment.Sequence, Before = before });
             _captured.Enqueue((resolution, UiSnapshots.Freeze(Actions), translation.Impacts, errors));
         }
         // Phase changes and mulligan replacements can be silent in the current engine.

@@ -28,6 +28,7 @@ public static class UiSnapshots
     };
     public static UiPresentationResolution Freeze(UiPresentationResolution r) => r with
     {
+        Before = r.Before is null ? null : Freeze(r.Before),
         After = Freeze(r.After), Steps = List(r.Steps.Select(step => step switch
         {
             UiDrawPresentation draw => (UiPresentationStep)(draw with { Card = draw.Side == "self" && draw.Card is not null ? Freeze(draw.Card) : null }),

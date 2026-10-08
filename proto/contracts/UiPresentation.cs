@@ -2,7 +2,10 @@ namespace Kards.Ui.Contracts;
 
 /// <summary>Resolved presentation snapshots, supplied by an adapter. No rules or targeting are inferred.</summary>
 public abstract record UiPresentationStep;
-public sealed record UiDrawPresentation(string Side, int SlotIndex, UiCardView? Card = null) : UiPresentationStep;
+public sealed record UiDrawPresentation(string Side, int SlotIndex, UiCardView? Card = null) : UiPresentationStep
+{
+    public bool Consecutive { get; init; }
+}
 /// <summary>
 /// One hit on the board. <paramref name="Source"/> is the attacker the engine reported
 /// (unit.damage.dealt), so the UI can play the weapon's own trajectory; null means the engine
@@ -26,7 +29,10 @@ public sealed record UiDiscardPresentation(string Side, UiCardView? Card, UiDisc
 public sealed record UiMulliganPresentation(string Side, int Replaced, IReadOnlyList<UiCardView> Drawn) : UiPresentationStep;
 public enum UiTurnKind { TurnStarted, Fatigue }
 public sealed record UiTurnPresentation(string Side, int Turn, UiTurnKind Kind = UiTurnKind.TurnStarted, int? Damage = null) : UiPresentationStep;
+public enum UiPresentationPriority { Indirect, Direct }
 public sealed record UiPresentationResolution(string MatchId, IReadOnlyList<UiPresentationStep> Steps, UiMatchView After)
 {
     public long Sequence { get; init; }
+    public UiMatchView? Before { get; init; }
+    public UiPresentationPriority Priority { get; init; }
 }

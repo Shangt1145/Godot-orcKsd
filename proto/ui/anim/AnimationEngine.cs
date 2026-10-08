@@ -280,7 +280,7 @@ public partial class AnimationEngine : Node
     public static DeploymentStyle SlamProfile(int defense)
     {
         var s = BattleSequence.SlamStyle(defense);
-        return new(s.TravelFrames / 60.0 + s.SettleSeconds, s.Gain, BattleSequence.SlamTier(defense));
+        return new(s.Seconds * 1000, s.Gain, BattleSequence.SlamTier(defense));
     }
     public async Task Slam(CardControl card)
     {
@@ -288,36 +288,62 @@ public partial class AnimationEngine : Node
         var style = SlamProfile(defense);
         var s = BattleSequence.SlamStyle(defense);
         var ms = style.Milliseconds;
-        Sfx.Play("deploy", card.View, style.Gain);
         if (Clock.ReducedMotion)
         {
-            await Sleep(Clock.Ms(ms));
+            Sfx.Play("deploy", card.View, style.Gain);
+            await Sleep(Clock.Ms(120));
             return;
         }
-        // Measured landing: the card is already on the slot, the weight arrives in one frame.
-        // Dust scales with build only — no unit-type or family branch.
-        await Motion(card.Visual, Clock.Ms(ms), (t, l) =>
+        var hit = false;
+        SlamDust? dust = null;
+        var impactAt = s.AnticipationSeconds + s.CollapseSeconds;
+        try
         {
-            if (t <= 0f)
+            // Motion applies Clock.Ms once; its first callback is after time zero.
+            await Motion(card.Visual, ms, (t, l) =>
             {
-                card.Visual.Position = l.Position + new Vector2(0, s.Squash * 260f);
-                card.Visual.Scale = new(1 + s.Squash, 1 - s.Squash);
-                card.Visual.Modulate = new Color(1f + s.Flash, 1f + s.Flash, 1f + s.Flash, 1f);
-                if (s.Dust > 0)
+                var time = t * s.Seconds;
+                var enlargement = 1f;
+                var lift = 0f;
+                if (s.LiftSeconds > 0 && time < s.LiftSeconds)
                 {
-                    var point = card.GetGlobalRect().Position + card.Size * new Vector2(.5f, .85f);
-                    Observe(DustPuff(point));
+                    var p = 1 - MathF.Pow(1 - (float)(time / s.LiftSeconds), 3);
+                    enlargement = Mathf.Lerp(1, s.LiftScale, p); lift = s.Lift * p;
                 }
-                if (s.Shake > 0 && card.GetParent() is Control stage) Observe(Shake(stage, s.Shake, s.Shake * 62));
-                return;
-            }
-            var settle = t * Math.Max(ms, 1) / 60f / (s.TravelFrames / 60.0 + s.SettleSeconds);
-            var flash = s.Flash * (1f - Math.Min(1f, (float)settle));
-            card.Visual.Position = l.Position;
-            card.Visual.Scale = Vector2.One;
-            card.Visual.Modulate = new Color(1f + flash, 1f + flash, 1f + flash, 1f);
-        });
-        card.Visual.Modulate = Colors.White;
+                else if (time < s.AnticipationSeconds)
+                {
+                    var p = (float)((time - s.LiftSeconds) / s.HoldSeconds);
+                    enlargement = Mathf.Lerp(s.LiftScale, 1 + (s.LiftScale - 1) * .78f, p);
+                    lift = Mathf.Lerp(s.Lift, s.Lift * .72f, p);
+                }
+                else if (time < impactAt)
+                {
+                    var p = Ease((float)((time - s.AnticipationSeconds) / s.CollapseSeconds));
+                    enlargement = Mathf.Lerp(1 + (s.LiftScale - 1) * .78f, 1, p);
+                    lift = s.Lift * .72f * (1 - p);
+                }
+                card.Visual.Position = l.Position + new Vector2(0, -lift);
+                card.Visual.Scale = l.Scale * enlargement;
+                if (!hit && time >= impactAt)
+                {
+                    hit = true;
+                    Sfx.Play("deploy", card.View, style.Gain);
+                    if (s.Shake > 0 && card.GetParent() is Control stage)
+                        Observe(Shake(stage, s.Shake, (style.Tier == 2 ? 1.0 : .47) * 1000));
+                }
+                if (time >= impactAt + s.DustDelay && dust is null && BudgetOk())
+                {
+                    var center = Overlay.GetGlobalTransform().AffineInverse() * card.GetGlobalRect().GetCenter();
+                    dust = new SlamDust { Size = Overlay.Size, Center = center, Footprint = card.Size,
+                        Diameter = s.Dust, Tier = style.Tier, Duration = Clock.Scale * .5, ManualAge = true,
+                        MouseFilter = Control.MouseFilterEnum.Ignore };
+                    Overlay.AddChild(dust); _effects.Add(dust);
+                }
+                if (dust is not null && GodotObject.IsInstanceValid(dust))
+                    dust.Age = (time - impactAt - s.DustDelay) * Clock.Scale;
+            });
+        }
+        finally { if (dust is not null) Kill(dust); }
     }
     private static async void Observe(Task task)
     {
