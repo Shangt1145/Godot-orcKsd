@@ -18,8 +18,9 @@ public sealed record UiDeploymentPresentation(UiCardView Card, UiMatchView Deplo
 public sealed record UiRemovalPresentation(UiCardView Card) : UiPresentationStep;
 public enum UiCounterStage { Armed, Disarmed, Triggered }
 public sealed record UiCounterPresentation(string Side, UiCounterStage Stage, UiCardView? Card = null, UiCardView? BlockedCard = null) : UiPresentationStep;
-public enum UiStatusKind { Heal, Buff, Damaged, Suppressed, Cleared, CostChanged }
+public enum UiStatusKind { Heal, Buff, Damaged, Suppressed, Cleared, CostChanged, Silenced, Veteran, Revealed, KeywordsChanged, TypesChanged }
 public sealed record UiStatusPresentation(UiCardView Before, UiCardView After, UiStatusKind Status) : UiPresentationStep;
+public sealed record UiShufflePresentation(string Side) : UiPresentationStep;
 
 /// <summary>Where a command-point change came from, so the bar can animate for the right reason.</summary>
 public enum UiResourceCause { Turn, Spend, Gain }

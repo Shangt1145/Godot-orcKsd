@@ -83,7 +83,10 @@ public partial class BattleScreen
         var before = _state with { MatchId = "deployment-release-origin" };
         var unit = before.SelfHand.First(c => c.Definition.CardType == "unit");
         before = before with { SelfHand = [unit], SelfHandCount = 1 };
-        ApplyProjection(before, new() { PlayableUids = [unit.Uid] });
+        var formation = before.SelfLine.Where(c => c.Zone == "support").Append(before.SelfHq!)
+            .OrderBy(c => c.SlotIndex).ToArray();
+        var gap = new UiDeploymentGap("deployment-origin-gap", formation.Length, formation.Last().Uid, null);
+        ApplyProjection(before, new() { PlayableUids = [unit.Uid], DeploymentGaps = [gap] });
         UiCommand? sent = null;
         DeploymentPose? held = null;
         void OnCommand(UiCommand command) => sent = command;
@@ -95,7 +98,8 @@ public partial class BattleScreen
                 held = DeploymentPose.From(_cards[unit.Uid]);
                 return Task.CompletedTask;
             });
-            if (sent is not PlayCard || held is null || !_deploymentOrigins.TryGetValue(unit.Uid, out var saved)
+            if (sent is not PlayCard { SupportIndex: null } play || play.GapId != gap.GapId
+                || held is null || !_deploymentOrigins.TryGetValue(unit.Uid, out var saved)
                 || saved != held.Value || DeploymentPose.From(_cards[unit.Uid]) != held.Value || VisibleCopies(unit.Uid) != 1)
                 throw new Exception("Releasing a deployment lost its held pose or duplicated the queued card.");
             RefuseCommand(sent);

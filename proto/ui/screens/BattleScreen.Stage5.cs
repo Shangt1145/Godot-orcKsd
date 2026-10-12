@@ -17,6 +17,8 @@ public partial class BattleScreen
     private Control _mulliganRow = null!;
     private Control _mulliganWaiting = null!;
     private readonly Dictionary<string, MulliganStamp> _mulliganMarks = new();
+    private string? _mulliganRequestId;
+    private Button _mulliganConfirm = null!;
     private bool _mulliganOpen, _mulliganWaitingPhase;
 
     /// <summary>True while the panel is up; used by the verify and capture hooks.</summary>
@@ -35,6 +37,7 @@ public partial class BattleScreen
         foreach (var style in new[] { "normal", "hover", "pressed", "focus" })
             confirm.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
         confirm.AddThemeColorOverride("font_color", new("e9e3cc"));
+        _mulliganConfirm = confirm;
         confirm.Pressed += ConfirmMulligan;
         _mulligan.AddChild(confirm);
         // Waiting band, shown while the engine replaces the draw and the other side answers.
@@ -49,10 +52,10 @@ public partial class BattleScreen
     }
 
     /// <summary>Opens the panel with the viewer's opening hand. Called when the engine parks a mulligan request.</summary>
-    public void ShowMulliganPanel(UiMatchView? view)
+    public void ShowMulliganPanel(UiMatchView? view, string? requestId = null)
     {
         if (view is null || view.Phase != "mulligan" || view.SelfHand.Count == 0 || _mulliganOpen) return;
-        _mulliganOpen = true;
+        _mulliganOpen = true; _mulliganRequestId = requestId;
         _mulliganWaiting.Visible = false;
         _mulliganWaitingPhase = false;
         UiStyles.Clear(_mulliganRow);
@@ -100,7 +103,7 @@ public partial class BattleScreen
         _mulliganMarks.Clear();
         _mulliganWaitingPhase = true;
         _mulliganWaiting.Visible = true;
-        CommandRequested?.Invoke(new ChooseMulligan(keep));
+        CommandRequested?.Invoke(new ChooseMulligan(keep, _mulliganRequestId));
     }
 
     /// <summary>Reconciles the panel with projections: the waiting band clears when play begins.</summary>

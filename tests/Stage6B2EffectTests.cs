@@ -124,8 +124,15 @@ public sealed class Stage6B2EffectTests
     public async Task ChoiceOrderExecutesOnlyThePlayersChosenBranch(string option)
     {
         using var s = await Ready("deran/command/_13");
-        s.TargetRequested += (request, responder) => Assert.True(responder.Complete(request.RequestId,
-            new Dictionary<string, IReadOnlyList<string>> { [request.Slots[0].Name] = [option] }));
+        var source = Card(s, "deran/command/_13");
+        s.TargetRequested += (request, responder) =>
+        {
+            Assert.Equal(source.Uid, request.SourceCard?.Uid);
+            Assert.Equal(source.Definition.ArtPath, request.SourceCard?.Definition.ArtPath);
+            Assert.Equal(new[] { "使友方总部获得+7防御力", "抽两张牌" }, request.Slots.Single().Allowed.Select(c => c.Label));
+            Assert.True(responder.Complete(request.RequestId,
+                new Dictionary<string, IReadOnlyList<string>> { [request.Slots[0].Name] = [option] }));
+        };
         var hp = s.View.SelfHq!.Health; var deck = s.View.SelfDeckCount;
         Assert.Equal(UiSubmitOutcome.Applied, await s.SubmitAsync(new PlayCard(Card(s, "deran/command/_13").Uid)));
         Assert.Equal(option == "0" ? hp + 7 : hp, s.View.SelfHq!.Health);

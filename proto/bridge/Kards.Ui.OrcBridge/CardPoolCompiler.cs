@@ -169,11 +169,13 @@ public static class CardPoolCompiler
         }
     }
 
-    /// <summary>
-    /// The two rarity vocabularies are unrelated (bronze/silver/gold vs Standard/Limited/Elite),
-    /// so no card is promoted to a special rarity on a guess. Everything lands on Standard unless
-    /// the catalog already uses the engine's own words.
-    /// </summary>
-    private static Rarity RarityOf(UiCardDefinition card) =>
-        Enum.TryParse<Rarity>(card.Rarity, ignoreCase: true, out var rarity) ? rarity : Rarity.Standard;
+    // Confirmed by the source client's card-import.js, rather than inferred from metal colours.
+    private static Rarity RarityOf(UiCardDefinition card) => card.Rarity.ToLowerInvariant() switch
+    {
+        "iron" or "common" => Rarity.Standard,
+        "bronze" => Rarity.Limited,
+        "silver" => Rarity.Special,
+        "gold" => Rarity.Elite,
+        _ => Enum.TryParse<Rarity>(card.Rarity, true, out var rarity) ? rarity : Rarity.Standard
+    };
 }

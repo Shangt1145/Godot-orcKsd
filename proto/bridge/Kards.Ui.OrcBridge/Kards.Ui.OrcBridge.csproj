@@ -18,6 +18,9 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources/verified-cards.json" LogicalName="Kards.Ui.OrcBridge.verified-cards.json" />
+    <!-- Runtime assets, embedded so Godot's in-memory assembly loading needs no Assembly.Location. -->
+    <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/ops/*.csx.tpl"
+                      LogicalName="Kards.Ui.OrcBridge.DiyOps.%(Filename)%(Extension)" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
   </ItemGroup>

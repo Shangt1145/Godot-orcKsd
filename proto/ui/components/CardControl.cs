@@ -47,7 +47,13 @@ public partial class CardControl : Control
         Visual.PivotOffset = Size / 2;
         var full = View is null || View.Visibility == Visibility.Full;
         var tex = full ? _cache.Get(Definition.ArtPath) : null;
-        if (tex is not null)
+        var custom = full && Definition.CardId.StartsWith("diy/", StringComparison.Ordinal);
+        if (custom)
+        {
+            var face = new DiyCardFace { Definition = Definition, View = View, IllustrationSource = tex, MouseFilter = MouseFilterEnum.Ignore };
+            Visual.AddChild(face); face.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        }
+        else if (tex is not null)
         {
             var image = new TextureRect
             {
@@ -107,7 +113,7 @@ public partial class CardControl : Control
                 content.AddChild(desc);
             }
         }
-        if (View is not null && full)
+        if (View is not null && full && !custom)
         {
             var stats = new HBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
             stats.AddThemeConstantOverride("separation", 2);
@@ -125,13 +131,15 @@ public partial class CardControl : Control
             }
             var flags = new List<string>();
             if (View.IsSuppressed)
-                flags.Add("抑制");
+                flags.Add("压制");
             if (View.IsSilenced)
-                flags.Add("静默");
+                flags.Add("抑制");
             if (View.IsVeteran)
                 flags.Add("老兵");
+            if (View.IsCovert) flags.Add("隐蔽");
             foreach (var kw in View.Keywords)
-                flags.Add(KeywordLabel(kw, View.KeywordValues));
+                if (kw is not ("suppressed" or "inhibited" or "veteran" or "covert"))
+                    flags.Add(KeywordLabel(kw, View.KeywordValues));
             if (flags.Count > 0)
             {
                 var label = UiStyles.Label(string.Join(" · ", flags), 11, UiStyles.Gold);
@@ -157,7 +165,9 @@ public partial class CardControl : Control
             "blitz" => "➜ 闪击",
             "guard" => "▣ 守护",
             "ambush" => "◈ 伏击",
-            "fury" => "✦ 狂怒",
+            "fury" => "✦ 奋战",
+            "smokescreen" => "烟幕", "mobilize" => "动员", "pincer" => "钳击",
+            "covert" => "隐蔽", "suppressed" => "被压制", "inhibited" => "被抑制",
             "veteran" => "★ 老兵",
             _ => "◇ " + keyword
         };

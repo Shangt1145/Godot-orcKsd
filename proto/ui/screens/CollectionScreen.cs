@@ -12,11 +12,39 @@ public partial class CollectionScreen : VBoxContainer
     private LineEdit _search = null!;
     private GridContainer _grid = null!;
     private VBoxContainer _detail = null!;
-    private Label _count = null!, _pageLabel = null!;
-    private Button _prev = null!, _next = null!;
+    private Label _count = null!;
+    private ScrollContainer _scroll = null!;
+    private Control _scrollContent = null!;
+    private HBoxContainer _filterRow = null!;
+    private Button _filterToggle = null!;
     private UiCardDefinition? _selected;
-    private int _page;
-    private const int PageSize = 18;
+    private UiCardDefinition[] _results = [];
+    private int _firstRow = -1, _lastRow = -1;
+    private const int RowStride = 256, RowGap = 16, Overscan = 1;
+    internal ScrollContainer CardScroll => _scroll;
+    internal LineEdit Search => _search;
+    internal IReadOnlyList<UiCardDefinition> Results => _results;
+    internal IEnumerable<CardControl> VisibleCards => _grid.GetChildren().OfType<VBoxContainer>()
+        .SelectMany(item => item.GetChildren().OfType<CenterContainer>()).SelectMany(center => center.GetChildren().OfType<CardControl>());
+    internal string? SelectedCardId => _selected?.CardId;
+    public void RefreshCatalog()
+    {
+        var values = new IEnumerable<string>[] { _catalog.Cards.Select(c => c.Set), _catalog.Cards.Select(c => c.CardType),
+            _catalog.Cards.Select(c => c.UnitType), _catalog.Cards.Select(c => c.Rarity), _catalog.Cards.SelectMany(c => c.Keywords) };
+        for (var i = 0; i < _filters.Count; i++)
+        {
+            var filter = _filters[i]; var selected = filter.GetItemMetadata(filter.Selected).AsString();
+            var title = filter.GetItemText(0); filter.Clear(); filter.AddItem(title); filter.SetItemMetadata(0, "");
+            foreach (var value in values[i].Where(x => x.Length > 0).Distinct().OrderBy(x => x))
+            {
+                filter.AddItem(i switch { 1 => UiStyles.TypeName(value), 3 => UiStyles.RarityName(value),
+                    4 => CardControl.KeywordLabel(value, new Dictionary<string, int>()), _ => value });
+                filter.SetItemMetadata(filter.ItemCount - 1, value);
+                if (selected == value) filter.Select(filter.ItemCount - 1);
+            }
+        }
+        Render(); ShowDetail(_catalog.Cards.FirstOrDefault(c => c.CardId == _selected?.CardId) ?? _catalog.Cards.FirstOrDefault());
+    }
     public void Initialize(CardCatalog catalog, TextureCache textures)
     {
         _catalog = catalog;
@@ -24,19 +52,15 @@ public partial class CollectionScreen : VBoxContainer
         SizeFlagsVertical = SizeFlags.ExpandFill;
         var heading = new HBoxContainer();
         AddChild(heading);
-        var title = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        heading.AddChild(title);
-        title.AddChild(UiStyles.Label("卡牌图鉴", 30));
-        title.AddChild(UiStyles.Label("浏览卡池、词条与卡面原文", 14, UiStyles.Dim));
-        _count = UiStyles.Label("", 16, UiStyles.Gold);
-        heading.AddChild(_count);
-        var searchRow = new HBoxContainer();
-        AddChild(searchRow);
+        heading.AddChild(UiStyles.Label("卡牌收藏", 30, UiStyles.MenuInk));
         _search = new LineEdit { PlaceholderText = "搜索卡名、编号或卡面文本…", SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(250, 42) };
-        searchRow.AddChild(_search);
-        _search.TextChanged += _ => { _page = 0; Render(); };
-        searchRow.AddChild(UiStyles.Button("重置筛选", () => { _search.Text = ""; foreach (var f in _filters) f.Select(0); _page = 0; Render(); }));
+        heading.AddChild(_search);
+        _search.TextChanged += _ => Render();
+        _filterToggle = UiStyles.Button("筛选", () => { _filterRow.Visible = !_filterRow.Visible; _filterToggle.SetPressedNoSignal(_filterRow.Visible); }); _filterToggle.ToggleMode = true; heading.AddChild(_filterToggle);
+        heading.AddChild(UiStyles.Button("重置", () => { foreach (var f in _filters) f.Select(0); _search.Text = ""; Render(); }));
+        _count = UiStyles.Label("", 14, UiStyles.Gold); heading.AddChild(_count);
         var filters = new HBoxContainer();
+        _filterRow = filters; filters.Visible = false;
         AddChild(filters);
         AddFilter(filters, "全部国别", catalog.Cards.Select(c => c.Set), x => x);
         AddFilter(filters, "全部卡类", catalog.Cards.Select(c => c.CardType), UiStyles.TypeName);
@@ -47,27 +71,23 @@ public partial class CollectionScreen : VBoxContainer
         AddChild(body);
         var gridSide = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         body.AddChild(gridSide);
-        var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
-        gridSide.AddChild(scroll);
+        _scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, VerticalScrollMode = ScrollContainer.ScrollMode.ShowAlways };
+        gridSide.AddChild(_scroll);
+        // The scroll extent represents every result; only nearby rows hold card actors/textures.
+        _scrollContent = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill, MouseFilter = MouseFilterEnum.Pass };
+        _scroll.AddChild(_scrollContent);
         _grid = new GridContainer { Columns = 6, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        scroll.AddChild(_grid);
-        var pager = new HBoxContainer();
-        gridSide.AddChild(pager);
-        _prev = UiStyles.Button("← 上一页", () => { _page--; Render(); });
-        pager.AddChild(_prev);
-        _pageLabel = UiStyles.Label("");
-        _pageLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _pageLabel.HorizontalAlignment = HorizontalAlignment.Center;
-        pager.AddChild(_pageLabel);
-        _next = UiStyles.Button("下一页 →", () => { _page++; Render(); });
-        pager.AddChild(_next);
+        _grid.AddThemeConstantOverride("h_separation", 16); _grid.AddThemeConstantOverride("v_separation", RowGap);
+        _scrollContent.AddChild(_grid); _grid.SetAnchorsAndOffsetsPreset(LayoutPreset.TopLeft);
+        _scrollContent.Resized += () => _grid.Size = new(_scrollContent.Size.X, _grid.Size.Y);
         var detailPanel = new PanelContainer { CustomMinimumSize = new Vector2(318, 0) };
         body.AddChild(detailPanel);
         var detailScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, SizeFlagsHorizontal = SizeFlags.ExpandFill };
         detailPanel.AddChild(detailScroll);
         _detail = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         detailScroll.AddChild(_detail);
-        scroll.Resized += () => { _grid.Columns = Math.Max(2, (int)(scroll.Size.X / 153)); };
+        _scroll.Resized += ResizeGrid;
         Render();
         ShowDetail(catalog.Cards.FirstOrDefault());
     }
@@ -81,7 +101,7 @@ public partial class CollectionScreen : VBoxContainer
             o.AddItem(label(v));
             o.SetItemMetadata(o.ItemCount - 1, v);
         }
-        o.ItemSelected += _ => { _page = 0; Render(); };
+        o.ItemSelected += _ => Render();
         row.AddChild(o);
         _filters.Add(o);
     }
@@ -90,33 +110,60 @@ public partial class CollectionScreen : VBoxContainer
         if (_grid is null)
             return;
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
-        var list = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]).ToArray();
-        var pages = Math.Max(1, (list.Length + PageSize - 1) / PageSize);
-        _page = Math.Clamp(_page, 0, pages - 1);
-        _count.Text = $"{list.Length} / {_catalog.Cards.Count} 张";
-        _pageLabel.Text = $"{_page + 1} / {pages}";
-        _prev.Disabled = _page == 0;
-        _next.Disabled = _page == pages - 1;
-        UiStyles.Clear(_grid);
-        foreach (var def in list.Skip(_page * PageSize).Take(PageSize))
+        _results = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]).ToArray();
+        _count.Text = $"{_results.Length} / {_catalog.Cards.Count} 张";
+        var filterCount = vals.Count(v => v.Length > 0); _filterToggle.Text = filterCount == 0 ? "筛选" : $"筛选 · {filterCount}";
+        _scroll.ScrollVertical = 0;
+        SetScrollExtent(); UpdateWindow(true);
+    }
+    private void SetScrollExtent() => _scrollContent.CustomMinimumSize = new(137, Math.Max(1, (_results.Length + _grid.Columns - 1) / _grid.Columns) * RowStride);
+    private void ResizeGrid()
+    {
+        var columns = Math.Max(1, (int)((_scroll.Size.X - 20 + 16) / 153));
+        if (_grid.Columns != columns)
         {
-            var item = new VBoxContainer();
+            var firstCard = _scroll.ScrollVertical / RowStride * _grid.Columns;
+            _grid.Columns = columns; SetScrollExtent();
+            _scroll.ScrollVertical = firstCard / columns * RowStride;
+        }
+        UpdateWindow(true);
+    }
+    public override void _Process(double delta)
+    {
+        if (IsVisibleInTree() && _grid is not null) UpdateWindow();
+    }
+    private void UpdateWindow(bool force = false)
+    {
+        var totalRows = (_results.Length + _grid.Columns - 1) / _grid.Columns;
+        var first = Math.Max(0, _scroll.ScrollVertical / RowStride - Overscan);
+        var last = Math.Min(totalRows, (int)Math.Ceiling((_scroll.ScrollVertical + _scroll.Size.Y) / RowStride) + Overscan);
+        if (!force && first == _firstRow && last == _lastRow) return;
+        _firstRow = first; _lastRow = last;
+        UiStyles.Clear(_grid);
+        _grid.Position = new(0, first * RowStride);
+        _grid.Size = new(_scrollContent.Size.X, Math.Max(1, last - first) * RowStride - RowGap);
+        foreach (var def in _results.Skip(first * _grid.Columns).Take(Math.Max(0, last - first) * _grid.Columns))
+        {
+            var item = new VBoxContainer { CustomMinimumSize = new(137, RowStride - RowGap), SizeFlagsHorizontal = SizeFlags.ExpandFill };
             item.AddThemeConstantOverride("separation", 5);
             _grid.AddChild(item);
+            var center = new CenterContainer(); item.AddChild(center);
             var card = new CardControl();
             card.Bind(def, _textures, 137);
             card.SetState(_selected?.CardId == def.CardId, false);
             card.Activated += _ => ShowDetail(def);
             card.LongPressed += _ => ShowDetail(def);
-            item.AddChild(card);
+            center.AddChild(card);
             var name = UiStyles.Label(def.Name, 13);
             name.CustomMinimumSize = new Vector2(137, 0);
             name.ClipText = true;
             name.TooltipText = def.Name;
+            name.HorizontalAlignment = HorizontalAlignment.Center;
             item.AddChild(name);
-            item.AddChild(UiStyles.Label($"{def.Set} · {UiStyles.TypeName(def.CardType)}", 11, UiStyles.Dim));
+            var meta = UiStyles.Label($"{def.Set} · {UiStyles.TypeName(def.CardType)}", 11, UiStyles.Dim);
+            meta.ClipText = true; meta.HorizontalAlignment = HorizontalAlignment.Center; item.AddChild(meta);
         }
-        if (list.Length == 0)
+        if (_results.Length == 0)
             _grid.AddChild(UiStyles.Label("没有符合条件的卡牌", 18, UiStyles.Dim));
     }
     public void ShowDetail(UiCardDefinition? card)
@@ -125,11 +172,8 @@ public partial class CollectionScreen : VBoxContainer
         UiStyles.Clear(_detail);
         if (card is null)
             return;
-        foreach (var item in _grid.GetChildren())
-            foreach (var child in item.GetChildren())
-                if (child is CardControl c)
-                    c.SetState(c.Definition.CardId == card.CardId, false);
-        _detail.AddChild(UiStyles.Label(card.Name, 22, UiStyles.Gold));
+        foreach (var visible in VisibleCards) visible.SetState(visible.Definition.CardId == card.CardId, false);
+        var name = UiStyles.Label(card.Name, 22, UiStyles.Gold); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; name.CustomMinimumSize = new(280, 0); _detail.AddChild(name);
         if (card.NameEn.Length > 0)
             _detail.AddChild(UiStyles.Label(card.NameEn, 14, UiStyles.Dim));
         var full = new CardControl();

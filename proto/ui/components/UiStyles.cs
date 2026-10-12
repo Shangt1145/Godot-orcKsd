@@ -4,6 +4,39 @@ namespace Kards.Ui;
 
 public static class UiStyles
 {
+    public static readonly Color MenuPanel = new("1c221eee"), MenuLine = new("666453"), MenuInk = new("efe7d1"),
+        MenuDim = new("aaa994"), Accent = new("c17c36");
+    // The application shell has its own theme; the battle keeps its existing presentation.
+    public static Theme CreateMenuTheme()
+    {
+        var theme = CreateTheme();
+        foreach (var cls in new[] { "Label", "Button", "LineEdit", "OptionButton", "CheckButton", "CheckBox", "RichTextLabel" })
+            theme.SetColor("font_color", cls, MenuInk);
+        foreach (var cls in new[] { "Button", "OptionButton" })
+        {
+            theme.SetStylebox("normal", cls, Box(new("282d27"), new("5b5b4b"), 1, 10));
+            theme.SetStylebox("hover", cls, Box(new("3b4135"), Gold, 1, 10));
+            theme.SetStylebox("pressed", cls, Box(new("4a4632"), Gold, 1, 10));
+            theme.SetStylebox("focus", cls, Box(Colors.Transparent, Gold, 1, 10));
+            theme.SetStylebox("disabled", cls, Box(new("20261f"), new("3f463b"), 1, 10));
+            theme.SetColor("font_disabled_color", cls, new("737b6b"));
+        }
+        theme.SetStylebox("normal", "LineEdit", Box(new("1a211d"), new("535949"), 1, 10));
+        theme.SetStylebox("focus", "LineEdit", Box(new("232b23"), Gold, 1, 10));
+        theme.SetStylebox("panel", "PanelContainer", Box(MenuPanel, MenuLine, 1, 16));
+        theme.SetStylebox("panel", "PopupMenu", Box(new("20281f"), MenuLine, 1, 10));
+        theme.SetColor("font_color", "PopupMenu", MenuInk);
+        theme.SetStylebox("panel", "AcceptDialog", Box(new("20281f"), MenuLine, 2, 18));
+        return theme;
+    }
+    public static void Primary(Button button)
+    {
+        button.AddThemeStyleboxOverride("normal", Box(new("a2632c"), new("ddb476"), 1, 12));
+        button.AddThemeStyleboxOverride("hover", Box(new("be7e38"), new("eed2a0"), 1, 12));
+        button.AddThemeStyleboxOverride("pressed", Box(new("875327"), Gold, 1, 12));
+        button.AddThemeFontSizeOverride("font_size", 18);
+        button.CustomMinimumSize = new(0, 48);
+    }
     public static readonly Color Bg = new("14161a"), Panel = new("1d2027"), Panel2 = new("23262e"),
         Line = new("333844"), Ink = new("e8e6e1"), Dim = new("9aa1ad"), Gold = new("c7aa71"), Green = new("8fd6a0");
     public static StyleBoxFlat Box(Color fill, Color? border = null, int radius = 6, int padding = 12)

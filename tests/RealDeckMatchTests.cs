@@ -1,4 +1,4 @@
-﻿using Kards.Ui.Contracts;
+using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 using Kards.Ui.OrcBridge;
 using Orc.Game.Cards;
@@ -90,7 +90,9 @@ public sealed class RealDeckMatchTests
             // The hand must hold catalog cards, not the probe infantry the earlier tests used.
             Assert.All(view.SelfHand, card =>
                 Assert.Contains(card.Definition.CardId, deck));
-            Assert.NotEmpty(session.Actions.PlayableUids);
+            Assert.True(session.Actions.HandPlayabilityKnown);
+            Assert.All(session.Actions.PlayableUids, uid =>
+                Assert.True(session.Host.Match.PlayManager.CanPlay((CardBase)session.Host.Index[uid])));
 
             // The opening hand is random, so a given seed may hold nothing affordable and playable.
             // What matters is that the engine accepts a legal play whenever one is offered — the

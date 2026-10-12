@@ -9,6 +9,7 @@ public partial class BattleAim : Control
     public Vector2 From { get; set; }
     public Vector2 To { get; set; }
     public bool Moving { get; set; }
+    public bool InvalidTarget { get; set; }
     public UiAttackPreview? Preview { get; set; }
     public override void _Draw()
     {
@@ -16,7 +17,7 @@ public partial class BattleAim : Control
         if (!Visible || distance < 20) return;
         var direction = (To - From).Normalized();
         var normal = new Vector2(-direction.Y, direction.X);
-        var ink = Moving ? new Color("bcbfaf") : new Color("9b2826");
+        var ink = Moving || InvalidTarget ? new Color("bcbfaf") : new Color("9b2826");
         Vector2[] points;
         if (distance < 45f)
         {

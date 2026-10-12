@@ -3,83 +3,42 @@ using Orc.Game.Targeting;
 
 namespace Kards.Ui.OrcBridge;
 
-/// <summary>
-/// Minimal engine-side targeter bridge. The engine inverts control when it needs a player choice, and a
-/// missing bridge surfaces as a failed targeting result rather than an exception, so every match needs one.
-/// The interactive panel is supplied by the UI later; until then this answers with the conservative policy:
-/// an empty mulligan selection (keeping the opening hand) and a cancel for anything else.
-/// </summary>
-public sealed class OrcTargeterBridge : ITargeterBridge
+/// <summary>Consumes native selector sessions in order. Only the engine supplies candidates.</summary>
+public sealed class OrcTargeterBridge(Action<ISelectorInstance>? present = null) : ITargeterBridge
 {
-    private readonly Func<IReadOnlyList<object?>> _collect;
-    private readonly Action<TargetingRequestDescription, ITargetingResponder>? _present;
+    public void BeginTargeting(ITargeterSession session) => _ = ConsumeAsync(session);
 
-    /// <param name="collect">Everything the UI can currently interact with, as engine references.</param>
-    /// <param name="present">Interactive handler; when null the conservative auto policy is used.</param>
-    public OrcTargeterBridge(Func<IReadOnlyList<object?>> collect,
-        Action<TargetingRequestDescription, ITargetingResponder>? present = null)
+    private async Task ConsumeAsync(ITargeterSession session)
     {
-        _collect = collect;
-        _present = present;
+        while (await session.NextAsync() is { } selector)
+        {
+            try
+            {
+                if (present is null) AutoRespond(selector);
+                else present(selector);
+            }
+            catch { selector.Submit(new CancelEvent()); }
+        }
     }
 
-    public Task<IReadOnlyList<object?>> CollectCandidatesAsync(TargetingCollectionContext context)
-        => Task.FromResult(_collect());
-
-    public void BeginInteraction(TargetingRequestDescription description, ITargetingResponder responder)
+    public static void AutoRespond(ISelectorInstance selector)
     {
-        if (_present is not null)
-        {
-            _present(description, responder);
-            return;
-        }
-        AutoRespond(description, responder);
+        var data = selector.Presentation;
+        if (selector.SelectorName == SelectorNames.Mulligan && data.Min == 0)
+            selector.Submit(new PickEvent());
+        else if (data.Identifiers is { Count: > 0 } ids && data.Min <= 1)
+            selector.Submit(new PickEvent(identifiers: [ids[0]]));
+        else if (data.Candidates.FirstOrDefault(r => r.IsAlive) is { } first && data.Min <= 1)
+            selector.Submit(selector.Mode == SelectorInteractionMode.Drag ? new DropEvent(first) : new PickEvent([first]));
+        else selector.Submit(new CancelEvent());
     }
 
-    /// <summary>
-    /// The shared conservative policy: keep the whole opening hand on mulligan; otherwise take the first
-    /// allowed candidate for single-choice slots. Used directly when no interactive handler is supplied,
-    /// and as the fallback when the interactive handler has no pending player intent.
-    /// </summary>
-    public static void AutoRespond(TargetingRequestDescription description, ITargetingResponder responder)
-    {
-        var slot = description.Slots.Count > 0 ? description.Slots[0] : null;
-        if (slot is null)
-        {
-            responder.Cancel(description.RequestId);
-            return;
-        }
-        var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
-        if (slot.Kind == TargetSlotKind.MulliganSelect && slot.Min == 0)
-        {
-            // Keeping the whole opening hand is always a legal answer: the slot allows an empty selection.
-            responder.Complete(description.RequestId,
-                new Dictionary<string, IReadOnlyList<TargetSelection>>(StringComparer.Ordinal)
-                {
-                    [slot.Name] = Array.Empty<TargetSelection>()
-                });
-            return;
-        }
-        if (allowed.Length > 0 && slot.Min <= 1)
-        {
-            responder.Complete(description.RequestId,
-                new Dictionary<string, IReadOnlyList<TargetSelection>>(StringComparer.Ordinal)
-                {
-                    [slot.Name] = [TargetSelection.FromReference(allowed[0])]
-                });
-            return;
-        }
-        responder.Cancel(description.RequestId);
-    }
-
-    /// <summary>
-    /// Translates the mulligan panel's keep list into the replacement set the engine expects:
-    /// every allowed reference whose UI uid is not kept is returned to the deck. The engine still
-    /// validates the submitted selection; this only does the uid mapping.
-    /// </summary>
     public static IReadOnlyList<Ref<Entity>> SelectReplace(IEnumerable<Ref<Entity>> allowed, IEnumerable<string> keepUids)
     {
         var keep = keepUids.ToHashSet(StringComparer.Ordinal);
         return allowed.Where(reference => !keep.Contains(OrcRefs.KeyOf(reference.Value))).ToArray();
     }
 }
+
+/// <summary>Labels attached by reviewed source effects; never an engine rule.</summary>
+internal sealed record OrderSelectorTag(string SlotName, IReadOnlyDictionary<string, string>? Labels = null);

@@ -6,7 +6,12 @@ public enum ChoiceKind
 }
 public sealed record UiChoice(string Id, string Label, ChoiceKind Kind, UiCardView? Card = null);
 public sealed record UiChoiceSlot(string Name, ChoiceKind Kind, int Min, int Max, IReadOnlyList<UiChoice> Allowed);
-public sealed record UiTargetRequest(string RequestId, IReadOnlyList<UiChoiceSlot> Slots);
+public sealed record UiTargetRequest(string RequestId, IReadOnlyList<UiChoiceSlot> Slots)
+{
+    public UiCardView? SourceCard { get; init; }
+    public string SelectorName { get; init; } = "";
+    public bool IsDrag { get; init; }
+}
 
 /// <summary>Adapter returns true for any terminal result, including engine-side failure.</summary>
 public interface IUiTargetResponder

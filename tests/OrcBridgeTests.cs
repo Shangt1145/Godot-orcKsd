@@ -27,21 +27,12 @@ public sealed class OrcBridgeTests
         var deckA = new CardList(Enumerable.Repeat(InfantryId, 20));
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
         Match? match = null;
-        var bridge = new OrcTargeterBridge(() => InteractablesOf(match));
+        var bridge = new OrcTargeterBridge();
         match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: firstPlayerIndex, targeterBridge: bridge);
         return match;
     }
 
-    private static IReadOnlyList<object?> InteractablesOf(Match? match)
-    {
-        if (match is null || match.State == MatchState.Preparing) return Array.Empty<object?>();
-        var references = new List<object?>();
-        foreach (var line in new[] { match.Battlefield.PlayerASupportLine, match.Battlefield.FrontLine, match.Battlefield.PlayerBSupportLine })
-            foreach (var slot in line)
-                references.Add(slot.Ref);
-        foreach (var player in match.Players) references.Add(player.Hq.Ref);
-        return references;
-    }
+
 
     [Fact]
     public async Task HostReadsOpeningBoardFromEngine()
@@ -167,12 +158,11 @@ public sealed class OrcBridgeTests
         // The panel path: the bridge parks the request, the UI submits a keep list, and the engine
         // replaces exactly the rest. Everything here is the engine's own truth.
         var parked = new TaskCompletionSource();
-        Orc.Game.Targeting.TargetingRequestDescription? description = null;
-        Orc.Game.Targeting.ITargetingResponder? responder = null;
+        Orc.Game.Targeting.ISelectorInstance? selector = null;
         Match? match = null;
-        var bridge = new OrcTargeterBridge(() => InteractablesOf(match), (d, r) =>
+        var bridge = new OrcTargeterBridge(s =>
         {
-            description = d; responder = r; parked.TrySetResult();
+            selector = s; parked.TrySetResult();
         });
         var definitions = new[]
         {
@@ -193,15 +183,13 @@ public sealed class OrcBridgeTests
         var self = match.BeginMulliganAsync(match.Players[0]);
         await parked.Task; // the request must park, not auto-answer
 
-        var slot = description!.Slots[0];
-        Assert.Equal(Orc.Game.Targeting.TargetSlotKind.MulliganSelect, slot.Kind);
-        var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
+        Assert.Equal(Orc.Game.Targeting.SelectorNames.Mulligan, selector!.SelectorName);
+        var allowed = selector.Presentation.Candidates.Where(r => r.IsAlive).ToArray();
         Assert.Equal(opening.Length, allowed.Length);
         var replace = OrcTargeterBridge.SelectReplace(allowed, opening.Take(3));
         Assert.Single(replace);
 
-        responder!.Complete(description.RequestId,
-            new Dictionary<string, IReadOnlyList<Orc.Core.Ref<Orc.Core.Entity>>> { [slot.Name] = replace });
+        Assert.True(selector!.Submit(new Orc.Game.Targeting.PickEvent(replace)));
         var result = await self;
         Assert.True(result.IsSuccess, $"mulligan failed: {result.FailureReason}");
         host.Pump();
@@ -220,12 +208,11 @@ public sealed class OrcBridgeTests
     public async Task KeepAllMulliganKeepsTheWholeOpeningHand()
     {
         var parked = new TaskCompletionSource();
-        Orc.Game.Targeting.TargetingRequestDescription? description = null;
-        Orc.Game.Targeting.ITargetingResponder? responder = null;
+        Orc.Game.Targeting.ISelectorInstance? selector = null;
         Match? match = null;
-        var bridge = new OrcTargeterBridge(() => InteractablesOf(match), (d, r) =>
+        var bridge = new OrcTargeterBridge(s =>
         {
-            description = d; responder = r; parked.TrySetResult();
+            selector = s; parked.TrySetResult();
         });
         var definitions = new[]
         {
@@ -243,13 +230,8 @@ public sealed class OrcBridgeTests
         var self = match.BeginMulliganAsync(match.Players[0]);
         await parked.Task;
 
-        var slot = description!.Slots[0];
-        responder!.Complete(description.RequestId,
-            new Dictionary<string, IReadOnlyList<Orc.Core.Ref<Orc.Core.Entity>>>
-            {
-                [slot.Name] = OrcTargeterBridge.SelectReplace(
-                    (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray(), opening)
-            });
+        Assert.True(selector!.Submit(new Orc.Game.Targeting.PickEvent(
+            OrcTargeterBridge.SelectReplace(selector.Presentation.Candidates.Where(r => r.IsAlive).ToArray(), opening))));
         var result = await self;
         Assert.True(result.IsSuccess);
         host.Pump();

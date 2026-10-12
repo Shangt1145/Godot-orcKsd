@@ -23,7 +23,7 @@ public sealed class BridgeContractTests
 {
     private const string InfantryId = "contract-infantry";
 
-    private static Match CreateMatch(int seed = 7)
+    private static Match CreateMatch(int seed = 7, Action<Orc.Game.Targeting.ISelectorInstance>? present = null)
     {
         var definitions = new[]
         {
@@ -34,22 +34,14 @@ public sealed class BridgeContractTests
         var deckA = new CardList(Enumerable.Repeat(InfantryId, 20));
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
         Match? match = null;
-        // AutoRespond matters: BeginUnitPrePlayAsync parks on a SingleSelect slot and waits forever
+        // AutoRespond matters: BeginUnitPrePlayAsync parks on a native selector and waits forever
         // unless a choice is submitted. A bridge that only records requests deadlocks the host.
-        var bridge = new OrcTargeterBridge(() => InteractablesOf(match), OrcTargeterBridge.AutoRespond);
+        var bridge = new OrcTargeterBridge(present ?? OrcTargeterBridge.AutoRespond);
         match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: 0, targeterBridge: bridge);
         return match;
     }
 
-    private static IReadOnlyList<object?> InteractablesOf(Match? match)
-    {
-        if (match is null || match.State == MatchState.Preparing) return Array.Empty<object?>();
-        var references = new List<object?>();
-        foreach (var line in new[] { match.Battlefield.PlayerASupportLine, match.Battlefield.FrontLine, match.Battlefield.PlayerBSupportLine })
-            foreach (var slot in line) references.Add(slot.Ref);
-        foreach (var player in match.Players) references.Add(player.Hq.Ref);
-        return references;
-    }
+
 
     // ── SHAPE ───────────────────────────────────────────────────────────────
 
@@ -311,10 +303,11 @@ public sealed class BridgeContractTests
         Assert.DoesNotContain(host.View.SelfHand, c => c.Uid == uid);
         Assert.Equal(3, host.View.SelfHand.Count);
 
-        // PlayableUids is the hand's interactive set — a card the UI must let the player pick up.
-        // A deployed unit has left the hand, so what matters here is that the remaining cards
-        // are still offered; if upstream narrows this set, the UI silently stops responding.
-        Assert.NotEmpty(host.Actions.PlayableUids);
+        // Entry availability is now supplied by the native validation query. Spending the last
+        // credit removes the remaining one-cost cards from playable highlights, not the hand.
+        Assert.True(host.Actions.HandPlayabilityKnown);
+        Assert.Empty(host.Actions.PlayableUids);
+        Assert.Equal(3, host.View.SelfHand.Count);
         Assert.All(host.Actions.PlayableUids, id =>
             Assert.Contains(host.View.SelfHand, c => c.Uid == id));
     }
@@ -328,7 +321,14 @@ public sealed class BridgeContractTests
     [Fact]
     public async Task AnAttackOnTheHeadquartersIsReportedWithItsAttackerAndAmount()
     {
-        var match = CreateMatch();
+        var aimAtHq = false;
+        var match = CreateMatch(present: selector =>
+        {
+            if (!aimAtHq) { OrcTargeterBridge.AutoRespond(selector); return; }
+            // Backend candidates now include enemy units too; this scenario explicitly aims at the HQ.
+            var hq = selector.Presentation.Candidates.Single(r => r.Value is Orc.Game.Players.Hq);
+            selector.Submit(new Orc.Game.Targeting.DropEvent(hq));
+        });
         var host = new OrcMatchHost(match, "contract-assault");
         var impacts = new List<IReadOnlyList<UiOrderImpact>>();
         host.CombatReady += (reported, _, _) => impacts.AddRange(reported);
@@ -348,6 +348,7 @@ public sealed class BridgeContractTests
         await match.EndTurn();
         await OrcOpponentDriver.PlayTurnAsync(match, match.Players[1]);
 
+        aimAtHq = true;
         var attack = match.CommandManager.BeginAttackAsync(unit);
         Assert.True(await Task.WhenAny(attack, Task.Delay(TimeSpan.FromSeconds(20))) == attack,
             "the attack never completed");

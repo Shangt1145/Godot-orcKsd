@@ -15,7 +15,7 @@ public partial class Main
     private async Task VerifyCardPoolStageAsync()
     {
         Show("battle");
-        await StartRealMatchAsync(interactiveMulligan: false, hotseat: true, deckSeed: 7, demoOpeningHand: true);
+        await StartRealMatchAsync(interactiveMulligan: false, manualOpponentForVerification: true, deckSeed: 7, demoOpeningHand: true);
         var runner = _runner!; var report = runner.CardPoolReport ?? throw new Exception("Catalog admission did not report its support set.");
         if (report.Total != 315 || report.Verified != 21 || report.StructurallyRepresentable <= report.Verified)
             throw new Exception("Reviewed and structural card coverage were confused.");
@@ -23,10 +23,18 @@ public partial class Main
         if (runner.CurrentView!.SelfHand.Any(c => !approved.Contains(c.CardId)) || runner.CurrentView.SelfDeckCount != 26)
             throw new Exception("A validation deck included unreviewed cards or the wrong count.");
         // Advance both human seats through the production command path; no AI substitutes the player.
-        await runner.SubmitAsync(new EndTurn()); runner.SwitchSeat();
-        await runner.SubmitAsync(new EndTurn()); runner.SwitchSeat();
+        await runner.SubmitAsync(new EndTurn()); runner.SwitchViewerForVerification();
+        await runner.SubmitAsync(new EndTurn()); runner.SwitchViewerForVerification();
         var card = runner.CurrentView!.SelfHand.First(c => c.CardId == "USG/units/_4");
-        await _battle.DragAsync(card.Uid, _battle.DropAtRowEdge(false, false)); runner.Pump();
+        await _battle.DragAsync(card.Uid, _battle.DropAtRowEdge(false, false));
+        // Native selectors complete asynchronously. Mouse release is not an engine commit boundary.
+        var until = Time.GetTicksMsec() + 10000;
+        while (Time.GetTicksMsec() < until)
+        {
+            runner.Pump();
+            if (!runner.IsSubmitting && runner.CurrentView!.SelfLine.Any(c => c.Uid == card.Uid)) break;
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
         await _presentations!.Completion;
         if (!runner.CurrentView!.SelfLine.Any(c => c.Uid == card.Uid) || !_battle.MatchesProjection(runner.CurrentView))
             throw new Exception("Reviewed catalog deployment did not settle through mouse input.");

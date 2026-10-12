@@ -50,11 +50,13 @@ public partial class BattleScreen
         if (_history.GetChildCount() != 0 || _state.EnemyHandCount != 5 || _state.EnemyKredits != hidden.Before.EnemyKredits)
             throw new Exception("Opponent arming exposed private information.");
         ResetDemo(); var draw = _demo.CreatePresentationScenario("draw"); Render(draw.Before, new(), false);
+        var drawnUid = draw.Resolution.Steps.OfType<UiDrawPresentation>().Single().Card!.Uid;
         var movedDuringFlip = false; var centered = false;
         void OnDraw(string phase)
         {
-            var paper = _sequence.GetChildren().OfType<BattleCard>().FirstOrDefault();
-            if (paper is null) return;
+            if (phase is not ("draw-start" or "draw-flip" or "draw-reveal")) return;
+            if (!_cards.TryGetValue(drawnUid, out var paper) || paper.MouseFilter != MouseFilterEnum.Stop)
+                throw new Exception("Friendly draw must use its real interactive card throughout the flight.");
             if (phase == "draw-flip") movedDuringFlip = (paper.Position + paper.Size / 2).DistanceTo(new(640, 360)) > 20 && Math.Abs(paper.Rotation) > .01;
             if (phase == "draw-reveal") centered = (paper.Position + paper.Size / 2).DistanceTo(new(640, 360)) < 1;
         }

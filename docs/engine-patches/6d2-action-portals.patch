@@ -1,0 +1,748 @@
+diff --git a/src/Orc.Game/Board/BattleLine.cs b/src/Orc.Game/Board/BattleLine.cs
+index af309cf..62c1812 100644
+--- a/src/Orc.Game/Board/BattleLine.cs
++++ b/src/Orc.Game/Board/BattleLine.cs
+@@ -1,4 +1,7 @@
+ using System.Collections;
++using Orc.Core;
++using Orc.Game.Cards;
++using Orc.Game.Players;
+ 
+ namespace Orc.Game.Board;
+ 
+@@ -6,13 +9,60 @@ namespace Orc.Game.Board;
+ /// 战线（2A 槽位模型）：固定容量槽位序列（容量 5/5/5；按索引 0..N-1）。
+ /// 读面：容量 / 槽位序列（实现 <see cref="IReadOnlyList{T}"/>；索引越界＝明确错误、不静默）；
+ /// 「整线空槽枚举」可经槽位序列读面派生（不单列）。
+-/// 邻位动态候选（主查询）：遍历语义＝所有被占槽位（含 HQ）取左右相邻空槽、去重、按槽位索引升序（端点越界侧跳过）；
+-/// 结果＝部署候选位（部署＝己方支援线邻位空槽；部署校验属后续批次、本批仅提供查询）。
++/// 部署主查询 GetInsertionGaps 提供全部阵型插入边界（含 HQ），底层槽位仅承载最终位置；
++/// GetAdjacentEmptySlots 保留为旧槽位模型的查询，不再决定预打出部署候选。
+ /// 〔移动候选口径（终态）：指挥移动＝仅推进、候选＝前线空槽；无后撤/横移候选——不在本查询范围。〕
+ /// </summary>
+ public sealed class BattleLine : IReadOnlyList<Slot>
+ {
+     private readonly Slot[] _slots;
++    private object?[]? _gapPositions;
++    private IReadOnlyList<FormationGap> _gaps = Array.Empty<FormationGap>();
++    private long _gapGeneration;
++
++    /// <summary>N occupied entities offer N+1 insertion gaps, until capacity is full.
++    /// Unchanged queries reuse identities; occupancy changes invalidate every old candidate.</summary>
++    public IReadOnlyList<FormationGap> GetInsertionGaps()
++    {
++        var positions = _slots.Select(s => s.Occupant).ToArray();
++        if (_gapPositions is not null && positions.SequenceEqual(_gapPositions)) return _gaps;
++        foreach (var gap in _gaps) gap.Destroy();
++        _gapPositions = positions; _gapGeneration++;
++        var occupants = positions.OfType<Entity>().ToArray();
++        if (occupants.Length != positions.Count(p => p is not null)
++            || occupants.Length >= Capacity || occupants.Any(e => e is not UnitCard && e is not Hq))
++            return _gaps = Array.Empty<FormationGap>();
++        return _gaps = Array.AsReadOnly(Enumerable.Range(0, occupants.Length + 1)
++            .Select(i => new FormationGap(this, _gapGeneration, i, positions,
++                i > 0 ? occupants[i - 1] : null, i < occupants.Length ? occupants[i] : null)).ToArray());
++    }
++
++    internal bool IsCurrent(FormationGap gap) => ReferenceEquals(gap.Line, this)
++        && gap.Generation == _gapGeneration && _gaps.Contains(gap)
++        && _slots.Select(s => s.Occupant).SequenceEqual(gap.Positions)
++        && _slots.Any(s => s.IsEmpty);
++
++    /// <summary>Engine-only layout commit after play validation. All existing entities retain order;
++    /// positions (including HQ) are updated together before any deployment signal is emitted.</summary>
++    internal bool TryOpenGap(FormationGap gap, out Slot slot)
++    {
++        slot = null!;
++        if (!gap.IsCurrent) return false;
++        var occupants = gap.Positions.OfType<Entity>().ToArray();
++        if (occupants.Any(e => e is UnitCard u && (!u.TryGetData<UnitStateData>(out var state)
++                || !ReferenceEquals(state.Position?.Occupant, u) || state.IsDestroyed))) return false;
++        var start = (Capacity - occupants.Length - 1) / 2;
++        foreach (var position in _slots) position.Clear();
++        for (var i = 0; i < occupants.Length; i++)
++        {
++            var destination = _slots[start + i + (i >= gap.Ordinal ? 1 : 0)];
++            destination.Place(occupants[i]);
++            if (occupants[i] is UnitCard unit) unit.GetData<UnitStateData>().Position = destination;
++            else if (occupants[i] is Hq hq) hq.AttachToSlot(destination);
++        }
++        slot = _slots[start + gap.Ordinal];
++        return true;
++    }
+ 
+     /// <summary>创建固定容量战线（槽位随创建生成、索引固定）。</summary>
+     /// <param name="capacity">容量（须为正整数）。</param>
+@@ -55,7 +105,7 @@ public sealed class BattleLine : IReadOnlyList<Slot>
+     }
+ 
+     /// <summary>
+-    /// 邻位动态候选（部署候选位——本批仅查询）：遍历所有被占槽位（含 HQ），取其左右相邻槽位中的空槽、
++    /// 旧模型邻位空槽查询（不是当前预打出部署候选）：遍历所有被占槽位（含 HQ），取其左右相邻槽位中的空槽、
+     /// 去重、按槽位索引升序（端点越界侧跳过）；无被占槽位或无空邻位＝空列表。
+     /// 〔移动候选（指挥）＝前线空槽；无后撤/横移候选——见指挥侧，不在本查询范围。〕
+     /// </summary>
+diff --git a/src/Orc.Game/Board/Battlefield.cs b/src/Orc.Game/Board/Battlefield.cs
+index 86deff9..3aaf283 100644
+--- a/src/Orc.Game/Board/Battlefield.cs
++++ b/src/Orc.Game/Board/Battlefield.cs
+@@ -7,7 +7,7 @@ namespace Orc.Game.Board;
+ /// （<see cref="BattleLine"/>；容量 5/5/5）。
+ /// 归属固定（对象稳定、不随回合滚动；"我方/敌方"为调用方视图概念，战场不做滚动）；前线不属于任何一方。
+ /// HQ 初始占位（2A 槽位化；W3-3 受控变更：占位者由「对应玩家引用」改为「玩家总部实体」<see cref="Players.Hq"/>——
+-/// 独立 HQ 实体占支援线固定槽位（<see cref="HqSlotIndex"/>＝2，居中），Player 持 HQ 引用；
++/// 独立 HQ 实体初始占支援线槽位（<see cref="HqSlotIndex"/>＝2，居中），Player 持 HQ 引用；
+ /// 布局语义〔占容量格/邻位/守护/轰炸机拦截基准〕不变）：
+ /// 支援线各含 HQ 占位（槽 2）＋左右各 2 格初始为空；前线初始全空。
+ /// 〔W3-4 受控变更：原为「支援线槽 0＝HQ、容量 4」——总部贴在支援线最左端，单位只能落在它右侧，
+@@ -17,7 +17,7 @@ namespace Orc.Game.Board;
+ /// </summary>
+ public sealed class Battlefield
+ {
+-    /// <summary>总部在支援线中的固定占位索引（居中：其左、其右各有 2 格可放单位）。</summary>
++    /// <summary>总部初始占位索引。阵型插入后位置可变，规则应读取 Hq.Position。</summary>
+     public const int HqSlotIndex = 2;
+ 
+     /// <summary>创建战场（构造期即含 HQ 占位：玩家A / 玩家B 支援线槽 <see cref="HqSlotIndex"/>＝各自总部实体）。</summary>
+diff --git a/src/Orc.Game/Cards/PlayChain.cs b/src/Orc.Game/Cards/PlayChain.cs
+index 82c3596..15335f7 100644
+--- a/src/Orc.Game/Cards/PlayChain.cs
++++ b/src/Orc.Game/Cards/PlayChain.cs
+@@ -56,6 +56,10 @@ public enum PlayFailureReason
+ 
+     /// <summary>非"进行"相位（相位门禁：准备／换牌相位下打出链各入口拒绝——零副作用、状态不推进）。</summary>
+     PhaseBlocked,
++    InteractionBlocked,
++    NonOwnerTurn,
++    CardNotInHand,
++    FormationGapUnavailable,
+ }
+ 
+ /// <summary>
+diff --git a/src/Orc.Game/Cards/UnitCard.cs b/src/Orc.Game/Cards/UnitCard.cs
+index 5f37607..3efea86 100644
+--- a/src/Orc.Game/Cards/UnitCard.cs
++++ b/src/Orc.Game/Cards/UnitCard.cs
+@@ -142,11 +142,17 @@ public class UnitCard : CardBase
+     /// <summary>打出链（外层；仅部署路径）：card.played → 部署链 → 收尾（扣费 → 离手）。</summary>
+     private async Task HandlePlayChainAsync(CardTriggerView view, Context ctx, CancellationToken ct)
+     {
+-        if (view.Card is not UnitCard unit || view.Player is not Player player || view.Position is not { } slot)
++        if (view.Card is not UnitCard unit || view.Player is not Player player)
+         {
+-            ctx.Interrupt(); // 载荷缺失（结构性错误）：链中止、收尾不发生
++            ctx.Interrupt();
+             return;
+         }
++        var slot = view.Position;
++        if (view.FormationGap is { } gap)
++        {
++            if (!gap.Line.TryOpenGap(gap, out slot)) { ctx.Interrupt(); return; }
++        }
++        if (slot is null) { ctx.Interrupt(); return; }
+ 
+         // ① 打出宣告（card.played；W4-1 升级版载荷＝{ Card, Player }——被使用卡实例＋使用方）
+         await GameUpdates.EmitCardPlayed(_chainEngine, unit, player, ct);
+diff --git a/src/Orc.Game/Commanding/CommandManager.cs b/src/Orc.Game/Commanding/CommandManager.cs
+index 2dda8ba..137c720 100644
+--- a/src/Orc.Game/Commanding/CommandManager.cs
++++ b/src/Orc.Game/Commanding/CommandManager.cs
+@@ -79,6 +79,7 @@ public sealed class CommandManager
+     private readonly IReadOnlyList<Player> _players;
+     private readonly Func<Player?> _currentPlayerProvider;
+     private readonly MatchLifecycle? _lifecycle;
++    private readonly Func<Player, Entity?, Entity?, bool> _inputAllowed;
+     private readonly RetriggerSystem? _retrigger; // A4：再触发服务（亡计结算执行面/防护的统一入口；可空＝独立构造降级）
+     private readonly Func<string, JudicatorBinding>? _validationJudicatorResolver; // J2：验证判定器解析器（复验绑定解析——对局＝注册表；缺省＝内置默认）
+     private readonly Func<UnitCard, Ref<Entity>, bool> _combatTargetLegal; // K1：目标合法性判定通道（（攻击者, 目标引用）→ bool——对局＝combat.target.legal 条目句柄；缺省＝内置默认）
+@@ -140,7 +141,8 @@ public sealed class CommandManager
+         Func<UnitCard, UnitCard, bool>? combatAmbushCondition = null,
+         Func<UnitCard, Slot?, LegEligibilityFailure?>? moveLegEligibility = null,
+         Func<UnitCard, LegEligibilityFailure?>? attackLegEligibility = null,
+-        Func<Player, bool>? moveFrontlineEnemy = null)
++        Func<Player, bool>? moveFrontlineEnemy = null,
++        Func<Player, Entity?, Entity?, bool>? inputAllowed = null)
+     {
+         ArgumentNullException.ThrowIfNull(engine);
+         ArgumentNullException.ThrowIfNull(battlefield);
+@@ -157,6 +159,7 @@ public sealed class CommandManager
+         _players = players;
+         _currentPlayerProvider = currentPlayerProvider ?? (() => null);
+         _lifecycle = lifecycle;
++        _inputAllowed = inputAllowed ?? ((_, _, _) => true);
+         _retrigger = retrigger;
+         _validationJudicatorResolver = validationJudicatorResolver;
+ 
+@@ -616,6 +619,11 @@ public sealed class CommandManager
+         ArgumentNullException.ThrowIfNull(unit);
+         RequireUnitized(unit);
+ 
++        if (unit.Owner is { } inputOwner && !_inputAllowed(inputOwner, unit, null))
++            return new CommandAvailability(CommandBlockReason.InteractionBlocked,
++                CommandActionAvailability.Blocked(CommandBlockReason.InteractionBlocked),
++                CommandActionAvailability.Blocked(CommandBlockReason.InteractionBlocked));
++
+         // K3：leg 资格先行（共享条件源——可用性与复验四调用点同源）；移动的位置参数＝当前位置（仅推进语义）。
+         var moveLegFailure = _moveLegEligibility(unit, unit.GetData<UnitStateData>().Position);
+         var attackLegFailure = _attackLegEligibility(unit);
+@@ -669,7 +677,7 @@ public sealed class CommandManager
+             return CommandActionAvailability.Blocked(MapLegFailure(failure));
+         }
+ 
+-        var candidates = CollectAttackCandidates(unit);
++        var candidates = CollectAttackCandidates(unit).Where(r => _inputAllowed(unit.Owner!, unit, r.Value)).ToList();
+         return candidates.Count == 0
+             ? CommandActionAvailability.Blocked(CommandBlockReason.NoCandidates)
+             : CommandActionAvailability.Available(candidates);
+@@ -983,6 +991,8 @@ public sealed class CommandManager
+         var owner = unit.Owner;
+         var enemy = owner is null ? null : EnemyOf(owner);
+         var selectedEntity = selected.Value;
++        if (owner is not null && !_inputAllowed(owner, unit, selectedEntity))
++        { box.Result = CommandResult.Failure(CommandFailureReason.InteractionBlocked); return; }
+ 
+         // 分派：选中敌方 HQ 实体引用 / 敌方单位 → 攻击触发器；选中空槽 → 移动触发器
+         // （X1：触发者随指挥链透传）。W3-3：HQ 目标以实体引用承载——不再有「槽位→HQ」分派
+@@ -1666,6 +1676,7 @@ public sealed class CommandManager
+         CommandBlockReason.NonOwnerTurn => CommandFailureReason.NonOwnerTurn,
+         CommandBlockReason.OwnerInvalid => CommandFailureReason.OwnerInvalid,
+         CommandBlockReason.UnitDead => CommandFailureReason.UnitDead,
++        CommandBlockReason.InteractionBlocked => CommandFailureReason.InteractionBlocked,
+         _ => CommandFailureReason.CommandFlowFault,
+     };
+ 
+diff --git a/src/Orc.Game/Commanding/CommandTypes.cs b/src/Orc.Game/Commanding/CommandTypes.cs
+index c26aee3..4acbdbc 100644
+--- a/src/Orc.Game/Commanding/CommandTypes.cs
++++ b/src/Orc.Game/Commanding/CommandTypes.cs
+@@ -56,6 +56,7 @@ public enum CommandFailureReason
+ 
+     /// <summary>发起拒绝：非"进行"相位（准备／换牌相位下指挥入口拒绝——零副作用、状态不推进）。</summary>
+     PhaseBlocked,
++    InteractionBlocked,
+ }
+ 
+ /// <summary>
+@@ -85,6 +86,7 @@ public enum CommandBlockReason
+     /// <summary>被压制（A2 加性）：被压制单位不能移动或攻击（行动合法性消费面读「被压制」标记——
+     /// 施加即时生效；「额外压制一回」只影响持续、不改变本阻断）。</summary>
+     Suppressed,
++    InteractionBlocked,
+ }
+ 
+ /// <summary>
+diff --git a/src/Orc.Game/GameHooks.cs b/src/Orc.Game/GameHooks.cs
+index 939defe..293399e 100644
+--- a/src/Orc.Game/GameHooks.cs
++++ b/src/Orc.Game/GameHooks.cs
+@@ -260,11 +260,13 @@ public static class GameHooks
+         PayloadKiller,
+     };
+ 
+-    // ---------- 判定器名（21 条；转发引用 JudicatorNames） ----------
++    // ---------- 判定器名（22 条；转发引用 JudicatorNames） ----------
+ 
+     /// <summary>判定器名：费用检查（<c>validation.cost.check</c>）。</summary>
+     public const string JudicatorCostCheck = JudicatorNames.CostCheck;
+ 
++    public const string JudicatorActionInput = JudicatorNames.ActionInput;
++
+     /// <summary>判定器名：反制使用检查（<c>validation.counter.use</c>）。</summary>
+     public const string JudicatorCounterUse = JudicatorNames.CounterUse;
+ 
+@@ -325,10 +327,10 @@ public static class GameHooks
+     /// <summary>判定器名：失去点数的数字包裹（<c>resource.point.lose</c>；E1-25 后续）。</summary>
+     public const string JudicatorPointLose = JudicatorNames.PointLose;
+ 
+-    /// <summary>判定器名全量（21 条；稳定序＝定义序）。</summary>
++    /// <summary>判定器名全量（22 条；稳定序＝定义序）。</summary>
+     public static IReadOnlyList<string> JudicatorNameList { get; } = new[]
+     {
+-        JudicatorCostCheck, JudicatorCounterUse, JudicatorMoveRecheck, JudicatorAttackRecheck,
++        JudicatorCostCheck, JudicatorCounterUse, JudicatorMoveRecheck, JudicatorAttackRecheck, JudicatorActionInput,
+         JudicatorDeckTopTag, JudicatorTargetCandidateEligibility,
+         JudicatorCombatTargetLegal, JudicatorCombatRange, JudicatorCombatGuardEligibility, JudicatorCombatInterception,
+         JudicatorCombatCounterEligibility, JudicatorCombatAmbushCondition,
+@@ -338,11 +340,11 @@ public static class GameHooks
+         JudicatorPointGain, JudicatorPointLose,
+     };
+ 
+-    /// <summary>判定器名装配面：20 条内置（4 条验证类＋6 条交战类＋3 条动作资格类＋1 条效果选靶类＋5 条资源类
++    /// <summary>判定器名装配面：21 条内置（5 条验证类＋6 条交战类＋3 条动作资格类＋1 条效果选靶类＋5 条资源类
+     /// ＋1 条目标候选合法性〔S2 提入生产装配〕）由 <c>Match.Initialize</c> 固定注册段注册；1 条示范类（DeckTopTag）经外部装配段（<c>judicatorAssembly</c>）可选注入。</summary>
+     public static IReadOnlyList<string> BuiltInJudicatorNames { get; } = new[]
+     {
+-        JudicatorCostCheck, JudicatorCounterUse, JudicatorMoveRecheck, JudicatorAttackRecheck,
++        JudicatorCostCheck, JudicatorCounterUse, JudicatorMoveRecheck, JudicatorAttackRecheck, JudicatorActionInput,
+         JudicatorCombatTargetLegal, JudicatorCombatRange, JudicatorCombatGuardEligibility, JudicatorCombatInterception,
+         JudicatorCombatCounterEligibility, JudicatorCombatAmbushCondition,
+         JudicatorMoveLegEligibility, JudicatorAttackLegEligibility, JudicatorMoveFrontlineEnemy,
+diff --git a/src/Orc.Game/Judicators/JudicatorNames.cs b/src/Orc.Game/Judicators/JudicatorNames.cs
+index 4866661..8809a84 100644
+--- a/src/Orc.Game/Judicators/JudicatorNames.cs
++++ b/src/Orc.Game/Judicators/JudicatorNames.cs
+@@ -10,6 +10,7 @@ namespace Orc.Game.Judicators;
+ /// </summary>
+ public static class JudicatorNames
+ {
++    public const string ActionInput = "action.input.allowed";
+     // ---------- J2（合法性验证替换）：默认验证判定器（四条；内置注册段固定注册——无条件可用） ----------
+ 
+     /// <summary>费用检查（费用验证点专属；预打出/打出复用同一判定器——moding 改写即其全部引用点生效）。</summary>
+diff --git a/src/Orc.Game/Managers/PlayManager.cs b/src/Orc.Game/Managers/PlayManager.cs
+index 1a0ac97..05d8bd8 100644
+--- a/src/Orc.Game/Managers/PlayManager.cs
++++ b/src/Orc.Game/Managers/PlayManager.cs
+@@ -10,8 +10,8 @@ namespace Orc.Game.Managers;
+ /// <summary>
+ /// 打出管理器（2B 打出链服务与交互入口）：
+ /// ①单位预打出（<see cref="BeginUnitPrePlayAsync"/>）——开始＝触发预打出触发器（内含指挥点合法性验证；不足＝拒绝）
+-///   ＋候选检查（候选＝己方支援线空槽位〔邻位规则计算〕；为空＝拒绝、不进入交互）；
+-///   交互＝targeter 请求（候选＝空槽位引用）；确认（前端/mock 经交互完成路径提交选中槽位）＝自动衔接打出链；
++///   ＋候选检查（候选＝己方支援阵型全部插入空隙（含总部边界）；为空＝拒绝、不进入交互）；
++///   交互＝targeter 请求（候选＝FormationGap 引用）；确认（前端/mock 经交互完成路径提交选中空隙）＝自动衔接打出链；
+ ///   取消（经交互取消路径）＝终止预打出（零副作用——不发更新、卡留手、无费用扣除、无槽位/组件变化）。
+ ///   「开始/取消/确认」形态：开始＝本入口；取消/确认＝交互完成路径（桥接 Complete/Cancel 驱动，等价于前端拖回/释放手势）。
+ /// ②单位打出链直接驱动（<see cref="PlayUnitAsync"/>）：外层复验＋部署链＋收尾扣费（部署路径）。
+@@ -34,11 +34,12 @@ public sealed class PlayManager
+     private readonly Battlefield _battlefield;
+     private readonly TurnManager? _turnManager;
+     private readonly MatchLifecycle? _lifecycle;
++    private readonly Func<Player, Entity?, Entity?, bool> _inputAllowed;
+ 
+     /// <summary>创建打出管理器。</summary>
+     /// <param name="engine">对局引擎（发射更新 / 触发子触发器）。</param>
+     /// <param name="targeterManager">目标选择管理器（单位预打出交互）。</param>
+-    /// <param name="battlefield">战场（部署候选＝己方支援线空槽位的计算源）。</param>
++    /// <param name="battlefield">战场（部署候选＝己方支援阵型插入空隙的计算源）。</param>
+     /// <param name="turnManager">回合管理器（反制「仅己方回合」的当前行动方真源；可空——缺省＝独立构造场景，反制使用抛明确异常）。</param>
+     /// <param name="lifecycle">对局生命周期（终局门禁——后置项 B；缺省＝null＝独立构造场景无门禁）。</param>
+     /// <exception cref="ArgumentNullException">engine / targeterManager / battlefield 为 null。</exception>
+@@ -47,7 +48,8 @@ public sealed class PlayManager
+         TargeterManager targeterManager,
+         Battlefield battlefield,
+         TurnManager? turnManager = null,
+-        MatchLifecycle? lifecycle = null)
++        MatchLifecycle? lifecycle = null,
++        Func<Player, Entity?, Entity?, bool>? inputAllowed = null)
+     {
+         ArgumentNullException.ThrowIfNull(engine);
+         ArgumentNullException.ThrowIfNull(targeterManager);
+@@ -58,15 +60,16 @@ public sealed class PlayManager
+         _battlefield = battlefield;
+         _turnManager = turnManager;
+         _lifecycle = lifecycle;
++        _inputAllowed = inputAllowed ?? ((_, _, _) => true);
+     }
+ 
+     // ---------- ① 单位预打出（开始→交互→确认/取消；一次调用链） ----------
+ 
+     /// <summary>
+     /// 单位预打出（一次调用链：开始 → 交互 → 确认/取消 →〔确认时〕自动衔接打出链）：
+-    /// ①开始：触发预打出触发器（内含指挥点验证——不足＝拒绝〔预打出阶段〕）；候选检查（己方支援线空槽位〔邻位规则〕——为空＝拒绝）；
+-    /// ②交互：发起 targeter 请求（候选＝空槽位引用；单选）；等待结局（前端/mock 经桥接完成或取消）；
+-    /// ③确认：取出选中槽位 → 自动衔接 <see cref="PlayUnitAsync"/>；取消：终止（零副作用）。
++    /// ①开始：触发预打出触发器（内含指挥点验证——不足＝拒绝〔预打出阶段〕）；候选检查（己方支援阵型插入空隙——为空＝拒绝）；
++    /// ②交互：发起 targeter 请求（候选＝FormationGap 引用；单选）；等待结局（前端/mock 经桥接完成或取消）；
++    /// ③确认：取出选中空隙 → 自动衔接 <see cref="PlayUnitAsync"/>；取消：终止（零副作用）。
+     /// </summary>
+     /// <exception cref="ArgumentNullException">card 为 null。</exception>
+     /// <exception cref="InvalidOperationException">卡牌未加载归属（装配性错误、fail-fast）。</exception>
+@@ -74,6 +77,8 @@ public sealed class PlayManager
+     {
+         ArgumentNullException.ThrowIfNull(card);
+         var owner = RequireOwner(card);
++        if (CheckAdmission(card, true) is { } admission) return PlayResult.Failure(admission);
++
+ 
+         // 终局门禁（后置项 B）：对局已结束＝入口拒绝（不触发预打出、不发起 targeter 请求、零副作用）
+         if (_lifecycle is not null)
+@@ -113,20 +118,20 @@ public sealed class PlayManager
+             return PlayResult.Failure(PlayFailureReason.PlayChainFault);
+         }
+ 
+-        // ① 候选：己方支援线空槽位（邻位规则计算）——为空＝预打出不可开始（不进入交互）。
+-        var candidates = _battlefield.GetSupportLine(owner).GetAdjacentEmptySlots();
++        // Engine-owned insertion gaps: before, between and after all units and HQ.
++        var candidates = _battlefield.GetSupportLine(owner).GetInsertionGaps();
+         if (candidates.Count == 0)
+         {
+             return PlayResult.Failure(PlayFailureReason.PrePlayNoAvailableSlots);
+         }
+ 
+-        // ② 交互：targeter 请求（候选＝空槽位引用；候选由后端给出——Q19＝a）。
+-        Slot? selectedSlot = null;
++        // ② 交互：targeter 请求（候选＝FormationGap 引用；候选由后端给出——Q19＝a）。
++        FormationGap? selectedGap = null;
+         var result = await _targeterManager.RunAsync(async flow =>
+         {
+             var step = await flow.Step(
+                 SelectorTemplates.Slot,
+-                new ReferenceSetParameter(candidates.Select(slot => slot.Ref), 1, 1));
++                new ReferenceSetParameter(candidates.Select(gap => gap.Ref), 1, 1));
+ 
+             // 非法选择＝同一选择器重入（Q8a）。
+             while (step.IsFailed && step.Failure == SelectorFailureReason.InvalidSelection)
+@@ -144,8 +149,8 @@ public sealed class PlayManager
+                 return TargeterResult.FromSelectorFailure(step.Failure);
+             }
+ 
+-            selectedSlot = step.Value?.Value as Slot;
+-            return selectedSlot is null
++            selectedGap = step.Value?.Value as FormationGap;
++            return selectedGap is null
+                 ? TargeterResult.Failed(TargeterFailureReason.InvalidSelection)
+                 : TargeterResult.Ok();
+         });
+@@ -160,13 +165,13 @@ public sealed class PlayManager
+             return PlayResult.Failure(PlayFailureReason.TargetingFailed, result);
+         }
+ 
+-        // ③ 确认：选中空槽位（身份可判）→ 自动衔接打出链。
+-        if (selectedSlot is null)
++        // ③ 确认：选中阵型空隙（身份及占用快照复验）→ 自动衔接打出链。
++        if (selectedGap is null)
+         {
+             return PlayResult.Failure(PlayFailureReason.TargetingFailed, result);
+         }
+ 
+-        return await PlayUnitAsync(card, selectedSlot, ct);
++        return await PlayUnitAsync(card, selectedGap, ct);
+     }
+ 
+     // ---------- ② 单位打出链（直接驱动；部署路径） ----------
+@@ -183,6 +188,8 @@ public sealed class PlayManager
+         ArgumentNullException.ThrowIfNull(card);
+         ArgumentNullException.ThrowIfNull(target);
+         var owner = RequireOwner(card);
++        if (CheckAdmission(card, false) is { } admission) return PlayResult.Failure(admission);
++
+ 
+         // 终局门禁（后置项 B）：对局已结束＝入口拒绝（零副作用、状态不推进）
+         if (_lifecycle is not null)
+@@ -229,6 +236,64 @@ public sealed class PlayManager
+         };
+     }
+ 
++    /// <summary>Canonical deployment portal. Rejects stale/foreign gaps before any game side effect.</summary>
++    public async Task<PlayResult> PlayUnitAsync(UnitCard card, FormationGap gap, CancellationToken ct = default)
++    {
++        ArgumentNullException.ThrowIfNull(card); ArgumentNullException.ThrowIfNull(gap);
++        var owner = RequireOwner(card);
++        if (CheckAdmission(card, true) is { } admission) return PlayResult.Failure(admission);
++        if (card.TryGetData<UnitStateData>(out _)) return PlayResult.Failure(PlayFailureReason.UnitAlreadyUnitized);
++        if (!ReferenceEquals(gap.Line, _battlefield.GetSupportLine(owner)) || !gap.IsCurrent)
++            return PlayResult.Failure(PlayFailureReason.FormationGapUnavailable);
++        await using var scope = _engine.BeginAction();
++        var stream = await card.PlayTrigger.InvokeAsync(_engine, new Dictionary<string, object?>
++        {
++            [GameUpdates.PayloadCard] = card, [GameUpdates.PayloadPlayer] = owner,
++            [nameof(CardTriggerView.FormationGap)] = gap,
++        }, ct);
++        return stream.Outcome switch
++        {
++            ExecutionOutcome.Normal => PlayResult.Success(),
++            ExecutionOutcome.ValidationRejected => PlayResult.Failure(PlayFailureReason.PlayVerificationRejected),
++            _ => PlayResult.Failure(PlayFailureReason.PlayChainFault),
++        };
++    }
++
++    /// <summary>Pure entry availability. Executes the same native validation judicators;
++    /// effect-specific selections and revalidation still happen in the play chain.</summary>
++    public bool CanPlay(CardBase card)
++    {
++        if (CheckAdmission(card, true) is not null) return false;
++        return card switch
++        {
++            UnitCard unit => !unit.TryGetData<UnitStateData>(out _)
++                && unit.PrePlayTrigger.EvaluateValidation(Array.Empty<Ref<Entity>>()).IsValid
++                && _battlefield.GetSupportLine(unit.Owner!).GetInsertionGaps().Count > 0,
++            CommandCard command => command.PrePlayTrigger.EvaluateValidation(Array.Empty<Ref<Entity>>()).IsValid,
++            CounterCard counter => counter.UseCounterTrigger.EvaluateValidation(Array.Empty<Ref<Entity>>()).IsValid,
++            _ => false,
++        };
++    }
++
++    public IReadOnlyList<FormationGap> GetDeploymentGaps(UnitCard card) => CanPlay(card)
++        ? _battlefield.GetSupportLine(card.Owner!).GetInsertionGaps() : Array.Empty<FormationGap>();
++
++    private PlayFailureReason? CheckAdmission(CardBase card, bool requireHand)
++    {
++        if (_lifecycle?.IsEnded == true) return PlayFailureReason.GameEnded;
++        if (_lifecycle is not null && !_lifecycle.IsActionAllowed) return PlayFailureReason.PhaseBlocked;
++        var owner = card.Owner;
++        if (owner is null) return PlayFailureReason.CardNotInHand;
++        // Full match user entrances require native ownership/hand membership. Standalone fixtures
++        // keep their established low-level semantics; JoinUnitAsync never reads frontend state.
++        if (requireHand && _turnManager is not null)
++        {
++            if (!ReferenceEquals(_turnManager.CurrentPlayer, owner)) return PlayFailureReason.NonOwnerTurn;
++            if (!owner.Hand.Contains(card)) return PlayFailureReason.CardNotInHand;
++        }
++        return _inputAllowed(owner, card, null) ? null : PlayFailureReason.InteractionBlocked;
++    }
++
+     // ---------- ③ 加入路径 ----------
+ 
+     /// <summary>
+@@ -316,6 +381,8 @@ public sealed class PlayManager
+     {
+         ArgumentNullException.ThrowIfNull(card);
+         var owner = RequireOwner(card);
++        if (CheckAdmission(card, true) is { } admission) return PlayResult.Failure(admission);
++
+ 
+         // 终局门禁（后置项 B）：对局已结束＝入口拒绝（零副作用、状态不推进）
+         if (_lifecycle is not null)
+@@ -362,6 +429,8 @@ public sealed class PlayManager
+             return PlayResult.Cancelled();
+         }
+ 
++        if (CheckAdmission(card, true) is { } commitAdmission) return PlayResult.Failure(commitAdmission);
++
+         // ② 打出段：复验＋宣告＋主动 handler 集＋收尾；捕获结果自动移交为 object? 参数。
+         var playStream = await card.PlayTrigger.InvokeAsync(
+             _engine,
+@@ -395,6 +464,8 @@ public sealed class PlayManager
+     {
+         ArgumentNullException.ThrowIfNull(card);
+         var owner = RequireOwner(card);
++        if (CheckAdmission(card, false) is { } admission) return PlayResult.Failure(admission);
++
+ 
+         // 终局门禁（后置项 B）：对局已结束＝入口拒绝（激活/取消均拒绝；零副作用、状态不推进）
+         if (_lifecycle is not null)
+diff --git a/src/Orc.Game/Match/Match.cs b/src/Orc.Game/Match/Match.cs
+index c38c9d4..edd09c1 100644
+--- a/src/Orc.Game/Match/Match.cs
++++ b/src/Orc.Game/Match/Match.cs
+@@ -268,6 +268,12 @@ public sealed class Match
+     /// <exception cref="InvalidOperationException">对局尚未进入"进行"态。</exception>
+     public JudicatorRegistry Judicators => RequireReady(_judicators);
+ 
++    /// <summary>Optional frontend state provider. Invoked synchronously; must be read-only.</summary>
++    public Func<Player, ActionInteractionState?>? InteractionStateReader { get; set; }
++
++    public bool CanAcceptInput(Player player, Entity? actor = null, Entity? target = null)
++        => CombatJudicatorInvoker.InvokeBool(Judicators.Resolve(JudicatorNames.ActionInput), player, actor!, target!);
++
+     // ---------- 构筑外判定（W1-1 G12 加性面） ----------
+ 
+     /// <summary>
+@@ -507,6 +513,8 @@ public sealed class Match
+         // （『初始化内创建＋注入』范式）；装配期注册段经创建参数一次性执行（注册动作返回条目等价句柄、供注册方持有）；
+         // 时点＝卡加载之前（远早于洗切与加载段——就绪由装配链位置保证：「装配期已注册条目在卡加载阶段即可被解析调用」）。
+         _judicators = new JudicatorRegistry();
++        _judicators.Register(JudicatorNames.ActionInput,
++            new ActionInputJudicator(player => InteractionStateReader?.Invoke(player)));
+ 
+         // J2 加性（合法性验证替换）：内置注册段（固定、无条件执行）——注册默认验证判定器（费用/反制）：
+         // 「默认名恒可解析、默认判定器无条件可用」（不依赖外部装配段传入）。
+@@ -663,7 +671,8 @@ public sealed class Match
+             // K3：leg 资格（move/attack）与推进前置判定通道——经条目句柄（固定内置注册段注册所得；可用性/复验四调用点同源）。
+             (unit, position) => LegJudicatorInvoker.InvokeLeg(moveLegEligibilityEntry, unit, position),
+             unit => LegJudicatorInvoker.InvokeLeg(attackLegEligibilityEntry, unit, null),
+-            owner => CombatJudicatorInvoker.InvokeBool(moveFrontlineEnemyEntry, owner));
++            owner => CombatJudicatorInvoker.InvokeBool(moveFrontlineEnemyEntry, owner),
++            CanAcceptInput);
+         TriggerRegistry.Register(_commandManager.CommandTrigger, TriggerLayer.LowLevel);
+         TriggerRegistry.Register(_commandManager.UnitMoveTrigger, TriggerLayer.LowLevel);
+         TriggerRegistry.Register(_commandManager.UnitAttackTrigger, TriggerLayer.LowLevel);
+@@ -722,7 +731,7 @@ public sealed class Match
+         _turnManager.ActionStateRefresher = _commandManager.RefreshActionStates;
+         // 打出管理器（2B 加性：随管理器群生成——打出链服务与交互入口；回合管理器为反制「仅己方回合」真源；
+         // 后置项 B 加性：注入对局生命周期——终局门禁）
+-        _playManager = new PlayManager(Engine, _targeterManager, _battlefieldManager.Battlefield, _turnManager, _lifecycle);
++        _playManager = new PlayManager(Engine, _targeterManager, _battlefieldManager.Battlefield, _turnManager, _lifecycle, CanAcceptInput);
+ 
+         // A1 加性：换牌管理器（开局换牌相位承载——特制槽位交互＋换牌执行；双方确认＝执行先手第 1 回合＋置"进行"）
+         var turnManager = _turnManager!;
+@@ -832,6 +841,8 @@ public sealed class Match
+         // 动作作用域（UI 消费桥接）：结束回合链产生的事件聚合为一段。
+         await using var _actionScope = Engine.BeginAction();
+ 
++        if (!CanAcceptInput(CurrentPlayer, CurrentPlayer.Hq))
++            throw new InvalidOperationException("InteractionBlocked");
+         await TurnManager.EndTurn(ct);
+     }
+ 
+diff --git a/src/Orc.Game/Output/GameHooksJson.cs b/src/Orc.Game/Output/GameHooksJson.cs
+index 13df863..a24cf5c 100644
+--- a/src/Orc.Game/Output/GameHooksJson.cs
++++ b/src/Orc.Game/Output/GameHooksJson.cs
+@@ -194,9 +194,11 @@ public static class GameHooksJson
+             ["Managers/ResourceManager.cs·ChangePointsAsync / GainPointsAsync / LosePointsAsync"], []),
+     };
+ 
+-    /// <summary>21 条判定器的权威描述表（与 03-hook定义 S3-3 对齐；E1-25 补齐 effect.target.resolve 缺口并追加资源五条；S2：目标候选合法性提入生产内置段）。</summary>
++    /// <summary>22 条判定器的权威描述表（与 03-hook定义 S3-3 对齐；E1-25 补齐 effect.target.resolve 缺口并追加资源五条；S2：目标候选合法性提入生产内置段）。</summary>
+     private static IReadOnlyList<JudicatorEntry> JudicatorMetadata { get; } = new[]
+     {
++        new JudicatorEntry(GameHooks.JudicatorActionInput,
++            ["Judicators/ActionInputJudicator.cs"], true),
+         new JudicatorEntry(GameHooks.JudicatorCostCheck,
+             ["Judicators/CostCheckJudicator.cs"], true),
+         new JudicatorEntry(GameHooks.JudicatorCounterUse,
+diff --git a/src/Orc.Game/Triggers/CardTriggerView.cs b/src/Orc.Game/Triggers/CardTriggerView.cs
+index 03b6e66..0e94545 100644
+--- a/src/Orc.Game/Triggers/CardTriggerView.cs
++++ b/src/Orc.Game/Triggers/CardTriggerView.cs
+@@ -29,6 +29,10 @@ public class CardTriggerView
+     [Read]
+     public virtual Slot? Position { get; set; }
+ 
++    [Optional]
++    [Read]
++    public virtual FormationGap? FormationGap { get; set; }
++
+     /// <summary>预打出捕获箱（可选；2B 加性扩展）：指令预打出 handler 经此提交捕获值（由打出链创建并随触发数据注入）。</summary>
+     [Optional]
+     [Read]
+diff --git a/tests/Orc.Game.Tests/DeployCostModifierTests.cs b/tests/Orc.Game.Tests/DeployCostModifierTests.cs
+index f3c4ff6..894fcf7 100644
+--- a/tests/Orc.Game.Tests/DeployCostModifierTests.cs
++++ b/tests/Orc.Game.Tests/DeployCostModifierTests.cs
+@@ -141,7 +141,7 @@ public class DeployCostModifierTests
+         Assert.True(responder.Complete(
+             description.RequestId,
+             TargeterTestKit.Selection(
+-                TargeterTestKit.PrimarySlot(description), match.Battlefield.PlayerASupportLine[1].Ref)));
++                TargeterTestKit.PrimarySlot(description), match.Battlefield.PlayerASupportLine.GetInsertionGaps()[0].Ref)));
+         var deployed = await task;
+ 
+         Assert.Equal(PlayResultStatus.Success, deployed.Status);
+diff --git a/tests/Orc.Game.Tests/GameHooksTests.cs b/tests/Orc.Game.Tests/GameHooksTests.cs
+index 7dca0cb..9ba8844 100644
+--- a/tests/Orc.Game.Tests/GameHooksTests.cs
++++ b/tests/Orc.Game.Tests/GameHooksTests.cs
+@@ -208,13 +208,13 @@ public class GameHooksTests
+             .Select(field => (string)field.GetRawConstantValue()!)
+             .ToList();
+ 
+-        Assert.Equal(21, names.Count);
++        Assert.Equal(22, names.Count);
+         Assert.Equal(names.OrderBy(v => v, StringComparer.Ordinal),
+             GameHooks.JudicatorNameList.OrderBy(v => v, StringComparer.Ordinal));
+ 
+         // 装配面：20 内置固定注册段（4 验证类＋6 交战类＋3 动作资格类＋1 效果选靶类＋5 资源类
+         // ＋1 目标候选合法性〔S2 提入〕） + 1 外部装配段 = 全量 21
+-        Assert.Equal(20, GameHooks.BuiltInJudicatorNames.Count);
++        Assert.Equal(21, GameHooks.BuiltInJudicatorNames.Count);
+         Assert.Single(GameHooks.ExternalJudicatorNames);
+         Assert.Equal(GameHooks.JudicatorNameList.OrderBy(v => v, StringComparer.Ordinal),
+             GameHooks.BuiltInJudicatorNames.Concat(GameHooks.ExternalJudicatorNames)
+@@ -357,7 +357,7 @@ public class GameHooksTests
+         var root = document.RootElement;
+ 
+         Assert.Equal(31, root.GetProperty("signals").GetArrayLength()); // S1 受控适配（29 → 30）：新增 unit.upgraded；S2 受控适配（30 → 31）：新增 unit.revealed
+-        Assert.Equal(21, root.GetProperty("judicators").GetArrayLength());
++        Assert.Equal(22, root.GetProperty("judicators").GetArrayLength());
+         Assert.Equal(GameHooks.TriggerLayers.Count, root.GetProperty("triggerLayers").GetArrayLength());
+         Assert.Equal(27, root.GetProperty("pending").GetArrayLength());
+ 
+diff --git a/tests/Orc.Game.Tests/PlayChainUnitTests.cs b/tests/Orc.Game.Tests/PlayChainUnitTests.cs
+index c6d9cd7..f3924de 100644
+--- a/tests/Orc.Game.Tests/PlayChainUnitTests.cs
++++ b/tests/Orc.Game.Tests/PlayChainUnitTests.cs
+@@ -11,7 +11,7 @@ namespace Orc.Game.Tests;
+ /// <summary>
+ /// 2B 验收①②（单位）：预打出（合法性/交互成功/取消；拒绝不发起请求、不进入交互、不发更新）、
+ /// 出链（验证/部署/单位化/扣费；仅部署扣费）、复验失败（零副作用＋留痕）、直接驱动防御（占槽/重复单位化）、
+-/// 未加载卡 fail-fast。断言对象＝被选中的空槽位（槽位对象断言）。
++/// 未加载卡 fail-fast。候选断言＝被选中的阵型空隙；结果断言＝引擎重排后的实际占用槽。
+ /// </summary>
+ public class PlayChainUnitTests
+ {
+@@ -79,15 +79,15 @@ public class PlayChainUnitTests
+         var task = match.PlayManager.BeginUnitPrePlayAsync(unit);
+         var (description, responder) = await bridge.WaitForNextBeginAsync();
+ 
+-        // 候选＝己方支援线空槽位（邻位规则计算；初始＝HQ 两侧邻位槽 [1, 3]）；单选槽。
+-        Assert.Equal(new[] { line[1].Ref, line[3].Ref }, description.AllowedTargets);
++        // 候选＝己方支援阵型插入空隙（初始＝HQ 两侧）；单选空隙。
++        Assert.Equal(line.GetInsertionGaps().Select(gap => gap.Ref), description.AllowedTargets);
+         Assert.Equal(SelectorNames.Slot, description.Slots[0].Name);
+         Assert.Equal(1, description.Slots[0].Min);
+         Assert.Equal(1, description.Slots[0].Max);
+ 
+-        // 确认（选中空槽位）→ 自动衔接打出链。
++        // 确认（选中左侧阵型空隙）→ 自动衔接打出链。
+         var target = line[1];
+-        Assert.True(responder.Complete(description.RequestId, TargeterTestKit.Selection(TargetSlot.DefaultName, target.Ref)));
++        Assert.True(responder.Complete(description.RequestId, TargeterTestKit.Selection(TargetSlot.DefaultName, line.GetInsertionGaps()[0].Ref)));
+         var result = await task;
+ 
+         Assert.Equal(PlayResultStatus.Success, result.Status);
+diff --git a/tests/Orc.Game.Tests/UnitTurnsInPlayTests.cs b/tests/Orc.Game.Tests/UnitTurnsInPlayTests.cs
+index 357fd06..419d35e 100644
+--- a/tests/Orc.Game.Tests/UnitTurnsInPlayTests.cs
++++ b/tests/Orc.Game.Tests/UnitTurnsInPlayTests.cs
+@@ -76,7 +76,7 @@ public class UnitTurnsInPlayTests
+         Assert.True(responder.Complete(
+             description.RequestId,
+             TargeterTestKit.Selection(
+-                TargeterTestKit.PrimarySlot(description), match.Battlefield.PlayerASupportLine[1].Ref)));
++                TargeterTestKit.PrimarySlot(description), match.Battlefield.PlayerASupportLine.GetInsertionGaps()[0].Ref)));
+         var deployed = await task;
+ 
+         Assert.Equal(PlayResultStatus.Success, deployed.Status);
+diff --git a/src/Orc.Game/Board/FormationGap.cs b/src/Orc.Game/Board/FormationGap.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Orc.Game/Board/FormationGap.cs
+@@ -0,0 +1,22 @@
++using Orc.Core;
++
++namespace Orc.Game.Board;
++
++/// <summary>An insertion boundary in an occupied formation, including its HQ.
++/// Identity belongs to one exact line snapshot. It is never a physical empty slot.</summary>
++public sealed class FormationGap : Entity
++{
++    internal FormationGap(BattleLine line, long generation, int ordinal, object?[] positions,
++        Entity? left, Entity? right) : base($"Formation gap {ordinal}")
++    {
++        Line = line; Generation = generation; Ordinal = ordinal; Positions = positions;
++        Left = left; Right = right;
++    }
++    public BattleLine Line { get; }
++    public int Ordinal { get; }
++    public Entity? Left { get; }
++    public Entity? Right { get; }
++    public bool IsCurrent => Life.IsAlive && Line.IsCurrent(this);
++    internal long Generation { get; }
++    internal object?[] Positions { get; }
++}
+diff --git a/src/Orc.Game/Judicators/ActionInputJudicator.cs b/src/Orc.Game/Judicators/ActionInputJudicator.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Orc.Game/Judicators/ActionInputJudicator.cs
+@@ -0,0 +1,28 @@
++using Orc.Core;
++using Orc.Game.Players;
++
++namespace Orc.Game.Judicators;
++
++/// <summary>Value-only UI input state. Null reader means headless engine operation.
++/// UI restrictions can only narrow native legality; game rules never come from this state.</summary>
++public sealed record ActionInteractionState(bool AllowsActions, IReadOnlySet<Guid> BusyEntities,
++    Guid? ContinuationActorId = null);
++
++public delegate bool ActionInputRule(Player player, Entity? actor, Entity? target);
++
++/// <summary>Stateless admission judicator. Pulls fresh frontend state on every query/commit.
++/// Registered through the usual judicator registry, with the same moding surface.</summary>
++internal sealed class ActionInputJudicator : Judicator<ActionInputRule>
++{
++    private readonly Func<Player, ActionInteractionState?> _read;
++    internal ActionInputJudicator(Func<Player, ActionInteractionState?> read) => _read = read;
++    protected override Func<object[]?, object[]?> Adapt(ActionInputRule handler)
++        => args => new object[] { handler(Unpack<Player>(args, 0), Unpack<Entity?>(args, 1), Unpack<Entity?>(args, 2)) };
++    public override object[]? Invoke(object[]? args) => Adapt(Evaluate)(args);
++    private bool Evaluate(Player player, Entity? actor, Entity? target)
++    {
++        var state = _read(player);
++        return state is null || (state.AllowsActions || actor is not null && actor.Id == state.ContinuationActorId)
++            && (actor is null || !state.BusyEntities.Contains(actor.Id));
++    }
++}

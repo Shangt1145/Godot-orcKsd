@@ -1,4 +1,4 @@
-﻿using Orc.Cards;
+using Orc.Cards;
 using Orc.Core;
 using Orc.Game;
 using Orc.Game.Cards;
@@ -6,6 +6,8 @@ using Orc.Game.Commanding;
 using Orc.Game.Managers;
 using Orc.Game.Players;
 using Orc.Game.Targeting;
+using Orc.Game.Board;
+using Orc.Game.Judicators;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 
@@ -29,20 +31,21 @@ public sealed partial class OrcMatchSession : IDisposable
     private bool _disposed;
     private bool _automaticChoice;
     private readonly OrcMatchHost _host;
-    private readonly Func<Match?, IReadOnlyList<object?>> _interactables;
     private Task<MulliganResult>? _mulliganRequest;
-    private (TargetingRequestDescription Description, ITargetingResponder Responder)? _pendingMulligan;
+    private ISelectorInstance? _pendingMulligan;
     private string[]? _pendingSelection;
     private int? _pendingSlot;
     private SourceEffectAssembly? _effects;
     private bool _interactiveCommand;
     private CancellationToken _activeCommandToken;
+    private string? _pendingGapId;
+    private UiCommand? _admittedCommand;
+    public Func<UiActionInteractionState>? InteractionStateReader { get; set; }
 
-    private OrcMatchSession(OrcMatchHost host, Match match,
-        Func<Match?, IReadOnlyList<object?>> interactables)
+    private OrcMatchSession(OrcMatchHost host, Match match)
     {
         _host = host; Match = match;
-        _interactables = interactables;
+        match.InteractionStateReader = ReadInteractionState;
     }
 
     public OrcMatchHost Host => _host;
@@ -64,7 +67,7 @@ public sealed partial class OrcMatchSession : IDisposable
     public void SettleProjection() { if (!_disposed) _host.SettleProjection(); }
     public void SelectViewer(int index)
     {
-        if (_disposed || IsSubmitting || MulliganPending) return;
+        if (_disposed || IsSubmitting || MulliganPending || TargetPending || index is < 0 or > 1) return;
         _host.SelectViewer(index);
         ClearIntent();
     }
@@ -80,8 +83,9 @@ public sealed partial class OrcMatchSession : IDisposable
         _lifetime.Cancel();
         CancelTargetChoice();
         _effects?.Dispose();
-        if (_pendingMulligan is { } pending) pending.Responder.Cancel(pending.Description.RequestId);
+        if (_pendingMulligan is { } pending) pending.Submit(new CancelEvent());
         _pendingMulligan = null;
+        MulliganRequestId = null;
         _mulliganRequest = null;
         ClearIntent();
         _host.Detach();
@@ -99,21 +103,41 @@ public sealed partial class OrcMatchSession : IDisposable
     public static async Task<OrcMatchSession> CreateFromCatalogAsync(
         IReadOnlyList<UiCardDefinition> cards, int seed, string matchId, string fallbackCardId,
         Func<string, string>? artLookup = null, CancellationToken ct = default,
-        IReadOnlyList<string>? openingHand = null, string? sourceDirectory = null)
+        IReadOnlyList<string>? openingHand = null, string? sourceDirectory = null, ConstructedDeck? constructedDeck = null,
+        IReadOnlyList<DiyCardDraft>? customCards = null)
     {
         if (sourceDirectory is null) throw new InvalidDataException("Catalog admission requires its source directory.");
-        var (pool, report, effects) = VerifiedCardPool.Compile(cards, sourceDirectory);
-        if (pool.Count == 0) throw new InvalidDataException("No reviewed cards are available; probe fallback is not a catalog match.");
+        var sourceCards = cards.Where(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal)).ToArray();
+        var (reviewed, report, effects) = VerifiedCardPool.Compile(sourceCards, sourceDirectory);
+        var custom = (customCards ?? []).Select(c => DiyCardCompiler.Compile(c.Snapshot(), sourceCards)).ToArray();
+        if (custom.Select(c => c.Entry.Id).Distinct(StringComparer.Ordinal).Count() != custom.Length)
+            throw new InvalidDataException("DIY 卡牌编号重复");
+        if (cards.Any(c => c.CardId.StartsWith("diy/", StringComparison.Ordinal) && !custom.Any(d => d.Entry.Id == c.CardId)))
+            throw new InvalidDataException("缺少 DIY 卡牌的可执行定义");
+        var pool = reviewed.Concat(custom.Select(c => c.Entry)).ToArray();
+        var completeCards = sourceCards.Concat(custom.Select(c => c.Card)).ToArray();
+        if (reviewed.Count == 0) throw new InvalidDataException("No reviewed cards are available; probe fallback is not a catalog match.");
         if (openingHand is not null && openingHand.Any(id => !pool.Any(e => e.Id == id)))
             throw new InvalidDataException("The requested opening hand contains unreviewed cards.");
-        var deck = DeckBuilder.BuildVerified(pool, seed);
-        var opponentDeck = DeckBuilder.BuildVerified(pool, unchecked(seed + 1));
-        var session = await CreateAsync(pool, deck, opponentDeck, seed, matchId,
-            artLookup: artLookup, ct: ct, openingHand: openingHand);
+        constructedDeck = constructedDeck?.Snapshot();
+        if (constructedDeck is not null)
+        {
+            var problems = ConstructionRules.Validate(constructedDeck, completeCards, pool.Select(e => e.Id).ToHashSet());
+            if (problems.Count > 0) throw new InvalidDataException(string.Join("；", problems));
+            if (openingHand is not null) throw new InvalidDataException("构筑卡组不能替换起手牌");
+        }
+        IReadOnlyList<string> deck = constructedDeck?.CardIds ?? DeckBuilder.BuildVerified(reviewed, seed);
+        var opponent = constructedDeck is null ? null
+            : new DeckConstructionService(sourceCards, sourceDirectory).Starter(deck.Count, unchecked(seed + 1));
+        var opponentDeck = opponent?.CardIds ?? DeckBuilder.BuildVerified(reviewed, unchecked(seed + 1));
+        var session = await CreateNativeAsync(pool, deck, opponentDeck, seed, matchId,
+            artLookup: artLookup, ct: ct, openingHand: openingHand, deckConfiguration: constructedDeck?.Options,
+            opponentDeckConfiguration: opponent?.Options, customCards: custom);
         try
         {
             session._effects = new SourceEffectAssembly(session.Match, effects, reason => session.LastRejectionReason ??= reason);
-            session._host.SetSourceDefinitions(cards);
+            session._host.SetOrderTargetReader(session._effects.ReadOrderTargets);
+            session._host.SetSourceDefinitions(completeCards);
             session.CardPoolReport = report;
             return session;
         }
@@ -126,7 +150,6 @@ public sealed partial class OrcMatchSession : IDisposable
     /// </summary>
     public static async Task<OrcMatchSession> CreateProbeAsync(
         string cardId, int copies, int seed, string matchId, int viewerIndex = 0,
-        Func<Match?, IReadOnlyList<object?>>? interactables = null,
         Func<string, string>? artLookup = null, CancellationToken ct = default)
     {
         var definitions = new[]
@@ -137,7 +160,7 @@ public sealed partial class OrcMatchSession : IDisposable
         };
         var probe = Enumerable.Repeat(cardId, copies).ToArray();
         return await CreateAsync(definitions, probe, probe, seed, matchId, viewerIndex,
-            interactables, artLookup, ct);
+            artLookup, ct);
     }
 
     /// <summary>
@@ -153,13 +176,22 @@ public sealed partial class OrcMatchSession : IDisposable
     /// pool does not define are skipped, so a stale id degrades to a smaller hand rather than an
     /// unplayable match.
     /// </param>
-    public static async Task<OrcMatchSession> CreateAsync(
+    public static Task<OrcMatchSession> CreateAsync(
         IReadOnlyList<CardDefinitionEntry> definitions,
         IReadOnlyList<string> deckA, IReadOnlyList<string> deckB,
         int seed, string matchId, int viewerIndex = 0,
-        Func<Match?, IReadOnlyList<object?>>? interactables = null,
         Func<string, string>? artLookup = null, CancellationToken ct = default,
-        IReadOnlyList<string>? openingHand = null)
+        IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null)
+        => CreateNativeAsync(definitions, deckA, deckB, seed, matchId, viewerIndex, artLookup, ct,
+            openingHand, deckConfiguration, opponentDeckConfiguration);
+
+    private static async Task<OrcMatchSession> CreateNativeAsync(
+        IReadOnlyList<CardDefinitionEntry> definitions,
+        IReadOnlyList<string> deckA, IReadOnlyList<string> deckB,
+        int seed, string matchId, int viewerIndex = 0,
+        Func<string, string>? artLookup = null, CancellationToken ct = default,
+        IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null,
+        IReadOnlyList<CompiledDiyCard>? customCards = null)
     {
         if (deckA.Count == 0 || deckB.Count == 0)
             throw new ArgumentException("Both decks must have at least one card.", nameof(deckA));
@@ -172,27 +204,45 @@ public sealed partial class OrcMatchSession : IDisposable
         listA.AddRange(deckA);
         var listB = new Orc.Game.Collections.CardList();
         listB.AddRange(deckB);
-        Match? match = null;
-        Func<Match?, IReadOnlyList<object?>> collect = interactables ?? DefaultInteractables;
         OrcMatchSession? session = null;
-        var bridge = new OrcTargeterBridge(() => collect(match), (d, r) =>
+        var bridge = new OrcTargeterBridge(selector =>
         {
-            if (session is null) { OrcTargeterBridge.AutoRespond(d, r); return; }
-            // A mulligan is the UI panel's to answer; anything else replays the player's choice.
-            if (d.Slots.Count > 0 && d.Slots[0].Kind == TargetSlotKind.MulliganSelect)
+            if (session is null) { OrcTargeterBridge.AutoRespond(selector); return; }
+            if (selector.SelectorName == SelectorNames.Mulligan)
             {
-                session.NotePendingRequest(d, r);
+                session.NotePendingRequest(selector);
                 session.MulliganRequested?.Invoke();
-                return;
             }
-            session.AnswerParked(d, r);
+            else session.AnswerParked(selector);
         });
-        match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge);
+        Faction FactionOf(string nation) => nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany,
+            "USG" => Faction.USA, "UN" => Faction.Britain, _ => throw new InvalidDataException("未知构筑国家") };
+        PlayerDeckConfiguration? Config(DeckOptions? options) => options is null ? null
+            : new PlayerDeckConfiguration(FactionOf(options.MainNation), FactionOf(options.AllyNation));
+        var registry = new CardEffectRegistry();
+        foreach (var card in customCards ?? [])
+            if (card.Effect is { } effect) registry.DeclarePrefab(card.Entry.Id, [effect.Root.Id]);
+        var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge, effectRegistry: registry,
+            deckConfigForPlayerA: Config(deckConfiguration), deckConfigForPlayerB: Config(opponentDeckConfiguration));
+        match.Engine.ScriptEvaluator = NativeScriptHost.Evaluator;
+        foreach (var card in customCards ?? [])
+            if (card.Effect is { } effect) match.Engine.Prefabs.RegisterPrefab(effect);
         var host = new OrcMatchHost(match, matchId, viewerIndex, artLookup);
-        session = new OrcMatchSession(host, match, collect) { MatchId = matchId };
+        session = new OrcMatchSession(host, match) { MatchId = matchId };
         try
         {
             await host.InitializeAsync(ct);
+            foreach (var player in match.Players)
+                foreach (var card in player.Hand.OfType<CardBase>()
+                    .Concat(Enumerable.Range(0, player.Deck.Count).Select(i => player.Deck.PeekInstance(i))))
+                {
+                    if (!match.CardLibrary.TryGetRegisteredId(card.Definition, out var id)) continue;
+                    var expected = customCards?.FirstOrDefault(c => c.Entry.Id == id);
+                    if (expected?.Effect is null) continue;
+                    var loaded = card.Effects.Where(e => e.Name == expected.Effect.Root.Id).ToArray();
+                    if (loaded.Length != 1 || !loaded[0].IsMounted)
+                        throw new InvalidDataException($"DIY 卡牌 {id} 的效果未完整装载，拒绝开始对局");
+                }
             if (openingHand is { Count: > 0 })
                 await ApplyOpeningHandAsync(host, definitions, openingHand, ct);
         }
@@ -225,26 +275,6 @@ public sealed partial class OrcMatchSession : IDisposable
         host.Refresh();
     }
 
-    private static IReadOnlyList<object?> DefaultInteractables(Match? match)
-    {
-        if (match is null || match.State == MatchState.Preparing) return Array.Empty<object?>();
-        var references = new List<object?>();
-        var lines = new[]
-        {
-            match.Battlefield.PlayerASupportLine, match.Battlefield.FrontLine, match.Battlefield.PlayerBSupportLine
-        };
-        foreach (var line in lines)
-            foreach (var slot in line) references.Add(slot.Ref);
-        // Board units as well as their slots. The engine's coarse filter intersects this list with its
-        // own candidates, and attack candidates are *unit* references — hand over slots only and the
-        // enemy HQ is the sole survivor, so every unit the player aims at is silently replaced by it.
-        foreach (var line in lines)
-            foreach (var slot in line)
-                if (slot.Occupant is UnitCard unit) references.Add(unit.Ref);
-        foreach (var player in match.Players) references.Add(player.Hq.Ref);
-        return references;
-    }
-
     // ── Mulligan ────────────────────────────────────────────────────────────
 
     /// <summary>Answers every non-viewer side, then either parks the viewer's mulligan or keeps it.</summary>
@@ -263,15 +293,27 @@ public sealed partial class OrcMatchSession : IDisposable
             // Not wrapped in Task.Run: the returned task parks on the mulligan slot by itself, and
             // hopping threads would make the UI's panel touch the scene tree off the main thread.
             // Do not await it here — it only completes once the UI answers.
-            _mulliganRequest = RunMulliganAsync(viewer, ct);
-            _ = _mulliganRequest.ContinueWith(t => { _ = t.Exception; },
-                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            BeginViewerMulligan(ct);
         }
         else
         {
             await Match.MulliganDone(viewer, linked.Token);
             _host.CaptureCompletedActions();
         }
+    }
+
+    public string? MulliganRequestId { get; private set; }
+    private long _mulliganDelivery;
+
+    private bool BeginViewerMulligan(CancellationToken ct = default)
+    {
+        if (_disposed || MulliganPending || IsSubmitting || Match.Phase != MatchPhase.Mulligan
+            || Match.MulliganManager.IsConfirmed(_host.Viewer)) return false;
+        MulliganOutcome = null; MulliganError = null;
+        _mulliganRequest = RunMulliganAsync(_host.Viewer, ct);
+        _ = _mulliganRequest.ContinueWith(t => { _ = t.Exception; },
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        return true;
     }
 
     private async Task<MulliganResult> RunMulliganAsync(Player viewer, CancellationToken ct)
@@ -286,105 +328,62 @@ public sealed partial class OrcMatchSession : IDisposable
     /// clicked a target or dropped on a slot), so the choice is replayed here rather than leaving the
     /// engine to ask again. An unmatched player choice cancels the request without substitution.
     /// </summary>
-    public void AnswerParked(TargetingRequestDescription description, ITargetingResponder responder)
+    public void AnswerParked(ISelectorInstance selector)
     {
-        if (_disposed) { responder.Cancel(description.RequestId); return; }
-        if (description.Slots.Count == 0) { ClearIntent(); Refuse(responder, description); return; }
-        var slot = description.Slots[0];
-        if (slot.Kind == TargetSlotKind.OptionSelect)
+        if (_disposed || _activeCommandToken.IsCancellationRequested) { selector.Submit(new CancelEvent()); return; }
+        var data = selector.Presentation;
+        if (data.Identifiers is not null)
         {
-            if (_automaticChoice)
-            {
-                responder.Complete(description.RequestId, new Dictionary<string, IReadOnlyList<TargetSelection>>
-                    { [slot.Name] = [TargetSelection.FromIdentifier(slot.Options![0].Id)] });
-            }
-            else PresentTargetChoice(description, responder);
+            if (_automaticChoice) OrcTargeterBridge.AutoRespond(selector);
+            else PresentTargetChoice(selector);
             return;
         }
-        var allowed = (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).ToArray();
-
-        // 1) A target the player clicked: answer with exactly that reference.
+        var allowed = data.Candidates.Where(r => r.IsAlive).ToArray();
+        if (_pendingGapId is { } gapId)
+        {
+            var wanted = allowed.FirstOrDefault(r => r.Value is FormationGap && OrcRefs.KeyOf(r.Value) == gapId);
+            ClearIntent();
+            if (wanted is not null) selector.Submit(new PickEvent([wanted]));
+            else { LastRejectionReason = "FormationGapUnavailable"; selector.Submit(new CancelEvent()); }
+            return;
+        }
         if (_pendingSelection is { Length: > 0 })
         {
-            var chosen = allowed.Where(r => _pendingSelection.Contains(OrcRefs.KeyOf(r.Value))).ToArray();
-            if (chosen.Length > 0) { Complete(description, responder, slot.Name, chosen); return; }
-            LastRejectionReason = "SelectedTargetUnavailable";
-            ClearIntent(); Refuse(responder, description); return;
-        }
-
-        // 2) A slot the player dropped on. The UI sends an *engine slot index*, while the candidate
-        //    list is what the engine is willing to accept this action; answering with a different slot
-        //    than the one dropped on is worse than refusing, because the unit would appear somewhere the
-        //    player did not point at. When the engine does not offer the slot, the request is cancelled so
-        //    the failure and its reason reach the player.
-        var wanted = SlotAt(slot.Name);
-        if (_pendingSupportIndex is not null || _pendingSlot is not null)
-        {
-            if (wanted is not null && allowed.Any(r => ReferenceEquals(r.Value, wanted.Value)))
+            var chosen = _pendingSelection.Select(uid => allowed.FirstOrDefault(r => OrcRefs.KeyOf(r.Value) == uid)).ToArray();
+            if (chosen.All(r => r is not null))
             {
-                Complete(description, responder, slot.Name, [wanted]);
+                ClearIntent();
+                selector.Submit(selector.Mode == SelectorInteractionMode.Drag && chosen.Length == 1
+                    ? new DropEvent(chosen[0]) : new PickEvent(chosen!));
                 return;
             }
-            LastRejectionReason = "SelectedSlotUnavailable";
+            LastRejectionReason = "SelectedTargetUnavailable";
+            ClearIntent(); selector.Submit(new CancelEvent()); return;
+        }
+        if (_pendingSupportIndex is not null || _pendingSlot is not null)
+        {
+            var wanted = SlotAt();
             ClearIntent();
-            Refuse(responder, description);
+            if (wanted is not null && allowed.Any(r => ReferenceEquals(r.Value, wanted.Value)))
+                selector.Submit(selector.Mode == SelectorInteractionMode.Drag ? new DropEvent(wanted) : new PickEvent([wanted]));
+            else { LastRejectionReason = "SelectedSlotUnavailable"; selector.Submit(new CancelEvent()); }
             return;
         }
-
-        ClearIntent();
-        if (_automaticChoice) OrcTargeterBridge.AutoRespond(description, responder);
-        else if (_interactiveCommand) PresentTargetChoice(description, responder);
-        else { LastRejectionReason = "SelectionRequired"; Refuse(responder, description); }
+        if (_automaticChoice) OrcTargeterBridge.AutoRespond(selector);
+        else if (_interactiveCommand) PresentTargetChoice(selector);
+        else { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); }
     }
 
-    /// <summary>
-    /// Ends a request the player cannot answer without selecting a different target.
-    /// </summary>
-    private static void Refuse(ITargetingResponder responder, TargetingRequestDescription description)
+    private Ref<Entity>? SlotAt()
     {
-        responder.Cancel(description.RequestId);
-    }
-
-    /// <summary>
-    /// Submits an answer and makes sure the request actually ends.
-    ///
-    /// The engine is parked inside <c>BeginInteraction</c> — a void call it makes on its own thread of
-    /// control, awaiting a <c>Task</c> this callback is expected to complete. <c>Complete</c> returning
-    /// <c>false</c> means the submission was rejected and **the request is still waiting**: the engine
-    /// has already returned from the callback and will not ask again, so an unanswered request parks
-    /// forever and every later command on that match hangs with it.
-    ///
-    /// A refused answer is cancelled using the same request id. The session lifetime also cancels
-    /// engine work on exit; a player choice must never fall back to an automatic selection.
-    /// </summary>
-    private void Complete(TargetingRequestDescription description, ITargetingResponder responder,
-        string slotName, IReadOnlyList<Ref<Entity>> selection)
-    {
-        ClearIntent();
-        if (responder.Complete(description.RequestId, Wrap(slotName, selection))) return;
-        LastRejectionReason = "SelectionRejected";
-        responder.Cancel(description.RequestId);
-    }
-
-    /// <summary>
-    /// The engine slot a drop maps to. Deployment asks on the anonymous slot ("default") with
-    /// support-line candidates; movement also uses an anonymous slot with front-line candidates.
-    /// </summary>
-    private Ref<Entity>? SlotAt(string slotName)
-    {
-        // Which line a slot belongs to is decided by what the caller recorded, not by the slot's name.
-        // A deployment and a unit drag both use the engine's default slot — `PlayManager` and
-        // `CommandManager` each create `new SingleSelectSlot()` with no name — so the name cannot tell
-        // them apart, while the intent can: a deployment recorded a support index, a drag recorded a
-        // front-line one. A drag that pointed at an enemy recorded neither and answers by reference.
         if (_pendingSupportIndex is { } support)
         {
-            var supportLine = Match.Battlefield.GetSupportLine(_host.Viewer.Index);
-            return support >= 0 && support < supportLine.Count ? supportLine[support].Ref : null;
+            var line = Match.Battlefield.GetSupportLine(_host.Viewer.Index);
+            return support >= 0 && support < line.Count ? line[support].Ref : null;
         }
         if (_pendingSlot is not { } front) return null;
-        var line = Match.Battlefield.FrontLine;
-        return front >= 0 && front < line.Count ? line[front].Ref : null;
+        var frontline = Match.Battlefield.FrontLine;
+        return front >= 0 && front < frontline.Count ? frontline[front].Ref : null;
     }
 
     /// <summary>
@@ -396,10 +395,8 @@ public sealed partial class OrcMatchSession : IDisposable
         _pendingSelection = null;
         _pendingSlot = null;
         _pendingSupportIndex = null;
+        _pendingGapId = null;
     }
-
-    private static Dictionary<string, IReadOnlyList<Ref<Entity>>> Wrap(string slot, IReadOnlyList<Ref<Entity>> selections) =>
-        new(StringComparer.Ordinal) { [slot] = selections };
 
     /// <summary>Records the player's chosen target, replayed when the engine asks where to strike.</summary>
     public void NoteSelection(params string[] targetUids) => _pendingSelection = targetUids;
@@ -417,11 +414,14 @@ public sealed partial class OrcMatchSession : IDisposable
     public event Action? MulliganRequested;
 
     /// <summary>Records a parked mulligan request so <see cref="CompleteMulliganAsync"/> can answer it.</summary>
-    public void NotePendingRequest(TargetingRequestDescription description, ITargetingResponder responder)
+    public void NotePendingRequest(ISelectorInstance selector)
     {
-        if (_disposed) { responder.Cancel(description.RequestId); return; }
-        if (description.Slots.Count > 0 && description.Slots[0].Kind == TargetSlotKind.MulliganSelect)
-            _pendingMulligan = (description, responder);
+        if (_disposed) { selector.Submit(new CancelEvent()); return; }
+        if (selector.SelectorName == SelectorNames.Mulligan)
+        {
+            _pendingMulligan = selector;
+            MulliganRequestId = $"{MatchId}:mulligan:{Interlocked.Increment(ref _mulliganDelivery)}";
+        }
     }
 
     /// <summary>
@@ -429,19 +429,20 @@ public sealed partial class OrcMatchSession : IDisposable
     /// the same responder path the engine parked on — so there is no parallel "mulligan API" to
     /// keep in sync. <see cref="OrcTargeterBridge.SelectReplace"/> owns the keep/replace policy.
     /// </summary>
-    public async Task<UiSubmitOutcome> CompleteMulliganAsync(IReadOnlyList<string> keepUids, CancellationToken ct = default)
+    public async Task<UiSubmitOutcome> CompleteMulliganAsync(IReadOnlyList<string> keepUids, CancellationToken ct = default,
+        string? requestId = null)
     {
         if (_disposed) return UiSubmitOutcome.Interrupted;
         if (_pendingMulligan is null) return UiSubmitOutcome.Rejected;
-        var pending = _pendingMulligan.Value;
-        var slot = pending.Description.Slots[0];
-        var allowed = (slot.AllowedReferences ?? pending.Description.AllowedTargets).Where(r => r.IsAlive).ToArray();
-        if (!pending.Responder.Complete(pending.Description.RequestId,
-            new Dictionary<string, IReadOnlyList<Ref<Entity>>>(StringComparer.Ordinal)
-            {
-                [slot.Name] = OrcTargeterBridge.SelectReplace(allowed, keepUids),
-            })) return UiSubmitOutcome.Rejected;
-        _pendingMulligan = null;
+        if (requestId is not null && requestId != MulliganRequestId) return UiSubmitOutcome.Rejected;
+        var pending = _pendingMulligan;
+        var allowed = pending.Presentation.Candidates.Where(r => r.IsAlive).ToArray();
+        var keys = allowed.Select(r => OrcRefs.KeyOf(r.Value)).ToHashSet(StringComparer.Ordinal);
+        if (keepUids.Distinct(StringComparer.Ordinal).Count() != keepUids.Count || keepUids.Any(id => !keys.Contains(id)))
+            return UiSubmitOutcome.Rejected;
+        if (!pending.Submit(new PickEvent(OrcTargeterBridge.SelectReplace(allowed, keepUids))))
+            return UiSubmitOutcome.Rejected;
+        if (ReferenceEquals(_pendingMulligan, pending)) { _pendingMulligan = null; MulliganRequestId = null; }
         if (_mulliganRequest is not null)
         {
             // The engine reports why a mulligan failed; surfacing it turns a silent stall into a
@@ -451,6 +452,11 @@ public sealed partial class OrcMatchSession : IDisposable
             catch (Exception e) { MulliganError = e.Message; throw; }
         }
         _mulliganRequest = null;
+        if (MulliganOutcome is { IsSuccess: false } failed)
+        {
+            LastRejectionReason = failed.FailureReason?.ToString() ?? failed.Status.ToString();
+            return UiSubmitOutcome.Rejected;
+        }
         return UiSubmitOutcome.Applied;
     }
 
@@ -469,7 +475,7 @@ public sealed partial class OrcMatchSession : IDisposable
     public async Task<UiSubmitOutcome> SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
         if (_disposed) return UiSubmitOutcome.Interrupted;
-        if (command is ChooseMulligan keep) return await CompleteMulliganAsync(keep.KeepUids, ct);
+        if (command is ChooseMulligan keep) return await CompleteMulliganAsync(keep.KeepUids, ct, keep.RequestId);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
         try { if (!await _commands.WaitAsync(0, linked.Token)) return UiSubmitOutcome.Busy; }
         catch (OperationCanceledException) { return UiSubmitOutcome.Interrupted; }
@@ -481,10 +487,25 @@ public sealed partial class OrcMatchSession : IDisposable
             using var cancelChoice = ct.Register(CancelTargetChoice);
             if (Match.Phase != MatchPhase.Play) return UiSubmitOutcome.WrongPhase;
             if (!IsViewerOnTurn) return UiSubmitOutcome.NotYourTurn;
+            var inputActor = BattleInteractionStateMachine.Actor(command) is { } actorUid
+                ? OrcRefs.EntityOf(Resolve(actorUid)) : _host.Viewer.Hq;
+            var targetUid = command switch { AttackUnit attack => attack.DefenderUid,
+                CommandUnit gesture => gesture.TargetUid, PlayCard play => play.TargetUid, _ => null };
+            var inputTarget = targetUid is null ? null : OrcRefs.EntityOf(Resolve(targetUid));
+            if (!Match.CanAcceptInput(_host.Viewer, inputActor, inputTarget))
+            { LastRejectionReason = "InteractionBlocked"; return UiSubmitOutcome.Rejected; }
+            _admittedCommand = command;
             switch (command)
             {
+                case Concede:
+                    var conceded = Match.Concede(_host.Viewer, ct);
+                    if (conceded.IsAccepted) return UiSubmitOutcome.Applied;
+                    LastRejectionReason = conceded.FailureReason?.ToString();
+                    return UiSubmitOutcome.Rejected;
                 case PlayCard play:
+                    _choiceSourceUid = play.Uid;
                     _pendingSelection = play.TargetUid is { } selected ? [selected] : null;
+                    _pendingGapId = play.GapId;
                     return await PlayAsync(play.Uid, play.SupportIndex, ct);
                 case MoveUnit move:
                 {
@@ -539,7 +560,9 @@ public sealed partial class OrcMatchSession : IDisposable
             CancelTargetChoice();
             ClearIntent();
             _interactiveCommand = false;
+            _choiceSourceUid = null;
             _activeCommandToken = default;
+            _admittedCommand = null;
             if (!_disposed) _host.CaptureCompletedActions();
             _commands.Release();
         }
@@ -558,16 +581,19 @@ public sealed partial class OrcMatchSession : IDisposable
         if (Resolve(uid) is CounterCard counter)
             return Report(await Match.PlayManager.UseCounterAsync(counter, ct));
         if (Resolve(uid) is not UnitCard unit) return UiSubmitOutcome.UnknownCard;
-        // The position is the player's, expressed through the engine's own interaction: its candidate set
-        // for a support deployment is every empty slot of the line (Orc.Game Managers/PlayManager.cs, the
-        // ① 候选 step), and AnswerParked replays the chosen slot as the answer. A slot outside that set —
-        // occupied or out of range — is refused by the coarse filter, so the engine still decides legality.
-        // Command points are the engine's call too: they are enforced by the play chain's verification.
-        _pendingSupportIndex = supportIndex;
+        // Compatibility for older contract fixtures explicitly naming storage slots. Product drag
+        // submits GapId and goes through the canonical native gap selector; these paths never mix.
+        if (supportIndex is { } legacy && _pendingGapId is null)
+        {
+            var line = Match.Battlefield.GetSupportLine(_host.Viewer);
+            if (legacy < 0 || legacy >= line.Count || !line[legacy].IsEmpty)
+            { LastRejectionReason = "SelectedSlotUnavailable"; return UiSubmitOutcome.Rejected; }
+            return Report(await Match.PlayManager.PlayUnitAsync(unit, line[legacy], ct));
+        }
         // Contract-only callers may omit a position. This explicit adapter policy is limited to
         // untargeted deployment; a named but illegal position is always refused.
         var automatic = _automaticChoice;
-        _automaticChoice = supportIndex is null;
+        _automaticChoice = _pendingGapId is null;
         try
         {
             return Report(await Match.PlayManager.BeginUnitPrePlayAsync(unit, ct));
@@ -576,6 +602,20 @@ public sealed partial class OrcMatchSession : IDisposable
     }
 
     private int? _pendingSupportIndex;
+
+    private ActionInteractionState? ReadInteractionState(Player player)
+    {
+        if (!ReferenceEquals(player, _host.Viewer) || InteractionStateReader is null) return null;
+        var state = InteractionStateReader();
+        var continuation = _admittedCommand is EndTurn ? player.Hq.Id
+            : _admittedCommand is { } command && BattleInteractionStateMachine.Actor(command) is { } uid
+                && Guid.TryParseExact(uid, "N", out var id) ? id : (Guid?)null;
+        // A parked choice belongs to the already admitted command. It may complete that command,
+        // while fresh commands still pass the admission check above and the session semaphore.
+        var busy = state.PendingActorUids.Select(uid => Guid.TryParseExact(uid, "N", out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty && id != continuation).ToHashSet();
+        return new(state.AllowsActions, busy, continuation);
+    }
 
     private UiSubmitOutcome Report(CommandResult result)
     {

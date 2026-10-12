@@ -50,7 +50,7 @@ public partial class BattleScreen
 
     private void RestorePendingDeploymentPoses()
     {
-        foreach (var (uid, pose) in _deploymentOrigins)
+        foreach (var (uid, pose) in _deploymentOrigins.Concat(_orderOrigins))
         {
             if (!_cards.TryGetValue(uid, out var card) || card.Mode != BattleCardMode.Hand) continue;
             StopHandMotion(uid);
@@ -58,6 +58,7 @@ public partial class BattleScreen
             card.Position = pose.Position; card.Rotation = pose.Rotation; card.Scale = pose.Scale;
             card.ZIndex = 140; card.MouseFilter = MouseFilterEnum.Ignore;
         }
+        if (_choiceRequest?.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var choiceSource)) choiceSource.Visible = false;
     }
     private void InitializePresentation()
     {
@@ -109,7 +110,7 @@ public partial class BattleScreen
         for (var i = 0; i < cards.Length; i++)
         {
             var card = cards[i];
-            if (card == _pressed || _deploymentOrigins.ContainsKey(card.Uid)) continue;
+            if (card == _pressed || HasPendingHandPlay(card.Uid)) continue;
             var slot = self ? after.SelfHand.FirstOrDefault(c => c.Uid == card.Uid)?.SlotIndex : i;
             if (slot is null) continue;
             var pose = HandPose(slot.Value, self ? after.SelfHand.Count : Math.Clamp(after.EnemyHandCount ?? 0, 0, 9), self);
@@ -179,34 +180,53 @@ public partial class BattleScreen
                         var pose = HandPose(draw.SlotIndex, count, self);
                         var consecutive = draw.Consecutive || (stepIndex > 0 && resolution.Steps[stepIndex - 1] is UiDrawPresentation previousDraw && previousDraw.Side == draw.Side)
                             || (stepIndex + 1 < resolution.Steps.Count && resolution.Steps[stepIndex + 1] is UiDrawPresentation nextDraw && nextDraw.Side == draw.Side);
-                        await _sequence.DrawAsync(draw, pose.Position, pose.Rotation, consecutive);
+                        BattleCard? incoming = null;
+                        if (self && draw.Card is { Visibility: Visibility.Full } drawn)
+                        {
+                            incoming = _cards.GetValueOrDefault(drawn.Uid)
+                                ?? AddCard(drawn, BattleCardMode.Hand, new(144, 202), pose.Position, pose.Rotation);
+                            incoming.RestPosition = pose.Position; incoming.RestRotation = pose.Rotation;
+                            incoming.ZIndex = 210;
+                            UpdateSelection();
+                        }
+                        await _sequence.DrawAsync(draw, pose.Position, pose.Rotation, consecutive, incoming);
                         break;
                     case UiOrderPresentation order:
-                        var from = order.Card.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628);
-                        if (_cards.TryGetValue(order.Card.Uid, out var handCard)) { from = handCard.Position; handCard.Visible = false; }
+                        var from = new DeploymentPose(order.Card.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628),
+                            new(144, 202), Vector2.One, 0);
+                        if (_cards.TryGetValue(order.Card.Uid, out var handCard)) { from = DeploymentPose.From(handCard); handCard.Visible = false; }
+                        if (_orderOrigins.Remove(order.Card.Uid, out var orderPose)) from = orderPose;
                         if (order.Card.OwnerSide == "enemy" && resolution.After.EnemyHandCount < _state.EnemyHandCount)
                         {
                             var back = _cardLayer.GetChildren().OfType<BattleCard>().LastOrDefault(c => c.View is null && c.Mode == BattleCardMode.Hidden && c.Visible);
-                            if (back is not null) { from = back.Position; back.Visible = false; }
+                            if (back is not null) { from = DeploymentPose.From(back); back.Visible = false; }
                         }
                         MakeHandRoom(resolution.After, order.Card.OwnerSide != "enemy");
-                        await _sequence.RevealOrderAsync(order.Card, from);
+                        _orderChoiceCaptions.Remove(order.Card.Uid, out var chosenCaption);
+                        _orderChoiceFaces.Remove(order.Card.Uid, out var chosenFace);
+                        await _sequence.RevealOrderAsync(chosenFace ?? order.Card, from, chosenCaption);
                         if (order.Card.Visibility == Visibility.Full) Record(order.Card, order.Card.Definition.Name);
                         var targets = VisibleImpacts(order.Impacts, resolution.After)
                             .Where(i => i.Before.Visibility == Visibility.Full && _cards.TryGetValue(i.Before.Uid, out var card)
                                 && card.Visible && card.View?.Visibility == Visibility.Full)
                             .GroupBy(i => i.Before.Uid).Select(g => (Impact: g.First(), Card: _cards[g.Key])).ToArray();
-                        await _combat.PresentImpactsAsync(targets);
-                        await _sequence.RetireOrderAsync();
+                        await Task.WhenAll(_combat.PresentImpactsAsync(targets), _sequence.RetireOrderAsync());
                         break;
                     case UiCounterPresentation counter:
                         var counterCard = counter.Card is null ? null : _cards.GetValueOrDefault(counter.Card.Uid);
+                        DeploymentPose? counterPose = counter.Card is { } reserved && _orderOrigins.Remove(reserved.Uid, out var reservedPose)
+                            ? reservedPose : null;
+                        DeploymentPose? blockedOrderPose = null;
                         if (counter.Stage == UiCounterStage.Triggered)
                         {
                             HideOpponentHandToCount(resolution.After.EnemyHandCount);
                             MakeHandRoom(resolution.After, false);
                             MakeHandRoom(resolution.After, counter.Side == "self");
                             if (counter.BlockedCard is { } blocked && _cards.TryGetValue(blocked.Uid, out var blockedHand)) blockedHand.Visible = false;
+                            if (counter.BlockedCard is { } blockedOrder && _orderOrigins.Remove(blockedOrder.Uid, out var blockedPose))
+                                blockedOrderPose = blockedPose;
+                            if (counter.BlockedCard is { } blockedChoice)
+                            { _orderChoiceCaptions.Remove(blockedChoice.Uid); _orderChoiceFaces.Remove(blockedChoice.Uid); }
                         }
                         var removal = counter.Stage == UiCounterStage.Triggered && stepIndex + 1 < resolution.Steps.Count
                             ? resolution.Steps[stepIndex + 1] as UiRemovalPresentation : null;
@@ -217,7 +237,7 @@ public partial class BattleScreen
                                 && removedCard.View?.Visibility == Visibility.Full)
                                 await _combat.PresentRemovalAsync(removal.Card, removedCard);
                         }
-                        await _sequence.CounterAsync(counter, counterCard, removal is null ? null : RemoveCounterTarget);
+                        await _sequence.CounterAsync(counter, counterCard, removal is null ? null : RemoveCounterTarget, blockedOrderPose, counterPose);
                         if (removal is not null) stepIndex++;
                         if (counter.Stage == UiCounterStage.Triggered && counter.Card?.Visibility == Visibility.Full)
                             Record(counter.Card, counter.Card.Definition.Name);
@@ -233,8 +253,12 @@ public partial class BattleScreen
                         _cards.TryGetValue(discard.Card?.Uid ?? "", out var discardedSource);
                         await _sequence.DiscardAsync(discard.Card, discardedSource, discard.Kind);
                         break;
+                    case UiShufflePresentation shuffle:
+                        await _sequence.ShuffleAsync(shuffle.Side);
+                        break;
                     case UiTurnPresentation turn:
-                        // "Your turn" / "opponent's turn". Also always emitted, always dropped.
+                        _turnInput.Present(turn);
+                        RefreshTurnInput();
                         await _sequence.TurnBannerAsync(turn);
                         break;
                     case UiStatusPresentation status when status.Before.Uid == status.After.Uid && status.Before.Visibility == Visibility.Full && status.After.Visibility == Visibility.Full:
@@ -256,12 +280,7 @@ public partial class BattleScreen
                 && resolution.After.Phase == "over" && resolution.After.ResultTitle is not null)
             {
                 var victory = resolution.After.ResultTitle == "胜利";
-                var reason = resolution.After.ResultReason switch
-                {
-                    "HqZero" => "总部被摧毁",
-                    "Concede" => "对手认输",
-                    _ => "对局结束",
-                };
+                var reason = ResultReasonText(resolution.After) ?? "对局结束";
                 await _sequence.ResultBannerAsync(victory, reason);
             }
             if (generation != _generation || _pendingPresentation != resolution) return;
@@ -276,9 +295,17 @@ public partial class BattleScreen
         }
         catch (OperationCanceledException) { /* Interrupt already settled or replaced the supplied state. */ }
         catch (Exception e) { GD.PushError(e.ToString()); if (generation == _generation) CancelSelection(); }
+        finally { _interaction.Presented(supplied); RefreshTurnInput(); }
     }
     private static UiCardView? PresentationCard(UiMatchView view, string uid) => view.SelfHand.Concat(view.SelfLine)
         .Concat(view.EnemyLine).Concat(new[] { view.SelfHq, view.EnemyHq }.OfType<UiCardView>()).FirstOrDefault(c => c.Uid == uid);
+
+    private static string? ResultReasonText(UiMatchView view) => view.ResultReason switch
+    {
+        "HqZero" => "总部被摧毁",
+        "Concede" => view.ResultTitle == "失败" ? "我方认输" : "对手认输",
+        _ => null
+    };
 
     private static IReadOnlyList<UiOrderImpact> VisibleImpacts(IReadOnlyList<UiOrderImpact> impacts, UiMatchView visibleAfter) =>
         impacts.Select(i => i.After is null ? i : i with { After = PresentationCard(visibleAfter, i.Before.Uid) ?? i.After }).ToArray();

@@ -90,6 +90,9 @@ public sealed record UiCardView : IDtoKind
     {
         get; init;
     }
+    /// <summary>Engine covert marker: effect protection, not concealed card identity.</summary>
+    public bool IsCovert { get; init; }
+    public IReadOnlyList<string> UnitTypes { get; init; } = Array.Empty<string>();
     public bool CanPlayCard
     {
         get; init;
@@ -203,7 +206,7 @@ public sealed record UiMatchView
 }
 
 public abstract record UiCommand;
-public sealed record PlayCard(string Uid, int? SupportIndex = null, string? TargetUid = null) : UiCommand;
+public sealed record PlayCard(string Uid, int? SupportIndex = null, string? TargetUid = null, string? GapId = null) : UiCommand;
 public sealed record MoveUnit(string Uid, string ToZone, int? SlotIndex = null) : UiCommand;
 /// <summary>
 /// A drag on a unit the player owns. The gesture is stated, the decision is not: the engine merges the
@@ -220,5 +223,6 @@ public sealed record CommandUnit(string Uid, string? TargetUid = null, int? Slot
 public sealed record AttackUnit(string AttackerUid, string DefenderUid) : UiCommand;
 public sealed record RetreatUnit(string Uid) : UiCommand;
 public sealed record EndTurn : UiCommand;
-public sealed record ChooseMulligan(IReadOnlyList<string> KeepUids) : UiCommand;
+public sealed record Concede : UiCommand;
+public sealed record ChooseMulligan(IReadOnlyList<string> KeepUids, string? RequestId = null) : UiCommand;
 public sealed record ChooseTarget(string Uid) : UiCommand;

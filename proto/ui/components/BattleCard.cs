@@ -19,6 +19,8 @@ public partial class BattleCard : Control
     public Vector2 FlightOffset { get; private set; }
     public float PaperShear { get; set; }
     public float DeploymentElevation { get; set; }
+    public string? ChoiceCaption { get; set; }
+    public bool DrawFaceDown { get; set; }
     private float _flightTilt;
     public void SetFlightPose(Vector2 offset, float tilt) { FlightOffset = offset; _flightTilt = tilt; QueueRedraw(); }
     private Texture2D? _texture;
@@ -37,7 +39,7 @@ public partial class BattleCard : Control
         View = view;
         Mode = view?.Visibility != Visibility.Full ? BattleCardMode.Hidden : mode;
         MouseDefaultCursorShape = CursorShape.PointingHand;
-        if (Mode == BattleCardMode.Hidden) _back = cache.Get("res://proto/assets/battle/card-back-v2.png");
+        _back = cache.Get("res://proto/assets/battle/card-back-v2.png");
         if (Mode == BattleCardMode.Hq) _hqMap = cache.Get("res://proto/assets/battle/hq-map-v2.png");
         if (Mode != BattleCardMode.Hidden && view is not null)
         {
@@ -48,6 +50,7 @@ public partial class BattleCard : Control
                 _illustration = new AtlasTexture { Atlas = _texture, Region = new Rect2(dimensions.X * .027f, dimensions.Y * .143f, dimensions.X * .946f, dimensions.Y * .518f), FilterClip = true };
                 _unitIcon = new AtlasTexture { Atlas = _texture, Region = new Rect2(dimensions.X * .423f, dimensions.Y * .690f, dimensions.X * .154f, dimensions.Y * .090f), FilterClip = true };
                 _nationIcon = new AtlasTexture { Atlas = _texture, Region = new Rect2(dimensions.X * .858f, dimensions.Y * .024f, dimensions.X * .105f, dimensions.Y * .083f), FilterClip = true };
+                if (view.CardId.StartsWith("diy/", StringComparison.Ordinal)) { _unitIcon = null; _nationIcon = null; }
             }
         }
         if (!_inputBound)
@@ -75,7 +78,7 @@ public partial class BattleCard : Control
         var paper = UiStyles.Box(new Color("c6bea3"), edge, 3, 0);
         paper.BorderWidthLeft = paper.BorderWidthTop = paper.BorderWidthRight = paper.BorderWidthBottom = Selected || Targeted ? 3 : 1;
         DrawStyleBox(paper, bounds);
-        if (Mode == BattleCardMode.Hidden)
+        if (Mode == BattleCardMode.Hidden || DrawFaceDown)
         {
             if (_back is not null) { DrawTextureRect(_back, bounds, false); return; }
             DrawRect(new Rect2(5, 5, Size.X - 10, Size.Y - 10), new Color("303b37"));
@@ -87,7 +90,9 @@ public partial class BattleCard : Control
         }
         if (Mode is BattleCardMode.Hand or BattleCardMode.Inspect)
         {
-            if (_texture is not null) DrawTextureRect(_texture, bounds.Grow(-3), false);
+            if (View is { } custom && custom.CardId.StartsWith("diy/", StringComparison.Ordinal))
+                DiyCardFace.Paint(this, custom.Definition, custom, _texture);
+            else if (_texture is not null) DrawTextureRect(_texture, bounds.Grow(-3), false);
             else
             {
                 DrawRect(new Rect2(5, 5, Size.X - 10, 28), NationColor);
@@ -101,6 +106,27 @@ public partial class BattleCard : Control
                 var armed = face.IsCounterArmed && face.OwnerSide == "self";
                 DrawRect(cost, new Color(armed ? "d5b54b" : "353b31"));
                 Text(face.EffectiveCost?.ToString() ?? "—", cost, (int)(Size.X * .13f), new Color(armed ? "343a30" : "dec775"));
+            }
+            if (ChoiceCaption is { } caption)
+            {
+                var box = new Rect2(7, Size.Y * .76f, Size.X - 14, Size.Y * .24f - 7);
+                DrawRect(box, new Color("d4ccb2"));
+                // Draw the branch text on the paper, including during horizontal flips.
+                var font = GetThemeDefaultFont();
+                var textSize = (int)Math.Clamp(Size.X * .065f, 11, 17);
+                var y = box.Position.Y + textSize + 2; var line = "";
+                foreach (var ch in caption)
+                {
+                    if (ch == '\n' || font.GetStringSize(line + ch, fontSize: textSize).X > box.Size.X - 8)
+                    {
+                        DrawString(font, new(box.Position.X + 4, y), line, fontSize: textSize, modulate: new("34392e"));
+                        line = ""; y += textSize + 3;
+                    }
+                    if (ch != '\n') line += ch;
+                    if (y > box.End.Y) break;
+                }
+                if (line.Length > 0 && y <= box.End.Y)
+                    DrawString(font, new(box.Position.X + 4, y), line, fontSize: textSize, modulate: new("34392e"));
             }
             return;
         }
@@ -128,6 +154,19 @@ public partial class BattleCard : Control
         if (View?.Keywords.Count > 0)
             Text("◆", new Rect2(Size.X - 19, 32, 17, 20), 13, new Color("e3d5a5"));
         if (View?.IsSuppressed == true) DrawRect(bounds.Grow(-4), new Color(.15f, .16f, .14f, .45f));
+        if (View is { } status)
+        {
+            var marks = new List<string>();
+            if (status.IsVeteran) marks.Add("★");
+            if (status.IsCovert) marks.Add("隐蔽");
+            if (status.IsSilenced) marks.Add("抑制");
+            if (status.IsSuppressed) marks.Add("压制");
+            if (marks.Count > 0)
+            {
+                DrawRect(new Rect2(5, 28, Size.X - 10, 18), new Color(.12f, .14f, .10f, .85f));
+                Text(string.Join(" · ", marks), new Rect2(5, 27, Size.X - 10, 18), 11, new Color("e3d5a5"));
+            }
+        }
     }
     private void Badge(float x, float y, int? value, bool shield, float r)
     {

@@ -22,7 +22,8 @@ public partial class BattleScreen
             Color ButtonColor() => ((StyleBoxFlat)_endTurn.GetThemeStylebox(_endTurn.Disabled ? "disabled" : "normal")).BgColor;
             if (!EndTurnEnabled || ButtonColor() != new Color("d98632")) throw new Exception("Friendly turn button is not orange and enabled.");
             var uid = initial.SelfHand.First(c => actions.PlayableUids.Contains(c.Uid)).Uid;
-            var enemy = initial with { ActivePlayerSide = "enemy" };
+            var enemy = initial with { ActivePlayerSide = "enemy", Turn = initial.Turn + 1 };
+            var returned = initial with { Turn = initial.Turn + 2 };
             // Deliberately supply stale legal actions: ownership must override every entry point.
             UpdateInputProjection(enemy, actions);
             SelectCard(uid); TryDrop(DropAtRowEdge(false, false)); Submit(new PlayCard(uid)); EndTurnClicked();
@@ -36,7 +37,19 @@ public partial class BattleScreen
                 || InteractionActions.PlayableUids.Count != 0 || InteractionActions.Moves.Count != 0
                 || InteractionActions.AttackPreviews.Count != 0 || ButtonColor() != new Color("666760"))
                 throw new Exception("Enemy turn allowed a gesture/command or retained the friendly button color.");
-            UpdateInputProjection(initial, actions);
+            // AI has already returned to self in the engine, but enemy playback still owns input.
+            UpdateInputProjection(returned, actions);
+            CardHovered(_cards[uid], true); CardPressed(_cards[uid], Vector2.Zero);
+            await DragAsync(uid, DropAtRowEdge(false, false)); await ClickEndTurnAsync();
+            if (commands != 0 || EndTurnEnabled || _detail.Visible || _hovered is not null
+                || _pressed is not null || ButtonColor() != new Color("666760"))
+                throw new Exception("Early logical return to self unlocked enemy playback.");
+            var friendlyBanner = PresentSequenceAsync(new(initial.MatchId,
+                [new UiTurnPresentation("self", returned.Turn)], returned), actions);
+            if (!EndTurnEnabled || ButtonColor() != new Color("d98632") || friendlyBanner.IsCompleted)
+                throw new Exception("Friendly banner did not release input while its own animation continued.");
+            await friendlyBanner;
+            ApplyProjection(initial, actions); UpdateInputProjection(initial, actions);
             await DragAsync(uid, DropAtRowEdge(false, false), () =>
             {
                 UpdateInputProjection(enemy, actions);
@@ -44,9 +57,10 @@ public partial class BattleScreen
                 return Task.CompletedTask;
             });
             if (commands != 0) throw new Exception("A gesture released after turn change submitted a command.");
+            ApplyProjection(initial, actions with { CanEndTurn = false });
             UpdateInputProjection(initial, actions with { CanEndTurn = false });
             if (EndTurnEnabled || ButtonColor() != new Color("d98632")) throw new Exception("Button color followed command availability rather than turn ownership.");
-            GD.Print("TURN_INPUT_VERIFY_OK enemy-stale-actions blocked-drag-play-move-attack-endturn held-gesture-cancel orange-self gray-enemy");
+            GD.Print("TURN_INPUT_VERIFY_OK enemy-stale-actions blocked-drag-play-move-attack-endturn blocked-early-logical-self no-hover friendly-banner-unlocks held-gesture-cancel orange-self gray-enemy");
 
             ApplyProjection(initial, actions);
             var firstDraw = initial.SelfHand[0] with { Uid = "priority-draw-1", SlotIndex = initial.SelfHand.Count };
@@ -78,6 +92,49 @@ public partial class BattleScreen
                 || _cards[uid].Mode != BattleCardMode.Field || _sequence.LiveCardCount != 0 || _combat.LiveEffectCount != 0)
                 throw new Exception($"Priority playback lost order or the final projection: {string.Join(',', played)}.");
             GD.Print("PRESENTATION_PRIORITY_UI_VERIFY_OK active-draw-finishes deployment-overtakes pending-draw-removal FIFO-feedback no-board-rollback effects=0");
+
+            foreach (var useDrawnCard in new[] { false, true })
+            {
+                var order = initial.SelfHand[0] with { Definition = initial.SelfHand[0].Definition with { CardType = "order" } };
+                var beforeOrder = initial with { SelfHand = initial.SelfHand.Select(c => c.Uid == order.Uid ? order : c).ToArray() };
+                ApplyProjection(beforeOrder, actions); UpdateInputProjection(beforeOrder, actions);
+                var handAfterOrder = beforeOrder.SelfHand.Where(c => c.Uid != order.Uid)
+                    .Append(firstDraw).Append(secondDraw).Select((c, i) => c with { SlotIndex = i }).ToArray();
+                var afterOrder = beforeOrder with { SelfHand = handAfterOrder, SelfHandCount = handAfterOrder.Length };
+                var next = useDrawnCard ? handAfterOrder.Single(c => c.Uid == firstDraw.Uid) : handAfterOrder.First(c => c.Uid != firstDraw.Uid && c.Uid != secondDraw.Uid);
+                var landed = next with { Zone = "support", SlotIndex = slot };
+                var remaining = handAfterOrder.Where(c => c.Uid != next.Uid).Select((c, i) => c with { SlotIndex = i }).ToArray();
+                var afterPlay = afterOrder with { SelfHand = remaining, SelfHandCount = remaining.Length, SelfLine = afterOrder.SelfLine.Append(landed).ToArray() };
+                var phases = new List<string>(); played.Clear(); var firstArrivalUsable = false;
+                var causalActions = actions with { PlayableUids = actions.PlayableUids.Append(firstDraw.Uid).ToArray() };
+                void OnCausalPhase(string phase)
+                {
+                    phases.Add(phase);
+                    if (!useDrawnCard && phase == "draw-start" && phases.Count(p => p == "draw-start") == 2)
+                        firstArrivalUsable = _cards.TryGetValue(firstDraw.Uid, out var arrived) && arrived.Mode == BattleCardMode.Hand
+                            && InteractionActions.PlayableUids.Contains(firstDraw.Uid) && EndTurnEnabled;
+                }
+                _sequence.PhaseChanged += OnCausalPhase;
+                try
+                {
+                    using var causalQueue = new PresentationPlayer(initial.MatchId, (r, a, ct) =>
+                    { ct.ThrowIfCancellationRequested(); played.Add(r.Sequence); return PresentSequenceAsync(r, a); }, beforeOrder);
+                    _ = causalQueue.Enqueue(new(initial.MatchId,
+                        [new UiOrderPresentation(order, []), new UiDrawPresentation("self", firstDraw.SlotIndex, firstDraw),
+                            new UiDrawPresentation("self", secondDraw.SlotIndex, secondDraw)], afterOrder) { Sequence = 1 }, causalActions);
+                    _ = causalQueue.Enqueue(new(initial.MatchId, [new UiDeploymentPresentation(landed, afterPlay)], afterPlay) { Sequence = 2 }, causalActions);
+                    UpdateInputProjection(afterPlay, causalActions);
+                    if (!causalQueue.IsBusy || !EndTurnEnabled) throw new Exception("Causal draw playback blocked input.");
+                    await causalQueue.Completion;
+                }
+                finally { _sequence.PhaseChanged -= OnCausalPhase; }
+                if (!played.SequenceEqual(new long[] { 1, 1, 1, 2 }) || phases.Count(p => p == "draw-start") != 2
+                    || phases.IndexOf("order-start") >= phases.IndexOf("draw-start")
+                    || phases.LastIndexOf("draw-settled") >= phases.IndexOf("deployment-start")
+                    || !MatchesProjection(afterPlay) || _sequence.LiveCardCount != 0 || !useDrawnCard && !firstArrivalUsable)
+                    throw new Exception($"Causal draw order failed: {string.Join(',', phases)}.");
+            }
+            GD.Print("CAUSAL_DRAW_UI_VERIFY_OK order two-draws then-play existing-or-new-card first-arrival-usable-during-second-draw input-remains-open final-projection effects=0");
 
             // A defeated unit's slot is immediately available while its disappearance waits.
             // The retained picture must not participate in the next deployment's row layout.

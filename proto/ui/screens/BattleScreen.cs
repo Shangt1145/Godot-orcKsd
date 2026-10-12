@@ -33,7 +33,6 @@ public partial class BattleScreen : Control
     private KreditsDisplay _selfResource = null!, _enemyResource = null!;
     private Label _hint = null!;
     private Control _history = null!, _result = null!;
-    private Control _hotseat = null!;
     private BattleCombat _combat = null!;
     private SfxPlayer _sfx = null!;
     private UiCombatResolution? _pendingCombat;
@@ -41,6 +40,7 @@ public partial class BattleScreen : Control
     private Label _deckCount = null!, _inspectStats = null!;
     private Button _endTurn = null!;
     private PopupMenu _menu = null!;
+    private ConfirmationDialog _concedeDialog = null!;
     private BattleAim _aim = null!;
     private BattlePaper _paper = null!;
     /// <summary>Slots a dragged card can land on, with the slot the pointer currently names.</summary>
@@ -81,9 +81,6 @@ public partial class BattleScreen : Control
     /// <summary>Raised by the gear menu: run the screen from a real engine match instead of the demo fixture.</summary>
     public event Action? RealMatchRequested;
 
-    /// <summary>Two people share one screen and take turns on the same match.</summary>
-    public event Action? HotseatRequested;
-
     /// <summary>Shows text supplied from outside (for example an engine refusal reason).</summary>
     public void ShowHint(string text)
     {
@@ -91,28 +88,6 @@ public partial class BattleScreen : Control
         _hint.Visible = true;
     }
 
-    /// <summary>
-    /// Shows the hotseat seat switcher. Two people share one screen, so the control has to say whose
-    /// turn it is — otherwise the player who is not on turn cannot tell whether the board is waiting
-    /// for them or for the other seat.
-    /// </summary>
-    public void ShowHotseatControls(bool hotseat, int seat, Action switchSeat, Func<bool> seatOnTurn)
-    {
-        UiStyles.Clear(_hotseat);
-        _hotseat.Visible = hotseat;
-        if (!hotseat) return;
-
-        var label = Text(seat == 0 ? "座位一（先手）" : "座位二（后手）", new(0, 0), new(210, 22), 16, "e9e4ce");
-        label.HorizontalAlignment = HorizontalAlignment.Center; _hotseat.AddChild(label);
-        var turn = Text(seatOnTurn() ? "轮到你行动" : "等待对手行动", new(0, 24), new(210, 20), 14, "b8b19a");
-        turn.HorizontalAlignment = HorizontalAlignment.Center; _hotseat.AddChild(turn);
-        var button = new Button { Text = "切换到座位" + (seat == 0 ? "二" : "一"), Position = new(5, 48), Size = new(200, 34) };
-        foreach (var style in new[] { "normal", "hover", "pressed", "focus" })
-            button.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
-        button.AddThemeColorOverride("font_color", new("e9e3cc"));
-        button.Pressed += () => { switchSeat(); ShowHotseatControls(true, seat == 0 ? 1 : 0, switchSeat, seatOnTurn); };
-        _hotseat.AddChild(button);
-    }
     public void Initialize(CardCatalog catalog, TextureCache textures, AnimClock clock, SfxPlayer sfx)
     {
         _textures = textures; _clock = clock; _sfx = sfx; _demo = new(catalog.Cards);
@@ -143,12 +118,21 @@ public partial class BattleScreen : Control
         popup.AddSeparator(); popup.AddItem("反制武装演示", 18); popup.AddItem("取消武装演示", 19);
         popup.AddItem("反制触发演示", 20); popup.AddItem("治疗演示", 21); popup.AddItem("强化演示", 22);
         popup.AddItem("压制与解除演示", 23); popup.AddItem("费用变化演示", 24);
-        popup.AddSeparator(); popup.AddItem("真实对局（接入引擎）", 25);
-        popup.AddItem("双人对局（同屏轮流）", 26);
+        popup.AddSeparator(); popup.AddItem("返回主菜单", 31); popup.AddItem("卡组构筑", 27); popup.AddItem("我的卡组", 28); popup.AddItem("开始新对局", 25);
+        popup.AddItem("认输", 29);
+        popup.AddItem("DIY 卡牌", 30);
+        _concedeDialog = new ConfirmationDialog { Title = "认输", DialogText = "确认认输并结束本局？", Exclusive = true };
+        _concedeDialog.GetOkButton().Text = "认输"; _concedeDialog.GetCancelButton().Text = "继续对局";
+        AddChild(_concedeDialog);
+        _concedeDialog.Confirmed += () => { if (CanConcedeNow) CommandRequested?.Invoke(new Concede()); };
         popup.IdPressed += id =>
         {
-            if (id == 25) RealMatchRequested?.Invoke();
-            else if (id == 26) HotseatRequested?.Invoke();
+            if (id == 29) { if (CanConcedeNow) _concedeDialog.PopupCentered(new(360, 140)); }
+            else if (id == 27) NavigationRequested?.Invoke("deck");
+            else if (id == 28) NavigationRequested?.Invoke("decklib");
+            else if (id == 31) NavigationRequested?.Invoke("home");
+            else if (id == 30) NavigationRequested?.Invoke("editor");
+            else if (id == 25) RealMatchRequested?.Invoke();
             else if (id == 0) NavigationRequested?.Invoke("collection");
             else if (id == 1) NavigationRequested?.Invoke("settings");
             else if (id == 2) ResetDemo();
@@ -190,13 +174,11 @@ public partial class BattleScreen : Control
         _canvas.AddChild(_combat); _combat.Initialize(clock, textures, sfx);
         InitializePresentation();
         _detail = new Control { Position = new(1027, 103), Size = new(215, 275), MouseFilter = MouseFilterEnum.Ignore, ZIndex = 160, Visible = false }; _canvas.AddChild(_detail);
-        _inspectStats = Text("", new(1027, 362), new(215, 23), 12, "e2dbc1"); _inspectStats.ZIndex = 161; _inspectStats.Visible = false; _canvas.AddChild(_inspectStats);
+        _inspectStats = Text("", new(1027, 362), new(215, 76), 12, "e2dbc1"); _inspectStats.AutowrapMode = TextServer.AutowrapMode.WordSmart; _inspectStats.ZIndex = 161; _inspectStats.Visible = false; _canvas.AddChild(_inspectStats);
         _result = new Control { Position = new(445, 228), Size = new(390, 232), ZIndex = 250, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
         _canvas.AddChild(_result);
         // Pass-through by default so the hidden control never eats board clicks; the button inside
         // still receives them because it is its own control.
-        _hotseat = new Control { Position = new(530, 92), Size = new(210, 92), ZIndex = 240, Visible = false, MouseFilter = MouseFilterEnum.Ignore };
-        _canvas.AddChild(_hotseat);
         InitializeMulligan();
         InitializeTargetChoices();
         _canvas.GuiInput += BoardInput;
@@ -219,24 +201,30 @@ public partial class BattleScreen : Control
     }
     public void ResetDemo()
     {
+        _concedeDialog.Hide();
         StopDemoPlayback();
         ClearRemovalActors();
         _deploymentOrigins.Clear();
+        _orderOrigins.Clear();
+        _orderChoiceCaptions.Clear(); _orderChoiceFaces.Clear(); CloseTargetChoice();
         _liveInputView = null; _liveInputActions = null;
         MulliganProjection("demo"); // the panel must never outlive the match it belongs to
         _frontOrder.Clear();         // the arrangement belongs to the board being reset
         _frontPlacements.Clear(); ReleaseGestureWaiter();
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
-        _usingDemo = true; _demo.Reset(); _entries.Clear(); UiStyles.Clear(_history);
+        _usingDemo = true; _demo.Reset(); _turnInput.Reset(_demo.State); _interaction.Reset(); _entries.Clear(); UiStyles.Clear(_history);
         Render(_demo.State, _demo.Actions, false);
         _hint.Visible = false;
     }
     public void ApplyProjection(UiMatchView state, UiBattleActions actions)
     {
+        _concedeDialog.Hide();
         StopDemoPlayback();
         ClearRemovalActors();
         _deploymentOrigins.Clear();
+        _orderOrigins.Clear();
+        _orderChoiceCaptions.Clear(); _orderChoiceFaces.Clear(); CloseTargetChoice();
         _liveInputView = null; _liveInputActions = null;
         _frontPlacements.Clear(); ReleaseGestureWaiter();
         if (_state?.MatchId != state.MatchId) _frontOrder.Clear();
@@ -244,6 +232,8 @@ public partial class BattleScreen : Control
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
         _usingDemo = false;
+        _turnInput.Reset(state);
+        _interaction.Reset();
         Render(UiSnapshots.Freeze(state), UiSnapshots.Freeze(actions), _state?.MatchId == state.MatchId);
     }
     private void FinishMotion()
@@ -282,7 +272,7 @@ public partial class BattleScreen : Control
             var victory = Text(state.ResultTitle ?? "对局结束", new(0, 14), new(390, 56), 48, "e8dec1");
             victory.HorizontalAlignment = HorizontalAlignment.Center; _result.AddChild(victory);
             // Why it ended, in the engine's own terms — the UI supplies wording, not the judgement.
-            var reason = state.ResultReason switch { "HqZero" => "总部被摧毁", "Concede" => "对手认输", _ => null };
+            var reason = ResultReasonText(state);
             if (reason is not null)
             {
                 var why = Text(reason, new(0, 70), new(390, 22), 17, "b8b19a");
@@ -313,9 +303,9 @@ public partial class BattleScreen : Control
         var enemyLine = state.EnemyLine.Where(c => !_removalActors.ContainsKey(c.Uid)).ToArray();
         _paper.FrontOwnedBySelf = selfLine.Any(c => c.Zone == "frontline");
         _paper.FrontOccupied = selfLine.Concat(enemyLine).Any(c => c.Zone == "frontline"); _paper.QueueRedraw();
-        AddRow(state.EnemyHq, enemyLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), EnemyArea);
+        AddRow(state.Phase == "over" && state.EnemyHq?.Health <= 0 ? null : state.EnemyHq, enemyLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), EnemyArea);
         AddRow(null, OrderFront(enemyLine.Concat(selfLine).Where(c => c.Zone == "frontline")), FrontArea);
-        AddRow(state.SelfHq, selfLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), SelfArea);
+        AddRow(state.Phase == "over" && state.SelfHq?.Health <= 0 ? null : state.SelfHq, selfLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), SelfArea);
         var hand = state.SelfHand.OrderBy(c => c.SlotIndex).ToArray();
         var spacing = Math.Min(98, 590f / Math.Max(1, hand.Length - 1));
         for (var i = 0; i < hand.Length; i++)
@@ -446,23 +436,28 @@ public partial class BattleScreen : Control
     }
     public void SelectCard(string uid)
     {
-        if (_deploymentOrigins.ContainsKey(uid)) return;
+        if (!IsFriendlyTurn) return;
+        if (_interaction.IsPending(uid)) return;
+        if (HasPendingHandPlay(uid)) return;
         if (!_cards.TryGetValue(uid, out var card) || card.View?.Visibility != Visibility.Full) return;
         if (InteractionCard(uid) is null) return;
         if (card.View.OwnerSide != "self" || card.View.IsHq) return;
         if (card.Mode == BattleCardMode.Hand && !InteractionActions.PlayableUids.Contains(uid))
-        { CancelGesture(); ShowDetail(card); Hint(InteractionCard(uid)?.BlockedReasons.FirstOrDefault() ?? "这张牌当前不可部署"); return; }
+            Hint(InteractionCard(uid)?.BlockedReasons.FirstOrDefault() ?? "可以拖动；当前无法打出");
         if (card.Mode == BattleCardMode.Field && !InteractionActions.Moves.Any(m => m.Uid == uid) && !InteractionActions.AttackPreviews.Any(p => p.AttackerUid == uid))
         { CancelGesture(); ShowDetail(card); Hint("此单位当前没有可用行动"); return; }
         _selected = uid; _detail.Visible = _inspectStats.Visible = false;
+        _dragDeploymentGaps = InteractionActions.DeploymentGaps.ToArray();
         Hint(card.Mode != BattleCardMode.Hand ? "拖动单位到前线移动，或拖到敌方卡牌发动攻击；右键取消"
             : card.View.Definition.CardType == "counter" ? (InteractionCard(uid)?.IsCounterArmed == true ? "拖到战场取消反制，退还预留费用" : "拖到战场激活反制，满足条件后自动触发")
-            : card.View.Definition.CardType == "order" ? "拖到目标使用指令，或拖到战场后选择目标；右键取消"
+            : IsTargetedOrder(uid) ? "拖出箭头指向单位，松手打出；右键取消"
+            : card.View.Definition.CardType == "order" ? "拖到战场打出指令；右键取消"
             : "拖动卡牌到我方支援线部署；右键取消");
         UpdateSelection();
     }
     private void CardPressed(BattleCard card, Vector2 viewportPosition)
     {
+        if (!IsFriendlyTurn) return;
         // Actions are drag-only. A click never deploys, moves or attacks; it only selects and previews.
         if (card.View?.OwnerSide == "enemy")
         {
@@ -472,6 +467,8 @@ public partial class BattleScreen : Control
             return;
         }
         if (card.View?.IsHq == true) return;
+        if (_interaction.IsPending(card.Uid)) return;
+        _sequence.TakeDraw(card.Uid);
         var position = card.Position; var rotation = card.Rotation;
         if (_pendingPresentation is null && _pendingCombat is null) FinishMotion();
         else StopHandMotion(card.Uid);
@@ -483,7 +480,10 @@ public partial class BattleScreen : Control
     }
     private void CardHovered(BattleCard card, bool on)
     {
-        if (_deploymentOrigins.ContainsKey(card.Uid)) return;
+        if (!IsFriendlyTurn) return;
+        if (HasPendingHandPlay(card.Uid)) return;
+        if (_interaction.IsPending(card.Uid)) return;
+        if (_sequence.IsDrawing(card.Uid)) return;
         if (on)
         {
             _hovered = card;
@@ -512,8 +512,17 @@ public partial class BattleScreen : Control
         inspect.Bind(card.View, card.View.IsHq ? BattleCardMode.Hq : BattleCardMode.Inspect, _textures);
         _detail.AddChild(inspect); _detail.Visible = true;
         _inspectStats.Text = card.View.IsHq ? $"总部防御  {card.View.Health}" : $"攻 {card.View.EffectiveAttack}  防 {card.View.Health ?? card.View.EffectiveDefense}  操作 {card.View.EffectiveOpCost}";
+        if (card.View.Keywords.Count > 0)
+            _inspectStats.Text += "\n" + string.Join(" · ", card.View.Keywords.Select(k => CardControl.KeywordLabel(k, card.View.KeywordValues)));
+        if (card.View.UnitTypes.Count > 1) _inspectStats.Text += "\n" + string.Join(" / ", card.View.UnitTypes.Select(UnitTypeLabel));
         _inspectStats.Visible = true;
     }
+    private static string UnitTypeLabel(string type) => type switch
+    {
+        "infantry" => "步兵", "tank" => "坦克", "artillery" => "火炮", "fighter" => "战斗机",
+        "bomber" => "轰炸机", "structure" => "建筑", "ship" => "舰船", "spacefighter" => "太空战机",
+        "landcruiser" => "陆地巡洋舰", _ => type
+    };
     public void PreviewTarget(string uid)
     {
         if (_selected is null || !_cards.TryGetValue(_selected, out var source) || !_cards.TryGetValue(uid, out var target)) return;
@@ -521,7 +530,7 @@ public partial class BattleScreen : Control
         if (preview is null || target.View?.Visibility != Visibility.Full) return;
         foreach (var c in _cards.Values) { c.Targeted = c == target; c.QueueRedraw(); }
         _aim.From = source.Position + source.Size / 2; _aim.To = target.Position + target.Size / 2;
-        _aim.Preview = preview; _aim.Moving = false; _aim.Visible = true; _aim.QueueRedraw();
+        _aim.Preview = preview; _aim.Moving = false; _aim.InvalidTarget = false; _aim.Visible = true; _aim.QueueRedraw();
     }
     private void UpdateSelection()
     {
@@ -532,7 +541,8 @@ public partial class BattleScreen : Control
                 || InteractionActions.Moves.Any(m => m.Uid == c.Uid) || InteractionActions.AttackPreviews.Any(p => p.AttackerUid == c.Uid);
             c.QueueRedraw();
         }
-        _paper.DeployHint = _selected is not null && InteractionActions.PlayableUids.Contains(_selected);
+        _paper.DeployHint = _selected is not null && InteractionCard(_selected)?.Definition.CardType == "unit"
+            && InteractionActions.PlayableUids.Contains(_selected);
         _paper.MoveHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"); _paper.QueueRedraw();
     }
     public void CancelSelection()
@@ -552,6 +562,7 @@ public partial class BattleScreen : Control
         else _combat.Interrupt();
         FinishMotion(); _pressed = null; _hovered = null; _dragging = false; _selected = null;
         _aim.Visible = false; _aim.Preview = null; _detail.Visible = _inspectStats.Visible = false;
+        _aim.InvalidTarget = false;
         ClearSlotHints(); UpdateSelection(); _hint.Visible = false;
         ReleaseGestureWaiter();
     }
@@ -566,13 +577,20 @@ public partial class BattleScreen : Control
         ClearSlotHints();
         if (!IsFriendlyTurn) { CancelGesture(); return; }
         if (_selected is null) return;
-        if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" })
+        if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" } order)
         {
+            if (IsTargetedOrder(_selected))
+            {
+                var target = OrderTargetAt(_selected, at);
+                if (target is null) { CancelGesture(); return; }
+                RememberOrderPose(_selected, releasedPose);
+                Submit(new PlayCard(_selected, TargetUid: target.Uid));
+                return;
+            }
             if (at.Y is >= 120 and <= 600 && InteractionActions.PlayableUids.Contains(_selected))
             {
-                var target = _cards.Values.FirstOrDefault(c => c.View?.Zone != "hand"
-                    && new Rect2(c.Position, c.Size).HasPoint(at));
-                Submit(new PlayCard(_selected, TargetUid: target?.View?.Uid));
+                RememberOrderPose(_selected, releasedPose);
+                Submit(new PlayCard(_selected));
             }
             else { CancelGesture(); Hint("已取消，卡牌返回原位"); }
             return;
@@ -592,7 +610,13 @@ public partial class BattleScreen : Control
                 _deploymentOrigins[_selected] = pose;
                 RestorePendingDeploymentPoses();
             }
-            Submit(new PlayCard(_selected, DropSlot(at.X, InteractionView.SupportLineSlotCount,
+            if (!_usingDemo)
+            {
+                if (DeploymentGapAt(at.X) is not { } gap)
+                { RefuseCommand(new PlayCard(_selected)); CancelGesture(); return; }
+                Submit(new PlayCard(_selected, GapId: gap.GapId));
+            }
+            else Submit(new PlayCard(_selected, DropSlot(at.X, InteractionView.SupportLineSlotCount,
                 _cards.Values.Where(c => c.View?.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support")), SupportOccupancy())));
         }
         else if (FrontBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"))
@@ -609,30 +633,7 @@ public partial class BattleScreen : Control
         else { CancelGesture(); Hint("已取消，卡牌返回原位"); }
     }
 
-    /// <summary>
-    /// The slot the player released over, read as an insertion rank within the line: dropping to the left
-    /// of a card means "in front of it", and to the right of the last card means "behind everything".
-    /// The rank is then spent on the line's free slots in ascending order, which is what makes the result
-    /// read back correctly — the row is drawn packed and centred, so a unit inserted ahead of the others
-    /// is drawn to their left.
-    ///
-    /// Reading the drop as an insertion rank and then spending it on the free slots was the defect, and it
-    /// was wrong in both directions. The rank counts *cards* while the answer has to be a *slot*, and once
-    /// the low slots are taken the two disagree: every drop came to rest to the right of the cards already
-    /// on the line, which is what "it always ends up on the right" was. And on an empty line there are no
-    /// cards to rank against, so the rank was always zero and the first unit was forced into one slot
-    /// wherever it was dropped.
-    ///
-    /// What the picture does carry is spacing: one slot is exactly one card pitch. So the drop is anchored
-    /// to the nearest card and stepped outwards — just past a card's right edge is that card's slot plus
-    /// one, a whole pitch clear of the leftmost card is its slot minus one — and an empty line is measured
-    /// from the board's middle, which is where the line itself is centred. Both sides of the units already
-    /// standing there are reachable, which is the whole point of dropping at one end.
-    ///
-    /// Occupied slots are stepped over, nearest first and looking towards the side the drop came from first,
-    /// so the engine is never handed a slot it cannot accept. Nothing else is validated: a real match may
-    /// ask for a slot the rules exclude, and the session refuses it rather than silently placing elsewhere.
-    /// </summary>
+    /// <summary>Legacy demo placement helper. Real support deployment submits native formation gaps.</summary>
     private static int DropSlot(float x, int capacity, IEnumerable<BattleCard> row, int[]? occupancy = null)
     {
         var cards = row.Where(c => c.Mode != BattleCardMode.Hand && c.View is not null)
@@ -748,10 +749,22 @@ public partial class BattleScreen : Control
         // A drag shows both, because the gesture does not say which it is — the engine decides that from
         // the drop. Showing only the empty slots left the targets the unit can strike invisible.
         if (_selected is not null)
+        {
             _attackHints.AddRange(InteractionActions.AttackPreviews
                 .Where(p => p.AttackerUid == _selected && _cards.ContainsKey(p.DefenderUid))
                 .Select(p => p.DefenderUid));
+            if (OrderTargeting(_selected) is { } orderTargets)
+                _attackHints.AddRange(orderTargets.TargetUids.Where(_cards.ContainsKey));
+        }
         if (!moving && !deploying) { _slotLayer.QueueRedraw(); return; }
+
+        if (deploying && !_usingDemo)
+        {
+            _slotHintY = SelfArea.Position.Y;
+            foreach (var gap in _dragDeploymentGaps) _slotHints.Add((gap.Ordinal, GapX(gap)));
+            _slotHintAim = DeploymentGapAt(at.X)?.Ordinal ?? -1;
+            _slotLayer.QueueRedraw(); return;
+        }
 
         var capacity = moving ? InteractionView.FrontLineSlotCount : InteractionView.SupportLineSlotCount;
         if (capacity <= 0) { _slotLayer.QueueRedraw(); return; }
@@ -835,13 +848,14 @@ public partial class BattleScreen : Control
 
     public override void _Input(InputEvent e)
     {
+        if (!IsVisibleInTree() || _canvas is null) return;
+        if (!IsFriendlyTurn) return;
         if (_choicePanel?.Visible == true)
         {
-            if (e is InputEventKey { Keycode: Key.Escape, Pressed: true }
-                || e is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }) CancelTargetChoice();
+            if (e is InputEventKey) { GetViewport().SetInputAsHandled(); return; }
+            if (e is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }) CancelTargetChoice();
             return;
         }
-        if (!IsVisibleInTree() || _canvas is null) return;
         if (e is InputEventKey { Keycode: Key.Escape, Pressed: true } || e is InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true })
         { CancelGesture(); return; }
         if (e is InputEventMouseMotion motion)
@@ -854,10 +868,11 @@ public partial class BattleScreen : Control
                 // Only a hand card travels with the cursor. A board unit stays on its slot and the
                 // gesture draws an arrow instead: that is how the original separates moving a unit
                 // from placing a card.
-                if (_dragging && _pressed.Mode == BattleCardMode.Hand)
+                if (_dragging && _pressed.Mode == BattleCardMode.Hand && !IsTargetedOrder(_pressed.Uid))
                 {
                     _pressed.Position = at - _grabOffset; _pressed.Rotation = 0; _pressed.ZIndex = 140;
                 }
+                if (_dragging && IsTargetedOrder(_pressed.Uid)) UpdateOrderAim(_pressed, at);
             }
             if (_selected is not null && _cards.TryGetValue(_selected, out var selected) && selected.Mode == BattleCardMode.Field)
             {
@@ -866,6 +881,7 @@ public partial class BattleScreen : Control
                 else
                 {
                     _aim.Preview = null; _aim.To = at; _aim.Visible = true;
+                    _aim.InvalidTarget = false;
                     _aim.Moving = FrontBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected); _aim.QueueRedraw();
                 }
             }
@@ -888,8 +904,23 @@ public partial class BattleScreen : Control
     }
     private void Submit(UiCommand command)
     {
-        if (!IsFriendlyTurn) { RefuseCommand(command); CancelGesture(); return; }
-        if (!_usingDemo) { CancelGesture(); CommandRequested?.Invoke(command); return; }
+        if (!IsFriendlyTurn) { if (command is not EndTurn) RefuseCommand(command); CancelGesture(); return; }
+        if (BattleInteractionStateMachine.Actor(command) is { } actor && _interaction.IsPending(actor))
+        { CancelGesture(); return; }
+        if (!_usingDemo)
+        {
+            var submittedView = InteractionView;
+            _interaction.Reserve(command);
+            _dispatchingActor = BattleInteractionStateMachine.Actor(command);
+            _dispatchingCommand = command; _dispatchRefused = false;
+            CancelGesture();
+            try { CommandRequested?.Invoke(command); }
+            finally { _dispatchingActor = null; _dispatchingCommand = null; }
+            // Native admission runs before the turn-presentation lock is armed.
+            if (command is EndTurn && !_dispatchRefused) { _turnInput.EndTurnRequested(submittedView); RefreshTurnInput(); }
+            return;
+        }
+        if (command is EndTurn) { _turnInput.EndTurnRequested(InteractionView); RefreshTurnInput(); }
         CancelGesture();
         if (command is CommandUnit gesture)
         {
@@ -1339,8 +1370,11 @@ public partial class BattleScreen : Control
         if (!resultLabels.Contains("总部被摧毁")) throw new Exception("The result panel ignored the engine's end reason.");
         if (!resultLabels.Any(t => t.Contains('9'))) throw new Exception("The result panel ignored the final turn count.");
         ApplyProjection(projected with { MatchId = "conceded", Phase = "over", ResultTitle = "失败", ResultReason = "Concede", FinalTurn = 4 }, new());
-        if (!_result.GetChildren().OfType<Label>().Any(l => l.Text == "对手认输"))
+        if (!_result.GetChildren().OfType<Label>().Any(l => l.Text == "我方认输"))
             throw new Exception("A conceded match did not report the concession.");
+        ApplyProjection(projected with { MatchId = "enemy-conceded", Phase = "over", ResultTitle = "胜利", ResultReason = "Concede", FinalTurn = 4 }, new());
+        if (!_result.GetChildren().OfType<Label>().Any(l => l.Text == "对手认输"))
+            throw new Exception("An enemy concession reported the wrong player.");
         if (_sequence.LiveCardCount != 0) throw new Exception("The result panel retained banner nodes.");
         _clock.SetSpeed(AnimClock.Speed.Faster); _clock.SetReducedMotion(true);
         StartScenario("fighter"); _demo.TryResolveAttack(new("self-front", "enemy-0"), out var reduced, out _);

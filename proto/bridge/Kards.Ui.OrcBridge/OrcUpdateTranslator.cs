@@ -80,6 +80,17 @@ public sealed class OrcUpdateTranslator
                 case GameUpdates.UnitDeployed:
                     AddDeployment(steps, payload, after);
                     break;
+                case GameUpdates.DeckShuffled:
+                    if (payload.GetValueOrDefault(GameUpdates.PayloadPlayer) is Player shuffled)
+                        steps.Add(new UiShufflePresentation(ReferenceEquals(shuffled, viewer) ? "self" : "enemy"));
+                    break;
+                case GameUpdates.UnitUpgraded:
+                case GameUpdates.UnitRevealed:
+                    if (PayloadCard(payload) is { } changed && BoardView(changed, previous) is { } old
+                        && BoardView(changed, after) is { } current)
+                        steps.Add(new UiStatusPresentation(old, current,
+                            update == GameUpdates.UnitUpgraded ? UiStatusKind.Veteran : UiStatusKind.Revealed));
+                    break;
                 case GameUpdates.CardPlayed:
                     if (PayloadCard(payload) is CommandCard order)
                         steps.Add(new UiOrderPresentation(_cards.Read(order, viewer, "hand", 0), []));
@@ -137,7 +148,45 @@ public sealed class OrcUpdateTranslator
         foreach (var armed in previous.SelfHand.Where(c => c.IsCounterArmed))
             if (after.SelfHand.Any(c => c.Uid == armed.Uid && !c.IsCounterArmed))
                 steps.Add(new UiCounterPresentation("self", UiCounterStage.Disarmed, armed));
+        AddVisibleChanges(steps, previous, after);
         return new OrcTranslation(steps, impacts);
+    }
+
+    private static IEnumerable<UiCardView> VisibleCards(UiMatchView view) => view.SelfHand.Concat(view.SelfLine)
+        .Concat(view.EnemyLine).Concat(new[] { view.SelfHq, view.EnemyHq }.OfType<UiCardView>())
+        .Where(c => c.Visibility == Visibility.Full);
+
+    // State transitions use the native before/after values. Never replay damage as a status cue,
+    // and never invent a removed keyword from the definition printed on the card.
+    private static void AddVisibleChanges(List<UiPresentationStep> steps, UiMatchView before, UiMatchView after)
+    {
+        var oldCards = VisibleCards(before).ToDictionary(c => c.Uid);
+        foreach (var card in VisibleCards(after))
+        {
+            if (!oldCards.TryGetValue(card.Uid, out var old)) continue;
+            void Status(UiStatusKind kind)
+            {
+                if (!steps.OfType<UiStatusPresentation>().Any(s => s.After.Uid == card.Uid && s.Status == kind))
+                    steps.Add(new UiStatusPresentation(old, card, kind));
+            }
+            var special = steps.OfType<UiStatusPresentation>().Any(s => s.After.Uid == card.Uid
+                && s.Status is UiStatusKind.Veteran or UiStatusKind.Revealed);
+            if (card.IsVeteran && !old.IsVeteran) { Status(UiStatusKind.Veteran); special = true; }
+            if (!card.IsCovert && old.IsCovert) { Status(UiStatusKind.Revealed); special = true; }
+            if (card.IsSuppressed && !old.IsSuppressed) Status(UiStatusKind.Suppressed);
+            if (card.IsSilenced && !old.IsSilenced) Status(UiStatusKind.Silenced);
+            if (!card.IsSuppressed && old.IsSuppressed || !card.IsSilenced && old.IsSilenced) Status(UiStatusKind.Cleared);
+            if (!special && (card.EffectiveAttack != old.EffectiveAttack || card.Health > old.Health))
+                Status(card.IsHq ? UiStatusKind.Heal : UiStatusKind.Buff);
+            if (card.EffectiveCost != old.EffectiveCost || card.EffectiveOpCost != old.EffectiveOpCost)
+                Status(UiStatusKind.CostChanged);
+            if (!old.UnitTypes.SequenceEqual(card.UnitTypes)) Status(UiStatusKind.TypesChanged);
+            if (!special && !steps.OfType<UiStatusPresentation>().Any(s => s.After.Uid == card.Uid)
+                && (!old.Keywords.SequenceEqual(card.Keywords)
+                    || old.KeywordValues.Count != card.KeywordValues.Count
+                    || old.KeywordValues.Any(p => !card.KeywordValues.TryGetValue(p.Key, out var value) || value != p.Value)))
+                Status(UiStatusKind.KeywordsChanged);
+        }
     }
 
     private static void AppendNewImpacts(List<UiPresentationStep> steps, List<UiOrderImpact> impacts)
@@ -327,8 +376,8 @@ public sealed class OrcUpdateTranslator
         var uid = OrcRefs.KeyOf(card);
         var hit = after.SelfLine.FirstOrDefault(c => c.Uid == uid) ?? after.EnemyLine.FirstOrDefault(c => c.Uid == uid);
         if (hit is not null) return hit;
-        if (after.SelfHq?.Uid == uid) return after.SelfHq;
-        return after.EnemyHq?.Uid == uid ? after.EnemyHq : null;
+        if (after.SelfHq?.Uid == uid) return after.SelfHq.Health <= 0 ? null : after.SelfHq;
+        return after.EnemyHq?.Uid == uid && after.EnemyHq.Health > 0 ? after.EnemyHq : null;
     }
 
     private static Card? PayloadCard(IReadOnlyDictionary<string, object?> payload)

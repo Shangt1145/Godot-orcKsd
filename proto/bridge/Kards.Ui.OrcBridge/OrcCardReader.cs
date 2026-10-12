@@ -36,9 +36,10 @@ public sealed class OrcCardReader
     public string ArtIdOf(CardBase card)
         => _library.TryGetRegisteredId(card.Definition, out var id) ? id : card.Definition.Name;
 
-    public UiCardDefinition ReadDefinition(CardBase card)
+    public UiCardDefinition ReadDefinition(CardBase card) => ReadDefinition(card.Definition);
+
+    public UiCardDefinition ReadDefinition(CardDefinition definition)
     {
-        var definition = card.Definition;
         var cardId = _library.TryGetRegisteredId(definition, out var id) ? id : definition.Name;
         if (SourceDefinitions?.TryGetValue(cardId, out var source) == true) return source;
         return new UiCardDefinition
@@ -51,7 +52,7 @@ public sealed class OrcCardReader
                 CardCategory.Command => "order",
                 _ => "unit"
             },
-            UnitType = definition.UnitTypes.Count > 0 ? definition.UnitTypes[0].ToString() : "",
+            UnitType = definition.UnitTypes.Count > 0 ? definition.UnitTypes[0].ToString().ToLowerInvariant() : "",
             Set = definition.Faction.ToString(),
             Rarity = definition.Rarity.ToString(),
             ArtPath = _artLookup?.Invoke(cardId) ?? "",
@@ -92,6 +93,8 @@ public sealed class OrcCardReader
         var attack = hq is not null ? null : unitized ? Effective(typed!, CardStatFields.Attack) : definition.BaseAttack;
         var defense = hq is not null ? hq.Health : unitized ? Effective(typed!, CardStatFields.Defense) : definition.BaseDefense;
         var opCost = hq is not null ? null : unitized ? Effective(typed!, CardStatFields.OperateCost) : definition.BaseOpCost;
+        var keywords = Keywords(card);
+        var present = KeywordRegistry.Registered.Where(keywords.Has).ToArray();
 
         return new UiCardView
         {
@@ -114,6 +117,13 @@ public sealed class OrcCardReader
             CanBeTargeted = side == "enemy",
             IsSuppressed = Keywords(card).Has(KeywordIds.Suppressed),
             IsSilenced = Keywords(card).Has(KeywordIds.Inhibited),
+            IsVeteran = VeteranRules.IsVeteran(card),
+            IsCovert = CovertRules.IsCovert(card),
+            UnitTypes = unitized && state is not null ? state.UnitTypes.Select(t => t.ToString().ToLowerInvariant()).ToArray()
+                : typed?.Definition.UnitTypes.Select(t => t.ToString().ToLowerInvariant()).ToArray() ?? [],
+            Keywords = present.Select(UiKeyword).ToArray(),
+            KeywordValues = present.Where(id => keywords.GetValue(id).HasValue)
+                .ToDictionary(UiKeyword, id => keywords.GetValue(id)!.Value, StringComparer.Ordinal),
             IsCounterArmed = card.TryGetData<CounterActivationData>(out var armed) && armed.IsActive
         };
     }
@@ -123,6 +133,15 @@ public sealed class OrcCardReader
 
     private static KeywordManager Keywords(Card card)
         => card is CardBase typed ? typed.Keywords : ((Hq)card).Keywords;
+
+    private static string UiKeyword(string id) => id switch
+    {
+        KeywordIds.Blitz => "blitz", KeywordIds.Fury => "fury", KeywordIds.SmokeScreen => "smokescreen",
+        KeywordIds.Ambush => "ambush", KeywordIds.Mobilize => "mobilize", KeywordIds.Pincer => "pincer",
+        KeywordIds.Armor => "armor", KeywordIds.Guard => "guard", KeywordIds.Veteran => "veteran",
+        KeywordIds.Covert => "covert", KeywordIds.Suppressed => "suppressed", KeywordIds.Inhibited => "inhibited",
+        _ => id
+    };
 
     private static int? Effective(CardBase card, string field)
     {

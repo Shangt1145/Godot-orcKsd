@@ -2,7 +2,7 @@ using Kards.Ui.Contracts;
 
 namespace Kards.Ui.Core;
 
-/// <summary>Direct actions precede waiting feedback; each lane is FIFO and the running beat completes.</summary>
+/// <summary>Direct actions precede unrelated feedback, after their prerequisites; each lane is FIFO.</summary>
 public sealed class PresentationPlayer : IDisposable
 {
     private readonly string _matchId;
@@ -14,8 +14,10 @@ public sealed class PresentationPlayer : IDisposable
     private long _order;
     private readonly CancellationTokenSource _lifetime = new();
     private bool _draining, _disposed;
+    private bool _terminalReceived;
+    private Item? _terminal;
     public Task Completion { get; private set; } = Task.CompletedTask;
-    public bool IsBusy => _draining || _direct.Count > 0 || _indirect.Count > 0;
+    public bool IsBusy => _draining || _direct.Count > 0 || _indirect.Count > 0 || _terminal is not null;
     public event Action<Exception>? Failed;
 
     public PresentationPlayer(string matchId,
@@ -30,7 +32,7 @@ public sealed class PresentationPlayer : IDisposable
 
     public Task Enqueue(UiPresentationResolution resolution, UiBattleActions actions)
     {
-        if (_disposed || resolution.MatchId != _matchId || resolution.After.MatchId != _matchId
+        if (_disposed || _terminalReceived || resolution.MatchId != _matchId || resolution.After.MatchId != _matchId
             || resolution.Before is not null && resolution.Before.MatchId != _matchId) return Completion;
         var frozen = UiSnapshots.Freeze(resolution);
         frozen = frozen with { Before = frozen.Before ?? _observed };
@@ -43,20 +45,28 @@ public sealed class PresentationPlayer : IDisposable
         var direct = frozen.Priority == UiPresentationPriority.Direct || frozen.Steps.Any(IsDirectStep)
             || frozen.Steps.All(s => s is UiResourcePresentation) && Moved(frozen.Before, frozen.After);
         if (direct) frozen = SeparateDeaths(frozen);
-        // A deployment/order can cause draws or removals. Its feedback tail has the same low
-        // priority as independent feedback; it must not keep a later gesture waiting.
+        // Arrivals caused by an action belong to that action: order/deployment, then its draws,
+        // before the next action's presentation. Input still commits without waiting for playback.
+        // Independent feedback and defeated units' retirements can yield to a later action.
         bool Primary(UiPresentationStep s) => IsDirectStep(s)
-            || direct && (s is UiBoardImpactsPresentation || s is UiResourcePresentation resource && resource.NewValue < resource.OldValue);
+            || direct && (s is UiBoardImpactsPresentation or UiDrawPresentation or UiStatusPresentation or UiShufflePresentation
+                || s is UiResourcePresentation resource && resource.NewValue < resource.OldValue);
         var primary = frozen.Steps.Where(Primary).ToArray();
         var feedback = frozen.Steps.Where(s => !Primary(s)).ToArray();
-        if (frozen.After.Phase == "over") Add(frozen, available, direct);
+        if (frozen.After.Phase == "over")
+        {
+            // Finish all previously accepted beats before showing the result; nothing may
+            // run after the result or re-open a terminal board.
+            _terminalReceived = true;
+            _terminal = new(frozen, available, ++_order);
+        }
         else if (direct && primary.Length > 0 && feedback.Length > 0)
         {
             var intermediate = WithoutFeedbackChanges(frozen, feedback);
-            Add(frozen with { Steps = primary, After = intermediate }, available, true);
+            AddAction(frozen with { Steps = primary, After = intermediate }, available);
             AddFeedback(frozen with { Steps = feedback, Before = intermediate }, available);
         }
-        else if (direct) Add(frozen, available, true);
+        else if (direct) AddAction(frozen, available);
         else AddFeedback(frozen, available);
         if (!_draining) Completion = DrainAsync();
         return Completion;
@@ -64,6 +74,27 @@ public sealed class PresentationPlayer : IDisposable
 
     private void Add(UiPresentationResolution resolution, UiBattleActions actions, bool direct) =>
         (direct ? _direct : _indirect).Enqueue(new(resolution, actions, ++_order));
+
+    private void AddAction(UiPresentationResolution resolution, UiBattleActions actions)
+    {
+        if (!resolution.Steps.Any(s => s is UiDrawPresentation)) { Add(resolution, actions, true); return; }
+        // Keep the entire causal chain in direct FIFO, but settle each arrival separately so
+        // the first card becomes an interactive hand card while the next draw is animating.
+        var before = resolution.Before; var first = 0;
+        void Beat(int end)
+        {
+            var after = WithoutFeedbackChanges(resolution, resolution.Steps.Skip(end).ToArray());
+            Add(resolution with { Steps = resolution.Steps.Skip(first).Take(end - first).ToArray(), Before = before, After = after }, actions, true);
+            before = after; first = end;
+        }
+        for (var i = 0; i < resolution.Steps.Count; i++)
+            if (resolution.Steps[i] is UiDrawPresentation)
+            {
+                if (i > first) Beat(i);
+                Beat(i + 1);
+            }
+        if (first < resolution.Steps.Count) Beat(resolution.Steps.Count);
+    }
 
     private void AddFeedback(UiPresentationResolution resolution, UiBattleActions actions)
     {
@@ -135,7 +166,57 @@ public sealed class PresentationPlayer : IDisposable
         };
     }
 
-    private bool Take(out Item? item) => _direct.TryDequeue(out item) || _indirect.TryDequeue(out item);
+    private static IEnumerable<string> RequiredCards(UiPresentationResolution resolution)
+    {
+        foreach (var step in resolution.Steps)
+        {
+            switch (step)
+            {
+                case UiDeploymentPresentation deployment: yield return deployment.Card.Uid; break;
+                case UiOrderPresentation order:
+                    yield return order.Card.Uid;
+                    foreach (var hit in order.Impacts) yield return hit.Before.Uid;
+                    break;
+                case UiCounterPresentation { Card: { } card }: yield return card.Uid; break;
+                case UiBoardImpactsPresentation hits:
+                    foreach (var hit in hits.Impacts)
+                    { yield return hit.Before.Uid; if (hit.Source is { } source) yield return source.Uid; }
+                    break;
+                case UiStatusPresentation status: yield return status.Before.Uid; break;
+                case UiRemovalPresentation removal: yield return removal.Card.Uid; break;
+                case UiDiscardPresentation { Card: { } card }: yield return card.Uid; break;
+            }
+        }
+        // Some adapter actions have no explicit actor step. A departure or change of zone is
+        // meaningful; merely reindexing an unrelated hand card must not make it a prerequisite.
+        if (resolution.Before is not { } before) yield break;
+        var after = resolution.After.SelfHand.Concat(resolution.After.SelfLine).Concat(resolution.After.EnemyLine)
+            .ToDictionary(c => c.Uid);
+        foreach (var card in before.SelfHand.Concat(before.SelfLine).Concat(before.EnemyLine))
+            if (!after.TryGetValue(card.Uid, out var next) || next.Zone != card.Zone) yield return card.Uid;
+    }
+
+    private bool Take(out Item? item)
+    {
+        if (_direct.TryPeek(out var action))
+        {
+            var required = RequiredCards(action.Resolution).ToHashSet(StringComparer.Ordinal);
+            var enemyAction = action.Resolution.Steps.Any(s => s is UiDeploymentPresentation { Card.OwnerSide: "enemy" }
+                or UiOrderPresentation { Card.OwnerSide: "enemy" } or UiCounterPresentation { Side: "enemy" });
+            // Never show a newly acquired card being used before its arrival. Hidden enemy draws
+            // carry no UID; use only side/order, without bringing their identities across the bridge.
+            var prerequisite = _indirect.Any(pending => pending.Order < action.Order && pending.Resolution.Steps
+                .OfType<UiDrawPresentation>().Any(draw => draw.Card is { } card && required.Contains(card.Uid)
+                    || draw.Side == "enemy" && enemyAction));
+            // Preserve feedback FIFO while reaching the prerequisite; do not extract a later draw
+            // past earlier feedback, and do not let another direct action pass this waiting action.
+            if (prerequisite) return _indirect.TryDequeue(out item);
+            return _direct.TryDequeue(out item);
+        }
+        if (_indirect.TryDequeue(out item)) return true;
+        item = _terminal; _terminal = null;
+        return item is not null;
+    }
 
     private async Task DrainAsync()
     {
@@ -162,7 +243,7 @@ public sealed class PresentationPlayer : IDisposable
             }
         }
         catch (OperationCanceledException) when (_disposed) { }
-        catch (Exception error) { _direct.Clear(); _indirect.Clear(); Failed?.Invoke(error); }
+        catch (Exception error) { _direct.Clear(); _indirect.Clear(); _terminal = null; Failed?.Invoke(error); }
         finally { _draining = false; }
     }
 
@@ -171,6 +252,7 @@ public sealed class PresentationPlayer : IDisposable
         if (_disposed) return;
         _disposed = true;
         _direct.Clear(); _indirect.Clear();
+        _terminal = null;
         _lifetime.Cancel();
     }
 }

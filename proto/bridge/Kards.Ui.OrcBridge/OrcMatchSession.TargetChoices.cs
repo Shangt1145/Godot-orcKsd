@@ -1,4 +1,5 @@
 using Kards.Ui.Contracts;
+using Kards.Ui.Core;
 using Orc.Game.Cards;
 using Orc.Game.Targeting;
 
@@ -7,74 +8,86 @@ namespace Kards.Ui.OrcBridge;
 public sealed partial class OrcMatchSession
 {
     private ChoiceResponder? _targetChoice;
+    private string? _choiceSourceUid;
+    private long _choiceDelivery;
     public event Action<UiTargetRequest, IUiTargetResponder>? TargetRequested;
     public event Action? TargetClosed;
     public bool TargetPending => _targetChoice is not null;
-    private void PresentTargetChoice(TargetingRequestDescription description, ITargetingResponder responder)
+    private void PresentTargetChoice(ISelectorInstance selector)
     {
-        if (_disposed || _activeCommandToken.IsCancellationRequested) { responder.Cancel(description.RequestId); return; }
-        if (TargetRequested is null) { LastRejectionReason = "SelectionRequired"; responder.Cancel(description.RequestId); return; }
-        var request = new UiTargetRequest(description.RequestId, description.Slots.Select(slot =>
+        if (_disposed || _activeCommandToken.IsCancellationRequested) { selector.Submit(new CancelEvent()); return; }
+        if (TargetRequested is null) { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); return; }
+        var data = selector.Presentation;
+        var tag = data.Parameter as OrderSelectorTag;
+        var name = tag?.SlotName ?? "default";
+        var kind = data.Identifiers is null ? ChoiceKind.Reference
+            : selector.SelectorName == SelectorNames.CardPicker ? ChoiceKind.CardDefinition : ChoiceKind.Option;
+        var visible = View.SelfHand.Concat(View.SelfLine).Concat(View.EnemyLine)
+            .Concat(new[] { View.SelfHq, View.EnemyHq }.OfType<UiCardView>()).ToArray();
+        var choices = data.Identifiers is { } identifiers
+            ? identifiers.Select(id =>
+            {
+                var card = kind == ChoiceKind.CardDefinition ? _host.ReadChoiceDefinition(id) : null;
+                return new UiChoice(id, tag?.Labels?.GetValueOrDefault(id) ?? card?.Definition.Name ?? id, kind, card);
+            }).ToArray()
+            : data.Candidates.Where(r => r.IsAlive).Select(r =>
+            {
+                var uid = OrcRefs.KeyOf(r.Value);
+                var card = visible.FirstOrDefault(c => c.Uid == uid);
+                return new UiChoice(uid, card?.Definition.Name ?? uid, kind, card);
+            }).ToArray();
+        // Engine retries reuse the instance Id. Each UI delivery gets a fresh token so stale answers cannot win.
+        var request = new UiTargetRequest($"{MatchId}:{selector.Id}:{Interlocked.Increment(ref _choiceDelivery)}",
+            [new(name, kind, data.Min, data.Max, choices)])
         {
-            var kind = slot.Kind == TargetSlotKind.OptionSelect ? ChoiceKind.Option : ChoiceKind.Reference;
-            var choices = kind == ChoiceKind.Option
-                ? slot.Options!.Select(o => new UiChoice(o.Id, o.Text, kind)).ToArray()
-                : (slot.AllowedReferences ?? description.AllowedTargets).Where(r => r.IsAlive).Select(r =>
-                {
-                    var uid = OrcRefs.KeyOf(r.Value);
-                    var card = View.SelfLine.Concat(View.EnemyLine).Concat(new[] { View.SelfHq, View.EnemyHq }.OfType<UiCardView>())
-                        .FirstOrDefault(c => c.Uid == uid);
-                    return new UiChoice(uid, card?.Definition.Name ?? (r.Value as CardBase)?.Name ?? uid, kind, card);
-                }).ToArray();
-            return new UiChoiceSlot(slot.Name, kind, slot.Min, slot.Max, choices);
-        }).ToArray());
-        var choice = new ChoiceResponder(this, description, responder);
+            SourceCard = View.SelfHand.FirstOrDefault(c => c.Uid == _choiceSourceUid),
+            SelectorName = selector.SelectorName,
+            IsDrag = selector.Mode == SelectorInteractionMode.Drag
+        };
+        var choice = new ChoiceResponder(this, selector, request.RequestId, name);
         _targetChoice = choice;
         if (_activeCommandToken.IsCancellationRequested) { CancelTargetChoice(); return; }
-        TargetRequested.Invoke(request, choice);
+        try { TargetRequested.Invoke(UiSnapshots.Freeze(request), choice); }
+        catch { LastRejectionReason = "InteractionFault"; CancelTargetChoice(); }
     }
     private void CancelTargetChoice()
     {
         var choice = _targetChoice;
         if (choice is null) return;
         choice.Cancel(choice.RequestId);
-        // Interaction faults can end the engine request before the UI responder is closed.
         if (_targetChoice == choice) { _targetChoice = null; TargetClosed?.Invoke(); }
     }
-    private sealed class ChoiceResponder(OrcMatchSession session, TargetingRequestDescription description,
-        ITargetingResponder responder) : IUiTargetResponder
+    private sealed class ChoiceResponder(OrcMatchSession session, ISelectorInstance selector,
+        string requestId, string slotName) : IUiTargetResponder
     {
-        public string RequestId => description.RequestId;
+        public string RequestId => requestId;
         public bool Complete(string requestId, IReadOnlyDictionary<string, IReadOnlyList<string>> selectionsBySlot)
         {
-            if (requestId != RequestId || session._targetChoice != this) return false;
-            var map = new Dictionary<string, IReadOnlyList<TargetSelection>>(StringComparer.Ordinal);
-            foreach (var (name, ids) in selectionsBySlot)
+            if (requestId != RequestId || session._targetChoice != this || selectionsBySlot.Count != 1
+                || !selectionsBySlot.TryGetValue(slotName, out var ids)) return false;
+            SelectorEvent input;
+            if (selector.Presentation.Identifiers is not null)
+                input = new PickEvent(identifiers: ids.ToArray());
+            else
             {
-                var slot = description.Slots.FirstOrDefault(s => s.Name == name);
-                if (slot is null) return false;
-                var allowed = slot.AllowedReferences ?? description.AllowedTargets;
-                var elements = new List<TargetSelection>();
-                foreach (var id in ids)
-                {
-                    if (slot.Kind == TargetSlotKind.OptionSelect) elements.Add(TargetSelection.FromIdentifier(id));
-                    else
-                    {
-                        var reference = allowed.FirstOrDefault(r => r.IsAlive && OrcRefs.KeyOf(r.Value) == id);
-                        if (reference is null) return false;
-                        elements.Add(TargetSelection.FromReference(reference));
-                    }
-                }
-                map.Add(name, elements);
+                var references = ids.Select(id => selector.Presentation.Candidates
+                    .FirstOrDefault(r => r.IsAlive && OrcRefs.KeyOf(r.Value) == id)).ToArray();
+                if (references.Any(r => r is null)) return false;
+                input = selector.Mode == SelectorInteractionMode.Drag && references.Length <= 1
+                    ? new DropEvent(references.FirstOrDefault()) : new PickEvent(references!);
             }
-            if (!responder.Complete(requestId, map)) return false;
+            if (!selector.Submit(input)) return false;
             Close(); return true;
         }
         public bool Cancel(string requestId)
         {
-            if (requestId != RequestId || session._targetChoice != this || !responder.Cancel(requestId)) return false;
+            if (requestId != RequestId || session._targetChoice != this || !selector.Submit(new CancelEvent())) return false;
             Close(); return true;
         }
-        private void Close() { session._targetChoice = null; session.TargetClosed?.Invoke(); }
+        private void Close()
+        {
+            if (session._targetChoice != this) return;
+            session._targetChoice = null; session.TargetClosed?.Invoke();
+        }
     }
 }

@@ -9,10 +9,18 @@ public static class UiSnapshots
     private static IReadOnlyList<T> List<T>(IEnumerable<T> values) => Array.AsReadOnly(values.ToArray());
     private static IReadOnlyDictionary<string, int> Values(IReadOnlyDictionary<string, int> values) => new ReadOnlyDictionary<string, int>(values.ToDictionary(p => p.Key, p => p.Value));
     public static UiCardDefinition Freeze(UiCardDefinition d) => d with { Keywords = List(d.Keywords), KeywordValues = Values(d.KeywordValues) };
-    public static UiCardView Freeze(UiCardView c) => c with { Definition = Freeze(c.Definition), Keywords = List(c.Keywords), KeywordValues = Values(c.KeywordValues), BlockedReasons = List(c.BlockedReasons) };
+    public static UiCardView Freeze(UiCardView c) => c with { Definition = Freeze(c.Definition), Keywords = List(c.Keywords), KeywordValues = Values(c.KeywordValues), UnitTypes = List(c.UnitTypes), BlockedReasons = List(c.BlockedReasons) };
+    public static UiTargetRequest Freeze(UiTargetRequest request) => request with
+    {
+        SourceCard = request.SourceCard is null ? null : Freeze(request.SourceCard),
+        Slots = List(request.Slots.Select(slot => slot with
+        { Allowed = List(slot.Allowed.Select(choice => choice with { Card = choice.Card is null ? null : Freeze(choice.Card) })) }))
+    };
     public static UiBattleActions Freeze(UiBattleActions actions) => actions with
     {
-        PlayableUids = List(actions.PlayableUids), Moves = List(actions.Moves), AttackPreviews = List(actions.AttackPreviews)
+        PlayableUids = List(actions.PlayableUids), Moves = List(actions.Moves), AttackPreviews = List(actions.AttackPreviews),
+        OrderTargets = List(actions.OrderTargets.Select(t => t with { TargetUids = List(t.TargetUids) })),
+        DeploymentGaps = List(actions.DeploymentGaps)
     };
     public static UiCombatResolution Freeze(UiCombatResolution r) => r with
     {
@@ -54,6 +62,7 @@ public static class UiSnapshots
                     : Array.Empty<UiCardView>()
             },
             UiTurnPresentation turn => turn,
+            UiShufflePresentation shuffle => shuffle,
             // Pure numbers: the cause and the old/new pair are engine facts, and no card view crosses.
             UiResourcePresentation resource => resource,
             _ => throw new ArgumentException("Unknown presentation step.")

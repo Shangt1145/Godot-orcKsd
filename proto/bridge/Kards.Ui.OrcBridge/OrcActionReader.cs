@@ -9,8 +9,8 @@ namespace Kards.Ui.OrcBridge;
 
 /// <summary>
 /// Engine availability -> the UI's action projection. Everything here comes from an engine query surface.
-/// The engine has no "can this card be played" query, so hand cards are listed as attemptable and legality is
-/// decided by the engine when the play is submitted; its refusal reason is shown to the player as-is.
+/// Native CanPlay evaluates entry validation, ownership and frontend admission. Effects can still
+/// reject their selections during the actual chain; no effect is executed just to illuminate a card.
 /// Damage forecasts are not invented: previews carry candidate targets without numbers.
 /// </summary>
 public sealed class OrcActionReader
@@ -29,7 +29,7 @@ public sealed class OrcActionReader
 
         var hand = new HashSet<Card>(viewer.Hand);
         var playable = index
-            .Where(entry => hand.Contains(entry.Value))
+            .Where(entry => hand.Contains(entry.Value) && entry.Value is CardBase card && match.PlayManager.CanPlay(card))
             .Select(entry => entry.Key)
             .ToArray();
 
@@ -52,10 +52,13 @@ public sealed class OrcActionReader
 
         return new UiBattleActions
         {
-            CanEndTurn = true,
+            CanEndTurn = match.CanAcceptInput(viewer, viewer.Hq),
             AttacksEnabled = true,
             PlayableUids = playable,
-            HandPlayabilityKnown = false,
+            HandPlayabilityKnown = true,
+            DeploymentGaps = match.Battlefield.GetSupportLine(viewer).GetInsertionGaps()
+                .Select(gap => new UiDeploymentGap(OrcRefs.KeyOf(gap), gap.Ordinal,
+                    gap.Left is null ? null : OrcRefs.KeyOf(gap.Left), gap.Right is null ? null : OrcRefs.KeyOf(gap.Right))).ToArray(),
             Moves = moves,
             AttackPreviews = previews
         };

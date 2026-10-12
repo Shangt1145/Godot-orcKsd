@@ -4,6 +4,8 @@ namespace Kards.Ui.Contracts;
 public sealed record UiMoveOption(string Uid, string ToZone, int? SlotIndex = null);
 public sealed record UiAttackPreview(string AttackerUid, string DefenderUid,
     int? DamageToDefender, int? DamageToAttacker, bool DefenderDies, bool AttackerDies);
+/// <summary>A single-target order and its current candidates, supplied by the effect adapter.</summary>
+public sealed record UiOrderTargeting(string Uid, IReadOnlyList<string> TargetUids);
 public sealed record UiCombatResolution(string MatchId, UiCardView Attacker, UiCardView Defender,
     int DamageToDefender, int DamageToAttacker, UiCardView? AttackerAfter, UiCardView? DefenderAfter, UiMatchView After);
 public sealed record UiBattleActions
@@ -13,6 +15,8 @@ public sealed record UiBattleActions
     public bool HandPlayabilityKnown { get; init; } = true;
     public IReadOnlyList<UiMoveOption> Moves { get; init; } = Array.Empty<UiMoveOption>();
     public IReadOnlyList<UiAttackPreview> AttackPreviews { get; init; } = Array.Empty<UiAttackPreview>();
+    public IReadOnlyList<UiOrderTargeting> OrderTargets { get; init; } = Array.Empty<UiOrderTargeting>();
+    public IReadOnlyList<UiDeploymentGap> DeploymentGaps { get; init; } = Array.Empty<UiDeploymentGap>();
     public bool CanEndTurn { get; init; }
     public bool AttacksEnabled { get; init; }
     /// <summary>The opening-hand phase is waiting for a keep/replace answer. Never decides which cards are legal to replace.</summary>

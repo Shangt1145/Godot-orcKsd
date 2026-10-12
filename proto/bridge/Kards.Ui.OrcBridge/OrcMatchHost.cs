@@ -24,10 +24,13 @@ public sealed class OrcMatchHost
     private OrcMatchReader _reader = null!;
     private OrcUpdateTranslator _translator = null!;
     private readonly OrcActionReader _actions = new();
+    private Func<Player, IReadOnlyList<UiOrderTargeting>>? _orderTargets;
+    internal void SetOrderTargetReader(Func<Player, IReadOnlyList<UiOrderTargeting>> reader) => _orderTargets = reader;
     private IDisposable? _immediate;
     private UiMatchView? _view;
     private bool _detached;
     private bool _observer;
+    private long _lastSequence;
     private readonly Queue<(UiPresentationResolution Resolution, UiBattleActions Actions,
         IReadOnlyList<UiOrderImpact> Impacts, string[] Errors)> _captured = new();
     public bool HistoricalStatesVerified { get; private set; } = true;
@@ -73,7 +76,15 @@ public sealed class OrcMatchHost
     public IReadOnlyDictionary<string, Orc.Cards.Card> Index => _reader?.LastIndex ?? new Dictionary<string, Orc.Cards.Card>();
 
     /// <summary>Availability for the current board, read from the engine's query surfaces.</summary>
-    public UiBattleActions Actions => _actions.Read(_match, _viewer, Index);
+    public UiBattleActions Actions
+    {
+        get
+        {
+            var actions = _actions.Read(_match, _viewer, Index);
+            return actions.CanEndTurn && _orderTargets is not null
+                ? actions with { OrderTargets = _orderTargets(_viewer) } : actions;
+        }
+    }
 
     /// <summary>Non-blocking feedback lane: fire and forget flags only, never animation work.</summary>
     public event Action<string>? ImmediateUpdate;
@@ -106,7 +117,7 @@ public sealed class OrcMatchHost
 
     /// <summary>
     /// Adopts a match that is already running, resolving this host's viewpoint from it. This is the
-    /// hotseat path: a second seat over the same live game. <see cref="InitializeAsync"/> cannot be
+    /// observer path: another viewpoint over the same live game. <see cref="InitializeAsync"/> cannot be
     /// used because it would initialise the match a second time; a seat only needs its own viewer,
     /// readers and view.
     /// </summary>
@@ -127,6 +138,14 @@ public sealed class OrcMatchHost
         _viewer = _match.Players[index];
         _captured.Clear(); // a viewpoint switch settles the board, not the previous seat's animation
         Refresh();
+    }
+
+    internal UiCardView? ReadChoiceDefinition(string id)
+    {
+        if (!_match.CardLibrary.Contains(id)) return null;
+        var definition = _cards.ReadDefinition(_match.CardLibrary.Get(id));
+        return new UiCardView { Uid = "definition:" + id, Definition = definition,
+            EffectiveCost = definition.Cost, Visibility = Visibility.Full };
     }
 
     /// <summary>A full projection settles past presentations, including a silent phase change.</summary>
@@ -169,6 +188,7 @@ public sealed class OrcMatchHost
         if (segments.Count > 1) HistoricalStatesVerified = false;
         foreach (var segment in segments)
         {
+            _lastSequence = Math.Max(_lastSequence + 1, segment.Sequence);
             var updates = segment.Entries
                 .Where(e => e.Kind == LogEntryKind.Update)
                 .Select(e => (Update: e.Message, Payload: e.Data))
@@ -179,12 +199,22 @@ public sealed class OrcMatchHost
             var translation = _translator.Translate(updates, _viewer, before, after);
             _view = after;
             var resolution = UiSnapshots.Freeze(new UiPresentationResolution(_matchId, translation.Steps, after)
-                { Sequence = segment.Sequence, Before = before });
+                { Sequence = _lastSequence, Before = before });
             _captured.Enqueue((resolution, UiSnapshots.Freeze(Actions), translation.Impacts, errors));
         }
         // Phase changes and mulligan replacements can be silent in the current engine.
         // Keep the live projection fresh without changing already frozen action snapshots.
-        if (segments.Count == 0) Refresh();
+        if (segments.Count == 0)
+        {
+            var before = _view;
+            var after = UiSnapshots.Freeze(Refresh());
+            // Concede intentionally emits no engine update. Deliver its authoritative phase
+            // change once through the same presentation lane, without fabricating a game event.
+            var silent = _translator.Translate([], _viewer, before, after);
+            if (silent.Steps.Count > 0 || before.Phase != "over" && after.Phase == "over" && after.ResultTitle is not null)
+                _captured.Enqueue((UiSnapshots.Freeze(new UiPresentationResolution(_matchId, silent.Steps, after)
+                    { Before = before, Sequence = ++_lastSequence }), UiSnapshots.Freeze(Actions), [], []));
+        }
     }
 
     /// <summary>

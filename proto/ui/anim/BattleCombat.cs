@@ -222,6 +222,7 @@ public partial class BattleCombat : Control
 
     public async Task PresentImpactsAsync(IReadOnlyList<(UiOrderImpact Impact, BattleCard Card)> targets)
     {
+        if (targets.Count == 0) { PhaseChanged?.Invoke("order-impact"); return; }
         Interrupt(); var epoch = _epoch; IsPlaying = true;
         // Capture all target positions before hiding any card; effects outlive their actors.
         foreach (var (impact, card) in targets)

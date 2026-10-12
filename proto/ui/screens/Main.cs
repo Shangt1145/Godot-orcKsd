@@ -1,3 +1,4 @@
+using Kards.Ui.OrcBridge;
 using Godot;
 using Kards.Ui.Core;
 using Kards.Ui.Contracts;
@@ -20,13 +21,30 @@ public partial class Main : Control
     private Label _pool = null!, _speedLabel = null!;
     private PanelContainer _shellBar = null!, _shellFooter = null!;
     private MarginContainer _contentMargin = null!;
-    private string _active = "battle";
+    private string _active = "home";
     private UiMatchView? _match;
     private OrcMatchRunner? _runner;
     private PresentationPlayer? _presentations;
+    private DeckConstructionService _deckService = null!;
+    private DeckLibrary _decks = null!;
+    private DeckEditorScreen _deckEditor = null!;
+    private DeckLibraryScreen _deckLibrary = null!;
+    private DiyCardLibrary _diy = null!;
+    private DiyEditorScreen _diyEditor = null!;
+    private CollectionScreen _collection = null!;
+    private ConstructedDeck? _trialDeck;
+    private string _diyPath = "";
+    private bool _verificationRun;
+    private string _deckPath = "";
 
-    public override void _Ready()
+    public override async void _Ready()
     {
+#if DEBUG
+        const string managedConfiguration = "Debug";
+#else
+        const string managedConfiguration = "Release";
+#endif
+        NativeScriptHost.ConfigureAssemblyDirectory(ProjectSettings.GlobalizePath($"res://.godot/mono/temp/bin/{managedConfiguration}"));
         Theme = UiStyles.CreateTheme();
         _clock = new AnimClock();
         AddChild(_clock);
@@ -37,50 +55,55 @@ public partial class Main : Control
         overlay.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         _fx = new AnimationEngine { Clock = _clock, Sfx = sfx, Overlay = overlay, Textures = _textures };
         AddChild(_fx);
+        _verificationRun = OS.GetCmdlineUserArgs().Any(a => a.StartsWith("--verify-") || a.StartsWith("--capture-"));
+        _splash = new MenuSplash(); _splash.Initialize(); AddChild(_splash); _splash.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        try { await InitializeInterfaceAsync(sfx); }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString()); _splash?.Fail(error.Message);
+            if (_verificationRun) GetTree().Quit(1);
+        }
+    }
+    private async Task InitializeInterfaceAsync(SfxPlayer sfx)
+    {
+        await StartupStageAsync(.08f, "整理卡牌收藏…");
         try
         {
             _catalog.Load(ProjectSettings.GlobalizePath("res://proto/data/nations"), CardCatalog.ResolveArtResource);
         }
-        catch (Exception e) { GD.PushError(e.ToString()); AddChild(UiStyles.Label("卡池加载失败，请先运行 tools/prepare.ps1", 24)); return; }
+        catch (Exception e) { throw new InvalidDataException("卡池加载失败，请先运行 tools/prepare.ps1", e); }
         // The engine knows nothing about art, so the catalog is the single place a card id becomes
         // a texture path. A real match reads its art through this table, same as the collection does.
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0)
             .GroupBy(c => c.CardId).ToDictionary(g => g.Key, g => g.First().ArtPath, StringComparer.Ordinal);
+        await StartupStageAsync(.32f, "检查已保存卡组…");
+        _deckPath = ProjectSettings.GlobalizePath(_verificationRun
+            ? $"res://artifacts/decks/session-{Guid.NewGuid():N}.json" : "user://decks.json");
+        _deckService = new DeckConstructionService(_catalog.Cards, ProjectSettings.GlobalizePath("res://proto/data/nations"));
+        _diyPath = ProjectSettings.GlobalizePath(_verificationRun
+            ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
+        _diy = new DiyCardLibrary(_diyPath);
+        _deckService.UpdateCustom(_diy.Cards);
+        _catalog.SetCustomCards(_deckService.CustomCards);
+        _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
+        _decks = new DeckLibrary(_deckPath);
+        if (_decks.Decks.Count == 0 && _decks.LoadError is null)
+        {
+            try { var starter = _deckService.Starter(); _decks.Save(starter); _decks.Activate(starter.Id); }
+            catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException) { GD.PushError(e.Message); }
+        }
+        await StartupStageAsync(.64f, "布置指挥部…");
         var root = new VBoxContainer();
         AddChild(root);
         root.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         root.AddThemeConstantOverride("separation", 0);
-        var bar = new PanelContainer();
-        _shellBar = bar;
-        bar.AddThemeStyleboxOverride("panel", UiStyles.Box(new("191c22"), UiStyles.Line, 0, 16));
-        root.AddChild(bar);
-        var nav = new HBoxContainer();
-        bar.AddChild(nav);
-        var brand = UiStyles.Label("OrC-KSD", 22, UiStyles.Gold);
-        nav.AddChild(brand);
-        foreach (var (id, text) in new[] { ("battle", "战斗"), ("deck", "卡组"), ("collection", "图鉴"), ("decklib", "牌库"), ("editor", "编辑器"), ("help", "帮助与演示"), ("settings", "设置") })
-        {
-            var key = id;
-            var b = UiStyles.Button(text, () => Show(key));
-            b.ToggleMode = true;
-            _nav[key] = b;
-            nav.AddChild(b);
-        }
-        var spacer = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        nav.AddChild(spacer);
-        _pool = UiStyles.Label($"{_catalog.Cards.Count} 张卡", 13, UiStyles.Dim);
-        nav.AddChild(_pool);
-        var margin = new MarginContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
-        _contentMargin = margin;
-        foreach (var edge in new[] { "left", "right", "top", "bottom" })
-            margin.AddThemeConstantOverride("margin_" + edge, 24);
-        root.AddChild(margin);
-        var content = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
-        margin.AddChild(content);
+        var content = BuildMenuShell(root);
         var collection = new CollectionScreen();
+        _collection = collection;
         collection.Initialize(_catalog, _textures);
         AddScreen(content, "collection", collection);
         _battle = new BattleScreen();
+        _battle.Theme = UiStyles.CreateTheme();
         _battle.Initialize(_catalog, _textures, _clock, sfx);
         _battle.CommandRequested += command =>
         {
@@ -91,13 +114,40 @@ public partial class Main : Control
             }
             CommandRequested?.Invoke(command);
         };
-        _battle.RealMatchRequested += () => _ = StartRealMatchAsync();
-        _battle.HotseatRequested += () => _ = StartRealMatchAsync(interactiveMulligan: true, hotseat: true);
+        _battle.RealMatchRequested += () => _ = StartRealMatchAsync(trialDeck: _trialDeck);
         _battle.NavigationRequested += Show;
         AddScreen(content, "battle", _battle);
-        AddScreen(content, "deck", Placeholder("卡组编辑", "卡组保存、数量限制与可用性将在卡组契约确定后接入。", "浏览卡牌", () => Show("collection")));
-        AddScreen(content, "decklib", Placeholder("牌库", "牌库导航已就绪，当前可在图鉴浏览完整卡池。", "打开图鉴", () => Show("collection")));
-        AddScreen(content, "editor", Placeholder("效果编辑器", "效果编辑器将在引擎能力查询接口就绪后接入。", "查看帮助", () => Show("help")));
+        _deckEditor = new DeckEditorScreen(); _deckEditor.Initialize(_deckService, _decks, _textures);
+        _deckLibrary = new DeckLibraryScreen(); _deckLibrary.Initialize(_decks, _deckService, _textures);
+        _deckEditor.Saved += RefreshMenuData;
+        _deckEditor.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        _deckLibrary.EditRequested += deck => { _deckEditor.Open(deck); Show("deck"); };
+        _deckLibrary.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        AddScreen(content, "deck", _deckEditor);
+        AddScreen(content, "decklib", _deckLibrary);
+        _home = new HomeScreen(); _home.Initialize(_decks, _deckService, _textures);
+        _home.PlayRequested += OpenPlaySelection;
+        _home.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        _deckLibrary.Changed += RefreshMenuData;
+        AddScreen(content, "home", _home);
+        _diyEditor = new DiyEditorScreen();
+        _diyEditor.Initialize(_diy, () => _catalog.Cards, _textures, id => _decks.Decks.Count(d => d.CardIds.Contains(id)),
+            id => _deckService.CustomErrors.GetValueOrDefault(id));
+        _diyEditor.Saved += RefreshDiy;
+        _diyEditor.ConstructRequested += id =>
+        {
+            _deckEditor.Search.Text = _catalog.Cards.First(c => c.CardId == id).Name;
+            _deckEditor.AvailableOnly.ButtonPressed = true; Show("deck");
+        };
+        _diyEditor.TrialRequested += card =>
+        {
+            var starter = _deckService.Starter(12);
+            var copies = Math.Min(2, ConstructionRules.CopyLimit(card.Rarity));
+            var trial = starter with { Name = card.Name + " · 试打",
+                CardIds = Enumerable.Repeat(card.Id, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
+            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
+        };
+        AddScreen(content, "editor", _diyEditor);
         _helpTabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         _gallery = new AnimationGallery { Name = "动画演示" };
         _helpTabs.AddChild(_gallery);
@@ -105,7 +155,7 @@ public partial class Main : Control
         var bridge = new BridgeDemo { Name = "交互与事件" };
         _helpTabs.AddChild(bridge);
         bridge.Initialize(_fx, _catalog, _textures);
-        var help = Placeholder("使用说明", "图鉴支持按国别、卡类、兵种、稀有度、词条筛选，也可以搜索卡名和卡面文本。\n\n点击或长按卡牌查看大图。动画演示页可选择兵种与防御值，并随时打断或复位。\n\n设置中的减弱动效保留声音、卡面揭示与动作时序。", "浏览图鉴", () => Show("collection"));
+        var help = Guide("使用说明", "收藏支持按国别、卡类、兵种、稀有度、词条筛选，也可以搜索卡名和卡面文本。滚轮下翻连续浏览所有卡牌。\n\n点击或长按卡牌查看大图。动画演示页可选择兵种与防御值，并随时打断或复位。\n\n设置中的减弱动效保留声音、卡面揭示与动作时序，同时关闭菜单位移、卡牌展开和鼠标跟随。");
         help.Name = "使用说明";
         _helpTabs.AddChild(help);
         _helpTabs.TabChanged += _ => _fx.InterruptAll();
@@ -113,21 +163,38 @@ public partial class Main : Control
         AddScreen(content, "settings", Settings());
         var footer = new PanelContainer();
         _shellFooter = footer;
-        footer.AddThemeStyleboxOverride("panel", UiStyles.Box(new("191c22"), UiStyles.Line, 0, 8));
+        footer.AddThemeStyleboxOverride("panel", UiStyles.Box(new("141b17ed"), new("4d5243"), 0, 8));
         root.AddChild(footer);
         var footRow = new HBoxContainer();
         footer.AddChild(footRow);
-        footRow.AddChild(UiStyles.Label("对战重做 · 第二阶段" + VersionSuffix(), 12, UiStyles.Dim));
+        footRow.AddChild(UiStyles.Label("OrC-KSD" + VersionSuffix(), 12, UiStyles.MenuDim));
         var gap = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         footRow.AddChild(gap);
         _speedLabel = UiStyles.Label("", 12, UiStyles.Dim);
         footRow.AddChild(_speedLabel);
         _clock.Changed += UpdateStatus;
+        _clock.Changed += RefreshMenuMotion;
         UpdateStatus();
-        Show("battle");
+        await StartupStageAsync(1, "准备就绪");
+        Show("home");
+        await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
-        if (args.Contains("--verify-ui"))
+        if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
+        else if (args.Contains("--verify-inflight-draw")) CallDeferred(MethodName.VerifyInFlightDrawOnly);
+        else if (args.Contains("--verify-action-portals") || args.Contains("--capture-action-portals"))
+            CallDeferred(MethodName.VerifyActionPortals);
+        else if (args.Contains("--verify-diy") || args.Contains("--capture-diy"))
+            CallDeferred(MethodName.VerifyDiy);
+        else if (args.Contains("--verify-decks") || args.Contains("--capture-decks"))
+            CallDeferred(MethodName.VerifyDecks);
+        else if (args.Contains("--verify-ui"))
             CallDeferred(MethodName.VerifyUi);
+        else if (args.Contains("--verify-stage6c2"))
+            CallDeferred(MethodName.VerifyStage6C2);
+        else if (args.Contains("--verify-native-feedback") || args.Contains("--capture-native-feedback"))
+            CallDeferred(MethodName.VerifyNativeFeedback);
+        else if (args.Contains("--verify-causal-draw"))
+            CallDeferred(MethodName.VerifyCausalDraw);
         else if (args.Contains("--verify-input-scheduling"))
             CallDeferred(MethodName.VerifyInputScheduling);
         else if (args.Contains("--verify-card-pool"))
@@ -136,6 +203,8 @@ public partial class Main : Control
             CallDeferred(MethodName.VerifyDeployment);
         else if (args.Contains("--capture-slam"))
             CallDeferred(MethodName.CaptureSlam);
+        else if (args.Contains("--capture-orders"))
+            CallDeferred(MethodName.CaptureOrders);
         else if (args.Contains("--capture-p11"))
             CallDeferred(MethodName.CaptureP11);
         else if (args.Contains("--capture-ui"))
@@ -146,23 +215,42 @@ public partial class Main : Control
             CallDeferred(MethodName.CapturePlacement);
         else if (args.Contains("--verify-orders"))
             CallDeferred(MethodName.VerifyOrders);
-        else
-            _ = StartRealMatchAsync();
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>
-    public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool hotseat = false,
-        int? deckSeed = null, bool demoOpeningHand = false, bool probe = false, IReadOnlyList<string>? verificationHand = null)
+    public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool manualOpponentForVerification = false,
+        int? deckSeed = null, bool demoOpeningHand = false, bool probe = false, IReadOnlyList<string>? verificationHand = null, bool useConstructedDeck = false,
+        ConstructedDeck? trialDeck = null)
     {
+        ConstructedDeck? selected = null;
+        if (trialDeck is not null)
+        {
+            selected = trialDeck.Snapshot();
+            if (_deckService.Validate(selected).Count > 0) { Show("editor"); return; }
+        }
+        else if ((!_verificationRun || useConstructedDeck) && !probe)
+        {
+            selected = _decks.ActiveDeck;
+            if (selected is null || _deckService.Validate(selected).Count > 0)
+            {
+                Show("decklib");
+                _battle.ShowHint("请先选择一副可用于对战的已保存卡组");
+                return;
+            }
+        }
         StopRealMatch();
+        _trialDeck = trialDeck?.Snapshot();
+        var matchArt = _artById.ToDictionary(p => p.Key, p => p.Value);
         var runner = new OrcMatchRunner
         {
             InteractiveMulligan = interactiveMulligan,
-            ArtLookup = id => _artById.GetValueOrDefault(id, ""),
+            ConstructedDeck = selected,
+            ArtLookup = id => matchArt.GetValueOrDefault(id, ""),
             // Production uses the admitted source catalog; only explicit verification uses a probe.
-            CatalogCards = probe ? null : _catalog.Cards,
+            CatalogCards = probe ? null : _deckService.Cards.ToArray(),
+            CustomCards = probe ? null : _diy.Cards.Where(c => _deckService.PlayableIds.Contains(c.Id)).Select(c => c.Snapshot()).ToArray(),
             CatalogSourceDirectory = ProjectSettings.GlobalizePath("res://proto/data/nations"),
-            Hotseat = hotseat,
+            ManualOpponentForVerification = manualOpponentForVerification,
             DeckSeed = deckSeed,
             // Pinning the hand is a demonstration aid, not the default: the verify and capture paths
             // need the engine's own deal, so they leave this off.
@@ -180,23 +268,25 @@ public partial class Main : Control
         }
         if (_runner != runner || !IsInsideTree()) return;
         if (runner.CardPoolReport is { } report)
-            _battle.ShowHint($"可用 {report.Verified} 种卡 · 随机发牌 · 30 张牌组");
-        _battle.ShowHotseatControls(hotseat, runner.ActiveSeat,
-            () => runner.SwitchSeat(),
-            () => runner.ActiveSeatOnTurn);
+            _battle.ShowHint(selected is null ? $"可用 {report.Verified} 种卡 · 验证用 30 张牌组" : $"{selected.Name} · {selected.CardIds.Length} 张卡牌 + 总部 · 随机发牌");
+
     }
 
     private void BindRunner(OrcMatchRunner runner)
     {
         _runner = runner;
+        runner.InteractionStateReader = _battle.ReadInteractionState;
         runner.ProjectionReady += (view, actions) => ApplyRunnerProjection(runner, view, actions);
-        runner.MulliganRequested += () => { if (_runner == runner) _battle.ShowMulliganPanel(runner.CurrentView); };
+        runner.MulliganRequested += () => Callable.From(() =>
+        { if (_runner == runner && runner.MulliganPending) _battle.ShowMulliganPanel(runner.CurrentView, runner.MulliganRequestId); }).CallDeferred();
         runner.TargetRequested += (request, responder) => Callable.From(() =>
         { if (_runner == runner && runner.TargetPending) _battle.ShowTargetChoice(request, responder); else responder.Cancel(request.RequestId); }).CallDeferred();
-        runner.TargetClosed += () => Callable.From(() => { if (_runner == runner) _battle.CloseTargetChoice(); }).CallDeferred();
+        runner.TargetClosed += () => Callable.From(() =>
+        { if (_runner == runner && !runner.TargetPending) _battle.CloseTargetChoice(); }).CallDeferred();
         runner.PresentationReady += (resolution, actions) =>
         {
             if (_runner != runner) return;
+            _battle.ObservePresentationTurn(resolution);
             if (runner.CurrentView is { } view) _battle.UpdateInputProjection(view, runner.CurrentActions);
             _presentations?.Enqueue(resolution, actions);
         };
@@ -210,7 +300,9 @@ public partial class Main : Control
         if (_runner != runner) return;
         _presentations?.Dispose();
         _battle.ApplyProjection(view, actions);
-        _battle.UpdateInputProjection(view, actions);
+        // Applying a new phase also changes the state pulled by native input judicators.
+        // Query again after that transition so a new match does not inherit the old UI lock.
+        _battle.UpdateInputProjection(view, runner.CurrentActions);
         _presentations = new PresentationPlayer(runner.MatchId, (resolution, available, ct) =>
         {
             ct.ThrowIfCancellationRequested();
@@ -236,6 +328,7 @@ public partial class Main : Control
         runner?.Stop();
         _battle?.CloseTargetChoice();
         if (GodotObject.IsInstanceValid(_battle)) _battle.CancelSelection();
+        if (GodotObject.IsInstanceValid(_battle)) _battle.SuspendMatchInput();
     }
 
     public override void _ExitTree() => StopRealMatch();
@@ -262,12 +355,19 @@ public partial class Main : Control
         if (!_battle.MatchesProjection(settled))
             throw new Exception("Opening presentation restored a stale mulligan board.");
 
+        async Task SettlePlayback()
+        {
+            _runner!.Pump();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            if (!await AwaitIdleAsync(30)) throw new Exception("Native bridge presentation did not settle.");
+        }
+
         // Playable loop: submit a real play and a real end-turn; the engine decides both outcomes.
         var actions = _runner!.CurrentActions;
         if (!actions.CanEndTurn || actions.PlayableUids.Count == 0)
             throw new Exception("Engine availability did not reach the UI.");
-        // The engine's play entry point takes units; orders have no play path yet, and a card the
-        // player cannot afford is correctly refused. Both would look like a broken choreography.
+        // This native lifecycle probe uses affordable units; source-assembled orders have their
+        // own end-to-end verification below.
         var uid = settled.SelfHand.FirstOrDefault(c =>
             actions.PlayableUids.Contains(c.Uid)
             && c.Definition.CardType == "unit"
@@ -279,7 +379,7 @@ public partial class Main : Control
         var phases = new List<string>();
         _battle.PresentationPhase += phase => phases.Add(phase);
         await _runner!.SubmitAsync(new PlayCard(uid));
-        await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
+        await SettlePlayback();
         GD.Print($"[bridge] play uid={uid} hand=[{string.Join(' ', settled.SelfHand.Select(c => $"{c.Definition.CardType}/{c.Definition.Cost}"))}] " +
             $"kredits={settled.SelfKredits} steps fired={deployed}, phases=[{string.Join(' ', phases)}]");
         if (!phases.Contains("deployment-start") || !phases.Any(p => p.StartsWith("deployment-slam")))
@@ -290,7 +390,7 @@ public partial class Main : Control
         if (!deployed) throw new Exception("Deployment produced no presentation.");
 
         await _runner!.SubmitAsync(new EndTurn());
-        await ToSignal(GetTree().CreateTimer(2.2), SceneTreeTimer.SignalName.Timeout);
+        await SettlePlayback();
         // The opponent driver plays the enemy turn through the engine and passes straight back.
         // Whether it deploys is the engine's business: with the shipped pool most hands hold
         // nothing affordable, and a driver that correctly does nothing is still a driver that ran.
@@ -298,17 +398,15 @@ public partial class Main : Control
         if (afterEnemyTurn.ActivePlayerSide != "self") throw new Exception("Opponent turn did not come back.");
         if (afterEnemyTurn.Turn <= view.Turn) throw new Exception("The turn counter did not advance past the opponent.");
 
-        // Deployment is adjacency-locked by the engine (only slots next to occupied ones are legal), so a
-        // second card must take a *different* slot. The engine decides whether the second play is
-        // legal at all — with the shipped pool it often is not — so this only checks the outcome
-        // when the card actually landed.
+        // Native insertion leaves distinct occupied positions. This lifecycle probe waits for
+        // playback before querying the next action; separate tests cover concurrent input.
         var second = _runner!.CurrentActions.PlayableUids
             .Where(c => _runner!.CurrentView!.SelfHand.Any(h => h.Uid == c))
             .FirstOrDefault();
         if (second is not null)
         {
             await _runner!.SubmitAsync(new PlayCard(second));
-            await ToSignal(GetTree().CreateTimer(1.8), SceneTreeTimer.SignalName.Timeout);
+            await SettlePlayback();
             var board = _runner!.CurrentView!.SelfLine;
             var left = board.FirstOrDefault(c => c.Uid == second);
             var right = board.FirstOrDefault(c => c.Uid == uid);
@@ -319,7 +417,7 @@ public partial class Main : Control
         // Real movement: advance a unit to a front slot the board says is free, and require it to land
         // there. The slot is chosen from the projection, not assumed, because the front line is shared.
         await _runner!.SubmitAsync(new EndTurn());
-        await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+        await SettlePlayback();
         var mover = _runner!.CurrentActions.Moves.Select(m => m.Uid).FirstOrDefault();
         if (mover is not null)
         {
@@ -331,7 +429,7 @@ public partial class Main : Control
             {
                 var wanted = free[0];
                 await _runner!.SubmitAsync(new MoveUnit(mover, "frontline", wanted));
-                await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+                await SettlePlayback();
                 var moved = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => c.Uid == mover);
                 if (moved is null || moved.Zone != "frontline" || moved.SlotIndex != wanted)
                     throw new Exception($"Real move asked for front slot {wanted} but landed on " +
@@ -346,12 +444,12 @@ public partial class Main : Control
         var combatSeen = false;
         _runner!.CombatReady += (impacts, _, _) => combatSeen |= impacts.Count > 0;
         await _runner!.SubmitAsync(new EndTurn());
-        await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+        await SettlePlayback();
         var hqUid = _runner!.CurrentView!.EnemyHq!.Uid;
         var strike = _runner!.CurrentActions.AttackPreviews.FirstOrDefault(p => p.DefenderUid == hqUid)
             ?? throw new Exception("No unit can attack the enemy headquarters.");
         await _runner!.SubmitAsync(new AttackUnit(strike.AttackerUid, hqUid));
-        await ToSignal(GetTree().CreateTimer(2.4), SceneTreeTimer.SignalName.Timeout);
+        await SettlePlayback();
         if (!combatSeen) throw new Exception("Attack produced no impact presentation.");
         var hqHealth = _runner!.CurrentView!.EnemyHq!.Health;
         if (hqHealth is null || hqHealth >= 20) throw new Exception("Attack did not damage the enemy HQ.");
@@ -432,23 +530,24 @@ public partial class Main : Control
         screen.Visible = false;
         _screens[id] = screen;
     }
-    private static VBoxContainer Placeholder(string title, string description, string action, Action handler)
+    private static VBoxContainer Guide(string title, string description)
     {
         var v = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
         v.AddChild(UiStyles.Label(title, 34, UiStyles.Gold));
         var p = UiStyles.Label(description, 18, UiStyles.Dim);
         p.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         v.AddChild(p);
-        var row = new HBoxContainer();
-        row.AddChild(UiStyles.Button(action, handler));
-        v.AddChild(row);
         return v;
     }
     private Control Settings()
     {
-        var v = new VBoxContainer();
-        v.AddChild(UiStyles.Label("设置", 30));
-        v.AddChild(UiStyles.Label("演出与音效偏好会在下次启动时保留。", 14, UiStyles.Dim));
+        var screen = new VBoxContainer();
+        screen.AddChild(UiStyles.Label("设置", 30, UiStyles.MenuInk));
+        screen.AddChild(UiStyles.Label("演出与音效偏好会自动保存。", 14, UiStyles.MenuDim));
+        var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; screen.AddChild(body);
+        var panel = new PanelContainer { CustomMinimumSize = new(720, 0) }; body.AddChild(panel);
+        var v = new VBoxContainer(); panel.AddChild(v); v.AddThemeConstantOverride("separation", 20);
+        v.AddChild(UiStyles.Label("演出", 24, UiStyles.MenuInk));
         v.AddChild(UiStyles.Label("动画速度", 18, UiStyles.Gold));
         var speed = new OptionButton();
         speed.AddItem("正常 · 1.00");
@@ -460,15 +559,23 @@ public partial class Main : Control
         var motion = new CheckButton { Text = "减弱动效", ButtonPressed = _clock.ReducedMotion };
         motion.Toggled += on => { _clock.SetReducedMotion(on); _fx.InterruptAll(); };
         v.AddChild(motion);
-        v.AddChild(UiStyles.Label("减少位移与碎屑，保留音效和可读的卡面揭示。", 14, UiStyles.Dim));
+        v.AddChild(UiStyles.Label("关闭菜单位移、卡牌展开与鼠标跟随；减少战场碎屑，保留音效和卡面揭示。", 14, UiStyles.Dim));
+        v.AddChild(new HSeparator());
+        v.AddChild(UiStyles.Label("音效", 24, UiStyles.MenuInk));
         var mute = new CheckButton { Text = "静音", ButtonPressed = _clock.Muted };
         mute.Toggled += on => _clock.SetMuted(on);
         v.AddChild(mute);
         v.AddChild(UiStyles.Label("音效音量", 18, UiStyles.Gold));
+        var level = UiStyles.Label($"{_clock.Volume:P0}", 14, UiStyles.MenuDim);
         var volume = new HSlider { MinValue = 0, MaxValue = 1, Step = .01, Value = _clock.Volume, CustomMinimumSize = new(350, 32) };
-        volume.ValueChanged += x => _clock.SetVolume((float)x);
+        volume.ValueChanged += x => { _clock.SetVolume((float)x); level.Text = $"{x:P0}"; };
         v.AddChild(volume);
-        return v;
+        v.AddChild(level);
+        var notes = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; body.AddChild(notes);
+        notes.AddChild(UiStyles.Label("操作提示", 20, UiStyles.Gold));
+        var guide = UiStyles.Label("点击左上角 OrC-KSD 返回主菜单。\n\n顶部直接进入卡组、收藏或 DIY 工坊；新建和编辑在卡组库中进行。\n\n对战中使用右上角菜单返回主菜单，再点“返回战场”继续当前对局。", 15, UiStyles.MenuInk);
+        guide.AutowrapMode = TextServer.AutowrapMode.WordSmart; notes.AddChild(guide);
+        return screen;
     }
     private void UpdateStatus()
     {
@@ -478,14 +585,18 @@ public partial class Main : Control
     {
         if (!_screens.ContainsKey(id))
             return;
-        if (id != _active)
-            _fx.InterruptAll();
+        var changed = id != _active || !_screens[id].Visible;
+        if (changed) { _fx.InterruptAll(); ResetMenuTransition(); }
         _active = id;
+        if (id == "decklib") _deckLibrary.Refresh();
+        if (id == "home") _home.Refresh();
         foreach (var (key, screen) in _screens)
             screen.Visible = key == id;
         foreach (var (key, b) in _nav)
             b.SetPressedNoSignal(key == id);
         SetBattlePresentation(id == "battle");
+        UpdateMenuNavigation();
+        if (changed) EnterMenuScreen(id);
     }
     public event Action<UiCommand>? CommandRequested;
     public void ApplyMatch(UiMatchView? match, UiBattleActions? actions = null)
@@ -499,6 +610,7 @@ public partial class Main : Control
     {
         _pool.Visible = !activeMatch;
         _shellBar.Visible = _shellFooter.Visible = !activeMatch;
+        _menuBackdrop.Visible = !activeMatch;
         foreach (var edge in new[] { "left", "right", "top", "bottom" })
             _contentMargin.AddThemeConstantOverride("margin_" + edge, activeMatch ? 0 : 24);
     }
@@ -517,6 +629,7 @@ public partial class Main : Control
                 || a.Name?.StartsWith("Orc.", StringComparison.Ordinal) == true))
                 throw new Exception("UI assembly directly references engine types.");
             GD.Print("UI_BOUNDARY_VERIFY_OK");
+            await VerifyMenuAsync();
             foreach (var id in _screens.Keys)
             {
                 Show(id);
@@ -565,12 +678,18 @@ public partial class Main : Control
             await _battle.VerifyDeploymentVisualsAsync();
             await _battle.VerifyDemoNonBlockingAsync();
             await VerifyMulliganPanelAsync();
+            await VerifyStage6C2Async();
             await VerifyBridgeAsync();
             await VerifyCardPoolStageAsync();
             await VerifyOrdersStageAsync();
             await VerifyNonBlockingInputAsync();
             await _battle.VerifyTurnAndPriorityAsync();
+            await VerifyCausalDrawOrderAsync();
+            await VerifyNativeFeedbackAsync();
+            await VerifyDiyAsync();
+            await VerifyDecksAsync();
             OpenGallery();
+            await MenuSettledAsync();
             // Restoring the shell changes the container's transform; measure actors only after layout settles.
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);

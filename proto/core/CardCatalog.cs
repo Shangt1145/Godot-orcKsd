@@ -8,6 +8,14 @@ public sealed class CardCatalog
 {
     public IReadOnlyList<UiCardDefinition> Cards { get; private set; } = Array.Empty<UiCardDefinition>();
     public IReadOnlyList<string> Warnings { get; private set; } = Array.Empty<string>();
+    private IReadOnlyList<UiCardDefinition> _sourceCards = [];
+    public void SetCustomCards(IReadOnlyList<UiCardDefinition> cards)
+    {
+        if (cards.Any(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal))
+            || cards.Select(c => c.CardId).Distinct(StringComparer.Ordinal).Count() != cards.Count)
+            throw new InvalidDataException("自定义卡牌编号无效或重复");
+        Cards = _sourceCards.Concat(cards).OrderBy(c => c.Set, StringComparer.Ordinal).ThenBy(c => c.Cost).ThenBy(c => c.CardId, StringComparer.Ordinal).ToArray();
+    }
 
     public void Load(string directory, Func<string, string>? resolveArt = null)
     {
@@ -59,6 +67,7 @@ public sealed class CardCatalog
             }
         }
         Cards = Array.AsReadOnly(cards.Values.OrderBy(x => x.Set, StringComparer.Ordinal).ThenBy(x => x.Cost).ThenBy(x => x.CardId, StringComparer.Ordinal).ToArray());
+        _sourceCards = Cards;
         Warnings = warnings.AsReadOnly();
     }
 

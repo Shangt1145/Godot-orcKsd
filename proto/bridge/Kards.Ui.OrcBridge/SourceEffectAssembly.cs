@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Kards.Ui.Contracts;
 using Orc.Cards;
 using Orc.Core;
 using Orc.Game;
@@ -22,11 +23,13 @@ internal sealed class SourceEffectAssembly : IDisposable
     public static bool Supports(string cardId) => Supported.Contains(cardId);
     private readonly Match _match;
     private readonly Action<string> _targetFailure;
+    private readonly IReadOnlyDictionary<string, JsonElement> _plans;
     private bool _disposed;
     public SourceEffectAssembly(Match match, IReadOnlyDictionary<string, JsonElement> plans, Action<string> targetFailure)
     {
         _match = match;
         _targetFailure = targetFailure;
+        _plans = plans;
         foreach (var card in match.Players.SelectMany(p => p.Hand.OfType<CardBase>()
             .Concat(Enumerable.Range(0, p.Deck.Count).Select(i => p.Deck.PeekInstance(i)))))
         {
@@ -67,30 +70,69 @@ internal sealed class SourceEffectAssembly : IDisposable
         public string? Option { get; set; }
     }
 
+    public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
+    {
+        var units = new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine }
+            .SelectMany(line => line).Select(slot => slot.Occupant).OfType<UnitCard>().ToArray();
+        var options = new List<UiOrderTargeting>();
+        foreach (var card in viewer.Hand.OfType<CommandCard>())
+        {
+            if (!_match.CardLibrary.TryGetRegisteredId(card.Definition, out var id) || !_plans.TryGetValue(id, out var declarations)) continue;
+            var plan = declarations.EnumerateArray().Single();
+            if (!plan.TryGetProperty("targets", out var targets) || targets.GetArrayLength() != 1) continue;
+            var side = Text(targets[0], "side", "any");
+            options.Add(new(OrcRefs.KeyOf(card), units.Where(unit => IsOrderTarget(card, unit, side))
+                .Select(OrcRefs.KeyOf).ToArray()));
+        }
+        return options;
+    }
+
+    private static bool IsOrderTarget(CommandCard card, UnitCard unit, string side) =>
+        unit.GetData<UnitStateData>().Position is not null && !unit.GetData<UnitStateData>().IsDestroyed
+        && (side == "any" || ReferenceEquals(unit.Owner, card.Owner) == (side == "friendly"));
+
     private async Task CaptureAsync(CommandCard card, JsonElement plan, CardTriggerView view, CancellationToken ct)
     {
         var selection = new Selection();
-        if (plan.TryGetProperty("targets", out var targets))
-            foreach (var target in targets.EnumerateArray())
-            {
-                var name = target.GetProperty("id").GetString()!;
-                var side = Text(target, "side", "any");
-                var result = await _match.TargeterManager.CreateTargeter(
-                    new TargetFilter(fineFilter: r => r.Value is UnitCard unit && unit.GetData<UnitStateData>().Position is not null
-                        && !unit.GetData<UnitStateData>().IsDestroyed
-                        && (side == "any" || ReferenceEquals(unit.Owner, card.Owner) == (side == "friendly"))),
-                    slots: [new SingleSelectSlot(name)]).Targeting();
-                if (result.Status != TargetingStatus.Success) { _targetFailure(result.Reason?.ToString() ?? result.Status.ToString()); view.CaptureBox!.CancelPrePlay(); return; }
-                selection.Targets.Add(name, (Card)result.Outcome!.GetSelection(name).Single().Value);
-            }
-        var choose = plan.GetProperty("actions").EnumerateArray().FirstOrDefault(a => Text(a, "op") == "chooseOne");
-        if (choose.ValueKind == JsonValueKind.Object)
+        var result = await _match.TargeterManager.RunAsync(async flow =>
         {
-            var options = choose.GetProperty("options").EnumerateArray()
-                .Select((o, i) => new OptionEntry(i.ToString(), o.GetProperty("label").GetString()!));
-            var result = await _match.TargeterManager.CreateTargeter(slots: [new OptionSelectSlot(options, "choice")]).Targeting();
-            if (result.Status != TargetingStatus.Success) { _targetFailure(result.Reason?.ToString() ?? result.Status.ToString()); view.CaptureBox!.CancelPrePlay(); return; }
-            selection.Option = result.Outcome!.GetIdentifiers("choice").Single();
+            if (plan.TryGetProperty("targets", out var targets))
+                foreach (var target in targets.EnumerateArray())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var name = target.GetProperty("id").GetString()!;
+                    var side = Text(target, "side", "any");
+                    var candidates = new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine }.SelectMany(line => line).Select(slot => slot.Occupant).OfType<UnitCard>().Where(u => IsOrderTarget(card, u, side)).Select(u => u.Ref).ToArray();
+                    if (candidates.Length == 0) return TargeterResult.Failed(TargeterFailureReason.NoAvailableCandidates);
+                    var step = await flow.Step(SelectorTemplates.FieldUnit,
+                        new ReferenceSetParameter(candidates, 1, 1,
+                            domainValidator: r => r.Value is UnitCard u && IsOrderTarget(card, u, side),
+                            tag: new OrderSelectorTag(name)));
+                    while (step.IsFailed && step.Failure == SelectorFailureReason.InvalidSelection)
+                        step = await flow.Retry<Ref<Entity>>();
+                    if (step.IsCancelled) return TargeterResult.Cancelled();
+                    if (!step.IsOk) return TargeterResult.FromSelectorFailure(step.Failure);
+                    selection.Targets.Add(name, (Card)step.Value!.Value);
+                }
+            var choose = plan.GetProperty("actions").EnumerateArray().FirstOrDefault(a => Text(a, "op") == "chooseOne");
+            if (choose.ValueKind == JsonValueKind.Object)
+            {
+                var labels = choose.GetProperty("options").EnumerateArray().Select((o, i) =>
+                    new KeyValuePair<string, string>(i.ToString(), o.GetProperty("label").GetString()!)).ToDictionary(p => p.Key, p => p.Value);
+                var step = await flow.Step(SelectorTemplates.Option,
+                    new IdentifierSetParameter(labels.Keys, 1, 1, new OrderSelectorTag("choice", labels)));
+                while (step.IsFailed && step.Failure == SelectorFailureReason.InvalidSelection)
+                    step = await flow.Retry<string>();
+                if (step.IsCancelled) return TargeterResult.Cancelled();
+                if (!step.IsOk) return TargeterResult.FromSelectorFailure(step.Failure);
+                selection.Option = step.Value;
+            }
+            return TargeterResult.Ok();
+        });
+        if (!result.IsOk)
+        {
+            _targetFailure(result.Reason?.ToString() ?? result.Status.ToString());
+            view.CaptureBox!.CancelPrePlay(); return;
         }
         ct.ThrowIfCancellationRequested();
         view.CaptureBox!.Capture(selection);

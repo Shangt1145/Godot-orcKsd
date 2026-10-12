@@ -12,6 +12,25 @@ public partial class BattleSequence : Control
     private readonly List<Tween> _tweens = [];
     private int _epoch;
     private BattleCard? _orderPaper;
+    private sealed class DrawFlight(BattleCard card)
+    {
+        public BattleCard Card { get; } = card;
+        public bool Taken { get; set; }
+        public List<Tween> Motion { get; } = [];
+        public TaskCompletionSource TakenSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+    private DrawFlight? _drawFlight;
+    public bool IsDrawing(string uid) => _drawFlight is { Taken: false } flight && flight.Card.Uid == uid;
+    public bool TakeDraw(string uid)
+    {
+        if (_drawFlight is not { Taken: false } flight || flight.Card.Uid != uid) return false;
+        flight.Taken = true;
+        foreach (var tween in flight.Motion) if (GodotObject.IsInstanceValid(tween)) tween.Kill();
+        flight.Card.DrawFaceDown = false; flight.Card.Scale = Vector2.One; flight.Card.PaperShear = 0;
+        flight.Card.Rotation = 0; flight.Card.QueueRedraw();
+        flight.TakenSignal.TrySetResult();
+        return true;
+    }
     public event Action<string>? PhaseChanged;
     public int LiveCardCount => GetChildCount();
     public void Initialize(TextureCache textures, AnimClock clock, SfxPlayer sfx)
@@ -52,9 +71,11 @@ public partial class BattleSequence : Control
         foreach (var t in _tweens) if (GodotObject.IsInstanceValid(t)) t.Kill();
         _tweens.Clear();
         _orderPaper = null;
+        _drawFlight?.TakenSignal.TrySetResult(); _drawFlight = null;
         foreach (var child in GetChildren()) { RemoveChild(child); child.QueueFree(); }
     }
-    public async Task DrawAsync(UiDrawPresentation draw, Vector2 destination, float rotation, bool consecutive = false)
+    public async Task DrawAsync(UiDrawPresentation draw, Vector2 destination, float rotation, bool consecutive = false,
+        BattleCard? interactiveCard = null)
     {
         var epoch = _epoch; var self = draw.Side == "self";
         var revealSeconds = consecutive ? .52 : .78;
@@ -63,74 +84,116 @@ public partial class BattleSequence : Control
         // Ignore even accidentally supplied opponent card identity.
         var visible = self && draw.Card?.Visibility == Visibility.Full ? draw.Card : null;
         var size = self ? new Vector2(144, 202) : new Vector2(110, 154);
-        var paper = Paper(null, self ? new(1156, 618) : new(1120, -96), size, self ? .7f : -.7f);
-        _sfx.Play("shuffle");
-        PhaseChanged?.Invoke("draw-start");
-        if (_clock.ReducedMotion)
+        var paper = interactiveCard ?? Paper(null, self ? new(1156, 618) : new(1120, -96), size, self ? .7f : -.7f);
+        var flight = interactiveCard is null ? null : new DrawFlight(paper);
+        _drawFlight = flight;
+        if (interactiveCard is not null)
         {
-            paper.Position = destination; paper.Rotation = rotation;
-            if (visible is not null) paper.Bind(visible, BattleCardMode.Hand, _textures);
-            PhaseChanged?.Invoke(self ? "draw-reveal" : "draw-hidden"); await Wait(consecutive ? .12 : .18, epoch); return;
+            paper.Position = new(1156, 618); paper.Rotation = .7f; paper.DrawFaceDown = true;
+            paper.QueueRedraw();
         }
-        if (self)
+        Tween DrawMotion(bool parallel = true)
         {
-            var start = paper.Position;
-            var reveal = new Vector2(640, 360) - size / 2;
-            var turned = false;
-            var travel = CreateTween(); _tweens.Add(travel);
-            travel.TweenMethod(Callable.From<float>(p =>
+            var tween = CreateTween(); if (parallel) tween.SetParallel();
+            tween.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+            _tweens.Add(tween); flight?.Motion.Add(tween); return tween;
+        }
+        async Task DrawWait(double seconds)
+        {
+            if (flight is null) { await Wait(seconds, epoch); return; }
+            await Task.WhenAny(Wait(seconds, epoch), flight.TakenSignal.Task);
+            if (epoch != _epoch || flight.Taken || !IsInsideTree()) throw new OperationCanceledException();
+        }
+        try
+        {
+            _sfx.Play("shuffle");
+            PhaseChanged?.Invoke("draw-start");
+            if (_clock.ReducedMotion)
             {
-                var ease = p * p * (3 - 2 * p);
-                var flip = Math.Min(1, p / .78f);
-                var enlargement = Mathf.Lerp(1, 1.42f, ease);
-                paper.Position = start.Lerp(reveal, ease) + new Vector2(-MathF.Sin(p * MathF.PI) * 24, -MathF.Sin(p * MathF.PI) * 46);
-                paper.Rotation = .7f * (1 - ease) - MathF.Sin(p * MathF.PI) * .24f;
-                paper.Scale = new Vector2(Math.Max(.025f, MathF.Abs(MathF.Cos(flip * MathF.PI))) * enlargement,
-                    enlargement * (1 - MathF.Sin(flip * MathF.PI) * .055f));
-                paper.PaperShear = MathF.Sin(flip * MathF.PI * 2) * .10f;
-                if (!turned && flip >= .5f)
+                paper.Position = destination; paper.Rotation = rotation;
+                if (visible is not null) paper.Bind(visible, BattleCardMode.Hand, _textures);
+                paper.DrawFaceDown = false;
+                PhaseChanged?.Invoke(self ? "draw-reveal" : "draw-hidden"); await DrawWait(consecutive ? .12 : .18); return;
+            }
+            if (self)
+            {
+                var start = paper.Position;
+                var reveal = new Vector2(640, 360) - size / 2;
+                var turned = false;
+                var travel = DrawMotion(false);
+                travel.TweenMethod(Callable.From<float>(p =>
                 {
-                    turned = true;
-                    if (visible is not null) paper.Bind(visible, BattleCardMode.Hand, _textures);
-                    PhaseChanged?.Invoke("draw-flip");
-                }
-                paper.QueueRedraw();
-            }), 0f, 1f, Time(revealSeconds));
-            await Wait(revealSeconds, epoch);
-            paper.Position = reveal; paper.Rotation = 0; paper.Scale = Vector2.One * 1.42f; paper.PaperShear = 0;
+                    var ease = p * p * (3 - 2 * p);
+                    var flip = Math.Min(1, p / .78f);
+                    var enlargement = Mathf.Lerp(1, 1.42f, ease);
+                    paper.Position = start.Lerp(reveal, ease) + new Vector2(-MathF.Sin(p * MathF.PI) * 24, -MathF.Sin(p * MathF.PI) * 46);
+                    paper.Rotation = .7f * (1 - ease) - MathF.Sin(p * MathF.PI) * .24f;
+                    paper.Scale = new Vector2(Math.Max(.025f, MathF.Abs(MathF.Cos(flip * MathF.PI))) * enlargement,
+                        enlargement * (1 - MathF.Sin(flip * MathF.PI) * .055f));
+                    paper.PaperShear = MathF.Sin(flip * MathF.PI * 2) * .10f;
+                    if (!turned && flip >= .5f)
+                    {
+                        turned = true;
+                        if (visible is not null) paper.Bind(visible, BattleCardMode.Hand, _textures);
+                        paper.DrawFaceDown = false;
+                        PhaseChanged?.Invoke("draw-flip");
+                    }
+                    paper.QueueRedraw();
+                }), 0f, 1f, Time(revealSeconds));
+                await DrawWait(revealSeconds);
+                paper.Position = reveal; paper.Rotation = 0; paper.Scale = Vector2.One * 1.42f; paper.PaperShear = 0;
+            }
+            else
+            {
+                var hiddenSeconds = consecutive ? .34 : .48;
+                var travel = DrawMotion(); travel.TweenProperty(paper, "position", destination, Time(hiddenSeconds));
+                travel.TweenProperty(paper, "rotation", rotation, Time(hiddenSeconds)); await DrawWait(hiddenSeconds);
+            }
+            PhaseChanged?.Invoke(self ? "draw-reveal" : "draw-hidden"); await DrawWait(self ? holdSeconds : consecutive ? .08 : .12);
+            var settle = DrawMotion();
+            settle.TweenProperty(paper, "position", destination, Time(settleSeconds));
+            settle.TweenProperty(paper, "rotation", rotation, Time(settleSeconds));
+            settle.TweenProperty(paper, "scale", Vector2.One, Time(settleSeconds));
+            await DrawWait(settleSeconds); PhaseChanged?.Invoke("draw-settled");
         }
-        else
+        catch (OperationCanceledException) when (flight?.Taken == true) { PhaseChanged?.Invoke("draw-taken"); }
+        finally
         {
-            var hiddenSeconds = consecutive ? .34 : .48;
-            var travel = Motion(); travel.TweenProperty(paper, "position", destination, Time(hiddenSeconds));
-            travel.TweenProperty(paper, "rotation", rotation, Time(hiddenSeconds)); await Wait(hiddenSeconds, epoch);
+            if (_drawFlight == flight) _drawFlight = null;
+            if (flight is not null)
+            {
+                foreach (var tween in flight.Motion)
+                { if (GodotObject.IsInstanceValid(tween)) tween.Kill(); _tweens.Remove(tween); }
+                if (GodotObject.IsInstanceValid(paper)) { paper.DrawFaceDown = false; paper.QueueRedraw(); }
+            }
         }
-        PhaseChanged?.Invoke(self ? "draw-reveal" : "draw-hidden"); await Wait(self ? holdSeconds : consecutive ? .08 : .12, epoch);
-        var settle = Motion();
-        settle.TweenProperty(paper, "position", destination, Time(settleSeconds));
-        settle.TweenProperty(paper, "rotation", rotation, Time(settleSeconds));
-        settle.TweenProperty(paper, "scale", Vector2.One, Time(settleSeconds));
-        await Wait(settleSeconds, epoch); PhaseChanged?.Invoke("draw-settled");
     }
-    public async Task RevealOrderAsync(UiCardView card, Vector2 from)
+    public Task RevealOrderAsync(UiCardView card, Vector2 from) =>
+        RevealOrderAsync(card, new DeploymentPose(from, new(144, 202), Vector2.One, 0));
+
+    // Reference f456–462 goes straight from the released card to its last display position.
+    // The clip cuts during the following exit; its full offscreen continuation is adapted here.
+    public const double OrderDockSeconds = .18;
+    public const double OrderHoldSeconds = 1.5;
+    public const double OrderExitSeconds = .44;
+    private static readonly Vector2 OrderDockCenter = new(420, 456);
+    public async Task RevealOrderAsync(UiCardView card, DeploymentPose from, string? choiceCaption = null)
     {
         var epoch = _epoch;
-        var paper = Paper(card, _clock.ReducedMotion ? new(540, 209) : from, new(200, 280));
+        var paper = Paper(card, from.Position, from.Size, from.Rotation, BattleCardMode.Hand);
+        paper.Scale = from.Scale;
+        paper.ChoiceCaption = choiceCaption;
         _orderPaper = paper;
-        if (!_clock.ReducedMotion)
+        PhaseChanged?.Invoke("order-start");
+        var fromCenter = from.Center;
+        var fromWidth = from.Size.X * from.Scale.X;
+        _sfx.Play("intel"); PhaseChanged?.Invoke("order-reveal");
+        if (!_clock.ReducedMotion && (fromCenter.DistanceTo(OrderDockCenter) > 1 || Math.Abs(fromWidth - 180) > 1))
         {
-            paper.Scale = Vector2.One * .65f; paper.Rotation = card.OwnerSide == "enemy" ? -.08f : .08f;
-            var t = Motion(); t.TweenProperty(paper, "position", new Vector2(540, 209), Time(.38));
-            t.TweenProperty(paper, "scale", Vector2.One, Time(.38)); t.TweenProperty(paper, "rotation", 0f, Time(.38));
-            await Wait(.38, epoch);
+            await Track(OrderDockSeconds, p => SetPaperPose(paper, fromCenter.Lerp(OrderDockCenter, Ease(p)),
+                Mathf.Lerp(fromWidth, 180, Ease(p)), Mathf.Lerp(from.Rotation, 0, Ease(p)), 0), epoch);
         }
-        _sfx.Play("intel"); PhaseChanged?.Invoke("order-reveal"); await Wait(.55, epoch);
-        if (!_clock.ReducedMotion)
-        {
-            var dock = Motion(); dock.TweenProperty(paper, "position", new Vector2(1008, 284), Time(.32));
-            dock.TweenProperty(paper, "scale", Vector2.One * .75f, Time(.32));
-            await Wait(.32, epoch);
-        }
+        else SetPaperPose(paper, OrderDockCenter, 180, 0, 0);
         PhaseChanged?.Invoke("order-docked");
     }
     public async Task RetireOrderAsync()
@@ -138,10 +201,22 @@ public partial class BattleSequence : Control
         var epoch = _epoch;
         if (_orderPaper is { } card && GodotObject.IsInstanceValid(card))
         {
-            var t = Motion(); t.TweenProperty(card, "modulate:a", 0f, Time(.28));
-            if (!_clock.ReducedMotion) t.TweenProperty(card, "position", card.Position + new Vector2(0, 26), Time(.28));
+            // Resolution runs alongside this readable hold, without blocking player input.
+            PhaseChanged?.Invoke("order-hold");
+            await Wait(OrderHoldSeconds, epoch);
+            PhaseChanged?.Invoke("order-held");
+            if (_clock.ReducedMotion)
+                await Track(.12, p => card.Modulate = new Color(1, 1, 1, 1 - p), epoch);
+            else
+            {
+                var center = card.Position + card.Size / 2;
+                var width = card.Size.X * card.Scale.X;
+                PhaseChanged?.Invoke("order-exit");
+                await Track(OrderExitSeconds, p => SetPaperPose(card,
+                    center.Lerp(new(-240, 260), p * p), Mathf.Lerp(width, width * 1.1f, p), -.08f * p, 0), epoch);
+                PhaseChanged?.Invoke("order-offscreen");
+            }
         }
-        await Wait(.28, epoch);
         if (_orderPaper is { } retired && GodotObject.IsInstanceValid(retired)) { RemoveChild(retired); retired.QueueFree(); }
         _orderPaper = null; PhaseChanged?.Invoke("order-retired");
     }
@@ -368,23 +443,52 @@ public partial class BattleSequence : Control
         }
     }
     private static float Ease(float t) { t = Math.Clamp(t, 0, 1); return t * t * (3 - 2 * t); }
-    public async Task CounterAsync(UiCounterPresentation counter, BattleCard? handCard, Func<Task>? resolve = null)
+    public async Task CounterAsync(UiCounterPresentation counter, BattleCard? handCard, Func<Task>? resolve = null,
+        DeploymentPose? blockedOrigin = null, DeploymentPose? counterOrigin = null)
     {
         var epoch = _epoch;
         if (counter.Stage != UiCounterStage.Triggered)
         {
-            // Arming never creates a field card or exposes an opponent's hand.
+            // The reserved card stays in the hand: one paper returns from the actual release pose.
             if (counter.Side != "self" || counter.Card?.Visibility != Visibility.Full || handCard is null) return;
+            var from = counterOrigin ?? DeploymentPose.From(handCard);
+            var rest = new DeploymentPose(handCard.RestPosition, handCard.Size, Vector2.One, handCard.RestRotation);
+            var returningPaper = Paper(counter.Card, from.Position, from.Size, from.Rotation, BattleCardMode.Hand);
+            returningPaper.Scale = from.Scale; handCard.Visible = false;
             handCard.UpdateView(counter.Card);
+            var notice = new BattleCounterNotice { Size = Size,
+                Caption = counter.Stage == UiCounterStage.Armed ? "反制激活" : "反制取消" };
+            AddChild(notice);
             _sfx.Play("counterSet");
             PhaseChanged?.Invoke(counter.Stage == UiCounterStage.Armed ? "counter-armed" : "counter-disarmed");
-            await Wait(.45, epoch); return;
+            PhaseChanged?.Invoke("counter-return-start");
+            try
+            {
+                await Track(_clock.ReducedMotion ? .12 : .56, p =>
+                {
+                    var q = Ease(p);
+                    SetPaperPose(returningPaper, from.Center.Lerp(rest.Center, q),
+                        Mathf.Lerp(from.Size.X * from.Scale.X, rest.Size.X, q),
+                        Mathf.Lerp(from.Rotation, rest.Rotation, q), 0);
+                    notice.Modulate = new(1, 1, 1, Math.Min(1, Math.Min(p * 8, (1 - p) * 6)));
+                }, epoch);
+                PhaseChanged?.Invoke("counter-returned");
+            }
+            finally
+            {
+                if (GodotObject.IsInstanceValid(returningPaper) && returningPaper.GetParent() == this) { RemoveChild(returningPaper); returningPaper.QueueFree(); }
+                if (GodotObject.IsInstanceValid(notice) && notice.GetParent() == this) { RemoveChild(notice); notice.QueueFree(); }
+                if (epoch == _epoch && GodotObject.IsInstanceValid(handCard))
+                { handCard.Visible = true; handCard.Position = rest.Position; handCard.Rotation = rest.Rotation; handCard.Scale = Vector2.One; }
+            }
+            return;
         }
         if (counter.Card is null) return;
         if (handCard is not null) handCard.Visible = false;
         if (counter.BlockedCard is { } order)
         {
-            await RevealOrderAsync(order, order.OwnerSide == "enemy" ? new(585, -60) : new(568, 628));
+            await RevealOrderAsync(order, blockedOrigin ?? new DeploymentPose(
+                order.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628), new(144, 202), Vector2.One, 0));
             _orderPaper!.Modulate = new Color(.65f, .65f, .62f);
             _orderPaper.AddChild(new BattleStatusCue { Size = _orderPaper.Size, Center = _orderPaper.Size / 2,
                 Caption = "已阻止", Ink = new("ad4b36"), Duration = Time(1.6), Stamp = true });
@@ -410,17 +514,21 @@ public partial class BattleSequence : Control
         card.UpdateView(visibleAfter ?? change.After);
         var caption = change.Status switch
         {
-            UiStatusKind.Heal => "治疗 " + change.After.Health,
+            UiStatusKind.Heal => change.After.IsHq ? "总部防御 +" + ((change.After.Health ?? 0) - (change.Before.Health ?? 0)) : "治疗 " + change.After.Health,
             UiStatusKind.Buff => $"{change.After.EffectiveAttack} / {change.After.Health}",
             UiStatusKind.Damaged => "-" + Math.Max(0, (change.Before.Health ?? 0) - (change.After.Health ?? 0)),
             UiStatusKind.Suppressed => "压制", UiStatusKind.Cleared => "已解除",
-            _ => "费用 " + change.After.EffectiveCost
+            UiStatusKind.Silenced => "抑制", UiStatusKind.Veteran => "老兵升级",
+            UiStatusKind.Revealed => "已揭示", UiStatusKind.KeywordsChanged => "词条变化",
+            UiStatusKind.TypesChanged => "兵种变化",
+            _ => change.After.EffectiveCost != change.Before.EffectiveCost
+                ? "部署费用 " + change.After.EffectiveCost : "操作费用 " + change.After.EffectiveOpCost
         };
         var cue = new BattleStatusCue { Size = Size, Center = card.Position + (card.Mode == BattleCardMode.Hand ? new Vector2(card.Size.X / 2, 20) : card.Size / 2), Caption = caption,
             Ink = change.Status is UiStatusKind.Heal or UiStatusKind.Buff ? new("a2b67d")
                 : change.Status == UiStatusKind.Damaged ? new("d66142") : new("ded2a7"),
             Duration = Time(.80), Quiet = _clock.ReducedMotion, Stamp = change.Status is UiStatusKind.Suppressed or UiStatusKind.Cleared };
-        AddChild(cue); _sfx.Play("intel");
+        AddChild(cue); _sfx.Play(change.Status == UiStatusKind.Veteran ? "veteran" : "intel");
         PhaseChanged?.Invoke("status-" + change.Status.ToString().ToLowerInvariant());
         if (!_clock.ReducedMotion)
         {
@@ -429,6 +537,17 @@ public partial class BattleSequence : Control
             pulse.TweenProperty(card, "scale", Vector2.One, Time(.24));
         }
         await Wait(.80, epoch);
+        if (GodotObject.IsInstanceValid(cue) && cue.GetParent() == this) { RemoveChild(cue); cue.QueueFree(); }
+    }
+    public async Task ShuffleAsync(string side)
+    {
+        var epoch = _epoch;
+        var center = side == "self" ? new Vector2(1198, 669) : new Vector2(640, 38);
+        var cue = new BattleStatusCue { Size = Size, Center = center, Caption = "洗牌",
+            Ink = new("ded2a7"), Duration = Time(.55), Quiet = _clock.ReducedMotion };
+        AddChild(cue); _sfx.Play("shuffle"); PhaseChanged?.Invoke("shuffle-" + side);
+        await Wait(.55, epoch);
+        if (GodotObject.IsInstanceValid(cue) && cue.GetParent() == this) { RemoveChild(cue); cue.QueueFree(); }
     }
     /// <summary>Opening-hand replacement: kept cards are decided outside; here the returned ones travel back to the stack.</summary>
     public async Task MulliganReturnAsync(IReadOnlyList<BattleCard> leaving)

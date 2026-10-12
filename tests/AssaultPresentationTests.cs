@@ -20,7 +20,7 @@ public sealed class AssaultPresentationTests
 {
     private const string InfantryId = "assault-infantry";
 
-    private static Match NewMatch()
+    private static Match NewMatch(Action<Orc.Game.Targeting.ISelectorInstance>? present = null)
     {
         var definitions = new[]
         {
@@ -29,10 +29,10 @@ public sealed class AssaultPresentationTests
                 unitTypes: [UnitType.Infantry], faction: Faction.Germany, rarity: Rarity.Standard))
         };
         Match? match = null;
-        // AutoRespond is required, not optional: BeginUnitPrePlayAsync parks on a SingleSelect slot
+        // AutoRespond is required, not optional: BeginUnitPrePlayAsync parks on a native selector
         // and waits indefinitely unless a choice is submitted. A handler that only records the
         // request deadlocks the test host.
-        var bridge = new OrcTargeterBridge(() => InteractablesOf(match), OrcTargeterBridge.AutoRespond);
+        var bridge = new OrcTargeterBridge(present ?? OrcTargeterBridge.AutoRespond);
         match = new Match(
             new CardList(Enumerable.Repeat(InfantryId, 20)),
             new CardList(Enumerable.Repeat(InfantryId, 20)),
@@ -40,20 +40,19 @@ public sealed class AssaultPresentationTests
         return match;
     }
 
-    private static IReadOnlyList<object?> InteractablesOf(Match? match)
-    {
-        if (match is null || match.State == MatchState.Preparing) return Array.Empty<object?>();
-        var references = new List<object?>();
-        foreach (var line in new[] { match.Battlefield.PlayerASupportLine, match.Battlefield.FrontLine, match.Battlefield.PlayerBSupportLine })
-            foreach (var slot in line) references.Add(slot.Ref);
-        foreach (var player in match.Players) references.Add(player.Hq.Ref);
-        return references;
-    }
+
 
     [Fact]
     public async Task AttackOnTheEnemyHqCarriesTheEngineAmountAndTheAttacker()
     {
-        var match = NewMatch();
+        var aimAtHq = false;
+        var match = NewMatch(selector =>
+        {
+            if (!aimAtHq) { OrcTargeterBridge.AutoRespond(selector); return; }
+            // Backend candidates now include enemy units too; this scenario explicitly aims at the HQ.
+            var hq = selector.Presentation.Candidates.Single(r => r.Value is Orc.Game.Players.Hq);
+            selector.Submit(new Orc.Game.Targeting.DropEvent(hq));
+        });
         var host = new OrcMatchHost(match, "assault");
         var impacts = new List<IReadOnlyList<UiOrderImpact>>();
         host.CombatReady += (reported, _, _) => impacts.AddRange(reported);
@@ -74,6 +73,7 @@ public sealed class AssaultPresentationTests
         await match.EndTurn();
         await OrcOpponentDriver.PlayTurnAsync(match, match.Players[1]);
 
+        aimAtHq = true;
         var attack = match.CommandManager.BeginAttackAsync(unit);
         Assert.True(await Task.WhenAny(attack, Task.Delay(TimeSpan.FromSeconds(20))) == attack,
             "the attack never completed");
