@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "orc.ui.demo.grenadier",
+  "name": "演示掷弹兵",
+  "components": [
+    { "component": "typeCategory", "type": ["infantry"] },
+    { "component": "factionCost", "faction": "Germany", "kredits": 2 },
+    { "component": "battleStats", "operationCost": 1, "attack": 2, "defense": 3 },
+    { "component": "tagData", "rarity": "Standard" },
+    { "component": "effects", "prefabs": ["orc.ui.demo.rally"] }
+  ]
+}

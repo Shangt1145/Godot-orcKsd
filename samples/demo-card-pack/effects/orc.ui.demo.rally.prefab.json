@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "root": {
+    "id": "orc.ui.demo.rally",
+    "version": 1,
+    "mainTrigger": {
+      "id": "t.main",
+      "stableKey": "演示·集结号（部署抽牌）",
+      "kind": "passive",
+      "viewType": "Orc.Cards.CardEventView",
+      "hooks": ["unit.deployed"],
+      "events": [
+        {
+          "id": "onUnitDeployed",
+          "entry": "HandleAsync",
+          "csx": "// 演示·集结号：unit.deployed → Host==载荷单位 → 从卡组抽 1 张牌。\nFunc<Orc.Cards.CardEventView, Context, CancellationToken, Task> HandleAsync = async (view, ctx, ct) =>\n{\n    if (view.Unit is not Orc.Cards.Card deployed || !object.ReferenceEquals(deployed, view.Host)) return;\n    var runtime = Orc.Game.Effects.EffectRuntime.ResolveFor(deployed);\n    if (runtime is null) return;\n    await runtime.DrawAsync(deployed, 1, ct);\n};",
+          "version": 1
+        }
+      ],
+      "version": 1
+    },
+    "otherTriggers": [],
+    "modings": [],
+    "injects": []
+  }
+}

@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="OrC-KSD · 卡牌指挥部"
-config/version="0.0.0-alpha.22"
+config/version="0.0.0-alpha.23"
 run/main_scene="res://proto/scenes/Main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 

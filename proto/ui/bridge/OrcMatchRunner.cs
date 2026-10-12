@@ -41,6 +41,8 @@ public sealed class OrcMatchRunner
     public string? CatalogSourceDirectory { get; init; }
     public ConstructedDeck? ConstructedDeck { get; init; }
     public IReadOnlyList<DiyCardDraft>? CustomCards { get; init; }
+    /// <summary>Enabled card packs; null falls back to the process-enabled set (PackSystem).</summary>
+    public IReadOnlyList<PackContent>? Packs { get; init; }
     public UiCardPoolReport? CardPoolReport => _session?.CardPoolReport;
 
     /// <summary>Explicit verification fixtures drive both sides through the native engine.</summary>
@@ -99,7 +101,8 @@ public sealed class OrcMatchRunner
         {
             session = await OrcMatchSession.CreateFromCatalogAsync(CatalogCards,
                 seed: DeckSeed ?? Random.Shared.Next(), matchId: MatchId, fallbackCardId: InfantryId, artLookup: ArtLookup, ct: ct,
-                openingHand: OpeningHand, sourceDirectory: CatalogSourceDirectory, constructedDeck: ConstructedDeck, customCards: CustomCards);
+                openingHand: OpeningHand, sourceDirectory: CatalogSourceDirectory, constructedDeck: ConstructedDeck, customCards: CustomCards,
+                packs: Packs);
         }
         else
         {

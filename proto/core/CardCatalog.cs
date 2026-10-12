@@ -9,13 +9,31 @@ public sealed class CardCatalog
     public IReadOnlyList<UiCardDefinition> Cards { get; private set; } = Array.Empty<UiCardDefinition>();
     public IReadOnlyList<string> Warnings { get; private set; } = Array.Empty<string>();
     private IReadOnlyList<UiCardDefinition> _sourceCards = [];
+    private IReadOnlyList<UiCardDefinition> _customCards = [];
+    private IReadOnlyList<UiCardDefinition> _packCards = [];
     public void SetCustomCards(IReadOnlyList<UiCardDefinition> cards)
     {
         if (cards.Any(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal))
             || cards.Select(c => c.CardId).Distinct(StringComparer.Ordinal).Count() != cards.Count)
             throw new InvalidDataException("自定义卡牌编号无效或重复");
-        Cards = _sourceCards.Concat(cards).OrderBy(c => c.Set, StringComparer.Ordinal).ThenBy(c => c.Cost).ThenBy(c => c.CardId, StringComparer.Ordinal).ToArray();
+        _customCards = cards;
+        Rebuild();
     }
+
+    /// <summary>Installs pack-card projections. Pack ids live in the "pack/&lt;packId&gt;/&lt;cardId&gt;"
+    /// namespace and never collide with source or DIY cards.</summary>
+    public void SetPackCards(IReadOnlyList<UiCardDefinition> cards)
+    {
+        if (cards.Any(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal))
+            || cards.Select(c => c.CardId).Distinct(StringComparer.Ordinal).Count() != cards.Count)
+            throw new InvalidDataException("卡包卡牌编号无效或重复");
+        _packCards = cards;
+        Rebuild();
+    }
+
+    private void Rebuild() =>
+        Cards = _sourceCards.Concat(_packCards).Concat(_customCards)
+            .OrderBy(c => c.Set, StringComparer.Ordinal).ThenBy(c => c.Cost).ThenBy(c => c.CardId, StringComparer.Ordinal).ToArray();
 
     public void Load(string directory, Func<string, string>? resolveArt = null)
     {

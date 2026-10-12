@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "orc.ui.demo.rifleman",
+  "name": "演示步枪兵",
+  "components": [
+    { "component": "typeCategory", "type": ["infantry"] },
+    { "component": "factionCost", "faction": "Germany", "kredits": 1 },
+    { "component": "battleStats", "operationCost": 1, "attack": 1, "defense": 2 },
+    { "component": "tagData", "rarity": "Standard" }
+  ]
+}

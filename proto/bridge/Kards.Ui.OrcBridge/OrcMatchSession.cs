@@ -104,18 +104,24 @@ public sealed partial class OrcMatchSession : IDisposable
         IReadOnlyList<UiCardDefinition> cards, int seed, string matchId, string fallbackCardId,
         Func<string, string>? artLookup = null, CancellationToken ct = default,
         IReadOnlyList<string>? openingHand = null, string? sourceDirectory = null, ConstructedDeck? constructedDeck = null,
-        IReadOnlyList<DiyCardDraft>? customCards = null)
+        IReadOnlyList<DiyCardDraft>? customCards = null, IReadOnlyList<PackContent>? packs = null)
     {
         if (sourceDirectory is null) throw new InvalidDataException("Catalog admission requires its source directory.");
-        var sourceCards = cards.Where(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal)).ToArray();
+        var sourceCards = cards.Where(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal)
+            && !c.CardId.StartsWith("pack/", StringComparison.Ordinal)).ToArray();
         var (reviewed, report, effects) = VerifiedCardPool.Compile(sourceCards, sourceDirectory);
         var custom = (customCards ?? []).Select(c => DiyCardCompiler.Compile(c.Snapshot(), sourceCards)).ToArray();
         if (custom.Select(c => c.Entry.Id).Distinct(StringComparer.Ordinal).Count() != custom.Length)
             throw new InvalidDataException("DIY 卡牌编号重复");
         if (cards.Any(c => c.CardId.StartsWith("diy/", StringComparison.Ordinal) && !custom.Any(d => d.Entry.Id == c.CardId)))
             throw new InvalidDataException("缺少 DIY 卡牌的可执行定义");
-        var pool = reviewed.Concat(custom.Select(c => c.Entry)).ToArray();
-        var completeCards = sourceCards.Concat(custom.Select(c => c.Card)).ToArray();
+        var packList = (packs ?? PackSystem.EnabledPacks).ToArray();
+        var packEntries = packList.SelectMany(p => p.PrefixedDefinitions).ToArray();
+        var packIdSet = packEntries.Select(e => e.Id).ToHashSet(StringComparer.Ordinal);
+        if (packIdSet.Count != packEntries.Length)
+            throw new InvalidDataException("卡包卡牌编号重复");
+        var pool = reviewed.Concat(custom.Select(c => c.Entry)).Concat(packEntries).ToArray();
+        var completeCards = sourceCards.Concat(custom.Select(c => c.Card)).Concat(packList.SelectMany(p => p.Projections)).ToArray();
         if (reviewed.Count == 0) throw new InvalidDataException("No reviewed cards are available; probe fallback is not a catalog match.");
         if (openingHand is not null && openingHand.Any(id => !pool.Any(e => e.Id == id)))
             throw new InvalidDataException("The requested opening hand contains unreviewed cards.");
@@ -132,7 +138,7 @@ public sealed partial class OrcMatchSession : IDisposable
         var opponentDeck = opponent?.CardIds ?? DeckBuilder.BuildVerified(reviewed, unchecked(seed + 1));
         var session = await CreateNativeAsync(pool, deck, opponentDeck, seed, matchId,
             artLookup: artLookup, ct: ct, openingHand: openingHand, deckConfiguration: constructedDeck?.Options,
-            opponentDeckConfiguration: opponent?.Options, customCards: custom);
+            opponentDeckConfiguration: opponent?.Options, customCards: custom, packs: packList);
         try
         {
             session._effects = new SourceEffectAssembly(session.Match, effects, reason => session.LastRejectionReason ??= reason);
@@ -191,7 +197,7 @@ public sealed partial class OrcMatchSession : IDisposable
         int seed, string matchId, int viewerIndex = 0,
         Func<string, string>? artLookup = null, CancellationToken ct = default,
         IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null,
-        IReadOnlyList<CompiledDiyCard>? customCards = null)
+        IReadOnlyList<CompiledDiyCard>? customCards = null, IReadOnlyList<PackContent>? packs = null)
     {
         if (deckA.Count == 0 || deckB.Count == 0)
             throw new ArgumentException("Both decks must have at least one card.", nameof(deckA));
@@ -222,26 +228,41 @@ public sealed partial class OrcMatchSession : IDisposable
         var registry = new CardEffectRegistry();
         foreach (var card in customCards ?? [])
             if (card.Effect is { } effect) registry.DeclarePrefab(card.Entry.Id, [effect.Root.Id]);
+        // Packs attach as one unit: declarations into the registry, inline prefabs and effect
+        // libraries into the match PrefabManager. Registration precedes card loading (engine
+        // pipeline order) and InitializeAsync verifies every keyword binding against these prefabs.
+        var packList = packs ?? PackSystem.EnabledPacks;
         var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge, effectRegistry: registry,
             deckConfigForPlayerA: Config(deckConfiguration), deckConfigForPlayerB: Config(opponentDeckConfiguration));
         match.Engine.ScriptEvaluator = NativeScriptHost.Evaluator;
         foreach (var card in customCards ?? [])
             if (card.Effect is { } effect) match.Engine.Prefabs.RegisterPrefab(effect);
+        PackSystem.AttachToMatch(registry, match.Engine, packList);
         var host = new OrcMatchHost(match, matchId, viewerIndex, artLookup);
         session = new OrcMatchSession(host, match) { MatchId = matchId };
         try
         {
             await host.InitializeAsync(ct);
+            var packExpected = packList.SelectMany(p => p.PrefixedDeclarations).ToLookup(d => d.Item1, d => d.Item2, StringComparer.Ordinal);
             foreach (var player in match.Players)
                 foreach (var card in player.Hand.OfType<CardBase>()
                     .Concat(Enumerable.Range(0, player.Deck.Count).Select(i => player.Deck.PeekInstance(i))))
                 {
                     if (!match.CardLibrary.TryGetRegisteredId(card.Definition, out var id)) continue;
                     var expected = customCards?.FirstOrDefault(c => c.Entry.Id == id);
-                    if (expected?.Effect is null) continue;
-                    var loaded = card.Effects.Where(e => e.Name == expected.Effect.Root.Id).ToArray();
-                    if (loaded.Length != 1 || !loaded[0].IsMounted)
-                        throw new InvalidDataException($"DIY 卡牌 {id} 的效果未完整装载，拒绝开始对局");
+                    if (expected?.Effect is { } effect)
+                    {
+                        var loaded = card.Effects.Where(e => e.Name == effect.Root.Id).ToArray();
+                        if (loaded.Length != 1 || !loaded[0].IsMounted)
+                            throw new InvalidDataException($"DIY 卡牌 {id} 的效果未完整装载，拒绝开始对局");
+                    }
+                    foreach (var prefabIds in packExpected[id])
+                        foreach (var prefabId in prefabIds.Distinct(StringComparer.Ordinal))
+                        {
+                            var packLoaded = card.Effects.Where(e => e.Name == prefabId).ToArray();
+                            if (packLoaded.Length != 1 || !packLoaded[0].IsMounted)
+                                throw new InvalidDataException($"卡包卡牌 {id} 的效果 {prefabId} 未完整装载，拒绝开始对局");
+                        }
                 }
             if (openingHand is { Count: > 0 })
                 await ApplyOpeningHandAsync(host, definitions, openingHand, ct);

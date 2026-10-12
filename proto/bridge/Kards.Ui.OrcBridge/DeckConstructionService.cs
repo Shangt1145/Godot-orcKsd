@@ -7,8 +7,10 @@ public sealed class DeckConstructionService
 {
     private readonly IReadOnlyList<UiCardDefinition> _sourceCards;
     private readonly IReadOnlySet<string> _reviewedIds;
+    private IReadOnlyList<UiCardDefinition> _packCards = [];
     public IReadOnlyList<UiCardDefinition> Cards { get; private set; }
     public IReadOnlyList<UiCardDefinition> CustomCards { get; private set; } = [];
+    public IReadOnlyList<UiCardDefinition> PackCards => _packCards;
     public IReadOnlyDictionary<string, string> CustomErrors { get; private set; } = new Dictionary<string, string>();
     public IReadOnlySet<string> PlayableIds { get; private set; }
     public UiCardPoolReport Report { get; }
@@ -32,8 +34,22 @@ public sealed class DeckConstructionService
             custom.Add(result.Card!);
         }
         CustomCards = custom.AsReadOnly(); CustomErrors = errors;
-        Cards = _sourceCards.Concat(custom).ToArray();
-        PlayableIds = _reviewedIds.Concat(custom.Select(c => c.CardId)).ToHashSet(StringComparer.Ordinal);
+        Rebuild(custom);
+    }
+
+    /// <summary>Installs pack projections into the buildable pool. Pack cards are engine-admitted by
+    /// construction (PackSystem precheck), so every projection is playable.</summary>
+    public void UpdatePacks(IReadOnlyList<UiCardDefinition> packCards)
+    {
+        _packCards = packCards.ToArray();
+        Rebuild(CustomCards);
+    }
+
+    private void Rebuild(IReadOnlyList<UiCardDefinition> custom)
+    {
+        Cards = _sourceCards.Concat(_packCards).Concat(custom).ToArray();
+        PlayableIds = _reviewedIds.Concat(_packCards.Select(c => c.CardId)).Concat(custom.Select(c => c.CardId))
+            .ToHashSet(StringComparer.Ordinal);
     }
     public IReadOnlyList<string> Validate(ConstructedDeck deck) => ConstructionRules.Validate(deck, Cards, PlayableIds);
     public ConstructedDeck Starter(int size = 39, int seed = 20261009)

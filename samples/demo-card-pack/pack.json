@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "orc.ui.demo",
+  "name": "UI 演示卡包",
+  "kind": "pack",
+  "version": 1,
+  "keywords": [
+    {
+      "id": "检阅",
+      "label": "检阅",
+      "battle": false,
+      "bindings": [
+        { "prefabId": "orc.ui.demo.inspection", "effectName": "检阅·部署抽牌" }
+      ]
+    }
+  ]
+}

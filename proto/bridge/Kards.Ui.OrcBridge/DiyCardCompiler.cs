@@ -37,7 +37,35 @@ public static class DiyCardCompiler
         ["ambush"] = KeywordIds.Ambush, ["mobilize"] = KeywordIds.Mobilize,
         ["pincer"] = KeywordIds.Pincer, ["armor"] = KeywordIds.Armor, ["covert"] = KeywordIds.Covert
     };
-    public static IReadOnlyList<UiDiyChoice> Keywords { get; } = KeywordMap.Select(p => new UiDiyChoice(p.Key, p.Value)).ToArray();
+    private static readonly object KeywordGate = new();
+    private static volatile IReadOnlyList<UiDiyChoice> _keywords = KeywordMap.Select(p => new UiDiyChoice(p.Key, p.Value)).ToArray();
+    private static volatile IReadOnlyDictionary<string, string> _packKeywords = new Dictionary<string, string>();
+
+    /// <summary>Engine keyword id → UI token. Built-ins map to their DIY token; pack keywords (already
+    /// engine ids) pass through, so DIY cards can carry pack vocabulary.</summary>
+    public static string KeywordToken(string engineId)
+    {
+        lock (KeywordGate)
+        {
+            var pack = _packKeywords.FirstOrDefault(p => p.Value == engineId).Key;
+            if (pack is { Length: > 0 }) return pack;
+            return KeywordMap.FirstOrDefault(p => p.Value == engineId).Key is { Length: > 0 } token ? token : engineId;
+        }
+    }
+
+    /// <summary>Installs the enabled packs' keyword vocabulary (pack id → engine id, identity map).
+    /// Called by the UI whenever the enabled pack set changes; DIY validation accepts those ids.</summary>
+    public static void SetPackKeywords(IReadOnlyDictionary<string, string> packKeywords)
+    {
+        lock (KeywordGate)
+        {
+            _packKeywords = packKeywords;
+            _keywords = KeywordMap.Select(p => new UiDiyChoice(p.Key, p.Value))
+                .Concat(packKeywords.Select(p => new UiDiyChoice(p.Key, p.Value))).ToArray();
+        }
+    }
+
+    public static IReadOnlyList<UiDiyChoice> Keywords { get { lock (KeywordGate) return _keywords; } }
     public static IReadOnlyList<UiDiyChoice> Operations { get; } =
         [new("draw", "抽牌"), new("gainPoint", "获得指挥点"), new("gainSlot", "获得指挥点槽"),
          new("damage", "单位伤害"), new("buff", "攻防增益"), new("pin", "压制"),
@@ -127,8 +155,8 @@ public static class DiyCardCompiler
         if (draft.Cost is < 0 or > 99 || draft.OpCost is < 0 or > 99 || draft.Attack is < 0 or > 99
             || draft.Defense is < 1 or > 99 || draft.Armor is < 0 or > 3)
             throw new InvalidDataException("费用与攻击须为 0–99，防御须为 1–99，重甲须为 0–3");
-        if (draft.Keywords.Any(k => !KeywordMap.ContainsKey(k)))
-            throw new InvalidDataException("含未接入的词条：" + string.Join("、", draft.Keywords.Where(k => !KeywordMap.ContainsKey(k))));
+        if (draft.Keywords.Any(k => !KnownKeyword(k)))
+            throw new InvalidDataException("含未接入的词条：" + string.Join("、", draft.Keywords.Where(k => !KnownKeyword(k))));
         if (draft.CardType == "order" && (draft.Keywords.Length != 0 || draft.Effects.Length == 0))
             throw new InvalidDataException("指令必须有打出效果，不能附带单位词条");
         if (!Enum.TryParse<UnitType>(draft.UnitType, true, out var unitType) || !Enum.IsDefined(unitType))
@@ -139,7 +167,7 @@ public static class DiyCardCompiler
             draft.CardType == "unit" ? draft.Defense : 0,
             category: draft.CardType == "unit" ? CardCategory.Unit : CardCategory.Command,
             unitTypes: draft.CardType == "unit" ? [unitType] : [],
-            keywords: draft.Keywords.Select(k => new KeywordDeclaration(KeywordMap[k], k == "armor" ? draft.Armor : null)),
+            keywords: draft.Keywords.Select(k => new KeywordDeclaration(EngineKeywordId(k), k == "armor" ? draft.Armor : null)),
             faction: draft.Nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany, "USG" => Faction.USA, _ => Faction.Britain },
             rarity: draft.Rarity switch { "iron" => Rarity.Standard, "bronze" => Rarity.Limited, "silver" => Rarity.Special, _ => Rarity.Elite });
         EffectSnapshot? snapshot = null;
@@ -179,6 +207,18 @@ public static class DiyCardCompiler
         var roundTrip = new CardDefinition(body!.Name, body.Components);
         return new(draft.Snapshot(), Preview(draft with { Name = native.Name }, catalog),
             new(draft.Id, roundTrip), snapshot, json);
+    }
+    private static bool KnownKeyword(string token)
+    {
+        lock (KeywordGate)
+            return KeywordMap.ContainsKey(token) || _packKeywords.ContainsKey(token);
+    }
+    private static string EngineKeywordId(string token)
+    {
+        lock (KeywordGate)
+            return KeywordMap.TryGetValue(token, out var engine) ? engine
+                : _packKeywords.TryGetValue(token, out var pack) ? pack
+                : throw new InvalidDataException("含未接入的词条：" + token);
     }
     private static void CheckEffect(string type, DiyEffectDraft e)
     {

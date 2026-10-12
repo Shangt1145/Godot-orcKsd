@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "root": {
+    "id": "orc.ui.demo.inspection",
+    "version": 1,
+    "mainTrigger": {
+      "id": "t.main",
+      "stableKey": "检阅·部署抽牌（词条绑定示例）",
+      "kind": "passive",
+      "viewType": "Orc.Cards.CardEventView",
+      "hooks": ["unit.deployed"],
+      "events": [
+        {
+          "id": "onUnitDeployed",
+          "entry": "HandleAsync",
+          "csx": "// 检阅词条的数据壳绑定效果：持有「检阅」词条的单位部署时抽 1 张牌。\n// 实际进入对局的方式：由授予类效果发放「检阅」词条（授予链装载期按绑定实例化）。\nFunc<Orc.Cards.CardEventView, Context, CancellationToken, Task> HandleAsync = async (view, ctx, ct) =>\n{\n    if (view.Unit is not Orc.Cards.Card deployed || !object.ReferenceEquals(deployed, view.Host)) return;\n    var runtime = Orc.Game.Effects.EffectRuntime.ResolveFor(deployed);\n    if (runtime is null) return;\n    await runtime.DrawAsync(deployed, 1, ct);\n};",
+          "version": 1
+        }
+      ],
+      "version": 1
+    },
+    "otherTriggers": [],
+    "modings": [],
+    "injects": []
+  }
+}
