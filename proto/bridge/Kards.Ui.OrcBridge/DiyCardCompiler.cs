@@ -69,9 +69,11 @@ public static class DiyCardCompiler
     public static IReadOnlyList<UiDiyChoice> Operations { get; } =
         [new("draw", "抽牌"), new("gainPoint", "获得指挥点"), new("gainSlot", "获得指挥点槽"),
          new("damage", "单位伤害"), new("buff", "攻防增益"), new("pin", "压制"),
-         new("silence", "抑制"), new("costMod", "行动费变化")];
+         new("silence", "抑制"), new("costMod", "行动费变化"), new("destroy", "消灭")];
     public static IReadOnlyList<UiDiyChoice> Targets { get; } =
-        [new("self", "本单位"), new("friendlyUnits", "全体友方单位"), new("enemyUnits", "全体敌方单位")];
+        [new("self", "本单位"), new("friendlyUnits", "全体友方单位"), new("enemyUnits", "全体敌方单位"),
+         new("friendlyUnit", "单个友方单位"), new("enemyUnit", "单个敌方单位"), new("anyUnit", "单个单位"),
+         new("bothUnits", "所有单位")];
     public static IReadOnlyList<UiDiyChoice> Durations { get; } =
         [new("", "持续"), new("turnEnd", "本回合结束"), new("nextOwnerTurnStart", "下个己方回合开始")];
     private static readonly Lazy<OpTemplateCatalog> Ops = new(() =>
@@ -174,25 +176,12 @@ public static class DiyCardCompiler
         var components = native.Components.ToList();
         if (draft.Effects.Length > 0)
         {
-            var template = Template(draft.CardType);
-            var driver = new EffectCompilationDriver();
-            driver.UseEffectAssets([template], Ops.Value);
-            var ops = draft.Effects.Select(e => ToDsl(e, draft.CardType)).ToArray();
-            var dsl = new DslEffectInstance(template.Id, new Dictionary<string, DslSlotFill> { ["on_event"] = new(ops) });
-            var result = driver.CompileDsl(DslJson.Serialize(dsl), draft.Id.Replace('/', '.') + ".effect");
-            if (result.Report.Failures.Count > 0 || result.Report.UnresolvedTraces.Count > 0
-                || result.Report.NeedsCsxTraces.Count > 0 || result.Report.PlaceholderConditionTraces.Count > 0
-                || result.Artifacts.Count != 1)
-                throw new InvalidDataException("效果无法完整编译：" + string.Join("；", result.Report.Failures.Select(f => f.Reason)
-                    .Concat(result.Report.Inputs.Where(i => i.FileFailureReason is not null).Select(i => i.FileFailureReason!))
-                    .Concat(result.Report.UnresolvedTraces.Select(t => t.Reason))
-                    .Concat(result.Report.NeedsCsxTraces.Select(t => $"{t.Location} 需要补全脚本：{t.Script}"))
-                    .Concat(result.Report.PlaceholderConditionTraces.Select(t => $"{t.Location} 条件未实现：{t.RawText}"))));
-            snapshot = result.Artifacts[0].Snapshot;
+            var (compiled, compiledJson) = CompileEffects(draft.CardType, draft.Effects, draft.Id.Replace('/', '.'));
+            snapshot = compiled;
             var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
             var instance = DynamicEffectFactory.Instantiate(engine, snapshot);
             if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
-            using var snapshotJson = JsonDocument.Parse(result.Artifacts[0].JsonText);
+            using var snapshotJson = JsonDocument.Parse(compiledJson);
             using var effectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
                 component = "effects", inline = new[] { snapshotJson.RootElement.Clone() }
@@ -208,6 +197,30 @@ public static class DiyCardCompiler
         return new(draft.Snapshot(), Preview(draft with { Name = native.Name }, catalog),
             new(draft.Id, roundTrip), snapshot, json);
     }
+    /// <summary>
+    /// Compiles an effect draft sequence against the frozen op-template assets. Shared by DIY cards
+    /// and pack card conversion — the only effect path that reaches real matches.
+    /// </summary>
+    internal static (EffectSnapshot Snapshot, string JsonText) CompileEffects(string cardType, IReadOnlyList<DiyEffectDraft> effects, string compileId)
+    {
+        foreach (var effect in effects) CheckEffect(cardType, effect);
+        var template = Template(cardType);
+        var driver = new EffectCompilationDriver();
+        driver.UseEffectAssets([template], Ops.Value);
+        var ops = effects.Select(e => ToDsl(e, cardType)).ToArray();
+        var dsl = new DslEffectInstance(template.Id, new Dictionary<string, DslSlotFill> { ["on_event"] = new(ops) });
+        var result = driver.CompileDsl(DslJson.Serialize(dsl), compileId.Replace('/', '.') + ".effect");
+        if (result.Report.Failures.Count > 0 || result.Report.UnresolvedTraces.Count > 0
+            || result.Report.NeedsCsxTraces.Count > 0 || result.Report.PlaceholderConditionTraces.Count > 0
+            || result.Artifacts.Count != 1)
+            throw new InvalidDataException("效果无法完整编译：" + string.Join("；", result.Report.Failures.Select(f => f.Reason)
+                .Concat(result.Report.Inputs.Where(i => i.FileFailureReason is not null).Select(i => i.FileFailureReason!))
+                .Concat(result.Report.UnresolvedTraces.Select(t => t.Reason))
+                .Concat(result.Report.NeedsCsxTraces.Select(t => $"{t.Location} 需要补全脚本：{t.Script}"))
+                .Concat(result.Report.PlaceholderConditionTraces.Select(t => $"{t.Location} 条件未实现：{t.RawText}"))));
+        return (result.Artifacts[0].Snapshot, result.Artifacts[0].JsonText);
+    }
+
     private static bool KnownKeyword(string token)
     {
         lock (KeywordGate)
@@ -244,7 +257,17 @@ public static class DiyCardCompiler
         }
     }
     private static DslOp ToDsl(DiyEffectDraft e, string type) => new(e.Op,
-        target: e.Target == "self" ? new("self") : new("all", e.Target == "friendlyUnits" ? "friendly" : "enemy"),
+        target: e.Target switch
+        {
+            "self" => new("self"),
+            "friendlyUnits" => new("all", "friendly"),
+            "enemyUnits" => new("all", "enemy"),
+            "friendlyUnit" => new("one", "friendly"),
+            "enemyUnit" => new("one", "enemy"),
+            "anyUnit" => new("one", "both"),
+            "bothUnits" => new("all", "both"),
+            _ => throw new InvalidDataException("未知选靶：" + e.Target)
+        },
         amount: e.Op is "damage" or "gainPoint" or "gainSlot" or "costMod" ? e.Amount : null,
         count: e.Op == "draw" ? e.Amount : null, attack: e.Op == "buff" ? e.Attack : null,
         defense: e.Op == "buff" ? e.Defense : null,
@@ -259,7 +282,7 @@ public static class DiyCardCompiler
             "gainSlot" => $"获得 {e.Amount} 个指挥点槽", "damage" => $"对{Target(e)}造成 {e.Amount} 点伤害",
             "buff" => $"{Target(e)}获得 {Amount(e.Attack)}/{Amount(e.Defense)}",
             "pin" => $"压制{Target(e)} {e.Amount} 回合", "silence" => $"抑制{Target(e)}",
-            "costMod" => $"{Target(e)}行动费 {Amount(e.Amount)}", _ => $"未支持：{e.Op}"
+            "costMod" => $"{Target(e)}行动费 {Amount(e.Amount)}", "destroy" => $"消灭{Target(e)}", _ => $"未支持：{e.Op}"
         } + (e.Until.Length == 0 ? "" : $"，直到{Durations.FirstOrDefault(d => d.Id == e.Until)?.Label ?? e.Until}"));
         return draft.Effects.Length == 0 ? "" : (draft.CardType == "unit" ? "部署：" : "打出：") + string.Join("；", lines) + "。";
     }

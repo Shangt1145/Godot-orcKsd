@@ -31,8 +31,6 @@ public partial class Main : Control
     private DeckLibraryScreen _deckLibrary = null!;
     private DiyCardLibrary _diy = null!;
     private DiyEditorScreen _diyEditor = null!;
-    private PackLibrary _packs = null!;
-    private PackScreen _packScreen = null!;
     private CollectionScreen _collection = null!;
     private ConstructedDeck? _trialDeck;
     private string _diyPath = "";
@@ -87,7 +85,6 @@ public partial class Main : Control
         _diy = new DiyCardLibrary(_diyPath);
         _deckService.UpdateCustom(_diy.Cards);
         _catalog.SetCustomCards(_deckService.CustomCards);
-        _packs = new PackLibrary(ProjectSettings.GlobalizePath("user://packs"));
         ReloadPacks();
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
         _decks = new DeckLibrary(_deckPath);
@@ -152,10 +149,6 @@ public partial class Main : Control
             Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
         };
         AddScreen(content, "editor", _diyEditor);
-        _packScreen = new PackScreen();
-        _packScreen.Initialize(_packs);
-        _packScreen.Changed += ReloadPacks;
-        AddScreen(content, "packs", _packScreen);
         _helpTabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         _gallery = new AnimationGallery { Name = "动画演示" };
         _helpTabs.AddChild(_gallery);
@@ -653,7 +646,9 @@ public partial class Main : Control
             if (!_pool.Visible)
                 throw new Exception("Battle presentation did not restore.");
             ApplyMatch(null);
-            if (_catalog.Cards.Count != 315)
+            var sourceCount = _catalog.Cards.Count(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
+                && !c.CardId.StartsWith("diy/", StringComparison.Ordinal));
+            if (sourceCount != 315)
                 throw new Exception("Wrong catalogue size.");
             foreach (var c in _catalog.Cards.Where(c => c.ArtPath.Length > 0))
                 if (!ResourceLoader.Exists(c.ArtPath))

@@ -180,6 +180,8 @@ public partial class Main
     private async Task VerifyCollectionScrollAsync()
     {
         void Check(bool valid, string reason) { if (!valid) throw new Exception(reason); }
+        // The collection now opens on the pack-list page; the scroll checks run inside the 太空战争 pack.
+        _collection.OpenPack("builtin:taikong"); await MenuFrameAsync();
         var scroll = _collection.CardScroll;
         var at = scroll.GetGlobalTransformWithCanvas() * new Vector2(60, 80);
         GetViewport().PushInput(new InputEventMouseMotion { Position = at, GlobalPosition = at }, true);
@@ -211,7 +213,17 @@ public partial class Main
         await MenuFrameAsync(); Check(_collection.Results.Count == 0 && !_collection.VisibleCards.Any(), "Empty search retained obsolete actors.");
         _collection.Search.Text = ""; _collection.Search.EmitSignal(LineEdit.SignalName.TextChanged, "");
         await MenuFrameAsync();
-        Check(_collection.Results.Count == _catalog.Cards.Count && scroll.ScrollVertical == 0, "Clearing search did not restore the full collection.");
+        // Pack-list round trip: back to the front page, tiles present, re-entering the pack keeps results.
+        var tiles = _collection.PackFrontTiles();
+        Check(tiles.Count >= 2 && tiles[0].Name == "太空战争" && tiles.Any(t => t.Name == "内置卡包"),
+            $"Pack front page missing expected tiles: {string.Join("、", tiles.Select(t => t.Name))}");
+        _collection.OpenPack(null); await MenuFrameAsync();
+        Check(!_collection.CardScroll.IsVisibleInTree() && _collection.PackFrontTiles().Count == tiles.Count, "Back navigation did not restore the pack list.");
+        _collection.OpenPack(tiles[1].Filter); await MenuFrameAsync();
+        Check(_collection.Results.All(c => c.CardId.StartsWith("pack/", StringComparison.Ordinal)) && _collection.Results.Count == tiles[1].Count,
+            "Opening a pack did not scope the grid to that pack.");
+        _collection.OpenPack("builtin:taikong"); await MenuFrameAsync();
+        Check(_collection.Results.Count == tiles[0].Count && scroll.ScrollVertical == 0, "Clearing search did not restore the full collection.");
         GD.Print($"COLLECTION_SCROLL_VERIFY_OK all={seen.Count} max_actors={maxActors} wheel last-card search-reset empty-search preserved-position");
     }
 }

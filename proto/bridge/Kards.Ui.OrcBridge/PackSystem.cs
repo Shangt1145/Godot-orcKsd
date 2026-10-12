@@ -33,24 +33,31 @@ public sealed class PackContent
     public IReadOnlyList<UiCardDefinition> Projections { get; }
     public IReadOnlyList<string> RegisteredKeywords { get; }
 
+    /// <summary>Card texts parsed into effect drafts and compiled against the frozen op templates.
+    /// Every admitted pack card with text must appear here — the generator's precheck guarantees it.</summary>
+    public IReadOnlyList<(string CardId, EffectSnapshot Effect)> ConvertedEffects { get; }
+
     internal PackContent(PackManifest manifest, string rootDirectory,
         IReadOnlyList<CardDefinitionEntry> definitions, IReadOnlyList<EffectSnapshot> inlinePrefabs,
         IReadOnlyList<(string CardId, IReadOnlyList<string> PrefabIds)> declarations,
         string? effectsDirectory, IReadOnlyList<UiCardDefinition> projections,
-        IReadOnlyList<string> registeredKeywords)
+        IReadOnlyList<string> registeredKeywords,
+        IReadOnlyList<(string CardId, EffectSnapshot Effect)> convertedEffects)
     {
         Manifest = manifest; RootDirectory = rootDirectory; Definitions = definitions;
         InlinePrefabs = inlinePrefabs; Declarations = declarations; EffectsDirectory = effectsDirectory;
-        Projections = projections; RegisteredKeywords = registeredKeywords;
+        Projections = projections; RegisteredKeywords = registeredKeywords; ConvertedEffects = convertedEffects;
     }
 
     /// <summary>Definitions re-id'd to their UI namespace — the form decks and the match consume.</summary>
     public IReadOnlyList<CardDefinitionEntry> PrefixedDefinitions =>
         [.. Definitions.Select(e => new CardDefinitionEntry(Prefixed(e.Id), e.Definition))];
 
-    /// <summary>Declarations re-keyed to the prefixed card id, same shape the match registry expects.</summary>
+    /// <summary>Declarations re-keyed to the prefixed card id, same shape the match registry expects.
+    /// Converted text effects join the same channel, so registration and mount verification share one source.</summary>
     public IReadOnlyList<(string CardId, IReadOnlyList<string> PrefabIds)> PrefixedDeclarations =>
-        [.. Declarations.Select(d => (Prefixed(d.CardId), d.PrefabIds))];
+        [.. Declarations.Select(d => (Prefixed(d.CardId), d.PrefabIds))
+            .Concat(ConvertedEffects.Select(c => (Prefixed(c.CardId), (IReadOnlyList<string>)[c.Effect.Root.Id])))];
 
     public string Prefixed(string cardId) => $"pack/{Manifest.Id}/{cardId}";
 }
@@ -177,6 +184,7 @@ public static class PackSystem
         var cardsDirectory = Path.Combine(packRoot, CardFileDirectory);
         var effectsDirectory = Path.Combine(packRoot, EffectFileDirectory);
         if (!Directory.Exists(cardsDirectory)) throw new InvalidDataException("缺少 cards/ 目录");
+        var texts = LoadTexts(packRoot);
         lock (Gate) Enabled.RemoveAll(p => p.Manifest.Id == manifest.Id); // re-load = replace
 
         var report = CardDistributionValidator.Validate([cardsDirectory],
@@ -190,13 +198,8 @@ public static class PackSystem
         try
         {
             var load = CardDataLoader.LoadDirectory(cardsDirectory);
-            if (manifest.Kind == "expansion")
-            {
-                var commands = load.Definitions.Where(d => d.Definition.Category != CardCategory.Unit)
-                    .Select(d => d.Id).ToArray();
-                if (commands.Length > 0)
-                    throw new InvalidDataException("扩展包只能添加单位卡，发现非单位卡：" + string.Join("、", commands));
-            }
+            if (manifest.Kind == "expansion" && manifest.Keywords.Count > 0)
+                throw new InvalidDataException("扩展包不得新增词条——词汇表只归卡包（2026-10-12 放宽：卡类不限，机制面仍只归卡包）");
 
             var libraryIds = LibraryPrefabIds(effectsDirectory);
             var ownIds = libraryIds.Concat(load.Prefabs.Select(p => p.Root.Id)).ToHashSet(StringComparer.Ordinal);
@@ -205,11 +208,12 @@ public static class PackSystem
             CheckPrefabCollisions(manifest, ownIds, enabledPacks);
             CheckReferences(manifest, load, ownIds, basePack);
 
-            var projections = load.Definitions.Select(e => Project(manifest, e)).ToArray();
+            var projections = load.Definitions.Select(e => Project(manifest, e, texts.GetValueOrDefault(e.Id))).ToArray();
+            var converted = ConvertEffects(manifest, load, texts);
             var content = new PackContent(manifest, packRoot, load.Definitions, load.Prefabs,
                 load.EffectDeclarations.Select(d => (d.CardId, (IReadOnlyList<string>)d.PrefabIds)).ToArray(),
                 Directory.Exists(effectsDirectory) ? effectsDirectory : null,
-                projections, [.. manifest.Keywords.Select(k => k.Id)]);
+                projections, [.. manifest.Keywords.Select(k => k.Id)], converted);
             lock (Gate) Enabled.Add(content); // now part of the process vocabulary
             return content;
         }
@@ -257,6 +261,37 @@ public static class PackSystem
                 KeywordRegistry.DeclareEffectBindings(keyword.Id,
                     keyword.Bindings.Select(b => new KeywordEffectBinding(b.PrefabId, b.EffectName)));
         }
+    }
+
+    /// <summary>Card texts live in a sidecar (the engine data body stays pure structure); the parser
+    /// mirrors tools/build_builtin_packs.py, so any drift between them fails here, at load.</summary>
+    private static Dictionary<string, string> LoadTexts(string packRoot)
+    {
+        var path = Path.Combine(packRoot, "texts.json");
+        if (!File.Exists(path)) return [];
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        var texts = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in doc.RootElement.EnumerateObject())
+            texts[pair.Name] = pair.Value.GetString() ?? "";
+        return texts;
+    }
+
+    private static IReadOnlyList<(string CardId, EffectSnapshot Effect)> ConvertEffects(
+        PackManifest manifest, CardDataLoadResult load, Dictionary<string, string> texts)
+    {
+        var converted = new List<(string, EffectSnapshot)>();
+        foreach (var entry in load.Definitions)
+        {
+            var text = texts.GetValueOrDefault(entry.Id);
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            var cardType = entry.Definition.Category == CardCategory.Unit ? "unit" : "order";
+            var drafts = PackCardTextParser.Parse(text, cardType)
+                ?? throw new InvalidDataException($"卡包 '{manifest.Id}' 卡牌 '{entry.Id}' 的卡面文本无法解析（生成器与解析器已漂移）：{text}");
+            if (drafts.Count == 0) continue;
+            var (effect, _) = DiyCardCompiler.CompileEffects(cardType, drafts, "pack." + manifest.Id + "." + entry.Id);
+            converted.Add((entry.Id, effect));
+        }
+        return converted;
     }
 
     // ------------------------------------------------------------------ checks
@@ -325,7 +360,7 @@ public static class PackSystem
 
     // ------------------------------------------------------------------ projection
 
-    private static UiCardDefinition Project(PackManifest manifest, CardDefinitionEntry entry)
+    private static UiCardDefinition Project(PackManifest manifest, CardDefinitionEntry entry, string text)
     {
         var d = entry.Definition;
         var isUnit = d.Category == CardCategory.Unit;
@@ -342,6 +377,7 @@ public static class PackSystem
             BaseAttack = isUnit ? d.Attack : null,
             BaseDefense = isUnit ? d.Defense : null,
             BaseOpCost = isUnit ? d.OperateCost : null,
+            Text = text,
             Keywords = [.. d.Keywords.Select(k => Token(k.Id))],
             KeywordValues = d.Keywords.Where(k => k.Value is { }).ToDictionary(k => Token(k.Id), k => k.Value!.Value),
         };
@@ -362,6 +398,8 @@ public static class PackSystem
                 registry.DeclarePrefab(cardId, prefabIds);
             foreach (var snapshot in pack.InlinePrefabs)
                 engine.Prefabs.RegisterPrefab(snapshot);
+            foreach (var (_, effect) in pack.ConvertedEffects)
+                engine.Prefabs.RegisterPrefab(effect);
             if (pack.EffectsDirectory is { } directory)
             {
                 var report = engine.Prefabs.LoadDirectory(directory);

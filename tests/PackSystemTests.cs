@@ -148,13 +148,18 @@ public class PackSystemTests : IDisposable
     }
 
     [Fact]
-    public void Load_ExpansionWithCommandCard_IsRejected()
+    public void Load_ExpansionWithCommandCard_IsAcceptedButKeywordDecl_IsRejected()
     {
         var basePack = CreatePack();
         var pack = PackSystem.Load(basePack, []);
-        var expansionRoot = CreatePack(kind: "expansion", dependsOn: pack.Manifest.Id, extraCard: CommandCard("test.order"));
-        var error = Assert.Throws<InvalidDataException>(() => PackSystem.Load(expansionRoot, [pack]));
-        Assert.Contains("单位", error.Message);
+        // 放宽（2026-10-12）：扩展包卡类不限（官方扩展含指令/反制），但词汇表仍只归卡包。
+        var commandRoot = CreatePack(id: "test.exp.cmd", kind: "expansion", dependsOn: pack.Manifest.Id, extraCard: CommandCard("test.order"));
+        var commandPack = PackSystem.Load(commandRoot, [pack]);
+        Assert.Equal(2, commandPack.Definitions.Count);
+        var keywordRoot = CreatePack(id: "test.exp.kw", kind: "expansion", dependsOn: pack.Manifest.Id,
+            keywordsJson: """[{"id":"badkw","label":"越权词条","battle":false,"bindings":[{"prefabId":"badkw.e","effectName":"RunAsync"}]}]""");
+        var error = Assert.Throws<InvalidDataException>(() => PackSystem.Load(keywordRoot, [pack]));
+        Assert.Contains("不得新增词条", error.Message);
         PackSystem.DisableKeywords(pack.Manifest.Id);
     }
 

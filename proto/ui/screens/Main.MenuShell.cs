@@ -19,7 +19,7 @@ public partial class Main
         var brand = UiStyles.Button("✦  OrC-KSD", () => Show("home")); brand.CustomMinimumSize = new(204, 46); brand.ToggleMode = true;
         brand.TooltipText = "返回指挥部";
         brand.AddThemeColorOverride("font_color", UiStyles.Gold); brand.AddThemeFontSizeOverride("font_size", 23); bar.AddChild(brand); _nav["home"] = brand;
-        foreach (var (id, text) in new[] { ("decklib", "我的卡组"), ("collection", "卡牌收藏"), ("editor", "DIY 工坊"), ("packs", "卡包") })
+        foreach (var (id, text) in new[] { ("decklib", "我的卡组"), ("collection", "收藏"), ("editor", "DIY 工坊") })
         {
             var key = id; var button = UiStyles.Button(text, () => NavigateMenu(key)); button.ToggleMode = true;
             button.CustomMinimumSize = new(116, 46); bar.AddChild(button); _nav[id] = button;

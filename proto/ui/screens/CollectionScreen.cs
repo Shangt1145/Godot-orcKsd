@@ -21,6 +21,11 @@ public partial class CollectionScreen : VBoxContainer
     private UiCardDefinition[] _results = [];
     private int _firstRow = -1, _lastRow = -1;
     private const int RowStride = 256, RowGap = 16, Overscan = 1;
+    private VBoxContainer? _packPage;
+    private Control? _cardBody;
+    private Button? _backButton;
+    private Label? _heading;
+    private string? _activePack; // null = pack list page; "builtin:taikong" = source pool; "pack/<id>" = a pack
     internal ScrollContainer CardScroll => _scroll;
     internal LineEdit Search => _search;
     internal IReadOnlyList<UiCardDefinition> Results => _results;
@@ -43,6 +48,7 @@ public partial class CollectionScreen : VBoxContainer
                 if (selected == value) filter.Select(filter.ItemCount - 1);
             }
         }
+        RenderPackPage();
         Render(); ShowDetail(_catalog.Cards.FirstOrDefault(c => c.CardId == _selected?.CardId) ?? _catalog.Cards.FirstOrDefault());
     }
     public void Initialize(CardCatalog catalog, TextureCache textures)
@@ -52,7 +58,11 @@ public partial class CollectionScreen : VBoxContainer
         SizeFlagsVertical = SizeFlags.ExpandFill;
         var heading = new HBoxContainer();
         AddChild(heading);
-        heading.AddChild(UiStyles.Label("卡牌收藏", 30, UiStyles.MenuInk));
+        _backButton = UiStyles.Button("← 卡包", () => OpenPack(null));
+        _backButton.Visible = false;
+        heading.AddChild(_backButton);
+        _heading = UiStyles.Label("收藏", 30, UiStyles.MenuInk);
+        heading.AddChild(_heading);
         _search = new LineEdit { PlaceholderText = "搜索卡名、编号或卡面文本…", SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(250, 42) };
         heading.AddChild(_search);
         _search.TextChanged += _ => Render();
@@ -69,6 +79,10 @@ public partial class CollectionScreen : VBoxContainer
         AddFilter(filters, "全部词条", catalog.Cards.SelectMany(c => c.Keywords), x => CardControl.KeywordLabel(x, new Dictionary<string, int>()));
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         AddChild(body);
+        _cardBody = body;
+        _packPage = new VBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _packPage.AddThemeConstantOverride("separation", 12);
+        AddChild(_packPage);
         var gridSide = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         body.AddChild(gridSide);
         _scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill,
@@ -88,8 +102,65 @@ public partial class CollectionScreen : VBoxContainer
         _detail = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         detailScroll.AddChild(_detail);
         _scroll.Resized += ResizeGrid;
+        RefreshCatalog();
+    }
+
+    /// <summary>A pack as shown on the front page: display name, card id prefix selector, count.</summary>
+    private sealed record PackTile(string Name, string? Filter, int Count);
+
+    private static IReadOnlyList<PackTile> PackTiles(CardCatalog catalog)
+    {
+        var cards = catalog.Cards;
+        var source = cards.Where(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
+            && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)).Count();
+        var tiles = new List<PackTile>();
+        if (source > 0) tiles.Add(new("太空战争", "builtin:taikong", source));
+        tiles.AddRange(cards.Where(c => c.CardId.StartsWith("pack/", StringComparison.Ordinal))
+            .GroupBy(c => string.Join('/', c.CardId.Split('/').Take(2)))
+            .Select(g => new PackTile(
+                g.First().Set.StartsWith("pack:", StringComparison.Ordinal) ? g.First().Set["pack:".Length..] : g.Key,
+                g.Key, g.Count()))
+            .OrderBy(t => t.Name, StringComparer.Ordinal));
+        return tiles;
+    }
+
+    internal void OpenPack(string? pack)
+    {
+        _activePack = pack;
         Render();
-        ShowDetail(catalog.Cards.FirstOrDefault());
+    }
+
+    /// <summary>Verification surface for the pack front page: name, selector, count per tile.</summary>
+    internal IReadOnlyList<(string Name, string? Filter, int Count)> PackFrontTiles() =>
+        PackTiles(_catalog).Select(t => (t.Name, t.Filter, t.Count)).ToArray();
+
+    private void RenderPackPage()
+    {
+        if (_packPage is null) return;
+        UiStyles.Clear(_packPage);
+        _packPage.AddChild(UiStyles.Label("选择一个卡包查看它的卡池", 15, UiStyles.Dim));
+        var grid = new GridContainer { Columns = 4, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        grid.AddThemeConstantOverride("h_separation", 12); grid.AddThemeConstantOverride("v_separation", 12);
+        _packPage.AddChild(grid);
+        foreach (var tile in PackTiles(_catalog))
+        {
+            var button = new Button { CustomMinimumSize = new Vector2(220, 96), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            var box = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+            box.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            box.AddThemeConstantOverride("separation", 6);
+            var name = UiStyles.Label(tile.Name, 20, UiStyles.MenuInk);
+            name.HorizontalAlignment = HorizontalAlignment.Center;
+            box.AddChild(name);
+            var count = UiStyles.Label($"{tile.Count} 张卡", 13, UiStyles.Dim);
+            count.HorizontalAlignment = HorizontalAlignment.Center;
+            box.AddChild(count);
+            button.AddChild(box);
+            var captured = tile;
+            button.Pressed += () => OpenPack(captured.Filter);
+            grid.AddChild(button);
+        }
+        if (PackTiles(_catalog).Count == 0)
+            _packPage.AddChild(UiStyles.Label("没有可浏览的卡包", 18, UiStyles.Dim));
     }
     private void AddFilter(HBoxContainer row, string all, IEnumerable<string> values, Func<string, string> label)
     {
@@ -109,9 +180,29 @@ public partial class CollectionScreen : VBoxContainer
     {
         if (_grid is null)
             return;
+        var inPack = _activePack is not null;
+        _backButton.Visible = inPack;
+        _packPage!.Visible = !inPack;
+        _cardBody!.Visible = inPack;
+        if (!inPack)
+        {
+            _heading!.Text = "收藏";
+            _count.Text = $"{PackTiles(_catalog).Count} 个卡包";
+            return;
+        }
+        var packName = _activePack == "builtin:taikong" ? "太空战争"
+            : _catalog.Cards.FirstOrDefault(c => c.CardId.StartsWith(_activePack + "/", StringComparison.Ordinal))?.Set is { } set && set.StartsWith("pack:", StringComparison.Ordinal) ? set["pack:".Length..] : _activePack;
+        _heading!.Text = $"收藏 · {packName}";
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
-        _results = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]).ToArray();
-        _count.Text = $"{_results.Length} / {_catalog.Cards.Count} 张";
+        IEnumerable<Kards.Ui.Contracts.UiCardDefinition> query = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]);
+        query = _activePack switch
+        {
+            "builtin:taikong" => query.Where(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
+                && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)),
+            var pack => query.Where(c => c.CardId.StartsWith(pack + "/", StringComparison.Ordinal))
+        };
+        _results = query.ToArray();
+        _count.Text = $"{_results.Length} 张";
         var filterCount = vals.Count(v => v.Length > 0); _filterToggle.Text = filterCount == 0 ? "筛选" : $"筛选 · {filterCount}";
         _scroll.ScrollVertical = 0;
         SetScrollExtent(); UpdateWindow(true);
