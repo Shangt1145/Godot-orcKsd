@@ -1,6 +1,10 @@
+using Orc.Cards;
 using Orc.Core;
 using Orc.Game;
+using Orc.Game.Cards;
 using Orc.Game.Players;
+using Orc.Game.Ui;
+using Orc.UI;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 
@@ -13,6 +17,9 @@ namespace Kards.Ui.OrcBridge;
 ///      segment (card.load / deck.shuffled / turn chain) is missed;
 ///   2. the segment queue is unbounded and the engine never waits, so the frame loop must keep pumping;
 ///   3. every segment is followed by a fresh full read, so the UI's state can never drift from the engine.
+///
+/// 迁移 S8：整盘与单卡视图改由**引擎侧投影提供者**（`.ui` 插件）产出——前端不再自造卡读面。
+/// 投影按**每帧拉取**；投影抛错＝**运行期隔离**（保留上一帧 + 记录错误），不炸对局。
 /// </summary>
 public sealed class OrcMatchHost
 {
@@ -20,9 +27,7 @@ public sealed class OrcMatchHost
     private int _viewerIndex;
     private readonly string _matchId;
     private Player _viewer = null!;
-    private OrcCardReader _cards = null!;
-    private OrcMatchReader _reader = null!;
-    private OrcUpdateTranslator _translator = null!;
+    private OrcUpdateTranslator? _translator;
     private readonly OrcActionReader _actions = new();
     private Func<Player, IReadOnlyList<UiOrderTargeting>>? _orderTargets;
     internal void SetOrderTargetReader(Func<Player, IReadOnlyList<UiOrderTargeting>> reader) => _orderTargets = reader;
@@ -31,6 +36,9 @@ public sealed class OrcMatchHost
     private bool _detached;
     private bool _observer;
     private long _lastSequence;
+    private readonly Func<string, string>? _artLookup;
+    private IReadOnlyDictionary<string, UiCardDefinition> _sourceDefinitions =
+        new Dictionary<string, UiCardDefinition>(StringComparer.Ordinal);
     private readonly Queue<(UiPresentationResolution Resolution, UiBattleActions Actions,
         IReadOnlyList<UiOrderImpact> Impacts, string[] Errors)> _captured = new();
     public bool HistoricalStatesVerified { get; private set; } = true;
@@ -44,24 +52,28 @@ public sealed class OrcMatchHost
         _artLookup = artLookup;
     }
 
-    private readonly Func<string, string>? _artLookup;
+    /// <summary>
+    /// 前端自持的**丰富卡定义**（美术/文本/flavor）——作为投影的 `definitionLookup` 注入；
+    /// 引擎不参与渲染，故这类界面数据始终由前端提供。可在初始化后设置（provider 每次读取时按需构造）。
+    /// </summary>
     internal void SetSourceDefinitions(IReadOnlyList<UiCardDefinition> definitions)
     {
-        EnsureReaders(); _cards.SourceDefinitions = definitions.ToDictionary(c => c.CardId, StringComparer.Ordinal);
+        _sourceDefinitions = definitions.ToDictionary(c => c.CardId, StringComparer.Ordinal);
         Refresh();
     }
 
-    /// <summary>
-    /// Readers need the card library, which only exists once the match leaves <c>Preparing</c>.
-    /// Building them here also means a later definition-format change is confined to the reader.
-    /// </summary>
-    private void EnsureReaders()
-    {
-        if (_reader is not null) return;
-        _cards = new OrcCardReader(_match.CardLibrary, _artLookup);
-        _reader = new OrcMatchReader(_cards);
-        _translator = new OrcUpdateTranslator(_cards);
-    }
+    private UiCardDefinition? DefinitionLookup(string cardId)
+        => _sourceDefinitions.TryGetValue(cardId, out var definition) ? definition : null;
+
+    /// <summary>取投影提供者（由 `.ui` 插件在装配期注册；未装配＝null）。</summary>
+    private IUiProjectionProvider? Provider()
+        => _match.UiProjections.CreateProvider(_artLookup, _matchId, DefinitionLookup);
+
+    /// <summary>单卡投影委托（供表现层"段→演出"取不在盘面上的卡视图）。</summary>
+    private UiCardView? ReadCardFor(Card card, Player viewer, string zone, int slotIndex)
+        => Provider()?.ReadCard(_match, card, viewer, zone, slotIndex);
+
+    private void EnsureTranslator() => _translator ??= new OrcUpdateTranslator(ReadCardFor);
 
     /// <summary>Last read board. Null until <see cref="InitializeAsync"/> completes.</summary>
     public UiMatchView View => _view ?? throw new InvalidOperationException("Match host has not been initialized.");
@@ -73,7 +85,53 @@ public sealed class OrcMatchHost
     public Match Match => _match;
 
     /// <summary>uid -> engine card for the last read; commands arrive as uids.</summary>
-    public IReadOnlyDictionary<string, Orc.Cards.Card> Index => _reader?.LastIndex ?? new Dictionary<string, Orc.Cards.Card>();
+    public IReadOnlyDictionary<string, Card> Index => BuildIndex();
+
+    /// <summary>
+    /// uid → 引擎卡（本次读取的盘面 + 本人手牌 + 双方总部）。命令以 uid 到达，故需要这张反查表；
+    /// 它是一次快照：上次读取后被销毁的卡自然缺席。
+    /// </summary>
+    private Dictionary<string, Card> BuildIndex()
+    {
+        var index = new Dictionary<string, Card>(StringComparer.Ordinal);
+        if (_viewer is null)
+        {
+            return index;
+        }
+
+        foreach (var card in _viewer.Hand)
+        {
+            if (card is CardBase typed)
+            {
+                index[OrcRefs.KeyOf(typed)] = typed;
+            }
+        }
+
+        var battlefield = _match.Battlefield;
+        for (var i = 0; i < battlefield.FrontLine.Count; i++)
+        {
+            if (battlefield.FrontLine[i].Occupant is Card front)
+            {
+                index[OrcRefs.KeyOf(front)] = front;
+            }
+        }
+
+        foreach (var player in _match.Players)
+        {
+            var line = battlefield.GetSupportLine(player.Index);
+            for (var i = 0; i < line.Count; i++)
+            {
+                if (line[i].Occupant is Card support)
+                {
+                    index[OrcRefs.KeyOf(support)] = support;
+                }
+            }
+
+            index[OrcRefs.KeyOf(player.Hq)] = player.Hq;
+        }
+
+        return index;
+    }
 
     /// <summary>Availability for the current board, read from the engine's query surfaces.</summary>
     public UiBattleActions Actions
@@ -110,16 +168,15 @@ public sealed class OrcMatchHost
         Attach();
         await _match.Initialize(ct);
         _viewer = _match.Players[_viewerIndex];
-        EnsureReaders();
-        _view = _reader.Read(_match, _viewer, _matchId);
+        EnsureTranslator();
+        _view = ProjectRequired();
         CaptureCompletedActions();
     }
 
     /// <summary>
     /// Adopts a match that is already running, resolving this host's viewpoint from it. This is the
     /// observer path: another viewpoint over the same live game. <see cref="InitializeAsync"/> cannot be
-    /// used because it would initialise the match a second time; a seat only needs its own viewer,
-    /// readers and view.
+    /// used because it would initialise the match a second time; a seat only needs its own viewer and view.
     /// </summary>
     public void AttachToLiveMatch()
     {
@@ -127,8 +184,8 @@ public sealed class OrcMatchHost
             throw new InvalidOperationException("The match is still preparing; initialise it first.");
         _viewer = _match.Players[_viewerIndex];
         _observer = true;
-        EnsureReaders();
-        _view = _reader.Read(_match, _viewer, _matchId);
+        EnsureTranslator();
+        _view = ProjectRequired();
     }
 
     public void SelectViewer(int index)
@@ -140,12 +197,19 @@ public sealed class OrcMatchHost
         Refresh();
     }
 
+    /// <summary>卡牌选择面板要展示的定义视图（不依赖盘面实例）。</summary>
     internal UiCardView? ReadChoiceDefinition(string id)
     {
         if (!_match.CardLibrary.Contains(id)) return null;
-        var definition = _cards.ReadDefinition(_match.CardLibrary.Get(id));
-        return new UiCardView { Uid = "definition:" + id, Definition = definition,
-            EffectiveCost = definition.Cost, Visibility = Visibility.Full };
+        var definition = StaticCardProjection.Project(
+            id, _match.CardLibrary.Get(id), _artLookup, DefinitionLookup);
+        return new UiCardView
+        {
+            Uid = "definition:" + id,
+            Definition = definition,
+            EffectiveCost = definition.Cost,
+            Visibility = Visibility.Full,
+        };
     }
 
     /// <summary>A full projection settles past presentations, including a silent phase change.</summary>
@@ -183,7 +247,7 @@ public sealed class OrcMatchHost
     public void CaptureCompletedActions()
     {
         if (_detached || _observer || _view is null || _viewer is null) return;
-        EnsureReaders();
+        EnsureTranslator();
         var segments = _match.Engine.TakeSegments();
         if (segments.Count > 1) HistoricalStatesVerified = false;
         foreach (var segment in segments)
@@ -194,9 +258,11 @@ public sealed class OrcMatchHost
                 .Select(e => (Update: e.Message, Payload: e.Data))
                 .ToArray();
             var errors = segment.Entries.Where(e => e.Level == LogLevel.Error).Select(e => e.Message).ToArray();
-            var after = UiSnapshots.Freeze(_reader.Read(_match, _viewer, _matchId));
-            var before = _view ?? after;
-            var translation = _translator.Translate(updates, _viewer, before, after);
+            // 先冻结 before 再拉取 after：Refresh() 有副作用（写 _view），若先取 after，
+            // before 会被覆盖成事后状态——段差异恒为零，部署/扣费在演出链上彻底不可见。
+            var before = _view;
+            var after = UiSnapshots.Freeze(ProjectRequired());
+            var translation = _translator!.Translate(updates, _viewer, before, after);
             _view = after;
             var resolution = UiSnapshots.Freeze(new UiPresentationResolution(_matchId, translation.Steps, after)
                 { Sequence = _lastSequence, Before = before });
@@ -210,8 +276,13 @@ public sealed class OrcMatchHost
             var after = UiSnapshots.Freeze(Refresh());
             // Concede intentionally emits no engine update. Deliver its authoritative phase
             // change once through the same presentation lane, without fabricating a game event.
-            var silent = _translator.Translate([], _viewer, before, after);
-            if (silent.Steps.Count > 0 || before.Phase != "over" && after.Phase == "over" && after.ResultTitle is not null)
+            var silent = _translator!.Translate([], _viewer, before, after);
+            // 资产化引擎的部分规则效果（如部署扣费）不产生引擎 update 段，只体现为视图差异。
+            // 这类差异若不入队演出，PresentationPlayer 的状态基线会停在付款前，UI 资源显示失真。
+            var material = before.SelfKredits != after.SelfKredits || before.EnemyKredits != after.EnemyKredits
+                || before.SelfLine.Count != after.SelfLine.Count || before.EnemyLine.Count != after.EnemyLine.Count;
+            if (silent.Steps.Count > 0 || material
+                || before.Phase != "over" && after.Phase == "over" && after.ResultTitle is not null)
                 _captured.Enqueue((UiSnapshots.Freeze(new UiPresentationResolution(_matchId, silent.Steps, after)
                     { Before = before, Sequence = ++_lastSequence }), UiSnapshots.Freeze(Actions), [], []));
         }
@@ -220,11 +291,36 @@ public sealed class OrcMatchHost
     /// <summary>
     /// Re-reads the board without animation. Mulligan's replacement draws are silent (no card.drawn /
     /// card.hand.add), so the opening hand must be re-read explicitly after a swap.
+    /// 投影抛错＝运行期隔离：保留上一帧并上报错误。
     /// </summary>
     public UiMatchView Refresh()
     {
-        EnsureReaders();
-        return _view = _reader.Read(_match, _viewer, _matchId);
+        var projected = Project();
+        return _view = projected ?? _view
+            ?? throw new InvalidOperationException(
+                "投影不可用：本对局未装配 UI 投影提供者（`.ui` 插件），且尚无上一帧可保留。");
+    }
+
+    private UiMatchView ProjectRequired() => Refresh();
+
+    private UiMatchView? Project()
+    {
+        var provider = Provider();
+        if (provider is null)
+        {
+            ErrorRaised?.Invoke("本对局未装配 UI 投影提供者（`.ui` 插件）——整盘视图不可用。");
+            return null;
+        }
+
+        try
+        {
+            return provider.Project(_match, _viewer);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            ErrorRaised?.Invoke($"投影失败（保留上一帧）：{e.Message}");
+            return null;
+        }
     }
 
     public void Detach()

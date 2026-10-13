@@ -36,8 +36,12 @@ public partial class Main
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         }
         await _presentations!.Completion;
-        if (!runner.CurrentView!.SelfLine.Any(c => c.Uid == card.Uid) || !_battle.MatchesProjection(runner.CurrentView))
-            throw new Exception("Reviewed catalog deployment did not settle through mouse input.");
+        var landed = runner.CurrentView!.SelfLine.Any(c => c.Uid == card.Uid);
+        if (!landed || !_battle.MatchesProjection(runner.CurrentView))
+            throw new Exception($"Reviewed catalog deployment did not settle through mouse input. "
+                + $"landed={landed} diff=[{_battle.ProjectionDiff(runner.CurrentView)}] "
+                + $"line=[{string.Join(' ', runner.CurrentView.SelfLine.Select(c => $"{c.CardId}@{c.SlotIndex}hp={c.Health}z={c.Zone}"))}] "
+                + $"hand=[{string.Join(' ', runner.CurrentView.SelfHand.Select(c => c.CardId))}]");
         var directory = ProjectSettings.GlobalizePath("res://artifacts"); System.IO.Directory.CreateDirectory(directory);
         System.IO.File.WriteAllText(directory + "/stage6b2-card-pool.json", JsonSerializer.Serialize(report,
             new JsonSerializerOptions { WriteIndented = true, Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } }));

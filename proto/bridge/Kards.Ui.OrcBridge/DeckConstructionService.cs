@@ -38,7 +38,7 @@ public sealed class DeckConstructionService
     }
 
     /// <summary>Installs pack projections into the buildable pool. Pack cards are engine-admitted by
-    /// construction (PackSystem precheck), so every projection is playable.</summary>
+    /// construction (engine cardpack pipeline precheck), so every projection is playable.</summary>
     public void UpdatePacks(IReadOnlyList<UiCardDefinition> packCards)
     {
         _packCards = packCards.ToArray();

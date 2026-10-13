@@ -1,8 +1,13 @@
 ﻿# -*- coding: utf-8 -*-
-"""内置卡包生成器：KARDS 官方 API dump → PackSystem 包目录。
+"""内置卡包生成器：KARDS 官方 API dump → **引擎新资产模型**卡包目录。
 
 输入：artifacts/kards-api-all-cards-20261012.json（官方 GraphQL 全量 dump）
-输出：proto/data/kards/<packId>/（pack.json + cards/*.card.json）
+输出：proto/data/kards/<packId>/（manifest.json + cards/*.card.json + texts.json）
+
+迁移说明（前端资产迁移 S9）：清单由前端自造的 `pack.json` 改为引擎 `manifest.json`
+（`PackageManifest`：kind=cardpack / id / guid / version / dependsOn[{id,version}] / assets[]）。
+`guid` 由包 id 经 uuid5 确定性派生（跨次稳定——资产名与脚本缓存键依赖它）；`assets[]` 留空
+（卡/效果/词条全走目录约定）；版本为语义化 `1.0.0`。
 
 准入规则（v1）：
 - 排除 OnlySpawnable（衍生牌）与 Special（promo 重印，语义不明）集合；
@@ -19,11 +24,15 @@ import json
 import re
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DUMP = ROOT / "artifacts" / "kards-api-all-cards-20261012.json"
 OUT = ROOT / "proto" / "data" / "kards"
+
+# 包身份派生命名空间（固定字面——保证同名包跨次生成得到同一 guid）。
+PACK_NAMESPACE = uuid.UUID("6f3a1c2e-9b47-4d5a-8c31-0d2e5f7a9b10")
 
 # 官方集合键 → (包目录名, 中文包名, 是否扩展包)
 SETS = {
@@ -130,22 +139,24 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     report: dict[str, dict] = {}
     for set_key, (pack_id, pack_name, is_expansion) in SETS.items():
-        pack_dir = OUT / pack_id
+        # 引擎 `PackageDiscovery` 约定：卡包置于 <基目录>/packs/<包>/manifest.json。
+        pack_dir = OUT / "packs" / pack_id
         (pack_dir / "cards").mkdir(parents=True, exist_ok=True)
         for old in (pack_dir / "cards").glob("*.card.json"):
             old.unlink()
         counts = {"admitted": 0, "keyword": 0, "effect": 0, "type": 0, "faction": 0}
         texts: dict[str, str] = {}
+        # 引擎 `manifest.json`（PackageManifest）：扩展包依赖基包（版本约束锁定主版）。
+        # `name` 为前端显示名——引擎 Parse 读宽忽略它，前端收藏页读它命名瓷砖。
         manifest = {
-            "schemaVersion": 1,
-            "version": 1,
+            "kind": "cardpack",
             "id": pack_id,
             "name": pack_name,
-            "kind": "expansion" if is_expansion else "pack",
-            "description": f"KARDS 官方扩展「{pack_name}」，数据来自官方 API（2026-10-12 抓取）。",
+            "guid": str(uuid.uuid5(PACK_NAMESPACE, pack_id)),
+            "version": "1.0.0",
+            "dependsOn": ([{"id": "builtin", "version": "1.*.*"}] if is_expansion else []),
+            "assets": [],
         }
-        if is_expansion:
-            manifest["dependsOn"] = ["builtin"]
         for node in cards:
             d = node["json"]
             if d["set"] != set_key:
@@ -167,8 +178,8 @@ def main() -> int:
             shutil.rmtree(pack_dir, ignore_errors=True)
             report[f"{pack_name}（未发布：v1 准入 0 张）"] = {"packId": pack_id, **counts}
             continue
-        (pack_dir / "pack.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+        (pack_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         report[pack_name] = {"packId": pack_id, **counts}
     (OUT / "_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -6,6 +6,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <!-- 中立 UI 契约（view 三件）：全局导入，使 proto/ui/** 源码零改动。 -->
+    <Using Include="Orc.UI.Contracts" />
     <Compile Include="proto/ui/**/*.cs" />
     <ProjectReference Include="proto/core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="proto/bridge/Kards.Ui.OrcBridge/Kards.Ui.OrcBridge.csproj" />

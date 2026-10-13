@@ -25,11 +25,12 @@ public static class DiyCardCompiler
         [new("av76", "苏联"), new("deran", "德国"), new("USG", "美国"), new("UN", "英国")];
     public static IReadOnlyList<UiDiyChoice> Rarities { get; } =
         [new("iron", "基础"), new("bronze", "限定"), new("silver", "特殊"), new("gold", "精英")];
-    public static IReadOnlyList<UiDiyChoice> UnitTypes { get; } = Enum.GetValues<UnitType>()
-        .Select(t => new UiDiyChoice(t.ToString().ToLowerInvariant(), t switch
+    // 引擎侧单位类型已数据化为 string 常量类（`UnitType.All` 即内置标识清单，规范小写）。
+    public static IReadOnlyList<UiDiyChoice> UnitTypes { get; } = UnitType.All
+        .Select(t => new UiDiyChoice(t, t switch
         {
             UnitType.Infantry => "步兵", UnitType.Tank => "坦克", UnitType.Artillery => "火炮",
-            UnitType.Fighter => "战斗机", UnitType.Bomber => "轰炸机", _ => t.ToString()
+            UnitType.Fighter => "战斗机", UnitType.Bomber => "轰炸机", _ => t
         })).ToArray();
     private static readonly IReadOnlyDictionary<string, string> KeywordMap = new Dictionary<string, string>
     {
@@ -161,7 +162,7 @@ public static class DiyCardCompiler
             throw new InvalidDataException("含未接入的词条：" + string.Join("、", draft.Keywords.Where(k => !KnownKeyword(k))));
         if (draft.CardType == "order" && (draft.Keywords.Length != 0 || draft.Effects.Length == 0))
             throw new InvalidDataException("指令必须有打出效果，不能附带单位词条");
-        if (!Enum.TryParse<UnitType>(draft.UnitType, true, out var unitType) || !Enum.IsDefined(unitType))
+        if (!UnitType.TryNormalize(draft.UnitType, out var unitType))
             throw new InvalidDataException("兵种不受引擎支持");
         foreach (var effect in draft.Effects) CheckEffect(draft.CardType, effect);
         var native = new CardDefinition(draft.Name.Trim(), draft.Cost,

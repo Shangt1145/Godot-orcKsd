@@ -122,14 +122,14 @@ public partial class CollectionScreen : VBoxContainer
     /// <summary>A base pack plus the expansions folded into it — expansions are a filter, never a tile.</summary>
     private sealed record PackFamily(string Id, string Name, IReadOnlyList<string> ExpansionIds);
 
-    private static IReadOnlyList<PackFamily> PackFamilies() =>
-        [.. PackSystem.EnabledPacks.Where(p => p.Manifest.Kind == "pack")
-            .Select(p => new PackFamily(p.Manifest.Id, p.Manifest.Name,
-                [.. PackSystem.EnabledPacks
-                    .Where(e => e.Manifest.Kind == "expansion" && e.Manifest.DependsOn.Count == 1
-                        && e.Manifest.DependsOn[0] == p.Manifest.Id)
-                    .Select(e => e.Manifest.Id)]))
+    private static IReadOnlyList<PackFamily> PackFamilies()
+    {
+        var packs = OrcEngineHost.PackDescriptors;
+        return [.. packs.Where(p => p.BasePackId is null)
+            .Select(p => new PackFamily(p.Id, p.Name,
+                [.. packs.Where(e => e.BasePackId == p.Id).Select(e => e.Id)]))
             .OrderBy(f => f.Name, StringComparer.Ordinal)];
+    }
 
     /// <summary>Card count for one family: the base pack's cards plus every expansion's.</summary>
     private static int ScopedCount(CardCatalog catalog, PackFamily family) =>
@@ -208,7 +208,7 @@ public partial class CollectionScreen : VBoxContainer
         if (_grid is null)
             return;
         var inPack = _activePack is not null;
-        _backButton.Visible = inPack;
+        _backButton!.Visible = inPack;
         _packPage!.Visible = !inPack;
         _cardBody!.Visible = inPack;
         if (!inPack)
@@ -241,7 +241,7 @@ public partial class CollectionScreen : VBoxContainer
                 _expansionFilter.SetItemMetadata(_expansionFilter.ItemCount - 1, "pack/" + family.Id);
                 foreach (var expId in family.ExpansionIds)
                 {
-                    _expansionFilter.AddItem(PackSystem.EnabledPacks.First(p => p.Manifest.Id == expId).Manifest.Name);
+                    _expansionFilter.AddItem(OrcEngineHost.PackDescriptors.First(p => p.Id == expId).Name);
                     _expansionFilter.SetItemMetadata(_expansionFilter.ItemCount - 1, "pack/" + expId);
                 }
             }
@@ -249,7 +249,7 @@ public partial class CollectionScreen : VBoxContainer
         if (_expansionFilter is not null)
             _expansionFilter.Visible = family is { ExpansionIds.Count: > 0 };
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
-        IEnumerable<Kards.Ui.Contracts.UiCardDefinition> query = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]);
+        IEnumerable<UiCardDefinition> query = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]);
         query = _activePack switch
         {
             "builtin:taikong" => query.Where(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)

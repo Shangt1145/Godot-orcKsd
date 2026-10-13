@@ -27,7 +27,7 @@ public sealed class DeckConstructionTests
     [Theory]
     [InlineData("iron", Rarity.Standard)] [InlineData("bronze", Rarity.Limited)]
     [InlineData("silver", Rarity.Special)] [InlineData("gold", Rarity.Elite)]
-    public void SourceRaritiesReachNativeDefinitions(string rarity, Rarity expected)
+    public void SourceRaritiesReachNativeDefinitions(string rarity, string expected)
     {
         Assert.True(CardPoolCompiler.TryCompile(Card("a", rarity: rarity) with { Cost = 1 }, out var compiled, out _));
         Assert.Equal(expected, compiled!.Definition.Rarity);

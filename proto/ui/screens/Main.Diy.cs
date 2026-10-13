@@ -17,38 +17,25 @@ public partial class Main
             Godot.GD.PushWarning(string.Join("；", _deckService.CustomErrors.Select(p => $"{p.Key}：{p.Value}")));
     }
 
-    /// <summary>Loads the built-in packs (太空战争's companions: 内置卡包 + official expansions) and
-    /// republishes the merged catalog. Base packs load before their expansions; any failure is an
-    /// error log, never a startup exception.</summary>
+    /// <summary>
+    /// 迁移 S8：卡包不再由前端自造模型装载——改为初始化**引擎宿主**（发现 `<base>/packs` 下的卡包，
+    /// 并注入内置插件与 `.ui` 投影插件），再从快照取卡包卡的**静态投影**喂给图鉴/构筑。
+    /// 单包装载失败＝隔离该包并记警告，绝不抛到启动链上。
+    /// </summary>
     private void ReloadPacks()
     {
         try
         {
-            var root = Godot.ProjectSettings.GlobalizePath("res://proto/data/kards");
-            var loaded = new List<PackContent>();
-            foreach (var dir in Directory.EnumerateDirectories(root).OrderBy(d => d, StringComparer.Ordinal))
-            {
-                if (!File.Exists(Path.Combine(dir, "pack.json"))) continue;
-                var manifest = PackSystem.ReadManifest(dir);
-                // expansions must load after their base pack; two passes keep that true regardless of name order.
-                if (manifest.Kind != "pack") continue;
-                loaded.Add(PackSystem.Load(dir, loaded));
-            }
-            foreach (var dir in Directory.EnumerateDirectories(root).OrderBy(d => d, StringComparer.Ordinal))
-            {
-                if (!File.Exists(Path.Combine(dir, "pack.json"))) continue;
-                var manifest = PackSystem.ReadManifest(dir);
-                if (manifest.Kind == "pack") continue;
-                if (loaded.Any(p => p.Manifest.Id == manifest.Id)) continue;
-                loaded.Add(PackSystem.Load(dir, loaded));
-            }
-            var projections = loaded.SelectMany(p => p.Projections).ToArray();
-            _catalog.SetPackCards(projections);
-            _deckService.UpdatePacks(projections);
+            var baseDirectory = Godot.ProjectSettings.GlobalizePath("res://proto/data/kards");
+            var (cards, failures, _) = OrcEngineHost.LoadPackCards(baseDirectory);
+            foreach (var failure in failures)
+                Godot.GD.PushWarning($"卡包/插件装载隔离：{failure}");
+            _catalog.SetPackCards(cards);
+            _deckService.UpdatePacks(cards);
         }
         catch (Exception e)
         {
-            Godot.GD.PushError($"内置卡包装载失败：{e.Message}");
+            Godot.GD.PushError($"卡包装载失败：{e.Message}");
         }
         if (_pool is not null) _pool.Text = $"{_catalog.Cards.Count} 张卡牌";
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);

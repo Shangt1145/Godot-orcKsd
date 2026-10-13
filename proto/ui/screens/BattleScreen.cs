@@ -1388,6 +1388,29 @@ public partial class BattleScreen : Control
         && _state.SelfLine.Select(c => (c.Uid, c.Health, c.Zone)).SequenceEqual(expected.SelfLine.Select(c => (c.Uid, c.Health, c.Zone)))
         && _state.EnemyLine.Select(c => (c.Uid, c.Health, c.Zone)).SequenceEqual(expected.EnemyLine.Select(c => (c.Uid, c.Health, c.Zone)))
         && _state.EnemyHq?.Health == expected.EnemyHq?.Health;
+
+    /// <summary>诊断面：与 <see cref="MatchesProjection"/> 同口径，返回第一处不一致的文字描述（一致＝空串）。</summary>
+    public string ProjectionDiff(UiMatchView expected)
+    {
+        if (_state.MatchId != expected.MatchId) return $"matchId {_state.MatchId} != {expected.MatchId}";
+        if (_state.Phase != expected.Phase) return $"phase {_state.Phase} != {expected.Phase}";
+        if (_state.SelfKredits != expected.SelfKredits) return $"kredits {_state.SelfKredits} != {expected.SelfKredits}";
+        var self = _state.SelfLine.Zip(expected.SelfLine, (a, b) => (a, b)).ToList();
+        if (_state.SelfLine.Count != expected.SelfLine.Count)
+            return $"selfLine count {_state.SelfLine.Count} != {expected.SelfLine.Count}";
+        foreach (var (a, b) in self)
+            if (a.Uid != b.Uid || a.Health != b.Health || a.Zone != b.Zone)
+                return $"selfLine {a.CardId}(uid={a.Uid},hp={a.Health},zone={a.Zone}) != engine(uid={b.Uid},hp={b.Health},zone={b.Zone})";
+        var enemy = _state.EnemyLine.Zip(expected.EnemyLine, (a, b) => (a, b)).ToList();
+        if (_state.EnemyLine.Count != expected.EnemyLine.Count)
+            return $"enemyLine count {_state.EnemyLine.Count} != {expected.EnemyLine.Count}";
+        foreach (var (a, b) in enemy)
+            if (a.Uid != b.Uid || a.Health != b.Health || a.Zone != b.Zone)
+                return $"enemyLine {a.CardId}(uid={a.Uid},hp={a.Health},zone={a.Zone}) != engine(uid={b.Uid},hp={b.Health},zone={b.Zone})";
+        if (_state.EnemyHq?.Health != expected.EnemyHq?.Health)
+            return $"enemyHq {_state.EnemyHq?.Health} != {expected.EnemyHq?.Health}";
+        return "";
+    }
     public async Task CaptureCombatFramesAsync(string dir)
     {
         var speed = _clock.Current; var quiet = _clock.ReducedMotion;

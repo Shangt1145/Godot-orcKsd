@@ -4,4 +4,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+
+  <!--
+    前端契约层（资产迁移后）：view 三件（UiCardDefinition / UiCardView / UiMatchView）已上移至
+    引擎**中立程序集** Orc.UI.Contracts（投影由引擎侧插件 Orc.UI 构造，故 DTO 须对后端可见）。
+    本工程仅保留输入/表现/DIY 契约，并引用该中立程序集。
+    经 `<Using Include="Orc.UI.Contracts" />` 全局导入，使 proto/ui/** 等源码**零改动**。
+    OrcEngineRoot 与 OrcBridge 同一约定（可 -p:OrcEngineRoot=... 覆盖）。
+  -->
+  <PropertyGroup>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == ''">H:\Working Folder\OrC-KSD-github\src\Orc.Game</OrcEngineRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Orc.UI.Contracts" />
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.UI.Contracts/Orc.UI.Contracts.csproj" />
+  </ItemGroup>
 </Project>

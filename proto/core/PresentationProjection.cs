@@ -19,7 +19,13 @@ internal sealed class PresentationProjection(UiMatchView? initial)
 
     private T Value<T>(string key, T before, T after, T current, long order)
     {
-        if (EqualityComparer<T>.Default.Equals(before, after) || _revisions.GetValueOrDefault(key) > order) return current;
+        // A newer revision always wins: an older feedback item must never roll the board back.
+        if (_revisions.GetValueOrDefault(key) > order) return current;
+        // 迁移 S8：宿主侧存在不经过演出链的静默视图推进（如资产化引擎的部署扣费不产生 update 段），
+        // 条目的 before/after 可能都已是"事后"值——此时条目不带自身增量，但它的 After 仍是该链位的
+        // 绝对真值：显示态与其不符时照常采纳，否则重放基线会永久停在静默推进之前。
+        if (EqualityComparer<T>.Default.Equals(before, after)
+            && EqualityComparer<T>.Default.Equals(current, after)) return current;
         _revisions[key] = order;
         return after;
     }

@@ -67,7 +67,7 @@ public static class VerifiedCardPool
             { support = UiCardSupport.Unsupported; reason = "Effect declaration has no reviewed complete engine adapter."; }
             else if (card.HasVariableStats || card.Cost is null or < 0
                 || (card.CardType == "unit" && (card.BaseAttack is null or < 0 || card.BaseDefense is null or <= 0 || card.BaseOpCost is null or < 0
-                || !Enum.TryParse<UnitType>(card.UnitType, true, out var unitType) || !Enum.IsDefined(unitType))))
+                || !UnitType.TryNormalize(card.UnitType, out _))))
             { support = UiCardSupport.Unsupported; reason = "Incomplete stats, variable stats, category or unit type."; }
             else if (!Reviews.TryGetValue(card.CardId, out var reviewedHash))
             { reason = "Not in the reviewed semantic support set."; }

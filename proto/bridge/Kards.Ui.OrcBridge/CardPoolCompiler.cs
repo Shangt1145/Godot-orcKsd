@@ -136,28 +136,29 @@ public static class CardPoolCompiler
         return declared;
     }
 
-    private static IEnumerable<UnitType>? UnitTypes(UiCardDefinition card)
+    // 引擎侧的单位类型已是 string 常量类（真源＝资产服务）；读宽写窄靠 UnitType.TryNormalize 归一。
+    private static IEnumerable<string>? UnitTypes(UiCardDefinition card)
     {
         if (string.IsNullOrWhiteSpace(card.UnitType)) return null;
-        return Enum.TryParse<UnitType>(card.UnitType, ignoreCase: true, out var unit) ? [unit] : null;
+        return UnitType.TryNormalize(card.UnitType, out var unit) ? [unit] : null;
     }
 
-    private static bool TryCategory(string? cardType, out CardCategory category)
+    private static bool TryCategory(string? cardType, out string category)
     {
         switch (cardType)
         {
             case "unit": category = CardCategory.Unit; return true;
             case "order": category = CardCategory.Command; return true;
             case "counter": category = CardCategory.Counter; return true;
-            default: category = default; return false;
+            default: category = string.Empty; return false;
         }
     }
 
     /// <summary>
-    /// The catalog's sets are nations; the engine's faction enum is a different axis. Only the four
+    /// The catalog's sets are nations; the engine's faction axis is a different one. Only the four
     /// engine factions have a mapping, keyed by the two catalog sets that clearly mean each.
     /// </summary>
-    private static bool TryFaction(string? set, out Faction faction)
+    private static bool TryFaction(string? set, out string faction)
     {
         switch (set?.ToLowerInvariant())
         {
@@ -165,17 +166,17 @@ public static class CardPoolCompiler
             case "av76": faction = Faction.Soviet; return true;
             case "usg": faction = Faction.USA; return true;
             case "un": faction = Faction.Britain; return true;
-            default: faction = default; return false;
+            default: faction = string.Empty; return false;
         }
     }
 
     // Confirmed by the source client's card-import.js, rather than inferred from metal colours.
-    private static Rarity RarityOf(UiCardDefinition card) => card.Rarity.ToLowerInvariant() switch
+    private static string RarityOf(UiCardDefinition card) => card.Rarity.ToLowerInvariant() switch
     {
         "iron" or "common" => Rarity.Standard,
         "bronze" => Rarity.Limited,
         "silver" => Rarity.Special,
         "gold" => Rarity.Elite,
-        _ => Enum.TryParse<Rarity>(card.Rarity, true, out var rarity) ? rarity : Rarity.Standard
+        _ => Rarity.TryNormalize(card.Rarity, out var rarity) ? rarity : Rarity.Standard
     };
 }

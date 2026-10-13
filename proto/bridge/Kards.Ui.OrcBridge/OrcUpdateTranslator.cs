@@ -16,9 +16,10 @@ public sealed record OrcTranslation(IReadOnlyList<UiPresentationStep> Steps, IRe
 /// </summary>
 public sealed class OrcUpdateTranslator
 {
-    private readonly OrcCardReader _cards;
+    // 单卡视图由引擎侧投影（`.ui` 插件）产出——前端只持一个委托，不自造卡读面（迁移 S8）。
+    private readonly Func<Card, Player, string, int, UiCardView?> _readCard;
 
-    public OrcUpdateTranslator(OrcCardReader cards) { _cards = cards; }
+    public OrcUpdateTranslator(Func<Card, Player, string, int, UiCardView?> readCard) { _readCard = readCard; }
 
     public OrcTranslation Translate(
         IReadOnlyList<(string Update, IReadOnlyDictionary<string, object?> Payload)> updates,
@@ -92,15 +93,15 @@ public sealed class OrcUpdateTranslator
                             update == GameUpdates.UnitUpgraded ? UiStatusKind.Veteran : UiStatusKind.Revealed));
                     break;
                 case GameUpdates.CardPlayed:
-                    if (PayloadCard(payload) is CommandCard order)
-                        steps.Add(new UiOrderPresentation(_cards.Read(order, viewer, "hand", 0), []));
+                    if (PayloadCard(payload) is CommandCard order && _readCard(order, viewer, "hand", 0) is { } orderView)
+                        steps.Add(new UiOrderPresentation(orderView, []));
                     break;
                 case GameUpdates.CounterTriggered:
                     if (PayloadCard(payload) is CounterCard counter)
                     {
                         var triggered = payload.GetValueOrDefault("UiCounterStage") as string == "triggered";
                         var side = counter.Owner == viewer ? "self" : "enemy";
-                        var card = side == "self" || triggered ? _cards.Read(counter, viewer, "hand", 0) : null;
+                        var card = side == "self" || triggered ? _readCard(counter, viewer, "hand", 0) : null;
                         steps.Add(new UiCounterPresentation(side, triggered ? UiCounterStage.Triggered : UiCounterStage.Armed, card));
                     }
                     break;
@@ -369,7 +370,7 @@ public sealed class OrcUpdateTranslator
     }
 
     private UiCardView? ReadFor(Player viewer, Card card)
-        => card is CardBase typed ? _cards.Read(typed, viewer, "hand", 0) : null;
+        => card is CardBase ? _readCard(card, viewer, "hand", 0) : null;
 
     private static UiCardView? BoardView(Card card, UiMatchView after)
     {

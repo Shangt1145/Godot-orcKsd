@@ -17,11 +17,18 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 中立 UI 契约（view 三件）：全局导入，保持源码零改动。 -->
+    <Using Include="Orc.UI.Contracts" />
     <EmbeddedResource Include="Resources/verified-cards.json" LogicalName="Kards.Ui.OrcBridge.verified-cards.json" />
     <!-- Runtime assets, embedded so Godot's in-memory assembly loading needs no Assembly.Location. -->
     <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/ops/*.csx.tpl"
                       LogicalName="Kards.Ui.OrcBridge.DiyOps.%(Filename)%(Extension)" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
+    <!-- 迁移 S8：宿主/包管理（EngineHost / CardPackLoader）、脚本求值器与内置 UI 插件（投影提供者）。 -->
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Script/Orc.Script.csproj" />
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Packages/Orc.Packages.csproj" />
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/Orc.Plugins.BuiltIn.csproj" />
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.UI/Orc.UI.csproj" />
   </ItemGroup>
 </Project>

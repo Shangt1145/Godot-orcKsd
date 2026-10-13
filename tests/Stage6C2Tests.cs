@@ -49,7 +49,7 @@ public sealed class Stage6C2Tests
     [InlineData(false, true)]
     public async Task NativeCommandForwardsTheWholeSelectionAndDefinitionFaces(bool empty, bool cancel)
     {
-        CardDefinition Definition(string name, CardCategory category) => new(name, 0, 0, 1, 2, category: category,
+        CardDefinition Definition(string name, string category) => new(name, 0, 0, 1, 2, category: category,
             faction: Faction.Germany, rarity: Rarity.Standard);
         var pool = new[] { new CardDefinitionEntry("order", Definition("选择指令", CardCategory.Command)),
             new CardDefinitionEntry("candidate", Definition("引擎候选单位", CardCategory.Unit)) };

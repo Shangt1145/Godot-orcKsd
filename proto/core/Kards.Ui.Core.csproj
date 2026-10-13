@@ -4,5 +4,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../contracts/Kards.Ui.Contracts.csproj" /></ItemGroup>
+  <ItemGroup>
+    <Using Include="Orc.UI.Contracts" />
+    <ProjectReference Include="../contracts/Kards.Ui.Contracts.csproj" />
+  </ItemGroup>
 </Project>

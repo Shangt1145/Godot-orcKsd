@@ -41,8 +41,8 @@ public sealed class OrcMatchRunner
     public string? CatalogSourceDirectory { get; init; }
     public ConstructedDeck? ConstructedDeck { get; init; }
     public IReadOnlyList<DiyCardDraft>? CustomCards { get; init; }
-    /// <summary>Enabled card packs; null falls back to the process-enabled set (PackSystem).</summary>
-    public IReadOnlyList<PackContent>? Packs { get; init; }
+    /// <summary>本局卡包集合（引擎宿主快照 + 包内容）；null = 由 <see cref="OrcEngineHost"/> 当前快照兜底。</summary>
+    public PackSet? Packs { get; init; }
     public UiCardPoolReport? CardPoolReport => _session?.CardPoolReport;
 
     /// <summary>Explicit verification fixtures drive both sides through the native engine.</summary>

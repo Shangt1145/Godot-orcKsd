@@ -79,6 +79,10 @@ public partial class Main : Control
         await StartupStageAsync(.32f, "检查已保存卡组…");
         _deckPath = ProjectSettings.GlobalizePath(_verificationRun
             ? $"res://artifacts/decks/session-{Guid.NewGuid():N}.json" : "user://decks.json");
+        // 迁移 S8：内建词条注册面是进程级静态（orc.builtin.core 进程相内容），必须先于任何
+        // CardDefinition 解析装配（ResolveKeywords 对未注册标识 fail-fast）；此处一并完成卡包发现，
+        // ReloadPacks 的 LoadPackCards 幂等复用同一宿主。
+        OrcEngineHost.WarmUp(ProjectSettings.GlobalizePath("res://proto/data/kards"));
         _deckService = new DeckConstructionService(_catalog.Cards, ProjectSettings.GlobalizePath("res://proto/data/nations"));
         _diyPath = ProjectSettings.GlobalizePath(_verificationRun
             ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
@@ -626,9 +630,14 @@ public partial class Main : Control
     {
         try
         {
-            if (typeof(Main).Assembly.GetReferencedAssemblies().Any(a => a.Name == "Orc"
-                || a.Name?.StartsWith("Orc.", StringComparison.Ordinal) == true))
-                throw new Exception("UI assembly directly references engine types.");
+            // 迁移 S8：中立视图契约上移到 Orc.UI.Contracts（零引擎依赖），proto/ui 经全局 Using 消费
+            // 它不算越界；引擎运行时程序集（Orc / Orc.Game / Orc.Packages / ...）仍然一律禁止。
+            var engineRefs = typeof(Main).Assembly.GetReferencedAssemblies()
+                .Select(a => a.Name).Where(n => n is not null)
+                .Where(n => n == "Orc" || (n.StartsWith("Orc.", StringComparison.Ordinal) && n != "Orc.UI.Contracts"))
+                .ToList();
+            if (engineRefs.Count > 0)
+                throw new Exception($"UI assembly directly references engine types: {string.Join("、", engineRefs!)}");
             GD.Print("UI_BOUNDARY_VERIFY_OK");
             await VerifyMenuAsync();
             foreach (var id in _screens.Keys)
