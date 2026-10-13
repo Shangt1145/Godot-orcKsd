@@ -1,6 +1,7 @@
 using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
+using Kards.Ui.OrcBridge;
 
 namespace Kards.Ui;
 
@@ -26,6 +27,8 @@ public partial class CollectionScreen : VBoxContainer
     private Button? _backButton;
     private Label? _heading;
     private string? _activePack; // null = pack list page; "builtin:taikong" = source pool; "pack/<id>" = a pack
+    private OptionButton? _expansionFilter; // pack-scoped source picker: base pack vs its expansions
+    private string? _expansionFamilyId; // which family the source picker currently lists
     internal ScrollContainer CardScroll => _scroll;
     internal LineEdit Search => _search;
     internal IReadOnlyList<UiCardDefinition> Results => _results;
@@ -67,7 +70,7 @@ public partial class CollectionScreen : VBoxContainer
         heading.AddChild(_search);
         _search.TextChanged += _ => Render();
         _filterToggle = UiStyles.Button("筛选", () => { _filterRow.Visible = !_filterRow.Visible; _filterToggle.SetPressedNoSignal(_filterRow.Visible); }); _filterToggle.ToggleMode = true; heading.AddChild(_filterToggle);
-        heading.AddChild(UiStyles.Button("重置", () => { foreach (var f in _filters) f.Select(0); _search.Text = ""; Render(); }));
+        heading.AddChild(UiStyles.Button("重置", () => { foreach (var f in _filters) f.Select(0); _expansionFilter!.Select(0); _search.Text = ""; Render(); }));
         _count = UiStyles.Label("", 14, UiStyles.Gold); heading.AddChild(_count);
         var filters = new HBoxContainer();
         _filterRow = filters; filters.Visible = false;
@@ -77,6 +80,14 @@ public partial class CollectionScreen : VBoxContainer
         AddFilter(filters, "全部兵种", catalog.Cards.Select(c => c.UnitType), x => x);
         AddFilter(filters, "全部稀有度", catalog.Cards.Select(c => c.Rarity), UiStyles.RarityName);
         AddFilter(filters, "全部词条", catalog.Cards.SelectMany(c => c.Keywords), x => CardControl.KeywordLabel(x, new Dictionary<string, int>()));
+        // Pack-scoped source picker: expansions fold into their base pack, so they surface here —
+        // never as front-page tiles (2026-10-13 用户拍板：扩展包只是卡池内筛选，不单独设入口).
+        _expansionFilter = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(150, 38) };
+        _expansionFilter.AddItem("全部来源");
+        _expansionFilter.SetItemMetadata(0, "");
+        _expansionFilter.ItemSelected += _ => Render();
+        _expansionFilter.Visible = false;
+        filters.AddChild(_expansionFilter);
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         AddChild(body);
         _cardBody = body;
@@ -108,6 +119,23 @@ public partial class CollectionScreen : VBoxContainer
     /// <summary>A pack as shown on the front page: display name, card id prefix selector, count.</summary>
     private sealed record PackTile(string Name, string? Filter, int Count);
 
+    /// <summary>A base pack plus the expansions folded into it — expansions are a filter, never a tile.</summary>
+    private sealed record PackFamily(string Id, string Name, IReadOnlyList<string> ExpansionIds);
+
+    private static IReadOnlyList<PackFamily> PackFamilies() =>
+        [.. PackSystem.EnabledPacks.Where(p => p.Manifest.Kind == "pack")
+            .Select(p => new PackFamily(p.Manifest.Id, p.Manifest.Name,
+                [.. PackSystem.EnabledPacks
+                    .Where(e => e.Manifest.Kind == "expansion" && e.Manifest.DependsOn.Count == 1
+                        && e.Manifest.DependsOn[0] == p.Manifest.Id)
+                    .Select(e => e.Manifest.Id)]))
+            .OrderBy(f => f.Name, StringComparer.Ordinal)];
+
+    /// <summary>Card count for one family: the base pack's cards plus every expansion's.</summary>
+    private static int ScopedCount(CardCatalog catalog, PackFamily family) =>
+        catalog.Cards.Count(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
+            || family.ExpansionIds.Any(e => c.CardId.StartsWith("pack/" + e + "/", StringComparison.Ordinal)));
+
     private static IReadOnlyList<PackTile> PackTiles(CardCatalog catalog)
     {
         var cards = catalog.Cards;
@@ -115,12 +143,11 @@ public partial class CollectionScreen : VBoxContainer
             && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)).Count();
         var tiles = new List<PackTile>();
         if (source > 0) tiles.Add(new("太空战争", "builtin:taikong", source));
-        tiles.AddRange(cards.Where(c => c.CardId.StartsWith("pack/", StringComparison.Ordinal))
-            .GroupBy(c => string.Join('/', c.CardId.Split('/').Take(2)))
-            .Select(g => new PackTile(
-                g.First().Set.StartsWith("pack:", StringComparison.Ordinal) ? g.First().Set["pack:".Length..] : g.Key,
-                g.Key, g.Count()))
-            .OrderBy(t => t.Name, StringComparer.Ordinal));
+        // Only base packs get tiles; their expansions are already part of the pack's pool and
+        // surface as the source picker inside the pack page.
+        tiles.AddRange(PackFamilies()
+            .Select(f => new PackTile(f.Name, "pack/" + f.Id, ScopedCount(catalog, f)))
+            .Where(t => t.Count > 0));
         return tiles;
     }
 
@@ -188,19 +215,55 @@ public partial class CollectionScreen : VBoxContainer
         {
             _heading!.Text = "收藏";
             _count.Text = $"{PackTiles(_catalog).Count} 个卡包";
+            if (_expansionFilter is not null) _expansionFilter.Visible = false;
             return;
         }
-        var packName = _activePack == "builtin:taikong" ? "太空战争"
-            : _catalog.Cards.FirstOrDefault(c => c.CardId.StartsWith(_activePack + "/", StringComparison.Ordinal))?.Set is { } set && set.StartsWith("pack:", StringComparison.Ordinal) ? set["pack:".Length..] : _activePack;
+        var family = PackFamilies().FirstOrDefault(f => "pack/" + f.Id == _activePack);
+        var packName = _activePack switch
+        {
+            "builtin:taikong" => "太空战争",
+            _ when family is not null => family.Name,
+            _ => _catalog.Cards.FirstOrDefault(c => c.CardId.StartsWith(_activePack + "/", StringComparison.Ordinal))?.Set
+                is { } set && set.StartsWith("pack:", StringComparison.Ordinal) ? set["pack:".Length..] : _activePack!,
+        };
         _heading!.Text = $"收藏 · {packName}";
+        // The source picker lists this family's base pool and expansions; rebuild only on family change
+        // so the user's selection survives re-renders.
+        if (_expansionFilter is not null && family?.Id != _expansionFamilyId)
+        {
+            _expansionFamilyId = family?.Id;
+            _expansionFilter.Clear();
+            _expansionFilter.AddItem("全部来源");
+            _expansionFilter.SetItemMetadata(0, "");
+            if (family is not null)
+            {
+                _expansionFilter.AddItem(family.Name);
+                _expansionFilter.SetItemMetadata(_expansionFilter.ItemCount - 1, "pack/" + family.Id);
+                foreach (var expId in family.ExpansionIds)
+                {
+                    _expansionFilter.AddItem(PackSystem.EnabledPacks.First(p => p.Manifest.Id == expId).Manifest.Name);
+                    _expansionFilter.SetItemMetadata(_expansionFilter.ItemCount - 1, "pack/" + expId);
+                }
+            }
+        }
+        if (_expansionFilter is not null)
+            _expansionFilter.Visible = family is { ExpansionIds.Count: > 0 };
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
         IEnumerable<Kards.Ui.Contracts.UiCardDefinition> query = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]);
         query = _activePack switch
         {
             "builtin:taikong" => query.Where(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
                 && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)),
+            _ when family is not null => query.Where(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
+                || family.ExpansionIds.Any(e => c.CardId.StartsWith("pack/" + e + "/", StringComparison.Ordinal))),
             var pack => query.Where(c => c.CardId.StartsWith(pack + "/", StringComparison.Ordinal))
         };
+        if (_expansionFilter is { Visible: true } picker)
+        {
+            var source = picker.GetItemMetadata(picker.Selected).AsString();
+            if (source.Length > 0)
+                query = query.Where(c => c.CardId.StartsWith(source + "/", StringComparison.Ordinal));
+        }
         _results = query.ToArray();
         _count.Text = $"{_results.Length} 张";
         var filterCount = vals.Count(v => v.Length > 0); _filterToggle.Text = filterCount == 0 ? "筛选" : $"筛选 · {filterCount}";
