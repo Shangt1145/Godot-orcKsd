@@ -157,4 +157,56 @@ public class SourceEffectConverterTests
         // 部署触发抽了一张：出手 −1、抽牌 ＋1，手牌规模不变。
         Assert.Equal(hand, session.View.SelfHand.Count);
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // DIY 文本 ↔ 引擎解析面往返（引擎 S2b 新接口 CardTextEffectCompiler.Parse＝单一真源）。
+    // 生成器产出的每个句式都必须能被引擎原样读回同构草稿——生成器与解析器永不漂移。
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static IEnumerable<object[]> EngineParseableCombinations()
+    {
+        string[] unitTargets = ["friendlyUnits", "enemyUnits", "friendlyUnit", "enemyUnit", "anyUnit", "bothUnits"];
+        foreach (var t in unitTargets)
+        {
+            yield return [new DiyEffectDraft { Op = "damage", Target = t, Amount = 2 }];
+            yield return [new DiyEffectDraft { Op = "buff", Target = t, Attack = 1, Defense = -2, Until = "turnEnd" }];
+            yield return [new DiyEffectDraft { Op = "pin", Target = t, Amount = 1 }];
+            yield return [new DiyEffectDraft { Op = "silence", Target = t }];
+            yield return [new DiyEffectDraft { Op = "costMod", Target = t, Amount = -1, Until = "turnEnd" }];
+            yield return [new DiyEffectDraft { Op = "destroy", Target = t }];
+        }
+        yield return [new DiyEffectDraft { Op = "draw", Target = "self", Amount = 3 }];
+        yield return [new DiyEffectDraft { Op = "gainPoint", Target = "self", Amount = 1 }];
+        yield return [new DiyEffectDraft { Op = "gainSlot", Target = "self", Amount = 2 }];
+    }
+
+    [Theory]
+    [MemberData(nameof(EngineParseableCombinations))]
+    public void DiyTextIsReadBackByTheEngineParser(DiyEffectDraft effect)
+    {
+        // self 只出现在归属自己的资源效果上（这些是 unit 卡）；其余组合以 order 卡生成。
+        var type = effect.Target == "self" ? "unit" : "order";
+        var text = DiyCardCompiler.Text(new DiyCardDraft { CardType = type, Effects = [effect] });
+        // until 后缀引擎解析面暂无句式：剥离期限子句再比对（期限语义由草稿本身携带）。
+        var stripped = RegularExpressions.UntilSuffix().Replace(text, "");
+        Assert.True(SourceEffectConverter.MatchesCardText([effect], stripped, type),
+            $"引擎读不回 DIY 文本：{text} → {stripped}");
+    }
+
+    [Fact]
+    public void UnitSelfUnitEffectsAreOutsideTheEngineTextSurface()
+    {
+        // 引擎选靶词表没有"本单位"（Side 回退 anyUnit）：self 单位效果是 DIY 功能面、文本面外——锁定认知，
+        // 防止有人误以为生成文本可被引擎读回而据此做导入类功能。
+        var drafts = new[] { new DiyEffectDraft { Op = "buff", Target = "self", Attack = 1, Defense = 1 } };
+        var text = DiyCardCompiler.Text(new DiyCardDraft { CardType = "unit", Effects = drafts });
+        Assert.Equal("部署：使本单位获得 +1/+1。", text);
+        Assert.Null(Orc.Game.EffectParsing.CardTextEffectCompiler.Parse(text, "unit"));
+    }
+}
+
+internal static partial class RegularExpressions
+{
+    [System.Text.RegularExpressions.GeneratedRegex(@"，直到[^，。]*(?=。?$)")]
+    internal static partial System.Text.RegularExpressions.Regex UntilSuffix();
 }

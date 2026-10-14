@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Kards.Ui.Contracts;
+using Orc.Game.EffectParsing;
 
 namespace Kards.Ui.OrcBridge;
 
@@ -156,4 +157,31 @@ internal static class SourceEffectConverter
     private static string Text(JsonElement e, string key, string fallback = "") =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString()! : fallback;
+
+    /// <summary>
+    /// 卡面文本 ↔ 效果草稿的一致性仲裁（引擎新接口 S2b：CardTextEffectCompiler.Parse＝单一真源）。
+    /// 定位：DIY 生成器（DiyCardCompiler.Text）与引擎解析器的**往返面**，由测试逐组合锁定——
+    /// 不做准入强制：镜像导入卡的卡面文本是还原原版的自由文本（"一张"／半角标点／复合句），
+    /// 本就不在引擎模板解析面内，其效果正确性由审核哈希门把关。
+    /// until 维度引擎解析面无对应句式，不参与比对（由声明本身携带）。
+    /// </summary>
+    internal static bool MatchesCardText(IReadOnlyList<DiyEffectDraft> drafts, string? text, string cardType)
+    {
+        var body = text?.Trim();
+        // 引擎 Parse 只剥"部署："前缀（unit 面）；order 卡的"打出："是 UI 显示前缀，仲裁前归一。
+        if (body is not null && body.StartsWith("打出：", StringComparison.Ordinal)) body = body["打出：".Length..].Trim();
+        var parsed = CardTextEffectCompiler.Parse(body, cardType);
+        if (parsed is null || parsed.Count != drafts.Count) return false;
+        for (var i = 0; i < drafts.Count; i++)
+        {
+            var (d, p) = (drafts[i], parsed[i]);
+            if (!string.Equals(d.Op, p.Op, StringComparison.Ordinal)
+                || !string.Equals(d.Target, p.Target, StringComparison.Ordinal)) return false;
+            // 数值维度按 op 语义归一：沉默/消灭无数值（草稿默认 1＝占位，引擎 0）；增益比攻防不比数量；
+            // 其余比数量不比攻防（草稿默认 1＝占位，引擎 0）。
+            if (d.Op == "buff") { if (d.Attack != p.Attack || d.Defense != p.Defense) return false; }
+            else if (d.Op is not ("silence" or "destroy") && d.Amount != p.Amount) return false;
+        }
+        return true;
+    }
 }

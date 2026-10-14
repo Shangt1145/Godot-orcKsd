@@ -71,10 +71,12 @@ public static class DiyCardCompiler
         [new("draw", "抽牌"), new("gainPoint", "获得指挥点"), new("gainSlot", "获得指挥点槽"),
          new("damage", "单位伤害"), new("buff", "攻防增益"), new("pin", "压制"),
          new("silence", "抑制"), new("costMod", "行动费变化"), new("destroy", "消灭")];
+    // 选靶词表＝引擎解析口径（CardTextEffectCompiler.Side 的映射面）：卡面文本要能被引擎原样读回，
+    // 生成器不得自造同义词（"全体友方单位"引擎不认，只认"所有友方单位"）。
     public static IReadOnlyList<UiDiyChoice> Targets { get; } =
-        [new("self", "本单位"), new("friendlyUnits", "全体友方单位"), new("enemyUnits", "全体敌方单位"),
-         new("friendlyUnit", "单个友方单位"), new("enemyUnit", "单个敌方单位"), new("anyUnit", "单个单位"),
-         new("bothUnits", "所有单位")];
+        [new("self", "本单位"), new("friendlyUnits", "所有友方单位"), new("enemyUnits", "所有敌方单位"),
+         new("friendlyUnit", "1 个友方单位"), new("enemyUnit", "1 个敌方单位"),
+         new("anyUnit", "1 个单位"), new("bothUnits", "所有单位")];
     public static IReadOnlyList<UiDiyChoice> Durations { get; } =
         [new("", "持续"), new("turnEnd", "本回合结束"), new("nextOwnerTurnStart", "下个己方回合开始")];
     private static readonly Lazy<OpTemplateCatalog> Ops = new(() =>
@@ -273,17 +275,19 @@ public static class DiyCardCompiler
         count: e.Op == "draw" ? e.Amount : null, attack: e.Op == "buff" ? e.Attack : null,
         defense: e.Op == "buff" ? e.Defense : null,
         condition: new DslCondition(DslCondition.PayloadSelf, type == "unit" ? "Unit" : "Card"), until: e.Until.Length == 0 ? null : e.Until);
-    private static string Text(DiyCardDraft draft)
+    internal static string Text(DiyCardDraft draft)
     {
+        // 句式＝引擎 CardTextEffectCompiler.Parse 的解析面（buff/costMod 带"使…获得"框架），
+        // 保证生成的卡面文本能被引擎原样读回（生成器与解析器不漂移）。
         string Target(DiyEffectDraft e) => Targets.FirstOrDefault(t => t.Id == e.Target)?.Label ?? e.Target;
         string Amount(int n) => n >= 0 ? "+" + n : n.ToString();
         var lines = draft.Effects.Select(e => e.Op switch
         {
             "draw" => $"抽 {e.Amount} 张牌", "gainPoint" => $"获得 {e.Amount} 个指挥点",
             "gainSlot" => $"获得 {e.Amount} 个指挥点槽", "damage" => $"对{Target(e)}造成 {e.Amount} 点伤害",
-            "buff" => $"{Target(e)}获得 {Amount(e.Attack)}/{Amount(e.Defense)}",
+            "buff" => $"使{Target(e)}获得 {Amount(e.Attack)}/{Amount(e.Defense)}",
             "pin" => $"压制{Target(e)} {e.Amount} 回合", "silence" => $"抑制{Target(e)}",
-            "costMod" => $"{Target(e)}行动费 {Amount(e.Amount)}", "destroy" => $"消灭{Target(e)}", _ => $"未支持：{e.Op}"
+            "costMod" => $"使{Target(e)}获得 {Amount(e.Amount)} 行动花费", "destroy" => $"消灭{Target(e)}", _ => $"未支持：{e.Op}"
         } + (e.Until.Length == 0 ? "" : $"，直到{Durations.FirstOrDefault(d => d.Id == e.Until)?.Label ?? e.Until}"));
         return draft.Effects.Length == 0 ? "" : (draft.CardType == "unit" ? "部署：" : "打出：") + string.Join("；", lines) + "。";
     }
