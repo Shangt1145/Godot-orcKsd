@@ -32,7 +32,7 @@ public class DiyCardTests
         Assert.Single(effects.Inline); Assert.Empty(effects.Prefabs);
         Assert.Contains("object.ReferenceEquals(view.Unit, self)", result.EngineCardJson!);
         var service = new DeckConstructionService(catalog.Cards, Source); service.UpdateCustom([card]);
-        Assert.Contains(card.Id, service.PlayableIds); Assert.Equal(21, service.Report.Verified);
+        Assert.Contains(card.Id, service.PlayableIds); Assert.Equal(24, service.Report.Verified);
         Assert.Equal(316, service.Cards.Count);
     }
     [Theory]
@@ -201,6 +201,6 @@ public class DiyCardTests
         service.UpdateCustom([card with { Effects = [new() { Op = "unknown" }] }]);
         Assert.DoesNotContain(card.Id, service.PlayableIds); Assert.NotEmpty(service.CustomErrors);
         Assert.NotEmpty(service.Validate(deck));
-        service.UpdateCustom([]); Assert.NotEmpty(service.Validate(deck)); Assert.Equal(21, service.Report.Verified);
+        service.UpdateCustom([]); Assert.NotEmpty(service.Validate(deck)); Assert.Equal(24, service.Report.Verified);
     }
 }

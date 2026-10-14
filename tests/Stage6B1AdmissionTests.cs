@@ -18,10 +18,10 @@ public sealed class Stage6B1AdmissionTests
     public void AdmissionSeparatesStructuralCoverageFromReviewedSemantics()
     {
         var catalog = Catalog(); var result = VerifiedCardPool.Compile(catalog.Cards, Source);
-        Assert.Equal(315, result.Report.Total); Assert.Equal(21, result.Report.Verified);
+        Assert.Equal(315, result.Report.Total); Assert.Equal(24, result.Report.Verified);
         Assert.True(result.Report.StructurallyRepresentable > result.Report.Verified);
         Assert.Equal(result.Report.Verified, result.Entries.Count);
-        Assert.Equal(9, result.Entries.Count(e => e.Definition.Category == CardCategory.Unit));
+        Assert.Equal(10, result.Entries.Count(e => e.Definition.Category == CardCategory.Unit));
         Assert.Contains(result.Report.Cards, r => r.CardId == "USG/units/_1" && r.Support == UiCardSupport.Unsupported);
         Assert.Contains(result.Report.Cards, r => r.CardId == "deran/units/_2" && r.Support == UiCardSupport.Unsupported);
         Assert.Contains(result.Report.Cards, r => r.Support == UiCardSupport.GeneratedOnly);
@@ -81,7 +81,8 @@ public sealed class Stage6B1AdmissionTests
         Assert.All(deck.GroupBy(id => id), g => Assert.InRange(g.Count(), 1, 3));
         Assert.Empty(DeckBuilder.Validate(deck, pool, 24)); // A command card is not mandatory.
         Assert.Equal(30, DeckBuilder.BuildVerified(pool, 7).Count);
-        Assert.Throws<InvalidDataException>(() => DeckBuilder.BuildVerified(pool.Where(e => e.Definition.Category == CardCategory.Unit).ToArray(), 7));
+        // 批次 1 后单位池扩到 10 张（×3 副上限＝30），纯单位牌组恰好可筑——容量门改由单卡池继续把守。
+        Assert.Equal(30, DeckBuilder.BuildVerified(pool.Where(e => e.Definition.Category == CardCategory.Unit).ToArray(), 7).Count);
         Assert.Throws<InvalidDataException>(() => DeckBuilder.BuildVerified([pool[0]], 7, 24));
     }
 
@@ -121,7 +122,7 @@ public sealed class Stage6B1AdmissionTests
         var cards = Catalog().Cards; var original = cards.Single(c => c.CardId == id);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(cards, 7, "reviewed-" + id, "probe",
             openingHand: [id], sourceDirectory: Source);
-        Assert.Equal(21, session.CardPoolReport!.Verified);
+        Assert.Equal(24, session.CardPoolReport!.Verified);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();
         var actorUid = session.View.SelfHand.Single(c => c.CardId == id).Uid;

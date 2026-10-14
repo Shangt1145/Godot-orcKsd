@@ -136,7 +136,7 @@ public partial class Main
             // Start the ordinary constructed-deck path with the exact saved list.
             await StartRealMatchAsync(false, manualOpponentForVerification: true, deckSeed: 37,
                 trialDeck: _deckEditor.Draft);
-            Check(_runner?.IsRunning == true && _runner.CardPoolReport!.Verified == 21, "DIY exact constructed match failed.");
+            Check(_runner?.IsRunning == true && _runner.CardPoolReport!.Verified == 24, "DIY exact constructed match failed.");
             await AwaitIdleAsync(20); StopRealMatch();
 
             // Then exercise the user-facing trial button, real mulligan and deployment.

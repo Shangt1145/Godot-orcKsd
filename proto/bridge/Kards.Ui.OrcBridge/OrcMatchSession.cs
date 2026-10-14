@@ -111,7 +111,7 @@ public sealed partial class OrcMatchSession : IDisposable
         if (sourceDirectory is null) throw new InvalidDataException("Catalog admission requires its source directory.");
         var sourceCards = cards.Where(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal)
             && !c.CardId.StartsWith("pack/", StringComparison.Ordinal)).ToArray();
-        var (reviewed, report, effects) = VerifiedCardPool.Compile(sourceCards, sourceDirectory);
+        var (reviewed, report, effects, convertedEffects) = VerifiedCardPool.CompileInternal(sourceCards, sourceDirectory);
         var custom = (customCards ?? []).Select(c => DiyCardCompiler.Compile(c.Snapshot(), sourceCards)).ToArray();
         if (custom.Select(c => c.Entry.Id).Distinct(StringComparer.Ordinal).Count() != custom.Length)
             throw new InvalidDataException("DIY 卡牌编号重复");
@@ -141,7 +141,8 @@ public sealed partial class OrcMatchSession : IDisposable
         var opponentDeck = opponent?.CardIds ?? DeckBuilder.BuildVerified(reviewed, unchecked(seed + 1));
         var session = await CreateNativeAsync(pool, deck, opponentDeck, seed, matchId,
             artLookup: artLookup, ct: ct, openingHand: openingHand, deckConfiguration: constructedDeck?.Options,
-            opponentDeckConfiguration: opponent?.Options, customCards: custom, packs: packSet);
+            opponentDeckConfiguration: opponent?.Options, customCards: custom, packs: packSet,
+            convertedEffects: convertedEffects);
         try
         {
             session._effects = new SourceEffectAssembly(session.Match, effects, reason => session.LastRejectionReason ??= reason);
@@ -200,7 +201,8 @@ public sealed partial class OrcMatchSession : IDisposable
         int seed, string matchId, int viewerIndex = 0,
         Func<string, string>? artLookup = null, CancellationToken ct = default,
         IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null,
-        IReadOnlyList<CompiledDiyCard>? customCards = null, PackSet? packs = null)
+        IReadOnlyList<CompiledDiyCard>? customCards = null, PackSet? packs = null,
+        IReadOnlyDictionary<string, EffectSnapshot>? convertedEffects = null)
     {
         if (deckA.Count == 0 || deckB.Count == 0)
             throw new ArgumentException("Both decks must have at least one card.", nameof(deckA));
@@ -233,6 +235,10 @@ public sealed partial class OrcMatchSession : IDisposable
         var registry = new CardEffectRegistry();
         foreach (var card in customCards ?? [])
             if (card.Effect is { } effect) registry.DeclarePrefab(card.Entry.Id, [effect.Root.Id]);
+        // 转换卡与 DIY 同一条装配路：先声明（注册先于卡加载——引擎管道序），
+        // Match 构造后把快照登记进 Prefabs。效果组件本身只有磁盘装载路径消费。
+        foreach (var cardId in (convertedEffects ?? new Dictionary<string, EffectSnapshot>()).Keys)
+            registry.DeclarePrefab(cardId, [convertedEffects![cardId].Root.Id]);
         // 卡包按一个整体装配：声明进 registry、内联预制体与效果库进对局的 PrefabManager；
         // 注册先于卡加载（引擎管道序），且 InitializeAsync 会把每个词条绑定对本局预制体核验。
         var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge, effectRegistry: registry,
@@ -241,6 +247,8 @@ public sealed partial class OrcMatchSession : IDisposable
         match.Engine.ScriptEvaluator = NativeScriptHost.Evaluator;
         foreach (var card in customCards ?? [])
             if (card.Effect is { } effect) match.Engine.Prefabs.RegisterPrefab(effect);
+        if (convertedEffects is not null)
+            foreach (var snapshot in convertedEffects.Values) match.Engine.Prefabs.RegisterPrefab(snapshot);
         CardPackAssembler.Attach(registry, match.Engine, packSet.Contents);
         // 引擎级运行期卡（随快照冻结）：声明与预制体同样先于卡加载登记。
         foreach (var entry in packSet.Snapshot.RuntimeCards)

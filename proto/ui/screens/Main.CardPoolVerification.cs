@@ -17,7 +17,7 @@ public partial class Main
         Show("battle");
         await StartRealMatchAsync(interactiveMulligan: false, manualOpponentForVerification: true, deckSeed: 7, demoOpeningHand: true);
         var runner = _runner!; var report = runner.CardPoolReport ?? throw new Exception("Catalog admission did not report its support set.");
-        if (report.Total != 315 || report.Verified != 21 || report.StructurallyRepresentable <= report.Verified)
+        if (report.Total != 315 || report.Verified != 24 || report.StructurallyRepresentable <= report.Verified)
             throw new Exception("Reviewed and structural card coverage were confused.");
         var approved = report.Cards.Where(c => c.Support == UiCardSupport.Verified).Select(c => c.CardId).ToHashSet();
         if (runner.CurrentView!.SelfHand.Any(c => !approved.Contains(c.CardId)) || runner.CurrentView.SelfDeckCount != 26)

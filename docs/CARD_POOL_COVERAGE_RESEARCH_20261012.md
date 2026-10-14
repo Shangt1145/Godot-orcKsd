@@ -63,3 +63,18 @@
 - 批次 2（交互选靶）：把 TargeterManager 选靶流接进 DSL 转换产物，或扩展 SourceEffectAssembly plan 词表
 - 批次 3（引擎缺口）：summon/develop/hqEnchant 需引擎新增模板，走上游补丁流程（参考 6D2 先例）
 - 词条/国籍两大 blocker：先盘点 54 张未知词条的分布，引擎已实现但映射缺失的补映射表；引擎没有的进批次 3
+
+## 附录：批次 1 实施结果（2026-10-14，alpha.26）
+
+调研口径在迁移后实测收窄——本批实际落地：
+
+- **新增 Verified 21 → 24**：3 张转换卡（`UN/unit/_1` 部署抽牌、`av76/command/-20` 压制+全体伤害+抽牌、`deran/command/_1` 抽牌）。
+  其余候选被三道门挡住：ref/random 选靶与 filter（批次 2）、块级 condition（批次 2）、
+  白板卡缺 unitType 数据（数据补全后即可审核准入，清单已预置）。
+- **数据审核否决 2 张**：`deran/command/_16`（文本"下一回合"vs 声明立即）、`deran/command/26`（声明缺伤害部分）——声明与卡面不符，保持 Unreviewed 待数据修正。
+- **实现**：`SourceEffectConverter`（源声明→DIY DSL，块级未知键 fail-fast）＋
+  `VerifiedCardPool.CompileInternal`（转换卡走统计/审核门，Verified 时编译+实例化+注入 EffectsDefinition）＋
+  `OrcMatchSession`（转换卡按 DIY 模式登记 CardEffectRegistry 声明与 Prefabs 快照——内存池路径不消费效果组件，这是关键坑）。
+- **验证**：新测试 8/8（含两条真对局效果触发断言）；全量 244/266（22 失败＝迁移遗留夹具欠账，比基线净 -1）；
+  `--verify-ui` 30 项全绿（CARD_POOL verified=24 reviewed-mouse-deployment）。
+- **工具**：`tools/refresh_verified_cards.py add/remove/list`——按 `GetRawText` 逐字节口径计算审核哈希。
