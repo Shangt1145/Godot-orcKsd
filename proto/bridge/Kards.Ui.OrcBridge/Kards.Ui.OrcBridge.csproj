@@ -25,6 +25,9 @@
     <!-- Runtime assets, embedded so Godot's in-memory assembly loading needs no Assembly.Location. -->
     <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/ops/*.csx.tpl"
                       LogicalName="Kards.Ui.OrcBridge.DiyOps.%(Filename)%(Extension)" />
+    <!-- OrC 导入：引擎触发模板（effectHost 语义原版，31 张）——模板 id 与 DslEffectInstance 对齐。 -->
+    <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/*.tpl.json"
+                      LogicalName="Kards.Ui.OrcBridge.OrcTpl.%(Filename)%(Extension)" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
     <!-- 迁移 S8：宿主/包管理（EngineHost / CardPackLoader）、脚本求值器与内置 UI 插件（投影提供者）。 -->

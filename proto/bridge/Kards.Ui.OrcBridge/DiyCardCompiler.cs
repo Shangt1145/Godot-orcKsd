@@ -107,6 +107,9 @@ public static class DiyCardCompiler
         if (failures.Count > 0) throw new InvalidDataException(string.Join("；", failures.Select(f => f.Error)));
         return ops;
     });
+    /// <summary>op 资产目录（嵌入资产唯一装载点；OrC 导入复用同一份）。</summary>
+    internal static OpTemplateCatalog SharedOps() => Ops.Value;
+
     private static EffectTemplate Template(string type)
     {
         // An effect-host actor plus the payload.self guard restricts each trigger to its own card.
