@@ -41,6 +41,8 @@ public sealed class OrcMatchRunner
     public string? CatalogSourceDirectory { get; init; }
     public ConstructedDeck? ConstructedDeck { get; init; }
     public IReadOnlyList<DiyCardDraft>? CustomCards { get; init; }
+    /// <summary>OrC 批量导入的完整卡（桥接层已编译的 outcome）；进对局池并注册效果。</summary>
+    public IReadOnlyList<OrcImportOutcome>? ImportedCards { get; init; }
     /// <summary>本局卡包集合（引擎宿主快照 + 包内容）；null = 由 <see cref="OrcEngineHost"/> 当前快照兜底。</summary>
     public PackSet? Packs { get; init; }
     public UiCardPoolReport? CardPoolReport => _session?.CardPoolReport;
@@ -102,6 +104,7 @@ public sealed class OrcMatchRunner
             session = await OrcMatchSession.CreateFromCatalogAsync(CatalogCards,
                 seed: DeckSeed ?? Random.Shared.Next(), matchId: MatchId, fallbackCardId: InfantryId, artLookup: ArtLookup, ct: ct,
                 openingHand: OpeningHand, sourceDirectory: CatalogSourceDirectory, constructedDeck: ConstructedDeck, customCards: CustomCards,
+                imported: ImportedCards,
                 packs: Packs);
         }
         else

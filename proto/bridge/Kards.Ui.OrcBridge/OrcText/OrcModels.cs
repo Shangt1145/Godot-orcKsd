@@ -87,7 +87,28 @@ public sealed record OrcDiagnostic(string Code, string Message)
 }
 
 /// <summary>解析出的单个效果：引擎触发模板 id ＋ 槽位名 ＋ 槽位 op 序列（可直交 EffectCompilationDriver.CompileDsl）。</summary>
-public sealed record OrcParsedEffect(string TemplateId, string Slot, IReadOnlyList<Orc.Game.EffectParsing.Dsl.DslOp> Ops);
+/// <summary>
+/// 解析出的单个效果：桥内合成触发模板所需的全量描述。Hook/Guard 由解析面按语义给定——
+/// 引擎原版触发模板不可直接嵌入（deploy_basic 是 eventCard 面读 view.Card，而 unit.* 载荷键
+/// 是 Unit，部署效果会静默空转；监听模板无归属守卫会泛触发），与 DIY 同一已验证语义：
+/// effectHost 骨架 + op 级守卫。Guard＝null 的效果（attack_basic 特化视图）走引擎原模板。
+/// </summary>
+public sealed record OrcParsedEffect(string TemplateId, string Slot, IReadOnlyList<Orc.Game.EffectParsing.Dsl.DslOp> Ops,
+    string? Hook = null, OrcTriggerGuard Guard = OrcTriggerGuard.None);
+
+/// <summary>触发守卫口径（与引擎 DslCondition 常量一一对应）。</summary>
+public enum OrcTriggerGuard
+{
+    None,
+    /// <summary>载荷自指：unit.* 信号（view.Unit）。</summary>
+    SelfUnit,
+    /// <summary>载荷自指：card.* 信号（view.Card）。</summary>
+    SelfCard,
+    /// <summary>归属同主（事件载荷为卡/单位——监听句）。</summary>
+    OwnerSame,
+    /// <summary>归属同主（事件载荷为玩家——回合系信号）。</summary>
+    OwnerSameByPlayer,
+}
 
 /// <summary>解析出的卡面词条声明（含参值）。</summary>
 public sealed record OrcKeywordDecl(string Id, int Value, bool Quantified);

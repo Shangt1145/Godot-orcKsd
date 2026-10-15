@@ -31,6 +31,8 @@ public partial class Main : Control
     private DeckLibraryScreen _deckLibrary = null!;
     private DiyCardLibrary _diy = null!;
     private DiyEditorScreen _diyEditor = null!;
+    private OrcImportLibrary _orcImports = null!;
+    private IReadOnlyList<OrcImportOutcome> _importedOutcomes = [];
     private CollectionScreen _collection = null!;
     private ConstructedDeck? _trialDeck;
     private string _diyPath = "";
@@ -89,6 +91,12 @@ public partial class Main : Control
         _diy = new DiyCardLibrary(_diyPath);
         _deckService.UpdateCustom(_diy.Cards);
         _catalog.SetCustomCards(_deckService.CustomCards);
+        // OrC 批量导入：装载持久化行并重编译（解析器演进时旧导入自动跟随新面）；
+        // 装载失败＝隔离并警告，绝不抛到启动链上。
+        _orcImports = new OrcImportLibrary(ProjectSettings.GlobalizePath(_verificationRun
+            ? $"res://artifacts/orc-imports/session-{Guid.NewGuid():N}.json" : "user://orc-imports.json"));
+        if (_orcImports.LoadError is { } orcError) GD.PushWarning(orcError);
+        RefreshImported();
         ReloadPacks();
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
         _decks = new DeckLibrary(_deckPath);
@@ -137,8 +145,17 @@ public partial class Main : Control
         AddScreen(content, "home", _home);
         _diyEditor = new DiyEditorScreen();
         _diyEditor.Initialize(_diy, () => _catalog.Cards, _textures, id => _decks.Decks.Count(d => d.CardIds.Contains(id)),
-            id => _deckService.CustomErrors.GetValueOrDefault(id));
+            id => _deckService.CustomErrors.GetValueOrDefault(id), _orcImports, () => _importedOutcomes);
         _diyEditor.Saved += RefreshDiy;
+        _diyEditor.ImportedChanged += RefreshImported;
+        _diyEditor.ImportedTrialRequested += outcome =>
+        {
+            var starter = _deckService.Starter(12);
+            var copies = Math.Min(2, ConstructionRules.CopyLimit(outcome.Card!.Rarity));
+            var trial = starter with { Name = outcome.Name + " · 试打",
+                CardIds = Enumerable.Repeat("orc/" + outcome.Id, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
+            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
+        };
         _diyEditor.ConstructRequested += id =>
         {
             _deckEditor.Search.Text = _catalog.Cards.First(c => c.CardId == id).Name;
@@ -254,6 +271,7 @@ public partial class Main : Control
             // Production uses the admitted source catalog; only explicit verification uses a probe.
             CatalogCards = probe ? null : _deckService.Cards.ToArray(),
             CustomCards = probe ? null : _diy.Cards.Where(c => _deckService.PlayableIds.Contains(c.Id)).Select(c => c.Snapshot()).ToArray(),
+            ImportedCards = probe ? null : _importedOutcomes.Where(o => o.Complete).ToArray(),
             CatalogSourceDirectory = ProjectSettings.GlobalizePath("res://proto/data/nations"),
             ManualOpponentForVerification = manualOpponentForVerification,
             DeckSeed = deckSeed,

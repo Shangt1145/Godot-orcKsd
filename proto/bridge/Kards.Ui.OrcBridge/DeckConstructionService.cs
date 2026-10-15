@@ -8,6 +8,7 @@ public sealed class DeckConstructionService
     private readonly IReadOnlyList<UiCardDefinition> _sourceCards;
     private readonly IReadOnlySet<string> _reviewedIds;
     private IReadOnlyList<UiCardDefinition> _packCards = [];
+    private IReadOnlyList<UiCardDefinition> _imported = [];
     public IReadOnlyList<UiCardDefinition> Cards { get; private set; }
     public IReadOnlyList<UiCardDefinition> CustomCards { get; private set; } = [];
     public IReadOnlyList<UiCardDefinition> PackCards => _packCards;
@@ -45,10 +46,19 @@ public sealed class DeckConstructionService
         Rebuild(CustomCards);
     }
 
+    /// <summary>Installs OrC batch-import projections (complete rows only) into the buildable pool.
+    /// Admission already happened at import compile time; callers pass the compiled projections.</summary>
+    public void UpdateImported(IReadOnlyList<UiCardDefinition> imported)
+    {
+        _imported = imported.ToArray();
+        Rebuild(CustomCards);
+    }
+
     private void Rebuild(IReadOnlyList<UiCardDefinition> custom)
     {
-        Cards = _sourceCards.Concat(_packCards).Concat(custom).ToArray();
+        Cards = _sourceCards.Concat(_packCards).Concat(custom).Concat(_imported).ToArray();
         PlayableIds = _reviewedIds.Concat(_packCards.Select(c => c.CardId)).Concat(custom.Select(c => c.CardId))
+            .Concat(_imported.Select(c => c.CardId))
             .ToHashSet(StringComparer.Ordinal);
     }
     public IReadOnlyList<string> Validate(ConstructedDeck deck) => ConstructionRules.Validate(deck, Cards, PlayableIds);

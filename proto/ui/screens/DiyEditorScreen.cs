@@ -11,6 +11,10 @@ public partial class DiyEditorScreen : VBoxContainer
     private Func<IReadOnlyList<UiCardDefinition>> _catalog = null!;
     private Func<string, int> _usage = null!;
     private Func<string, string?> _storedError = null!;
+    private OrcImportLibrary? _orcImports;
+    private Func<IReadOnlyList<OrcImportOutcome>>? _importedOutcomes;
+    private string? _selectedImported;
+    private readonly List<string> _importedListed = [];
     private DiyCardDraft? _blocked;
     private TextureCache _textures = null!;
     private DiyCardDraft _draft = new();
@@ -38,13 +42,19 @@ public partial class DiyEditorScreen : VBoxContainer
     public event Action? Saved;
     public event Action<string>? ConstructRequested;
     public event Action<DiyCardDraft>? TrialRequested;
+    /// <summary>OrC 批量导入落盘后通知（Main 重编译快照并刷新构筑池）。</summary>
+    public event Action? ImportedChanged;
+    /// <summary>试打一张 OrC 导入卡（与 DIY 试打同一临时卡组流程）。</summary>
+    public event Action<OrcImportOutcome>? ImportedTrialRequested;
     public DiyCardDraft Draft => Read();
     internal bool IsDirty => _dirty;
     internal string Notice => _notice.Text;
     public void Initialize(DiyCardLibrary library, Func<IReadOnlyList<UiCardDefinition>> catalog,
-        TextureCache textures, Func<string, int> usage, Func<string, string?> storedError)
+        TextureCache textures, Func<string, int> usage, Func<string, string?> storedError,
+        OrcImportLibrary? orcImports = null, Func<IReadOnlyList<OrcImportOutcome>>? importedOutcomes = null)
     {
         _library = library; _catalog = catalog; _textures = textures; _usage = usage; _storedError = storedError;
+        _orcImports = orcImports; _importedOutcomes = importedOutcomes;
         SizeFlagsVertical = SizeFlags.ExpandFill;
         AddThemeConstantOverride("separation", 10);
         var heading = new HBoxContainer(); AddChild(heading);
@@ -56,6 +66,11 @@ public partial class DiyEditorScreen : VBoxContainer
         SaveButton = UiStyles.Button("保存", () => Save()); heading.AddChild(SaveButton);
         ImportButton = UiStyles.Button("导入", () => Guard(Import)); heading.AddChild(ImportButton);
         ExportButton = UiStyles.Button("导出", Export); heading.AddChild(ExportButton);
+        if (_orcImports is not null)
+        {
+            var orcButton = UiStyles.Button("OrC 批量导入", OrcImport); heading.AddChild(orcButton);
+            orcButton.TooltipText = "粘贴官方语料 JSON（行数组或 {\"cards\":[…]}），自动解析为引擎卡；解析不了的留诊断待核对。";
+        }
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; AddChild(body);
         var listPanel = Panel(205); body.AddChild(listPanel);
         var list = new VBoxContainer(); listPanel.AddChild(list);
@@ -64,12 +79,29 @@ public partial class DiyEditorScreen : VBoxContainer
         Cards = new ItemList { SizeFlagsVertical = SizeFlags.ExpandFill, CustomMinimumSize = new(170, 100) }; list.AddChild(Cards);
         Cards.ItemSelected += index =>
         {
-            if (index < 0 || index >= _listed.Count) return;
-            var card = _library.Cards.First(c => c.Id == _listed[(int)index]);
-            Guard(() => Load(card));
+            if (index < 0) return;
+            var i = (int)index;
+            if (i < _listed.Count)
+            {
+                var card = _library.Cards.First(c => c.Id == _listed[i]);
+                Guard(() => Load(card));
+            }
+            else
+            {
+                // OrC 导入区：只读展示（九 op 编辑器表达不了引擎 21 op 面——诚实边界，不伪装可编辑）。
+                i -= _listed.Count + 1;
+                if (i < 0 || i >= _importedListed.Count) return;
+                _selectedImported = _importedListed[i];
+                ShowImportedNotice(_selectedImported);
+            }
         };
         DeleteButton = UiStyles.Button("删除", () =>
         {
+            if (_selectedImported is not null)
+            {
+                DeleteDialog.DialogText = "删除这张 OrC 导入卡？引用它的卡组需要重新编辑。";
+                DeleteDialog.PopupCentered(); return;
+            }
             var uses = _usage(_draft.Id);
             DeleteDialog.DialogText = uses == 0 ? "删除这张已保存的 DIY 卡牌？"
                 : $"有 {uses} 副卡组引用这张卡。删除后这些卡组需要重新编辑。仍然删除？";
@@ -121,12 +153,30 @@ public partial class DiyEditorScreen : VBoxContainer
         _preview = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; previewScroll.AddChild(_preview);
         ValidateButton = UiStyles.Button("校验", Validate); previewSide.AddChild(ValidateButton);
         ConstructButton = UiStyles.Button("用于构筑", () => { if (Save()) ConstructRequested?.Invoke(_draft.Id); }); previewSide.AddChild(ConstructButton);
-        TrialButton = UiStyles.Button("试打", () => { if (Save()) TrialRequested?.Invoke(_draft.Snapshot()); }); previewSide.AddChild(TrialButton);
+        TrialButton = UiStyles.Button("试打", () =>
+        {
+            if (_selectedImported is not null)
+            {
+                var outcome = (_importedOutcomes?.Invoke() ?? []).LastOrDefault(o => o.Id == _selectedImported && o.Complete);
+                if (outcome is null) { _notice.Text = "这张导入卡还在待核对（未编译入池），不能试打。"; return; }
+                ImportedTrialRequested?.Invoke(outcome); return;
+            }
+            if (Save()) TrialRequested?.Invoke(_draft.Snapshot());
+        }); previewSide.AddChild(TrialButton);
         TrialButton.TooltipText = "用临时 12 张卡牌的卡组随机发牌；按稀有度加入最多 2 张当前卡，不改动已保存卡组。";
         _notice = UiStyles.Label("", 13, UiStyles.Dim); _notice.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _notice.CustomMinimumSize = new(0, 35); AddChild(_notice);
         DeleteDialog = new ConfirmationDialog { Title = "删除 DIY 卡牌" }; AddChild(DeleteDialog);
-        DeleteDialog.Confirmed += () => Run(() => { _library.Delete(_draft.Id); Saved?.Invoke(); Load(new()); _notice.Text = "卡牌已删除；引用它的卡组请重新编辑。"; });
+        DeleteDialog.Confirmed += () => Run(() =>
+        {
+            if (_selectedImported is not null)
+            {
+                var id = _selectedImported; _selectedImported = null;
+                _orcImports!.Remove(id); _notice.Text = "OrC 导入卡已删除。";
+                RefreshList(); ImportedChanged?.Invoke(); return;
+            }
+            _library.Delete(_draft.Id); Saved?.Invoke(); Load(new()); _notice.Text = "卡牌已删除；引用它的卡组请重新编辑。";
+        });
         DiscardDialog = new ConfirmationDialog { Title = "未保存的卡牌", DialogText = "丢弃当前修改并继续？" }; AddChild(DiscardDialog);
         DiscardDialog.Confirmed += () => { var action = _afterDiscard; _afterDiscard = null; action?.Invoke(); };
         DiscardDialog.Canceled += () => { _afterDiscard = null; RefreshList(); };
@@ -232,13 +282,35 @@ public partial class DiyEditorScreen : VBoxContainer
     }
     private void RefreshList()
     {
-        Cards.Clear(); _listed.Clear();
+        Cards.Clear(); _listed.Clear(); _importedListed.Clear();
         foreach (var card in _library.Cards.Where(c => $"{c.Name} {c.Id}".Contains(Search.Text, StringComparison.OrdinalIgnoreCase)).OrderBy(c => c.Name))
         {
             _listed.Add(card.Id); Cards.AddItem((_storedError(card.Id) is null ? "" : "⚠ ") + card.Name + (card.CardType == "unit" ? " · 单位" : " · 指令"));
             Cards.SetItemTooltip(_listed.Count - 1, card.Id);
             if (card.Id == _draft.Id) Cards.Select(_listed.Count - 1);
         }
+        if (_orcImports is null || _orcImports.Rows.Count == 0) return;
+        if (_listed.Count > 0) Cards.AddItem("── OrC 导入 ──"); // 分节头（无 DIY 卡时导入区顶格）
+        var outcomes = _importedOutcomes?.Invoke() ?? [];
+        var byId = outcomes.Where(o => o.Complete || o.Diagnostics.Count > 0)
+            .GroupBy(o => o.Id).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        foreach (var row in _orcImports.Rows.Where(r => $"{r.Name} {r.Id}".Contains(Search.Text, StringComparison.OrdinalIgnoreCase)).OrderBy(r => r.Name))
+        {
+            var outcome = byId.GetValueOrDefault(row.Id);
+            var status = outcome is { Complete: true } ? "导入" : "待核对";
+            _importedListed.Add(row.Id);
+            Cards.AddItem(("▣ " + row.Name + (row.Type is "order" or "指令" ? " · 指令" : " · 单位") + " · " + status));
+            Cards.SetItemTooltip(_importedListed.Count - 1 + _listed.Count + (_listed.Count > 0 ? 1 : 0), row.Id);
+            if (row.Id == _selectedImported) Cards.Select(_listed.Count + (_listed.Count > 0 ? 1 : 0) + _importedListed.Count - 1);
+        }
+    }
+    private void ShowImportedNotice(string id)
+    {
+        var outcome = (_importedOutcomes?.Invoke() ?? []).LastOrDefault(o => o.Id == id);
+        if (outcome is null) { _notice.Text = "OrC 导入卡 " + id; return; }
+        _notice.Text = outcome.Complete
+            ? $"OrC 导入卡：{outcome.Name}（已编译入池，可在构筑中直接使用）"
+            : $"OrC 导入卡待核对：{outcome.Name} —— {string.Join("；", outcome.Diagnostics)}";
     }
     internal bool Save()
     {
@@ -299,6 +371,37 @@ public partial class DiyEditorScreen : VBoxContainer
         Tab("卡牌代码", LastExportCode); Tab("引擎单卡 JSON", result.EngineCardJson!);
         dialog.Confirmed += () => { ActiveExport = null; dialog.QueueFree(); };
         dialog.Canceled += () => { ActiveExport = null; dialog.QueueFree(); };
+        dialog.PopupCentered();
+    }
+    private void OrcImport()
+    {
+        var dialog = new ConfirmationDialog { Title = "OrC 批量导入", MinSize = new(700, 460), DialogHideOnOk = false }; AddChild(dialog);
+        var box = new VBoxContainer(); dialog.AddChild(box);
+        box.AddChild(UiStyles.Label("粘贴官方语料 JSON（行数组或 {\"cards\":[…]}）。解析成功的卡直接编译入池；解析不了的保留原文与诊断（待核对），可随解析器演进而重导。", 13, UiStyles.Dim));
+        var text = new TextEdit { CustomMinimumSize = new(640, 260), WrapMode = TextEdit.LineWrappingMode.Boundary }; box.AddChild(text);
+        var error = UiStyles.Label("", 13, new("dca58b")); error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(error);
+        dialog.Confirmed += () =>
+        {
+            try
+            {
+                var rows = OrcImportService.ParseRows(text.Text);
+                var outcomes = OrcImportService.ImportBatch(rows, _catalog());
+                _orcImports!.Merge(rows);
+                var complete = outcomes.Count(o => o.Complete);
+                var pending = outcomes.Count - complete;
+                var samples = outcomes.Where(o => !o.Complete).Take(3)
+                    .Select(o => $"{o.Name}：{o.Diagnostics.FirstOrDefault()}");
+                error.AddThemeColorOverride("font_color", UiStyles.Gold);
+                error.Text = $"导入完成：成功 {complete} 张，待核对 {pending} 张。" +
+                    (pending > 0 ? $"\n待核对待修订（原文保留）：\n{string.Join("\n", samples)}" : "");
+                RefreshList(); ImportedChanged?.Invoke();
+                if (pending == 0) { dialog.QueueFree(); _notice.Text = $"OrC 导入完成：成功 {complete} 张。"; }
+            }
+            catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException
+                or System.Text.Json.JsonException or ArgumentException or FormatException)
+            { error.Text = e.Message; }
+        };
+        dialog.Canceled += () => dialog.QueueFree();
         dialog.PopupCentered();
     }
     private void Import()

@@ -11,6 +11,7 @@ public sealed class CardCatalog
     private IReadOnlyList<UiCardDefinition> _sourceCards = [];
     private IReadOnlyList<UiCardDefinition> _customCards = [];
     private IReadOnlyList<UiCardDefinition> _packCards = [];
+    private IReadOnlyList<UiCardDefinition> _importedCards = [];
     public void SetCustomCards(IReadOnlyList<UiCardDefinition> cards)
     {
         if (cards.Any(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal))
@@ -31,8 +32,18 @@ public sealed class CardCatalog
         Rebuild();
     }
 
+    /// <summary>Installs OrC batch-import projections ("orc/&lt;rowId&gt;" namespace; complete rows only).</summary>
+    public void SetImportedCards(IReadOnlyList<UiCardDefinition> cards)
+    {
+        if (cards.Any(c => !c.CardId.StartsWith("orc/", StringComparison.Ordinal))
+            || cards.Select(c => c.CardId).Distinct(StringComparer.Ordinal).Count() != cards.Count)
+            throw new InvalidDataException("OrC 导入卡牌编号无效或重复");
+        _importedCards = cards;
+        Rebuild();
+    }
+
     private void Rebuild() =>
-        Cards = _sourceCards.Concat(_packCards).Concat(_customCards)
+        Cards = _sourceCards.Concat(_packCards).Concat(_customCards).Concat(_importedCards)
             .OrderBy(c => c.Set, StringComparer.Ordinal).ThenBy(c => c.Cost).ThenBy(c => c.CardId, StringComparer.Ordinal).ToArray();
 
     public void Load(string directory, Func<string, string>? resolveArt = null)

@@ -27,11 +27,13 @@ namespace Kards.Ui.OrcBridge;
 public sealed record OrcImportRow(string Id, string Name, string Type,
     int Cost, int OpCost, int Attack, int Defense, string Text);
 
-/// <summary>单行导入结果。Complete＝零诊断且编译成功；否则为待核对（诊断 + 原文）。</summary>
+/// <summary>单行导入结果。Complete＝零诊断且编译成功；否则为待核对（诊断 + 原文）。
+/// Entry/Snapshots 供对局装配（pool 条目 + 效果注册）；Pending 两项为空。</summary>
 public sealed record OrcImportOutcome(
     string Id, string Name, bool Complete,
     UiCardDefinition? Card, string? EngineCardJson,
-    string SourceText, IReadOnlyList<string> Diagnostics)
+    string SourceText, IReadOnlyList<string> Diagnostics,
+    CardDefinitionEntry? Entry = null, IReadOnlyList<EffectSnapshot>? Snapshots = null)
 {
     public static OrcImportOutcome Pending(OrcImportRow row, IReadOnlyList<string> diagnostics) =>
         new(row.Id, row.Name, false, null, null, row.Text, diagnostics);
@@ -122,7 +124,54 @@ public static class OrcImportService
             Keywords = [.. compile.Keywords.Select(k => k.Id)],
         };
         var card = DiyCardCompiler.Preview(draft, catalog);
-        return new(row.Id, row.Name, true, card, json, row.Text, []);
+        // roundTrip（反序列化产物）作为 pool 条目——与对局装载走同一解析面，杜绝"预检能过、装载报错"。
+        return new(row.Id, row.Name, true, card, json, row.Text, [],
+            new CardDefinitionEntry(cardId, roundTrip), snapshots.AsReadOnly());
+    }
+
+    /// <summary>
+    /// 行集解析入口：接受纯行数组（OrcImportRow 字段口径）与官方语料 wrapper
+    /// （{"cards":[{"json":{…}}]}）。语料卡缺字段时按导入默认值补齐（cost/opCost=1、攻防 0/1）。
+    /// </summary>
+    public static IReadOnlyList<OrcImportRow> ParseRows(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        List<JsonElement> items;
+        if (doc.RootElement.ValueKind == JsonValueKind.Array) items = doc.RootElement.EnumerateArray().ToList();
+        else if (doc.RootElement.ValueKind == JsonValueKind.Object
+            && doc.RootElement.TryGetProperty("cards", out var cards)
+            && cards.ValueKind == JsonValueKind.Array)
+        {
+            items = [];
+            foreach (var card in cards.EnumerateArray())
+            {
+                if (card.ValueKind != JsonValueKind.Object) continue;
+                items.Add(card.TryGetProperty("json", out var inner) && inner.ValueKind == JsonValueKind.Object
+                    ? inner.Clone() : card.Clone());
+            }
+        }
+        else throw new InvalidDataException("导入 JSON 需为行数组或 {\"cards\":[…]} 语料结构");
+        var rows = new List<OrcImportRow>();
+        foreach (var item in items)
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            string Text(string key) => item.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString()! : "";
+            int Num(string key, int fallback) => item.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number
+                ? v.GetInt32() : fallback;
+            var name = Text("name");
+            var text = item.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.Object
+                && t.TryGetProperty("zh-Hans", out var zh) && zh.ValueKind == JsonValueKind.String
+                    ? zh.GetString()! : Text("text");
+            if (name.Length == 0 && text.Length == 0) continue; // 无名无文的条目跳过（非卡数据）
+            var id = Text("id");
+            if (id.Length == 0) id = "row-" + (rows.Count + 1);
+            rows.Add(new OrcImportRow(id, name.Length == 0 ? id : name,
+                Text("type").Length == 0 ? "unit" : Text("type"),
+                Num("cost", 1), Num("opCost", 1), Num("attack", 0), Num("defense", 1), text));
+        }
+        if (rows.Count == 0) throw new InvalidDataException("导入 JSON 未发现可导入的卡行");
+        return rows;
     }
 
     /// <summary>语料类型 → (编译卡类型, 引擎兵种)。反制卡返回 null（编译面外，待核对）。</summary>
@@ -142,10 +191,55 @@ public static class OrcImportService
     internal static (EffectSnapshot Snapshot, string JsonText) CompileOrcEffect(
         string rowId, OrcParsedEffect effect)
     {
+        // 触发模板双轨：Hook 非空＝桥内合成 effectHost 模板（语义守卫见 OrcTriggerGuard 注释）；
+        // Hook 空（attack_basic 注入式特化视图）＝引擎原模板资产。
+        EffectTemplate template;
+        IReadOnlyList<DslOp> ops = effect.Ops;
+        if (effect.Hook is { } hook)
+        {
+            template = EffectTemplateJson.Deserialize(JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                id = "orc_" + effect.TemplateId,
+                actorFrom = "effectHost",
+                slots = new[] { new { name = effect.Slot, target = "mainTrigger.events[e1]" } },
+                root = new
+                {
+                    mainTrigger = new
+                    {
+                        id = "t_orc_" + effect.TemplateId,
+                        stableKey = "orc." + effect.TemplateId,
+                        kind = "passive",
+                        viewType = "Orc.Cards.CardEventView",
+                        hooks = new[] { hook },
+                        events = new[] { new { id = "e1", entry = "HandleAsync" } }
+                    },
+                    otherTriggers = Array.Empty<object>(),
+                    modings = Array.Empty<object>(),
+                    injects = Array.Empty<object>()
+                }
+            }));
+            if (effect.Guard != OrcTriggerGuard.None)
+            {
+                var condition = effect.Guard switch
+                {
+                    OrcTriggerGuard.SelfUnit or OrcTriggerGuard.SelfCard
+                        => new DslCondition(DslCondition.PayloadSelf,
+                            effect.Guard == OrcTriggerGuard.SelfUnit ? "Unit" : "Card"),
+                    OrcTriggerGuard.OwnerSame => new DslCondition(DslCondition.OwnerSame),
+                    OrcTriggerGuard.OwnerSameByPlayer => new DslCondition(DslCondition.OwnerSameByPlayer),
+                    _ => null,
+                };
+                if (condition is not null)
+                    ops = effect.Ops.Select(op => CloneWithCondition(op, condition)).ToArray();
+            }
+        }
+        else template = TriggerTemplate(effect.TemplateId);
+
         var driver = new EffectCompilationDriver();
-        driver.UseEffectAssets([TriggerTemplate(effect.TemplateId)], OpsAssets());
-        var dsl = new DslEffectInstance(effect.TemplateId,
-            new Dictionary<string, DslSlotFill> { [effect.Slot] = new(effect.Ops) });
+        driver.UseEffectAssets([template], OpsAssets());
+        var dsl = new DslEffectInstance(template.Id,
+            new Dictionary<string, DslSlotFill> { [effect.Slot] = new(ops) });
         var result = driver.CompileDsl(DslJson.Serialize(dsl),
             rowId.Replace('/', '.') + "." + effect.TemplateId + ".effect");
         if (result.Report.Failures.Count > 0 || result.Report.UnresolvedTraces.Count > 0
@@ -158,6 +252,13 @@ public static class OrcImportService
                 .Concat(result.Report.PlaceholderConditionTraces.Select(t => $"{t.Location} 条件未实现：{t.RawText}"))));
         return (result.Artifacts[0].Snapshot, result.Artifacts[0].JsonText);
     }
+
+    /// <summary>DslOp 是普通类且 Condition 只读——按全量构造面克隆并换守卫。</summary>
+    private static DslOp CloneWithCondition(DslOp op, DslCondition condition) => new(
+        op.Op, target: op.Target, filter: op.Filter, amount: op.Amount, count: op.Count,
+        attack: op.Attack, defense: op.Defense, keyword: op.Keyword, zone: op.Zone,
+        script: op.Script, condition: condition, name: op.Name, nested: op.Nested,
+        until: op.Until, field: op.Field, value: op.Value);
 
     /// <summary>引擎触发模板资产（嵌入自引擎仓库 EffectParsing/Templates/*.tpl.json）。</summary>
     internal static EffectTemplate TriggerTemplate(string templateId)

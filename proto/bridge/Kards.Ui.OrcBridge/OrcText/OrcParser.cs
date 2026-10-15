@@ -16,36 +16,44 @@ namespace Kards.Ui.OrcBridge.OrcText;
 internal static partial class OrcParser
 {
     // ── 触发词 → 引擎触发模板（id, 槽位）。模板/hook 名逐字对齐 Templates/*.tpl.json。──
-    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot)> Heads =
-        new Dictionary<string, (string, string)>
+    // 触发头 → 触发描述。Tpl 仅作标识/诊断；装载走 Hook+Guard 合成模板（effectHost 骨架 +
+    // op 级守卫）——引擎原版触发模板不可直接嵌入：deploy_basic 是 eventCard 面读 view.Card，
+    // 而 unit.* 载荷键是 Unit（部署静默空转）；监听模板无归属守卫（任意同钩子事件泛触发）。
+    // 守卫是语义的一部分，口径与 DIY 已验证面一致。
+    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot, string Hook, OrcTriggerGuard Guard)> Heads =
+        new Dictionary<string, (string, string, string, OrcTriggerGuard)>
         {
-            ["部署"] = ("deploy_basic", "on_deploy"),
-            ["亡计"] = ("death_basic", "on_event"),
-            ["遗言"] = ("death_basic", "on_event"),
-            ["使用时"] = ("played_basic", "on_event"),
-            ["己方回合开始时"] = ("turn_start_basic", "on_event"),
-            ["友方回合开始时"] = ("turn_start_basic", "on_event"),
-            ["己方回合结束时"] = ("turn_end_basic", "on_event"),
-            ["友方回合结束时"] = ("turn_end_basic", "on_event"),
+            ["部署"] = ("deploy_basic", "on_deploy", "unit.deployed", OrcTriggerGuard.SelfUnit),
+            ["亡计"] = ("death_basic", "on_event", "card.died", OrcTriggerGuard.SelfCard),
+            ["遗言"] = ("death_basic", "on_event", "card.died", OrcTriggerGuard.SelfCard),
+            ["使用时"] = ("played_basic", "on_event", "card.played", OrcTriggerGuard.SelfCard),
+            ["己方回合开始时"] = ("turn_start_basic", "on_event", "turn.start", OrcTriggerGuard.OwnerSameByPlayer),
+            ["友方回合开始时"] = ("turn_start_basic", "on_event", "turn.start", OrcTriggerGuard.OwnerSameByPlayer),
+            ["己方回合结束时"] = ("turn_end_basic", "on_event", "turn.end", OrcTriggerGuard.OwnerSameByPlayer),
+            ["友方回合结束时"] = ("turn_end_basic", "on_event", "turn.end", OrcTriggerGuard.OwnerSameByPlayer),
         };
 
-    // unit 卡无头自事件 → 触发模板（hooks: unit.acted? no—— attack_basic=攻击时, damaged_basic=card.damaged）。
-    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot)> SelfEvents =
-        new Dictionary<string, (string, string)>
+    // unit 卡无头自事件（载荷键：card.damaged 走 Card；unit.acted/unit.damage.dealt 走 Unit）。
+    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot, string Hook, OrcTriggerGuard Guard)> SelfEvents =
+        new Dictionary<string, (string, string, string, OrcTriggerGuard)>
         {
-            ["攻击时"] = ("attack_basic", "on_event"),
-            ["受到伤害时"] = ("damaged_basic", "on_event"),
-            ["造成伤害时"] = ("damage_dealt_basic", "on_event"),
-            ["攻击后"] = ("acted_basic", "on_event"),
+            ["受到伤害时"] = ("damaged_basic", "on_event", "card.damaged", OrcTriggerGuard.SelfCard),
+            ["造成伤害时"] = ("damage_dealt_basic", "on_event", "unit.damage.dealt", OrcTriggerGuard.SelfUnit),
+            ["攻击后"] = ("acted_basic", "on_event", "unit.acted", OrcTriggerGuard.SelfUnit),
         };
 
-    // 监听句（其他友方 X 部署时/被消灭时/受到伤害时）→ 监听模板（filter 走兵种/词条维）。
-    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot, string Ref)> Listeners =
-        new Dictionary<string, (string, string, string)>
+    // 引擎特化触发模板（注入机制自带宿主限域，不走合成面）。
+    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot)> EngineEvents =
+        new Dictionary<string, (string, string)> { ["攻击时"] = ("attack_basic", "on_event") };
+
+    // 监听句（其他友方 X 时）→ 归属同主守卫；"其他"（排除自身）引擎条件词表无合取面——
+    // 已知近似：自身事件也入监听，接受（诊断面提示）。
+    private static readonly IReadOnlyDictionary<string, (string Tpl, string Slot, string Hook, OrcTriggerGuard Guard)> Listeners =
+        new Dictionary<string, (string, string, string, OrcTriggerGuard)>
         {
-            ["部署时"] = ("deploy_listener", "on_event", "eventUnit"),
-            ["被消灭时"] = ("killed_basic", "on_event", "eventUnit"),
-            ["受到伤害时"] = ("damaged_basic", "on_event", "eventVictim"),
+            ["部署时"] = ("deploy_listener", "on_event", "unit.deployed", OrcTriggerGuard.OwnerSame),
+            ["被消灭时"] = ("killed_basic", "on_event", "card.died", OrcTriggerGuard.OwnerSame),
+            ["受到伤害时"] = ("damaged_basic", "on_event", "card.damaged", OrcTriggerGuard.OwnerSame),
         };
 
     private sealed class Fx
@@ -110,22 +118,31 @@ internal static partial class OrcParser
         // ① 显式触发头："部署：…" / "亡计，…"。
         var head = HeadPattern().Match(line);
         if (head.Success && Heads.TryGetValue(head.Groups[1].Value, out var mapped))
-            return new(mapped.Tpl, mapped.Slot, ActionsFor(head.Groups[2].Value, wordbook, fx));
+            return new(mapped.Tpl, mapped.Slot, ActionsFor(head.Groups[2].Value, wordbook, fx),
+                mapped.Hook, mapped.Guard);
 
         if (cardType != "unit")
             return new(FallbackTemplate(cardType), FallbackSlot(cardType),
-                ActionsFor(line, wordbook, fx)); // order/counter：整行就是动作体
+                ActionsFor(line, wordbook, fx),
+                cardType == "order" ? "card.played" : null,
+                cardType == "order" ? OrcTriggerGuard.SelfCard : OrcTriggerGuard.None); // order：整行是动作体；counter 编译面外
 
-        // ② unit 自事件："攻击时，…"。
+        // ② unit 自事件："攻击时，…"（attack_basic 走引擎特化模板；其余走合成）。
         var self = SelfEventPattern().Match(line);
+        if (self.Success && EngineEvents.TryGetValue(self.Groups[1].Value, out var engineMap))
+        {
+            fx.LastTarget = new DslSelector("self");
+            return new(engineMap.Tpl, engineMap.Slot, ActionsFor(self.Groups[2].Value, wordbook, fx));
+        }
         if (self.Success && SelfEvents.TryGetValue(self.Groups[1].Value, out var selfMap))
         {
             fx.LastTarget = new DslSelector("self");
-            return new(selfMap.Tpl, selfMap.Slot, ActionsFor(self.Groups[2].Value, wordbook, fx));
+            return new(selfMap.Tpl, selfMap.Slot, ActionsFor(self.Groups[2].Value, wordbook, fx),
+                selfMap.Hook, selfMap.Guard);
         }
 
         // ③ 监听句："其他友方 X 部署时，…"（"敌方"面外 → 待核对）。X 须为泛指"单位"——
-        // 引擎监听模板的填写面没有 filter 槽，兵种/词条限定的监听无法无损承载 → 拒绝。
+        // 合成监听无 filter 槽，兵种/词条限定的监听无法无损承载 → 拒绝。
         var listener = ListenerPattern().Match(line);
         if (listener.Success && Listeners.TryGetValue(listener.Groups[4].Value, out var listenMap))
         {
@@ -135,7 +152,8 @@ internal static partial class OrcParser
                 throw new OrcReject($"监听目标的限定（{listener.Groups[3].Value}）超出引擎监听模板填写面（无 filter 槽）");
             // 动作体内的"其/该单位"指向事件载荷，引擎 DSL 无 ref 选择器——LastTarget 保持空，
             // Target("其") 会拒绝而非误导性映射。
-            return new(listenMap.Tpl, listenMap.Slot, ActionsFor(listener.Groups[5].Value, wordbook, fx));
+            return new(listenMap.Tpl, listenMap.Slot, ActionsFor(listener.Groups[5].Value, wordbook, fx),
+                listenMap.Hook, listenMap.Guard);
         }
 
         // ④ 被动句（具有 X / 无法… / 双倍伤害 / 每具有…）→ 引擎无被动 op 面 → 待核对。
@@ -143,7 +161,8 @@ internal static partial class OrcParser
             throw new OrcReject($"被动句（{Truncate(line)}）需要持续态修饰或光环，引擎 DSL 触发面未覆盖");
 
         // ⑤ 无头 unit 行＝部署触发（KARDS 惯例：正文即部署效果）。
-        return new("deploy_basic", "on_deploy", ActionsFor(line, wordbook, fx));
+        return new("deploy_basic", "on_deploy", ActionsFor(line, wordbook, fx),
+            "unit.deployed", OrcTriggerGuard.SelfUnit);
     }
 
     // ───────────────────────── 动作切分 ─────────────────────────
