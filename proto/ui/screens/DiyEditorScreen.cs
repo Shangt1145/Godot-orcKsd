@@ -30,6 +30,12 @@ public partial class DiyEditorScreen : VBoxContainer
     internal LineEdit CardName = null!, Search = null!;
     internal OptionButton CardType = null!, Nation = null!, Rarity = null!, UnitType = null!, Art = null!;
     internal SpinBox Cost = null!, OpCost = null!, Attack = null!, Defense = null!, Armor = null!;
+    // ── 自导入卡图 ──
+    internal SpinBox ArtZoom = null!;
+    internal Button ImportArtButton = null!, RemoveArtButton = null!;
+    private FileDialog _artDialog = null!;
+    private Label _artStatus = null!;
+    private string _importedArt = "";
     internal TextEdit Flavor = null!, EffectTextInput = null!;
     internal Label TextNotice = null!;
     private Godot.Timer _textTimer = null!;
@@ -153,6 +159,24 @@ public partial class DiyEditorScreen : VBoxContainer
             .Where(c => c.ArtPath.Length > 0 && !c.CardId.StartsWith("diy/", StringComparison.Ordinal))
             .OrderBy(c => c.Name).Select(c => new UiDiyChoice(c.CardId, c.Name + " · " + c.Set))).ToArray());
         Field(basic, "卡图（现有素材）", Art); Art.ItemSelected += _ => Changed();
+        // 自导入卡图：本机图片 → 卡库旁 art/ 目录（PNG），缩放 50–300% 只作用于导入图。
+        var artRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        artRow.AddThemeConstantOverride("separation", 8); basic.AddChild(artRow);
+        ImportArtButton = UiStyles.Button("导入卡图…", () => _artDialog.Popup()); artRow.AddChild(ImportArtButton);
+        RemoveArtButton = UiStyles.Button("移除导入图", () => { _importedArt = ""; Changed(); RefreshPreview(); });
+        artRow.AddChild(RemoveArtButton);
+        _artStatus = UiStyles.Label("", 12, UiStyles.Dim);
+        _artStatus.SizeFlagsHorizontal = SizeFlags.ExpandFill; _artStatus.ClipText = true;
+        artRow.AddChild(_artStatus);
+        ArtZoom = Number(50, 300); Field(basic, "导入图缩放 %（50＝缩小留边，100＝铺满，300＝放大裁切）", ArtZoom);
+        ArtZoom.ValueChanged += v => { if (!_loading && _importedArt.Length > 0) { DiyArtStore.UpdateZoom(_draft.Id, (int)v); Changed(); RefreshPreview(); } };
+        _artDialog = new FileDialog
+        {
+            Title = "选择卡图图片", Access = FileDialog.AccessEnum.Filesystem,
+            UseNativeDialog = true, Size = new(720, 480)
+        };
+        _artDialog.Filters = ["*.png ; PNG 图片", "*.jpg ; JPEG 图片", "*.jpeg ; JPEG 图片", "*.webp ; WebP 图片"];
+        _artDialog.FileSelected += OnArtImported; AddChild(_artDialog);
 
         var textSec = Section(form, "规则文本 —— 自然语言解析入口");
         var hintText = UiStyles.Label("写一句效果（例：部署：随机对 1 个敌方单位造成 2 点伤害。），解析后落到下方效果结构；文本同时作为卡面规则文字。解析失败时不改动现有结构。", 12, UiStyles.Dim);
@@ -295,6 +319,7 @@ public partial class DiyEditorScreen : VBoxContainer
         _loading = true; _draft = draft.Snapshot();
         CardName.Text = draft.Name; Select(CardType, draft.CardType); Select(Nation, draft.Nation); Select(Rarity, draft.Rarity);
         Select(UnitType, draft.UnitType); Select(Art, draft.ArtCardId);
+        _importedArt = draft.ArtFile; ArtZoom.Value = draft.ArtScale;
         Cost.Value = draft.Cost; OpCost.Value = draft.OpCost; Attack.Value = draft.Attack; Defense.Value = draft.Defense; Armor.Value = draft.Armor;
         foreach (var pair in _keywords) pair.Value.ButtonPressed = draft.Keywords.Contains(pair.Key);
         Flavor.Text = draft.Flavor; EffectTextInput.Text = draft.EffectText;
@@ -322,7 +347,9 @@ public partial class DiyEditorScreen : VBoxContainer
         Name = CardName.Text, CardType = Value(CardType), Nation = Value(Nation), Rarity = Value(Rarity), UnitType = Value(UnitType),
         Cost = (int)Cost.Value, OpCost = (int)OpCost.Value, Attack = (int)Attack.Value, Defense = (int)Defense.Value,
         Keywords = Value(CardType) == "unit" ? _keywords.Where(k => k.Value.ButtonPressed).Select(k => k.Key).ToArray() : [],
-        Armor = (int)Armor.Value, ArtCardId = Value(Art), Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
+        Armor = (int)Armor.Value, ArtCardId = Value(Art), ArtFile = _importedArt,
+        ArtScale = _importedArt.Length > 0 ? (int)ArtZoom.Value : 100,
+        Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
         Effects = _effects.Select(r => r.Read()).ToArray(), OrcEffects = _orcRows.Select(r => r.Read()).ToArray()
     };
     private void Changed()
@@ -338,6 +365,13 @@ public partial class DiyEditorScreen : VBoxContainer
         Armor.Editable = isUnit && _keywords["armor"].ButtonPressed;
         _trigger.Text = isUnit ? "部署完成时执行" : "打出时执行";
         _identity.Text = draft.Id; _identity.ClipText = true; _identity.TooltipText = draft.Id;
+        // 自导入卡图控件状态：有导入图时禁用素材下拉（互斥口径），状态行显示文件与缩放。
+        var imported = _importedArt.Length > 0;
+        ImportArtButton.Disabled = _blocked is not null;
+        RemoveArtButton.Disabled = !imported;
+        Art.Disabled = imported || _blocked is not null;
+        ArtZoom.Editable = imported;
+        _artStatus.Text = imported ? $"已导入 {draft.ArtFile} · {draft.ArtScale}%" : "未导入（可用现有素材或导入本机图片）";
         AddEffectButton.Disabled = _effects.Count >= 8;
         var orcMode = _orcRows.Count > 0;
         var textMode = EffectTextInput.Text.Trim().Length > 0;
@@ -387,7 +421,8 @@ public partial class DiyEditorScreen : VBoxContainer
         }
         else
         {
-            foreach (var option in new[] { CardType, Nation, Rarity, Art }) option.Disabled = false;
+            foreach (var option in new[] { CardType, Nation, Rarity }) option.Disabled = false;
+            Art.Disabled = _importedArt.Length > 0; // 导入图与素材引用互斥：有导入图时素材下拉保持禁用
             _orcRows.ForEach(r => r.SetEnabled(true));
             ParseReplaceButton.Disabled = ParseAppendButton.Disabled = false;
             OrcJsonButton.Disabled = false; SyncHistory();
@@ -448,9 +483,30 @@ public partial class DiyEditorScreen : VBoxContainer
         _notice.Text = result.Success ? "校验通过：卡牌定义、效果编译、实例化和原生数据往返均成功。尚未保存。"
             : string.Join("；", result.Errors);
     }
-    /// <summary>规则文本实时解析状态（600ms 防抖，只读提示——落结构必须点解析按钮）。</summary>
-    private void RefreshTextNotice()
+    /// <summary>导入本机图片为卡图：解码→转 PNG 存卡库旁 art/（≤4MB），预览即时生效。</summary>
+    private void OnArtImported(string path)
     {
+        try
+        {
+            var image = Image.LoadFromFile(path);
+            if (image is null) { _notice.Text = "无法解码该图片（支持 PNG/JPEG/WebP）。"; return; }
+            if (image.GetWidth() is < 16 or > 4096 || image.GetHeight() is < 16 or > 4096)
+            { _notice.Text = $"图片尺寸须在 16–4096 像素（当前 {image.GetWidth()}×{image.GetHeight()}）。"; return; }
+            var png = image.SavePngToBuffer();
+            var name = _library.SaveArt(_draft.Id, png);
+            _importedArt = name;
+            ArtZoom.Value = 100;
+            DiyArtStore.UpdateZoom(_draft.Id, 100);
+            Select(Art, ""); // 导入图与素材引用互斥：清掉素材选择
+            Changed(); RefreshPreview();
+            _notice.Text = "卡图已导入（保存卡牌后生效到构筑）。";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException)
+        { _notice.Text = $"导入失败：{e.Message}"; }
+    }
+
+    /// <summary>规则文本实时解析状态（600ms 防抖，只读提示——落结构必须点解析按钮）。</summary>
+    private void RefreshTextNotice()    {
         var text = EffectTextInput.Text.Trim();
         if (text.Length == 0) { TextNotice.Text = ""; return; }
         try

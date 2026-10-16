@@ -137,7 +137,9 @@ public static class DiyCardCompiler
             CardType = draft.CardType, UnitType = draft.CardType == "unit" ? draft.UnitType : "",
             Cost = draft.Cost, BaseAttack = draft.CardType == "unit" ? draft.Attack : null,
             BaseDefense = draft.CardType == "unit" ? draft.Defense : null, BaseOpCost = draft.CardType == "unit" ? draft.OpCost : null,
-            ArtPath = catalog.FirstOrDefault(c => c.CardId == draft.ArtCardId)?.ArtPath ?? "",
+            // 自导入卡图优先于素材引用（diyart:// 内部 scheme，文件名经 CheckShape 受限校验）。
+            ArtPath = draft.ArtFile.Length > 0 ? "diyart://" + draft.ArtFile
+                : catalog.FirstOrDefault(c => c.CardId == draft.ArtCardId)?.ArtPath ?? "",
             Flavor = draft.Flavor, Text = Text(draft), Keywords = draft.Keywords.ToArray(),
             KeywordValues = draft.Keywords.Contains("armor") ? new Dictionary<string, int> { ["armor"] = draft.Armor } : new()
         };

@@ -1332,9 +1332,12 @@ public partial class BattleScreen : Control
         if (_enemyResource.Available is not null || _enemyResource.Slots is not null) throw new Exception("Unknown resource was fabricated.");
         // Every art path that reaches a card must be a safe, rooted resource path — a relative
         // escape or an absolute path would let a catalog entry point outside res://.
+        // diyart:// is the DIY imported-art scheme: the file name is validated by DiyCardLibrary
+        // (restricted charset, no separators) and resolved only inside the library art directory.
         foreach (var definition in _demo.Cards.Where(c => c.ArtPath.Length > 0))
         {
-            if (!definition.ArtPath.StartsWith("res://proto/art/", StringComparison.Ordinal))
+            if (!definition.ArtPath.StartsWith("res://proto/art/", StringComparison.Ordinal)
+                && !definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal))
                 throw new Exception($"Card art escaped the art root: {definition.ArtPath}");
             if (definition.ArtPath.Contains("..", StringComparison.Ordinal))
                 throw new Exception($"Card art carried a relative escape: {definition.ArtPath}");

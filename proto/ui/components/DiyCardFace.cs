@@ -9,9 +9,14 @@ public partial class DiyCardFace : Control
     public UiCardDefinition Definition { get; set; } = null!;
     public UiCardView? View { get; set; }
     public Texture2D? IllustrationSource { get; set; }
-    public override void _Draw() => Paint(this, Definition, View, IllustrationSource);
+    /// <summary>true＝自导入原图（整图绘制＋缩放）；false＝印卡素材（按印卡框裁剪）。</summary>
+    public bool IllustrationRaw { get; set; }
+    /// <summary>自导入图缩放百分比（50–300；≤100 整图缩小留边，>100 中心裁剪放大）。</summary>
+    public int IllustrationZoom { get; set; } = 100;
+    public override void _Draw() => Paint(this, Definition, View, IllustrationSource, IllustrationRaw, IllustrationZoom);
 
-    internal static void Paint(Control canvas, UiCardDefinition definition, UiCardView? view, Texture2D? texture)
+    internal static void Paint(Control canvas, UiCardDefinition definition, UiCardView? view, Texture2D? texture,
+        bool rawArt = false, int artZoom = 100)
     {
         var size = canvas.Size; var font = canvas.GetThemeDefaultFont();
         var paper = new Color("d4ccb2"); var ink = new Color("34392e");
@@ -31,7 +36,31 @@ public partial class DiyCardFace : Control
         Text((view?.EffectiveCost ?? definition.Cost)?.ToString() ?? "—", Box(.03f, .03f, .15f, .105f), number, paper);
         Text(definition.Name, Box(.20f, .045f, .69f, .08f), body + 1, paper, false);
         var art = Box(.03f, .145f, .94f, .49f);
-        if (texture is not null)
+        if (texture is not null && rawArt)
+        {
+            // 自导入原图：zoom≤100 整图按比例缩入卡图框（纸面留边）；zoom>100 中心裁剪源区域铺满。
+            var zoom = Math.Clamp(artZoom, 50, 300) / 100f;
+            var original = texture.GetSize();
+            if (zoom <= 1f)
+            {
+                var bounds = art.Size * zoom;
+                var fit = original.X * bounds.Y > original.Y * bounds.X
+                    ? new Vector2(bounds.X, bounds.X * original.Y / original.X)
+                    : new Vector2(bounds.Y * original.X / original.Y, bounds.Y);
+                canvas.DrawTextureRect(texture, new(art.Position + (art.Size - fit) / 2, fit), false);
+            }
+            else
+            {
+                var boxAspect = art.Size.X / art.Size.Y;
+                var cover = original.X * art.Size.Y > original.Y * art.Size.X
+                    ? new Rect2((original.X - original.Y * boxAspect) / 2, 0, original.Y * boxAspect, original.Y)
+                    : new Rect2(0, (original.Y - original.X / boxAspect) / 2, original.X, original.X / boxAspect);
+                var f = 1f / zoom;
+                var source = new Rect2(cover.Position + cover.Size * (1 - f) / 2, cover.Size * f);
+                canvas.DrawTextureRectRegion(texture, art, source);
+            }
+        }
+        else if (texture is not null)
         {
             var original = texture.GetSize();
             canvas.DrawTextureRectRegion(texture, art, new(original.X * .027f, original.Y * .143f, original.X * .946f, original.Y * .518f));

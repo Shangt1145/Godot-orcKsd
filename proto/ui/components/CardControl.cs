@@ -50,7 +50,13 @@ public partial class CardControl : Control
         var custom = full && Definition.CardId.StartsWith("diy/", StringComparison.Ordinal);
         if (custom)
         {
-            var face = new DiyCardFace { Definition = Definition, View = View, IllustrationSource = tex, MouseFilter = MouseFilterEnum.Ignore };
+            var raw = Definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal);
+            var face = new DiyCardFace
+            {
+                Definition = Definition, View = View, IllustrationSource = tex,
+                IllustrationRaw = raw, IllustrationZoom = raw ? DiyArtStore.ZoomOf(Definition.CardId) : 100,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
             Visual.AddChild(face); face.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         }
         else if (tex is not null)

@@ -41,7 +41,9 @@ public sealed class DiyCardLibrary
         if (card is null || card.Id is null || !Regex.IsMatch(card.Id, @"\Adiy/[a-zA-Z0-9_-]{1,64}\z")
             || string.IsNullOrWhiteSpace(card.Name) || card.Name.Length > 40
             || card.Nation is null || card.Rarity is null || card.CardType is null || card.UnitType is null
-            || card.ArtCardId is null || card.ArtCardId.Length > 200 || card.Flavor is null || card.Flavor.Length > 300
+            || card.ArtCardId is null || card.ArtCardId.Length > 200
+            || card.ArtFile is null || (card.ArtFile.Length > 0 && !Regex.IsMatch(card.ArtFile, @"\A[a-zA-Z0-9_-]{1,64}\.png\z"))
+            || card.ArtScale is < 50 or > 300 || card.Flavor is null || card.Flavor.Length > 300
             || card.EffectText is null || card.EffectText.Length > 2000
             || card.Keywords is null || card.Keywords.Length > 16 || card.Keywords.Any(string.IsNullOrWhiteSpace)
             || card.Keywords.Distinct(StringComparer.Ordinal).Count() != card.Keywords.Length
@@ -59,7 +61,30 @@ public sealed class DiyCardLibrary
         if (_cards.Count >= 128 && !_cards.Any(c => c.Id == card.Id)) throw new InvalidDataException("最多保存 128 种 DIY 卡牌");
         Mutate(() => { _cards.RemoveAll(c => c.Id == card.Id); _cards.Add(card.Snapshot() with { Name = card.Name.Trim() }); });
     }
-    public void Delete(string id) => Mutate(() => _cards.RemoveAll(c => c.Id == id));
+
+    // ── 自导入卡图 ────────────────────────────────────────────────────────────
+    // 图片存卡库旁 art/ 目录（与库文件同生命周期）；文件名由卡牌编号派生，
+    // CheckShape 校验 ArtFile 受限字符——不存在路径逃逸面。
+    private string ArtDirectory => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(_path))!, "art");
+    public static string ArtFileName(string cardId) =>
+        cardId.StartsWith("diy/", StringComparison.Ordinal) && Regex.IsMatch(cardId[4..], @"\A[a-zA-Z0-9_-]{1,64}\z")
+            ? cardId[4..] + ".png" : throw new InvalidDataException("卡牌编号无效，无法派生卡图文件名");
+    /// <summary>保存 PNG 字节为该卡的导入卡图（原子写；≤4MB），返回草稿应记录的文件名。</summary>
+    public string SaveArt(string cardId, byte[] png)
+    {
+        if (png is null || png.Length is 0 or > 4_000_000) throw new InvalidDataException("卡图须为 1B–4MB 的 PNG 数据");
+        var name = ArtFileName(cardId);
+        var directory = ArtDirectory; Directory.CreateDirectory(directory);
+        var temporary = Path.Combine(directory, name + ".tmp");
+        File.WriteAllBytes(temporary, png);
+        File.Move(temporary, Path.Combine(directory, name), overwrite: true);
+        return name;
+    }
+    public void Delete(string id) => Mutate(() =>
+    {
+        _cards.RemoveAll(c => c.Id == id);
+        try { File.Delete(Path.Combine(ArtDirectory, ArtFileName(id))); } catch (IOException) { }
+    });
     private void Mutate(Action change)
     {
         if (LoadError is not null) throw new IOException(LoadError);

@@ -89,6 +89,9 @@ public partial class Main : Control
         _diyPath = ProjectSettings.GlobalizePath(_verificationRun
             ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
         _diy = new DiyCardLibrary(_diyPath);
+        // 自导入卡图：art/ 目录与卡库同生命周期；缩放表随卡库刷新（RefreshImportedDiyArt）。
+        DiyArtStore.Configure(Path.Combine(Path.GetDirectoryName(_diyPath)!, "art"),
+            _diy.Cards.Where(c => c.ArtFile.Length > 0).Select(c => (c.Id, c.ArtScale)));
         _deckService.UpdateCustom(_diy.Cards);
         _catalog.SetCustomCards(_deckService.CustomCards);
         // OrC 批量导入：装载持久化行并重编译（解析器演进时旧导入自动跟随新面）；
@@ -677,9 +680,13 @@ public partial class Main : Control
                 && !c.CardId.StartsWith("diy/", StringComparison.Ordinal));
             if (sourceCount != 315)
                 throw new Exception("Wrong catalogue size.");
-            foreach (var c in _catalog.Cards.Where(c => c.ArtPath.Length > 0))
+            foreach (var c in _catalog.Cards.Where(c => c.ArtPath.Length > 0 && !c.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)))
                 if (!ResourceLoader.Exists(c.ArtPath))
                     throw new Exception($"Missing texture: {c.CardId}");
+            // diyart:// 自导入卡图走 DiyArtStore 运行时加载（不经资源导入管线），单独核验文件存在。
+            foreach (var c in _catalog.Cards.Where(c => c.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)))
+                if (!DiyArtStore.Has(c.ArtPath[9..]))
+                    throw new Exception($"Missing DIY art: {c.CardId}");
             var artRoot=ProjectSettings.GlobalizePath("res://proto/art");
             var checkedTextures=0;
             foreach(var file in System.IO.Directory.EnumerateFiles(artRoot,"*.png",System.IO.SearchOption.AllDirectories))

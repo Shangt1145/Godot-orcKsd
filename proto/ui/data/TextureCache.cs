@@ -10,6 +10,23 @@ public sealed class TextureCache
     private readonly HashSet<string> _missing = new();
     public int Count => _items.Count;
     public int Capacity { get; } = 64;
+    /// <summary>缓存写入（null＝记为缺失并返回 null），res:// 与 diyart:// 两路共用。</summary>
+    private Texture2D? Store(string path, Texture2D? tex)
+    {
+        if (tex is null)
+        {
+            _missing.Add(path);
+            return null;
+        }
+        var n = _order.AddFirst(path);
+        _items[path] = (tex, n);
+        if (_items.Count > Capacity && _order.Last is { } last)
+        {
+            _items.Remove(last.Value);
+            _order.RemoveLast();
+        }
+        return tex;
+    }
     public Texture2D? Get(string path)
     {
         if (path.Length == 0 || _missing.Contains(path))
@@ -20,6 +37,9 @@ public sealed class TextureCache
             _order.AddFirst(found.Node);
             return found.Texture;
         }
+        // diyart:// 自导入卡图：运行时图像（不经 Godot 资源导入管线），由 DiyArtStore 解析。
+        if (path.StartsWith("diyart://", StringComparison.Ordinal))
+            return Store(path, DiyArtStore.Load(path[9..]));
         if (!ResourceLoader.Exists(path))
         {
             _missing.Add(path);

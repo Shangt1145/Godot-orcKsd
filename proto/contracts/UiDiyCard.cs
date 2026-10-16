@@ -26,6 +26,13 @@ public sealed record DiyCardDraft
     public string[] Keywords { get; init; } = [];
     public int Armor { get; init; } = 1;
     public string ArtCardId { get; init; } = "";
+    /// <summary>
+    /// 自导入卡图文件名（存于卡库旁 art/ 目录，内容经 CheckShape 校验的受限文件名）。
+    /// 非空时优先于 <see cref="ArtCardId"/>（互斥口径：导入图覆盖素材引用）。
+    /// </summary>
+    public string ArtFile { get; init; } = "";
+    /// <summary>自导入卡图的绘制缩放（百分比 50–300；仅对 ArtFile 生效，素材引用不缩放）。</summary>
+    public int ArtScale { get; init; } = 100;
     public string Flavor { get; init; } = "";
     public DiyEffectDraft[] Effects { get; init; } = [];
     /// <summary>
