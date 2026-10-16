@@ -31,6 +31,7 @@ public partial class Main : Control
     private DeckLibraryScreen _deckLibrary = null!;
     private DiyCardLibrary _diy = null!;
     private DiyEditorScreen _diyEditor = null!;
+    private DiyEffectEditorScreen _diyEffects = null!;
     private OrcImportLibrary _orcImports = null!;
     private IReadOnlyList<OrcImportOutcome> _importedOutcomes = [];
     private CollectionScreen _collection = null!;
@@ -173,6 +174,12 @@ public partial class Main : Control
             Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
         };
         AddScreen(content, "editor", _diyEditor);
+        // 效果编辑器（独立屏幕）：主编辑器入口按钮进入，编辑实时写回草稿，完成后返回。
+        _diyEffects = new DiyEffectEditorScreen(); _diyEffects.Initialize();
+        _diyEditor.EffectsEditorRequested += () => { _diyEffects.Open(_diyEditor.CurrentDraft); Show("diyfx"); };
+        _diyEffects.Applied += (orc, legacy) => _diyEditor.ApplyEffects(orc, legacy);
+        _diyEffects.Finished += () => Show("editor");
+        AddScreen(content, "diyfx", _diyEffects);
         _helpTabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         _gallery = new AnimationGallery { Name = "动画演示" };
         _helpTabs.AddChild(_gallery);

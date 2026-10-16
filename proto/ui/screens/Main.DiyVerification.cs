@@ -58,9 +58,15 @@ public partial class Main
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await DiyCaptureAsync("initial");
-            await DiyClickAsync(_diyEditor.AddEffectButton);
-            Check(_diyEditor.EffectRows.Count == 1, "Add effect mouse click failed.");
-            _diyEditor.EffectRows[0].Amount.Value = 2;
+            await DiyClickAsync(_diyEditor.OpenEffectsButton);
+            Check(_active == "diyfx", "Open effects editor button did not switch screens.");
+            await DiyClickAsync(_diyEffects.AddEffectButton);
+            Check(_diyEffects.EffectRows.Count == 1, "Add effect mouse click failed.");
+            _diyEffects.EffectRows[0].Amount.Value = 2;
+            Check(_diyEditor.Draft.Effects.Length == 1 && _diyEditor.Draft.Effects[0].Amount == 2,
+                "Effect editor edits did not flow back to the main draft in real time.");
+            await DiyClickAsync(_diyEffects.FinishButton);
+            Check(_active == "editor", "Finish button did not return to the card editor.");
             await DiyClickAsync(_diyEditor.SaveButton);
             var unit = _diyEditor.Draft;
             Check(_diy.Cards.Any(c => c.Id == unit.Id) && !_diyEditor.IsDirty, "DIY unit was not saved: " + _diyEditor.Notice);
@@ -100,18 +106,20 @@ public partial class Main
 
             _diyEditor.Load(new DiyCardDraft { CardType = "order", Name = "DIY 战地补给", Cost = 0,
                 Effects = [new() { Op = "draw", Amount = 1 }, new() { Op = "buff", Target = "friendlyUnits", Attack = 1, Defense = 2, Until = "turnEnd" }] });
-            var buffRow = _diyEditor.EffectRows[1];
+            await DiyClickAsync(_diyEditor.OpenEffectsButton);
+            var buffRow = _diyEffects.EffectRows[1];
             await DiyClickAsync(buffRow.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "↑"));
             Check(_diyEditor.Draft.Effects[0].Op == "buff", "Effect up arrow did not reorder authored operations.");
             await DiyClickAsync(buffRow.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "↓"));
             Check(_diyEditor.Draft.Effects[0].Op == "draw", "Effect down arrow did not restore authored operations.");
+            _diyEffects.EditorScroll.EnsureControlVisible(_diyEffects.EffectRows[^1]);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await DiyCaptureAsync("editor-effects");
+            await DiyClickAsync(_diyEffects.FinishButton);
             await DiyClickAsync(_diyEditor.SaveButton); var order = _diyEditor.Draft;
             _diyEditor.EditorScroll.ScrollVertical = 0;
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await DiyCaptureAsync("editor-order");
-            _diyEditor.EditorScroll.EnsureControlVisible(_diyEditor.EffectRows[^1]);
-            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-            await DiyCaptureAsync("editor-effects");
 
             // A corrupt but structurally readable saved draft is quarantined, including its original op.
             var invalid = new DiyCardDraft { Id = "diy/invalid-" + Guid.NewGuid().ToString("N"), Effects = [new() { Op = "unknown" }] };
