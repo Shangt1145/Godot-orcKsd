@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
+using Kards.Ui.OrcBridge.OrcText;
 using Orc.Cards;
 using Orc.Core;
 using Orc.Game.Cards;
@@ -16,7 +17,7 @@ using Orc.Game.EffectParsing.Templates;
 namespace Kards.Ui.OrcBridge;
 
 internal sealed record CompiledDiyCard(DiyCardDraft Draft, UiCardDefinition Card,
-    CardDefinitionEntry Entry, EffectSnapshot? Effect, string CardJson);
+    CardDefinitionEntry Entry, IReadOnlyList<EffectSnapshot> Effects, string CardJson);
 
 /// <summary>Finite authoring surface over native definitions/DSL. Never interprets editable prose as rules.</summary>
 public static class DiyCardCompiler
@@ -165,28 +166,70 @@ public static class DiyCardCompiler
             throw new InvalidDataException("费用与攻击须为 0–99，防御须为 1–99，重甲须为 0–3");
         if (draft.Keywords.Any(k => !KnownKeyword(k)))
             throw new InvalidDataException("含未接入的词条：" + string.Join("、", draft.Keywords.Where(k => !KnownKeyword(k))));
-        if (draft.CardType == "order" && (draft.Keywords.Length != 0 || draft.Effects.Length == 0))
-            throw new InvalidDataException("指令必须有打出效果，不能附带单位词条");
+        // 文本模式：效果真源＝规则文本（OrcParser 解析 + 引擎编译）；行编辑器不参与编译。
+        var effectText = draft.EffectText.Trim();
+        var textMode = effectText.Length > 0;
+        if (draft.CardType == "order" && (draft.Keywords.Length != 0 || (!textMode && draft.Effects.Length == 0)))
+            throw new InvalidDataException("指令必须有打出效果（规则文本或效果行），不能附带单位词条");
+        if (!textMode)
+            foreach (var effect in draft.Effects) CheckEffect(draft.CardType, effect);
         if (!UnitType.TryNormalize(draft.UnitType, out var unitType))
             throw new InvalidDataException("兵种不受引擎支持");
-        foreach (var effect in draft.Effects) CheckEffect(draft.CardType, effect);
+
+        // 文本模式先编译（词条可能来自文本），失败即校验失败（诚实拒绝，不静默降级空效果）。
+        OrcTextCompile? textCompile = null;
+        if (textMode)
+        {
+            textCompile = OrcInspector.CompileText(draft.Id.Replace('/', '.'), effectText, draft.CardType);
+            if (textCompile.Problems.Count > 0)
+                throw new InvalidDataException(string.Join("；", textCompile.Problems));
+            if (textCompile.Effects.Count == 0)
+                throw new InvalidDataException("规则文本未解析出任何效果");
+        }
+
         var native = new CardDefinition(draft.Name.Trim(), draft.Cost,
             draft.CardType == "unit" ? draft.OpCost : 0, draft.CardType == "unit" ? draft.Attack : 0,
             draft.CardType == "unit" ? draft.Defense : 0,
             category: draft.CardType == "unit" ? CardCategory.Unit : CardCategory.Command,
             unitTypes: draft.CardType == "unit" ? [unitType] : [],
-            keywords: draft.Keywords.Select(k => new KeywordDeclaration(EngineKeywordId(k), k == "armor" ? draft.Armor : null)),
+            keywords: KeywordDecls(draft, textCompile?.Parse),
             faction: draft.Nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany, "USG" => Faction.USA, _ => Faction.Britain },
             rarity: draft.Rarity switch { "iron" => Rarity.Standard, "bronze" => Rarity.Limited, "silver" => Rarity.Special, _ => Rarity.Elite });
-        EffectSnapshot? snapshot = null;
+        var snapshots = new List<EffectSnapshot>();
         var components = native.Components.ToList();
-        if (draft.Effects.Length > 0)
+        if (textMode)
+        {
+            // 文本模式：文本编译出的快照逐条实例化并内联（与 OrC 导入同一 effects 组件形态）。
+            var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
+            var snapshotJsons = new List<JsonElement>();
+            foreach (var compiled in textCompile!.Effects)
+            {
+                foreach (var one in compiled.Snapshots)
+                {
+                    var instance = DynamicEffectFactory.Instantiate(engine, one);
+                    if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
+                    snapshots.Add(one);
+                }
+                using var doc = JsonDocument.Parse(compiled.JsonText!);
+                foreach (var element in doc.RootElement.EnumerateArray())
+                    snapshotJsons.Add(element.Clone());
+            }
+            if (snapshotJsons.Count > 0)
+            {
+                using var effectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new
+                {
+                    component = "effects", inline = snapshotJsons
+                }));
+                components.Add(EffectsDefinition.Read(effectsJson.RootElement));
+            }
+        }
+        else if (draft.Effects.Length > 0)
         {
             var (compiled, compiledJson) = CompileEffects(draft.CardType, draft.Effects, draft.Id.Replace('/', '.'));
-            snapshot = compiled;
             var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
-            var instance = DynamicEffectFactory.Instantiate(engine, snapshot);
+            var instance = DynamicEffectFactory.Instantiate(engine, compiled);
             if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
+            snapshots.Add(compiled);
             using var snapshotJson = JsonDocument.Parse(compiledJson);
             using var effectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
@@ -201,7 +244,19 @@ public static class DiyCardCompiler
         if (readWarnings.Count != 0) throw new InvalidDataException(string.Join("；", readWarnings));
         var roundTrip = new CardDefinition(body!.Name, body.Components);
         return new(draft.Snapshot(), Preview(draft with { Name = native.Name }, catalog),
-            new(draft.Id, roundTrip), snapshot, json);
+            new(draft.Id, roundTrip), snapshots.AsReadOnly(), json);
+    }
+
+    /// <summary>词条声明：文本模式＝解析词条 ∪ 勾选词条（按引擎 id 去重）；行模式＝勾选词条。</summary>
+    private static KeywordDeclaration[] KeywordDecls(DiyCardDraft draft, OrcCompileResult? parse)
+    {
+        var list = new List<KeywordDeclaration>();
+        if (parse is not null)
+            foreach (var keyword in parse.Keywords)
+                list.Add(new KeywordDeclaration(keyword.Id, keyword.Quantified ? keyword.Value : null));
+        foreach (var token in draft.Keywords)
+            list.Add(new KeywordDeclaration(EngineKeywordId(token), token == "armor" ? draft.Armor : null));
+        return list.GroupBy(k => k.Id, StringComparer.Ordinal).Select(g => g.First()).ToArray();
     }
     /// <summary>
     /// Compiles an effect draft sequence against the frozen op-template assets. Shared by DIY cards
@@ -280,6 +335,8 @@ public static class DiyCardCompiler
         condition: new DslCondition(DslCondition.PayloadSelf, type == "unit" ? "Unit" : "Card"), until: e.Until.Length == 0 ? null : e.Until);
     internal static string Text(DiyCardDraft draft)
     {
+        // 文本模式：卡面规则文本＝真源原文（非空时行编辑器产物不参与展示与编译）。
+        if (draft.EffectText.Trim().Length > 0) return draft.EffectText.Trim();
         // 句式＝引擎 CardTextEffectCompiler.Parse 的解析面（buff/costMod 带"使…获得"框架），
         // 保证生成的卡面文本能被引擎原样读回（生成器与解析器不漂移）。
         string Target(DiyEffectDraft e) => Targets.FirstOrDefault(t => t.Id == e.Target)?.Label ?? e.Target;

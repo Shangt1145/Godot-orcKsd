@@ -28,6 +28,12 @@ public sealed record DiyCardDraft
     public string ArtCardId { get; init; } = "";
     public string Flavor { get; init; } = "";
     public DiyEffectDraft[] Effects { get; init; } = [];
+    /// <summary>
+    /// 规则文本（自然文本→DSL 的真源＝原文，与 OrC 导入同一口径）。非空＝文本模式：
+    /// 效果由 OrcParser 解析并编译（引擎 31 触发模板面），Effects 行编辑器不参与编译。
+    /// 真源存原文而非编译产物——解析器演进后重编译自动跟随。
+    /// </summary>
+    public string EffectText { get; init; } = "";
     public DiyCardDraft Snapshot() => this with { Keywords = Keywords.ToArray(), Effects = Effects.ToArray() };
 }
 

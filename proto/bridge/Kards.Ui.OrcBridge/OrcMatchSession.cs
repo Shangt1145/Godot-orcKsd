@@ -246,7 +246,8 @@ public sealed partial class OrcMatchSession : IDisposable
         var packSet = packs ?? PackSet.FromSnapshot(OrcEngineHost.Snapshot());
         var registry = new CardEffectRegistry();
         foreach (var card in customCards ?? [])
-            if (card.Effect is { } effect) registry.DeclarePrefab(card.Entry.Id, [effect.Root.Id]);
+            if (card.Effects.Count > 0)
+                registry.DeclarePrefab(card.Entry.Id, card.Effects.Select(s => s.Root.Id).ToArray());
         // 转换卡与 DIY 同一条装配路：先声明（注册先于卡加载——引擎管道序），
         // Match 构造后把快照登记进 Prefabs。效果组件本身只有磁盘装载路径消费。
         foreach (var cardId in (convertedEffects ?? new Dictionary<string, EffectSnapshot>()).Keys)
@@ -261,7 +262,7 @@ public sealed partial class OrcMatchSession : IDisposable
             packageActivator: new SnapshotPackageActivator(packSet.Snapshot));
         match.Engine.ScriptEvaluator = NativeScriptHost.Evaluator;
         foreach (var card in customCards ?? [])
-            if (card.Effect is { } effect) match.Engine.Prefabs.RegisterPrefab(effect);
+            foreach (var snapshot in card.Effects) match.Engine.Prefabs.RegisterPrefab(snapshot);
         if (convertedEffects is not null)
             foreach (var snapshot in convertedEffects.Values) match.Engine.Prefabs.RegisterPrefab(snapshot);
         if (importedEffects is not null)
@@ -287,11 +288,11 @@ public sealed partial class OrcMatchSession : IDisposable
                 {
                     if (!match.CardLibrary.TryGetRegisteredId(card.Definition, out var id)) continue;
                     var expected = customCards?.FirstOrDefault(c => c.Entry.Id == id);
-                    if (expected?.Effect is { } effect)
+                    foreach (var snapshot in expected?.Effects ?? [])
                     {
-                        var loaded = card.Effects.Where(e => e.Name == effect.Root.Id).ToArray();
+                        var loaded = card.Effects.Where(e => e.Name == snapshot.Root.Id).ToArray();
                         if (loaded.Length != 1 || !loaded[0].IsMounted)
-                            throw new InvalidDataException($"DIY 卡牌 {id} 的效果未完整装载，拒绝开始对局");
+                            throw new InvalidDataException($"DIY 卡牌 {id} 的效果 {snapshot.Root.Id} 未完整装载，拒绝开始对局");
                     }
                     if (importedEffects is not null && importedEffects.TryGetValue(id, out var wanted))
                         foreach (var snapshot in wanted)

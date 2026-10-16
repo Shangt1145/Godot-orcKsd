@@ -42,6 +42,7 @@ public sealed class DiyCardLibrary
             || string.IsNullOrWhiteSpace(card.Name) || card.Name.Length > 40
             || card.Nation is null || card.Rarity is null || card.CardType is null || card.UnitType is null
             || card.ArtCardId is null || card.ArtCardId.Length > 200 || card.Flavor is null || card.Flavor.Length > 300
+            || card.EffectText is null || card.EffectText.Length > 2000
             || card.Keywords is null || card.Keywords.Length > 16 || card.Keywords.Any(string.IsNullOrWhiteSpace)
             || card.Keywords.Distinct(StringComparer.Ordinal).Count() != card.Keywords.Length
             || card.Effects is null || card.Effects.Length > 8

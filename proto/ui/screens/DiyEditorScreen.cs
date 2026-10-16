@@ -29,7 +29,10 @@ public partial class DiyEditorScreen : VBoxContainer
     internal LineEdit CardName = null!, Search = null!;
     internal OptionButton CardType = null!, Nation = null!, Rarity = null!, UnitType = null!, Art = null!;
     internal SpinBox Cost = null!, OpCost = null!, Attack = null!, Defense = null!, Armor = null!;
-    internal TextEdit Flavor = null!;
+    internal TextEdit Flavor = null!, EffectTextInput = null!;
+    internal Label TextNotice = null!;
+    private Godot.Timer _textTimer = null!;
+    private VBoxContainer _inspectBox = null!;
     internal Button SaveButton = null!, NewButton = null!, CopyButton = null!, DeleteButton = null!, AddEffectButton = null!, ValidateButton = null!, TrialButton = null!, ConstructButton = null!, ExportButton = null!, ImportButton = null!;
     internal ConfirmationDialog DeleteDialog = null!, DiscardDialog = null!;
     internal ConfirmationDialog? ActiveImport;
@@ -143,6 +146,20 @@ public partial class DiyEditorScreen : VBoxContainer
         _effectBox = new VBoxContainer(); form.AddChild(_effectBox);
         AddEffectButton = UiStyles.Button("＋ 添加效果", () => AddEffect(new()));
         form.AddChild(AddEffectButton);
+        form.AddChild(UiStyles.Label("规则文本（自然文本 → DSL，真源＝原文）", 16, UiStyles.Gold));
+        EffectTextInput = new TextEdit
+        {
+            CustomMinimumSize = new(0, 90), WrapMode = TextEdit.LineWrappingMode.Boundary,
+            PlaceholderText = "例：部署：随机对 1 个敌方单位造成 2 点伤害。非空时效果由文本解析，效果行不参与编译"
+        };
+        form.AddChild(EffectTextInput);
+        _textTimer = new Godot.Timer { OneShot = true, WaitTime = 0.6 }; AddChild(_textTimer);
+        _textTimer.Timeout += RefreshTextInspect;
+        EffectTextInput.TextChanged += () => { if (!_loading) { Changed(); _textTimer.Start(); } };
+        TextNotice = UiStyles.Label("", 12, UiStyles.Dim);
+        TextNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; form.AddChild(TextNotice);
+        form.AddChild(UiStyles.Label("效果结构（Inspector）", 16, UiStyles.Gold));
+        _inspectBox = new VBoxContainer(); form.AddChild(_inspectBox);
         Flavor = new TextEdit { CustomMinimumSize = new(0, 65), WrapMode = TextEdit.LineWrappingMode.Boundary, PlaceholderText = "风味文字，不作为规则执行（最多 300 字）" };
         Field(form, "风味文字", Flavor); Flavor.TextChanged += Changed;
         var previewPanel = Panel(245); body.AddChild(previewPanel);
@@ -221,11 +238,11 @@ public partial class DiyEditorScreen : VBoxContainer
         Select(UnitType, draft.UnitType); Select(Art, draft.ArtCardId);
         Cost.Value = draft.Cost; OpCost.Value = draft.OpCost; Attack.Value = draft.Attack; Defense.Value = draft.Defense; Armor.Value = draft.Armor;
         foreach (var pair in _keywords) pair.Value.ButtonPressed = draft.Keywords.Contains(pair.Key);
-        Flavor.Text = draft.Flavor;
+        Flavor.Text = draft.Flavor; EffectTextInput.Text = draft.EffectText;
         foreach (var row in _effects) { _effectBox.RemoveChild(row); row.QueueFree(); } _effects.Clear();
         foreach (var effect in draft.Effects) AddEffect(effect);
         _loading = false; _dirty = false; SaveButton.Text = "保存"; _notice.Text = "";
-        RefreshList(); RefreshPreview(); EditorScroll.ScrollVertical = 0;
+        RefreshList(); RefreshPreview(); RefreshTextInspect(); EditorScroll.ScrollVertical = 0;
         if (_blocked is not null) _notice.Text = $"卡牌未通过校验，原声明保留，不能用于实战：{_storedError(draft.Id)}";
     }
     private DiyCardDraft Read() => _blocked?.Snapshot() ?? _draft with
@@ -233,7 +250,8 @@ public partial class DiyEditorScreen : VBoxContainer
         Name = CardName.Text, CardType = Value(CardType), Nation = Value(Nation), Rarity = Value(Rarity), UnitType = Value(UnitType),
         Cost = (int)Cost.Value, OpCost = (int)OpCost.Value, Attack = (int)Attack.Value, Defense = (int)Defense.Value,
         Keywords = Value(CardType) == "unit" ? _keywords.Where(k => k.Value.ButtonPressed).Select(k => k.Key).ToArray() : [],
-        Armor = (int)Armor.Value, ArtCardId = Value(Art), Flavor = Flavor.Text, Effects = _effects.Select(r => r.Read()).ToArray()
+        Armor = (int)Armor.Value, ArtCardId = Value(Art), Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
+        Effects = _effects.Select(r => r.Read()).ToArray()
     };
     private void Changed()
     {
@@ -249,7 +267,19 @@ public partial class DiyEditorScreen : VBoxContainer
         _trigger.Text = isUnit ? "部署完成时执行" : "打出时执行";
         _identity.Text = draft.Id; _identity.ClipText = true; _identity.TooltipText = draft.Id;
         AddEffectButton.Disabled = _effects.Count >= 8;
-        foreach (var row in _effects) row.UpdateType(isUnit);
+        var textMode = EffectTextInput.Text.Trim().Length > 0;
+        AddEffectButton.Disabled = textMode || _effects.Count >= 8;
+        AddEffectButton.TooltipText = textMode ? "文本模式：效果由规则文本解析，行编辑器不参与编译。清空规则文本可回到行编辑。" : "";
+        foreach (var row in _effects)
+        {
+            row.UpdateType(isUnit);
+            if (textMode)
+                foreach (var childControl in row.FindChildren("*", "", true, false))
+                {
+                    if (childControl is BaseButton button) button.Disabled = true;
+                    if (childControl is SpinBox spin) spin.Editable = false;
+                }
+        }
         var card = DiyCardCompiler.Preview(Read(), _catalog());
         UiStyles.Clear(_preview);
         var control = new CardControl(); control.Bind(card, _textures, 200); _preview.AddChild(control);
@@ -264,6 +294,7 @@ public partial class DiyEditorScreen : VBoxContainer
         DeleteButton.Disabled = !_library.Cards.Any(c => c.Id == _draft.Id);
         var blocked = _blocked is not null;
         CardName.Editable = Flavor.Editable = !blocked; Cost.Editable = !blocked;
+        EffectTextInput.Editable = !blocked;
         if (blocked)
         {
             foreach (var option in new[] { CardType, Nation, Rarity, UnitType, Art }) option.Disabled = true;
@@ -333,6 +364,35 @@ public partial class DiyEditorScreen : VBoxContainer
         var result = DiyCardCompiler.Validate(Read(), _catalog());
         _notice.Text = result.Success ? "校验通过：卡牌定义、效果编译、实例化和原生数据往返均成功。尚未保存。"
             : string.Join("；", result.Errors);
+    }
+    /// <summary>规则文本实时解析（600ms 防抖）：状态行 + Inspector 结构树。编辑期只读展示，编译产物以保存时校验为准。</summary>
+    private void RefreshTextInspect()
+    {
+        UiStyles.Clear(_inspectBox);
+        var text = EffectTextInput.Text.Trim();
+        if (text.Length == 0) { TextNotice.Text = ""; return; }
+        try
+        {
+            var compile = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType));
+            var problems = compile.Problems;
+            TextNotice.Text = problems.Count == 0
+                ? $"解析成功：{compile.Effects.Count} 条效果，编译通过。"
+                : string.Join("\n", problems.Take(4));
+            TextNotice.AddThemeColorOverride("font_color",
+                problems.Count == 0 ? UiStyles.Dim : new Color("dca58b"));
+            foreach (var node in OrcInspector.Describe(compile.Parse))
+                RenderInspect(node, 0);
+        }
+        catch (Exception e)
+        { TextNotice.Text = "解析失败：" + e.Message; }
+    }
+    private void RenderInspect(OrcInspectNode node, int depth)
+    {
+        var label = UiStyles.Label((depth > 0 ? "· " : "") + node.Label + (node.Detail is null ? "" : "：" + node.Detail),
+            depth == 0 ? 14 : 12, depth == 0 ? UiStyles.Gold : UiStyles.Dim);
+        label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _inspectBox.AddChild(label);
+        foreach (var child in node.Children) RenderInspect(child, depth + 1);
     }
     private void Run(Action action)
     {
