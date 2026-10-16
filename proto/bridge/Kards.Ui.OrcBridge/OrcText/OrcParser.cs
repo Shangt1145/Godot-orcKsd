@@ -239,12 +239,12 @@ internal static partial class OrcParser
             return [new DslOp(op, amount: n)];
         }
 
-        // ④ 伤害：对 X 造成 N 点伤害。
+        // ④ 伤害：对 X 造成 N 点伤害（「随机对」前缀＝官方高频句式，随机面进 selector）。
         var dmg = DamagePattern().Match(s);
         if (dmg.Success)
         {
-            var target = Target(dmg.Groups[1].Value, wordbook, fx);
-            var n = OrcPredicates.Value(dmg.Groups[2].Value);
+            var target = Target(dmg.Groups[1].Value + dmg.Groups[2].Value, wordbook, fx);
+            var n = OrcPredicates.Value(dmg.Groups[3].Value);
             if (n is < 1 or > 99) throw new OrcReject($"伤害 {n} 超出引擎值域（1–99）");
             return [new DslOp("damage", target: target, amount: n)];
         }
@@ -443,7 +443,7 @@ internal static partial class OrcParser
     private static partial Regex DrawPattern();
     [GeneratedRegex(@"^(?:使)?(?:(友方|我方|敌方|对手)(?:玩家)?)?(?:额外)?(获得|增加|失去|减少)\s*([\d一二两三四五六七八九十百]+)\s*(?:个|点)?(?:临时)?指挥点(槽)?$")]
     private static partial Regex ResourcePattern();
-    [GeneratedRegex(@"^对(.+?)造成([\d一二两三四五六七八九十百]+)点伤害$")]
+    [GeneratedRegex(@"^(随机)?对(.+?)造成([\d一二两三四五六七八九十百]+)点伤害$")]
     private static partial Regex DamagePattern();
     [GeneratedRegex(@"^(消灭|压制|解除压制|抑制|移除)(.+)$")]
     private static partial Regex VerbPattern();

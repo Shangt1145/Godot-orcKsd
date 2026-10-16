@@ -166,17 +166,19 @@ public static class DiyCardCompiler
             throw new InvalidDataException("费用与攻击须为 0–99，防御须为 1–99，重甲须为 0–3");
         if (draft.Keywords.Any(k => !KnownKeyword(k)))
             throw new InvalidDataException("含未接入的词条：" + string.Join("、", draft.Keywords.Where(k => !KnownKeyword(k))));
-        // 文本模式：效果真源＝规则文本（OrcParser 解析 + 引擎编译）；行编辑器不参与编译。
+        // 编译真源优先级：OrcEffects 结构（Inspector 编辑面）> 旧版规则文本 > 效果行。
+        // 结构模式由编辑器保证可持久化（无 threshold 维），文本模式保持解析器演进自动跟随。
         var effectText = draft.EffectText.Trim();
-        var textMode = effectText.Length > 0;
-        if (draft.CardType == "order" && (draft.Keywords.Length != 0 || (!textMode && draft.Effects.Length == 0)))
+        var textMode = effectText.Length > 0 && draft.OrcEffects.Length == 0;
+        var orcMode = draft.OrcEffects.Length > 0;
+        if (draft.CardType == "order" && (draft.Keywords.Length != 0 || (!textMode && !orcMode && draft.Effects.Length == 0)))
             throw new InvalidDataException("指令必须有打出效果（规则文本或效果行），不能附带单位词条");
-        if (!textMode)
+        if (!textMode && !orcMode)
             foreach (var effect in draft.Effects) CheckEffect(draft.CardType, effect);
         if (!UnitType.TryNormalize(draft.UnitType, out var unitType))
             throw new InvalidDataException("兵种不受引擎支持");
 
-        // 文本模式先编译（词条可能来自文本），失败即校验失败（诚实拒绝，不静默降级空效果）。
+        // 旧版文本模式先编译（词条可能来自文本），失败即校验失败（诚实拒绝，不静默降级空效果）。
         OrcTextCompile? textCompile = null;
         if (textMode)
         {
@@ -197,7 +199,34 @@ public static class DiyCardCompiler
             rarity: draft.Rarity switch { "iron" => Rarity.Standard, "bronze" => Rarity.Limited, "silver" => Rarity.Special, _ => Rarity.Elite });
         var snapshots = new List<EffectSnapshot>();
         var components = native.Components.ToList();
-        if (textMode)
+        if (orcMode)
+        {
+            // 结构模式：Inspector 编辑面逐效果逐 op 编译（与导入同一通道、同一对象数组形态）。
+            var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
+            var snapshotJsons = new List<JsonElement>();
+            foreach (var edited in OrcEffectEditing.Compile(draft.Id.Replace('/', '.'), draft.OrcEffects))
+            {
+                if (edited.Error is not null) throw new InvalidDataException(edited.Error);
+                foreach (var one in edited.Snapshots)
+                {
+                    var instance = DynamicEffectFactory.Instantiate(engine, one);
+                    if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
+                    snapshots.Add(one);
+                }
+                using var editedDoc = JsonDocument.Parse(edited.JsonText!);
+                foreach (var element in editedDoc.RootElement.EnumerateArray())
+                    snapshotJsons.Add(element.Clone());
+            }
+            if (snapshotJsons.Count > 0)
+            {
+                using var orcEffectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new
+                {
+                    component = "effects", inline = snapshotJsons
+                }));
+                components.Add(EffectsDefinition.Read(orcEffectsJson.RootElement));
+            }
+        }
+        else if (textMode)
         {
             // 文本模式：文本编译出的快照逐条实例化并内联（与 OrC 导入同一 effects 组件形态）。
             var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };

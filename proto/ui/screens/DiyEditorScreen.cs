@@ -2,6 +2,7 @@ using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 using Kards.Ui.OrcBridge;
+using Kards.Ui.OrcBridge.OrcText;
 
 namespace Kards.Ui;
 
@@ -32,7 +33,15 @@ public partial class DiyEditorScreen : VBoxContainer
     internal TextEdit Flavor = null!, EffectTextInput = null!;
     internal Label TextNotice = null!;
     private Godot.Timer _textTimer = null!;
-    private VBoxContainer _inspectBox = null!;
+    // ── OrC Inspector（结构编辑面）──
+    private readonly List<OrcEffectRow> _orcRows = [];
+    private VBoxContainer _orcBox = null!, _rowsSection = null!;
+    internal Label OrcNotice = null!;
+    internal Button ParseReplaceButton = null!, ParseAppendButton = null!, UndoButton = null!, RedoButton = null!, OrcJsonButton = null!, AddOrcButton = null!;
+    internal OptionButton RecipePick = null!;
+    private Godot.Timer _orcTimer = null!;
+    private readonly List<string> _history = [];
+    private int _historyPos = -1;
     internal Button SaveButton = null!, NewButton = null!, CopyButton = null!, DeleteButton = null!, AddEffectButton = null!, ValidateButton = null!, TrialButton = null!, ConstructButton = null!, ExportButton = null!, ImportButton = null!;
     internal ConfirmationDialog DeleteDialog = null!, DiscardDialog = null!;
     internal ConfirmationDialog? ActiveImport;
@@ -114,24 +123,27 @@ public partial class DiyEditorScreen : VBoxContainer
         var editScroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; editPanel.AddChild(editScroll);
         EditorScroll = editScroll;
         var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; editScroll.AddChild(form);
-        _identity = UiStyles.Label("", 11, UiStyles.Dim); form.AddChild(_identity);
-        CardName = new LineEdit { MaxLength = 40, PlaceholderText = "卡牌名称" }; Field(form, "名称", CardName);
+        // ── 编辑区：分区面板布局（每节独立边距＋节标题），可读性优先 ──
+        form.AddThemeConstantOverride("separation", 12);
+        var basic = Section(form, "基础信息");
+        _identity = UiStyles.Label("", 11, UiStyles.Dim); basic.AddChild(_identity);
+        CardName = new LineEdit { MaxLength = 40, PlaceholderText = "卡牌名称" }; Field(basic, "名称", CardName);
         CardName.TextChanged += _ => Changed();
-        var types = new GridContainer { Columns = 3 }; form.AddChild(types);
+        var types = new GridContainer { Columns = 3 }; basic.AddChild(types);
         CardType = Option([new("unit", "单位"), new("order", "指令")]); Field(types, "卡牌类别", CardType);
         Nation = Option(DiyCardCompiler.Nations); Field(types, "国籍", Nation);
         Rarity = Option(DiyCardCompiler.Rarities); Field(types, "稀有度", Rarity);
         UnitType = Option(DiyCardCompiler.UnitTypes); Field(types, "兵种", UnitType);
         Cost = Number(0, 99); Field(types, "部署 / 打出费用", Cost);
         OpCost = Number(0, 99); Field(types, "行动费用", OpCost);
-        var stats = new GridContainer { Columns = 3 }; form.AddChild(stats);
+        var stats = new GridContainer { Columns = 3 }; basic.AddChild(stats);
         Attack = Number(0, 99); Field(stats, "攻击", Attack);
         Defense = Number(1, 99); Field(stats, "防御", Defense);
         Armor = Number(0, 3); Field(stats, "重甲参值", Armor);
         foreach (var o in new[] { CardType, Nation, Rarity, UnitType }) o.ItemSelected += _ => Changed();
         foreach (var n in new[] { Cost, OpCost, Attack, Defense, Armor }) n.ValueChanged += _ => Changed();
-        form.AddChild(UiStyles.Label("单位词条", 16, UiStyles.Gold));
-        var keywordGrid = new GridContainer { Columns = 4 }; form.AddChild(keywordGrid);
+        basic.AddChild(UiStyles.Label("单位词条", 14, UiStyles.Gold));
+        var keywordGrid = new GridContainer { Columns = 4 }; basic.AddChild(keywordGrid);
         foreach (var keyword in DiyCardCompiler.Keywords)
         {
             var box = new CheckBox { Text = keyword.Label, TooltipText = keyword.Label }; keywordGrid.AddChild(box);
@@ -140,28 +152,60 @@ public partial class DiyEditorScreen : VBoxContainer
         Art = Option(new[] { new UiDiyChoice("", "文字卡面") }.Concat(catalog()
             .Where(c => c.ArtPath.Length > 0 && !c.CardId.StartsWith("diy/", StringComparison.Ordinal))
             .OrderBy(c => c.Name).Select(c => new UiDiyChoice(c.CardId, c.Name + " · " + c.Set))).ToArray());
-        Field(form, "卡图（现有素材）", Art); Art.ItemSelected += _ => Changed();
-        _trigger = UiStyles.Label("", 14, UiStyles.Gold); form.AddChild(_trigger);
-        form.AddChild(UiStyles.Label("效果按排列顺序执行；规则文本自动生成。", 12, UiStyles.Dim));
-        _effectBox = new VBoxContainer(); form.AddChild(_effectBox);
-        AddEffectButton = UiStyles.Button("＋ 添加效果", () => AddEffect(new()));
-        form.AddChild(AddEffectButton);
-        form.AddChild(UiStyles.Label("规则文本（自然文本 → DSL，真源＝原文）", 16, UiStyles.Gold));
+        Field(basic, "卡图（现有素材）", Art); Art.ItemSelected += _ => Changed();
+
+        var textSec = Section(form, "规则文本 —— 自然语言解析入口");
+        var hintText = UiStyles.Label("写一句效果（例：部署：随机对 1 个敌方单位造成 2 点伤害。），解析后落到下方效果结构；文本同时作为卡面规则文字。解析失败时不改动现有结构。", 12, UiStyles.Dim);
+        hintText.AutowrapMode = TextServer.AutowrapMode.WordSmart; textSec.AddChild(hintText);
         EffectTextInput = new TextEdit
         {
             CustomMinimumSize = new(0, 90), WrapMode = TextEdit.LineWrappingMode.Boundary,
-            PlaceholderText = "例：部署：随机对 1 个敌方单位造成 2 点伤害。非空时效果由文本解析，效果行不参与编译"
+            PlaceholderText = "每行一条效果；支持：部署 / 亡计 / 使用时 / 回合开始 / 攻击后 / 监听句……"
         };
-        form.AddChild(EffectTextInput);
-        _textTimer = new Godot.Timer { OneShot = true, WaitTime = 0.6 }; AddChild(_textTimer);
-        _textTimer.Timeout += RefreshTextInspect;
-        EffectTextInput.TextChanged += () => { if (!_loading) { Changed(); _textTimer.Start(); } };
+        textSec.AddChild(EffectTextInput);
+        var parseRow = new HBoxContainer(); parseRow.AddThemeConstantOverride("separation", 8); textSec.AddChild(parseRow);
+        ParseReplaceButton = UiStyles.Button("解析并替换", () => ParseApply(replace: true)); parseRow.AddChild(ParseReplaceButton);
+        ParseAppendButton = UiStyles.Button("解析并追加", () => ParseApply(replace: false)); parseRow.AddChild(ParseAppendButton);
         TextNotice = UiStyles.Label("", 12, UiStyles.Dim);
-        TextNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; form.AddChild(TextNotice);
-        form.AddChild(UiStyles.Label("效果结构（Inspector）", 16, UiStyles.Gold));
-        _inspectBox = new VBoxContainer(); form.AddChild(_inspectBox);
+        TextNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; textSec.AddChild(TextNotice);
+        _textTimer = new Godot.Timer { OneShot = true, WaitTime = 0.6 }; AddChild(_textTimer);
+        _textTimer.Timeout += RefreshTextNotice;
+        EffectTextInput.TextChanged += () => { if (!_loading) { Changed(); _textTimer.Start(); } };
+
+        var inspSec = Section(form, "效果结构（Inspector，可编辑）");
+        var toolRow = new HBoxContainer(); toolRow.AddThemeConstantOverride("separation", 8); inspSec.AddChild(toolRow);
+        UndoButton = UiStyles.Button("撤销", Undo); toolRow.AddChild(UndoButton);
+        RedoButton = UiStyles.Button("重做", Redo); toolRow.AddChild(RedoButton);
+        OrcJsonButton = UiStyles.Button("效果 JSON", OrcJsonDialog); toolRow.AddChild(OrcJsonButton);
+        OrcJsonButton.TooltipText = "查看当前结构的编译产物 JSON（只读）；编辑面是结构本身，改结构即改效果。";
+        RecipePick = Option(new[] { new UiDiyChoice("", "从常见效果开始…") }
+            .Concat(OrcEffectEditing.Recipes.Select((r, i) => new UiDiyChoice(i.ToString(), r.Name))).ToArray());
+        toolRow.AddChild(RecipePick);
+        toolRow.AddChild(UiStyles.Button("添加", () =>
+        {
+            if (RecipePick.Selected <= 0) { _notice.Text = "先选一个常见效果。"; return; }
+            AddOrc(OrcEffectEditing.Recipes[RecipePick.Selected - 1].Effect);
+            _notice.Text = "已添加「" + OrcEffectEditing.Recipes[RecipePick.Selected - 1].Name + "」。";
+        }));
+        inspSec.AddChild(UiStyles.Label("① 选发生时机 → ② 改对象和动作 → ③ 保存并试打。结构是编译真源；规则文本不随结构修改回写。", 12, UiStyles.Dim));
+        _orcBox = new VBoxContainer(); _orcBox.AddThemeConstantOverride("separation", 10); inspSec.AddChild(_orcBox);
+        AddOrcButton = UiStyles.Button("＋ 再加一条效果", () => AddOrc(new OrcEffectDraft()));
+        inspSec.AddChild(AddOrcButton);
+        OrcNotice = UiStyles.Label("", 12, UiStyles.Dim);
+        OrcNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; inspSec.AddChild(OrcNotice);
+        _orcTimer = new Godot.Timer { OneShot = true, WaitTime = 0.5 }; AddChild(_orcTimer);
+        _orcTimer.Timeout += OrcCheck;
+
+        _rowsSection = Section(form, "简易效果行（旧卡兼容）");
+        _rowsSection.AddChild(UiStyles.Label("九宫格行编辑器，表达不了引擎 21 动作面；新效果请用上方结构编辑或规则文本解析。", 12, UiStyles.Dim));
+        _trigger = UiStyles.Label("", 14, UiStyles.Gold); _rowsSection.AddChild(_trigger);
+        _effectBox = new VBoxContainer(); _rowsSection.AddChild(_effectBox);
+        AddEffectButton = UiStyles.Button("＋ 添加效果", () => AddEffect(new()));
+        _rowsSection.AddChild(AddEffectButton);
+
+        var flavorSec = Section(form, "风味文字");
         Flavor = new TextEdit { CustomMinimumSize = new(0, 65), WrapMode = TextEdit.LineWrappingMode.Boundary, PlaceholderText = "风味文字，不作为规则执行（最多 300 字）" };
-        Field(form, "风味文字", Flavor); Flavor.TextChanged += Changed;
+        Field(flavorSec, "风味文字", Flavor); Flavor.TextChanged += Changed;
         var previewPanel = Panel(245); body.AddChild(previewPanel);
         PreviewPanel = previewPanel;
         var previewSide = new VBoxContainer(); previewPanel.AddChild(previewSide);
@@ -201,12 +245,27 @@ public partial class DiyEditorScreen : VBoxContainer
         if (_library.LoadError is { } error) _notice.Text = error;
     }
     private static PanelContainer Panel(float width) => new() { CustomMinimumSize = new(width, 0), SizeFlagsVertical = SizeFlags.ExpandFill };
-    private static void Field(Node parent, string label, Control control)
+    /// <summary>分区面板：独立边距＋节标题——可读性硬要求（不把所有控件挤在一起）。</summary>
+    private static VBoxContainer Section(VBoxContainer parent, string title)
+    {
+        var panel = new PanelContainer(); parent.AddChild(panel);
+        var margin = new MarginContainer();
+        foreach (var (name, value) in new[] { ("margin_left", 12), ("margin_top", 8), ("margin_right", 12), ("margin_bottom", 12) })
+            margin.AddThemeConstantOverride(name, value);
+        panel.AddChild(margin);
+        var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        box.AddThemeConstantOverride("separation", 8);
+        margin.AddChild(box);
+        box.AddChild(UiStyles.Label(title, 16, UiStyles.Gold));
+        return box;
+    }
+    private static Control Field(Node parent, string label, Control control)
     {
         var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         box.AddThemeConstantOverride("separation", 4); parent.AddChild(box);
         box.AddChild(UiStyles.Label(label, 12, UiStyles.Dim)); box.AddChild(control);
         control.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        return box;
     }
     internal static OptionButton Option(IEnumerable<UiDiyChoice> choices)
     {
@@ -241,8 +300,21 @@ public partial class DiyEditorScreen : VBoxContainer
         Flavor.Text = draft.Flavor; EffectTextInput.Text = draft.EffectText;
         foreach (var row in _effects) { _effectBox.RemoveChild(row); row.QueueFree(); } _effects.Clear();
         foreach (var effect in draft.Effects) AddEffect(effect);
+        foreach (var row in _orcRows) { _orcBox.RemoveChild(row); row.QueueFree(); } _orcRows.Clear();
+        if (draft.OrcEffects.Length > 0)
+            foreach (var orc in draft.OrcEffects) AddOrcRow(orc);
+        else if (draft.EffectText.Trim().Length > 0)
+        {
+            // 旧版文本卡自动升级：完整解析则落到结构编辑面；不完整保持原样（文本模式仍可编译）。
+            var hydration = OrcInspector.CompileText(draft.Id.Replace('/', '.'), draft.EffectText.Trim(), draft.CardType);
+            if (hydration.Parse.Complete)
+                foreach (var effect in hydration.Parse.Effects)
+                { try { AddOrcRow(OrcEffectEditing.ToDraft(effect)); } catch (InvalidDataException) { } }
+        }
+        RenumberOrc();
         _loading = false; _dirty = false; SaveButton.Text = "保存"; _notice.Text = "";
-        RefreshList(); RefreshPreview(); RefreshTextInspect(); EditorScroll.ScrollVertical = 0;
+        _history.Clear(); _historyPos = -1; Snap();
+        RefreshList(); RefreshPreview(); RefreshTextNotice(); EditorScroll.ScrollVertical = 0;
         if (_blocked is not null) _notice.Text = $"卡牌未通过校验，原声明保留，不能用于实战：{_storedError(draft.Id)}";
     }
     private DiyCardDraft Read() => _blocked?.Snapshot() ?? _draft with
@@ -251,7 +323,7 @@ public partial class DiyEditorScreen : VBoxContainer
         Cost = (int)Cost.Value, OpCost = (int)OpCost.Value, Attack = (int)Attack.Value, Defense = (int)Defense.Value,
         Keywords = Value(CardType) == "unit" ? _keywords.Where(k => k.Value.ButtonPressed).Select(k => k.Key).ToArray() : [],
         Armor = (int)Armor.Value, ArtCardId = Value(Art), Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
-        Effects = _effects.Select(r => r.Read()).ToArray()
+        Effects = _effects.Select(r => r.Read()).ToArray(), OrcEffects = _orcRows.Select(r => r.Read()).ToArray()
     };
     private void Changed()
     {
@@ -267,9 +339,11 @@ public partial class DiyEditorScreen : VBoxContainer
         _trigger.Text = isUnit ? "部署完成时执行" : "打出时执行";
         _identity.Text = draft.Id; _identity.ClipText = true; _identity.TooltipText = draft.Id;
         AddEffectButton.Disabled = _effects.Count >= 8;
+        var orcMode = _orcRows.Count > 0;
         var textMode = EffectTextInput.Text.Trim().Length > 0;
-        AddEffectButton.Disabled = textMode || _effects.Count >= 8;
-        AddEffectButton.TooltipText = textMode ? "文本模式：效果由规则文本解析，行编辑器不参与编译。清空规则文本可回到行编辑。" : "";
+        _rowsSection.Visible = !textMode && !orcMode; // 分区可见性：结构/文本模式下旧行编辑器整节隐藏，不留挤在一起的假入口
+        AddEffectButton.Disabled = textMode || orcMode || _effects.Count >= 8;
+        AddEffectButton.TooltipText = textMode || orcMode ? "效果由规则文本/结构编辑面承载，行编辑器不参与编译。" : "";
         foreach (var row in _effects)
         {
             row.UpdateType(isUnit);
@@ -307,8 +381,17 @@ public partial class DiyEditorScreen : VBoxContainer
                     if (childControl is SpinBox spin) spin.Editable = false;
                 }
             AddEffectButton.Disabled = true;
+            _orcRows.ForEach(r => r.SetEnabled(false));
+            ParseReplaceButton.Disabled = ParseAppendButton.Disabled = true;
+            UndoButton.Disabled = RedoButton.Disabled = OrcJsonButton.Disabled = true;
         }
-        else foreach (var option in new[] { CardType, Nation, Rarity, Art }) option.Disabled = false;
+        else
+        {
+            foreach (var option in new[] { CardType, Nation, Rarity, Art }) option.Disabled = false;
+            _orcRows.ForEach(r => r.SetEnabled(true));
+            ParseReplaceButton.Disabled = ParseAppendButton.Disabled = false;
+            OrcJsonButton.Disabled = false; SyncHistory();
+        }
         SaveButton.Disabled = ConstructButton.Disabled = TrialButton.Disabled = ExportButton.Disabled = blocked;
     }
     private void RefreshList()
@@ -365,34 +448,175 @@ public partial class DiyEditorScreen : VBoxContainer
         _notice.Text = result.Success ? "校验通过：卡牌定义、效果编译、实例化和原生数据往返均成功。尚未保存。"
             : string.Join("；", result.Errors);
     }
-    /// <summary>规则文本实时解析（600ms 防抖）：状态行 + Inspector 结构树。编辑期只读展示，编译产物以保存时校验为准。</summary>
-    private void RefreshTextInspect()
+    /// <summary>规则文本实时解析状态（600ms 防抖，只读提示——落结构必须点解析按钮）。</summary>
+    private void RefreshTextNotice()
     {
-        UiStyles.Clear(_inspectBox);
         var text = EffectTextInput.Text.Trim();
         if (text.Length == 0) { TextNotice.Text = ""; return; }
         try
         {
             var compile = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType));
-            var problems = compile.Problems;
-            TextNotice.Text = problems.Count == 0
-                ? $"解析成功：{compile.Effects.Count} 条效果，编译通过。"
-                : string.Join("\n", problems.Take(4));
-            TextNotice.AddThemeColorOverride("font_color",
-                problems.Count == 0 ? UiStyles.Dim : new Color("dca58b"));
-            foreach (var node in OrcInspector.Describe(compile.Parse))
-                RenderInspect(node, 0);
+            TextNotice.Text = compile.Parse.Complete
+                ? $"可解析：{compile.Effects.Count} 条效果，编译通过。点「解析并替换 / 追加」落到效果结构。"
+                : string.Join("\n", compile.Parse.Diagnostics.Select(d => d.ToString()).Take(4));
+            TextNotice.AddThemeColorOverride("font_color", compile.Parse.Complete ? UiStyles.Dim : new Color("dca58b"));
         }
-        catch (Exception e)
-        { TextNotice.Text = "解析失败：" + e.Message; }
+        catch (Exception e) { TextNotice.Text = "解析失败：" + e.Message; }
     }
-    private void RenderInspect(OrcInspectNode node, int depth)
+
+    /// <summary>规则文本 → 结构（替换/追加）。解析不完整或有触发不在编辑面内时不动结构（诚实诊断）。</summary>
+    private void ParseApply(bool replace)
     {
-        var label = UiStyles.Label((depth > 0 ? "· " : "") + node.Label + (node.Detail is null ? "" : "：" + node.Detail),
-            depth == 0 ? 14 : 12, depth == 0 ? UiStyles.Gold : UiStyles.Dim);
-        label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _inspectBox.AddChild(label);
-        foreach (var child in node.Children) RenderInspect(child, depth + 1);
+        var text = EffectTextInput.Text.Trim();
+        if (text.Length == 0) { TextNotice.Text = "规则文本为空。"; return; }
+        OrcCompileResult parse;
+        try { parse = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType)).Parse; }
+        catch (Exception e) { TextNotice.Text = "解析失败：" + e.Message; return; }
+        if (!parse.Complete)
+        {
+            TextNotice.Text = "未解析完整，结构未改动：\n" + string.Join("\n", parse.Diagnostics.Select(d => d.ToString()).Take(5));
+            TextNotice.AddThemeColorOverride("font_color", new Color("dca58b"));
+            return;
+        }
+        List<OrcEffectDraft> drafts;
+        try { drafts = parse.Effects.Select(OrcEffectEditing.ToDraft).ToList(); }
+        catch (InvalidDataException e)
+        {
+            TextNotice.Text = "有触发不在结构编辑面内，结构未改动：" + e.Message;
+            TextNotice.AddThemeColorOverride("font_color", new Color("dca58b"));
+            return;
+        }
+        // 文本词条并入勾选：量化重甲落到重甲参值；表达不了的诚实提示，不静默丢。
+        var notes = new List<string>();
+        foreach (var keyword in parse.Keywords)
+        {
+            var token = DiyCardCompiler.KeywordToken(keyword.Id);
+            if (_keywords.TryGetValue(token, out var box))
+            {
+                box.ButtonPressed = true;
+                if (keyword.Quantified && token == "armor") Armor.Value = keyword.Value;
+                else if (keyword.Quantified)
+                    notes.Add($"词条「{keyword.Id}」的参值 {keyword.Value} 没有独立输入框；如需精确参值请用「获得词条」动作。");
+            }
+            else notes.Add($"词条「{keyword.Id}」不在 DIY 词条表，未并入勾选。");
+        }
+        if (replace) { foreach (var row in _orcRows) { _orcBox.RemoveChild(row); row.QueueFree(); } _orcRows.Clear(); }
+        foreach (var draft in drafts) AddOrcRow(draft);
+        RenumberOrc();
+        TextNotice.Text = $"已解析 {drafts.Count} 条效果并{(replace ? "替换" : "追加")}到效果结构。" + (notes.Count > 0 ? "\n" + string.Join("\n", notes) : "");
+        TextNotice.AddThemeColorOverride("font_color", UiStyles.Dim);
+        OrcChanged();
+    }
+
+    private void AddOrc(OrcEffectDraft draft)
+    {
+        // 指令卡的部署触发自动换打出触发（配方与空白效果同款口径）。
+        if (Value(CardType) == "order" && draft.Template == "deploy_basic")
+            draft = draft with { Template = "played_basic", Hook = "card.played", Guard = "SelfCard" };
+        AddOrcRow(draft);
+        RenumberOrc();
+        OrcChanged();
+    }
+
+    private void AddOrcRow(OrcEffectDraft draft)
+    {
+        var row = new OrcEffectRow(draft, OrcChanged, r =>
+        {
+            _orcRows.Remove(r); _orcBox.RemoveChild(r); r.QueueFree(); RenumberOrc(); OrcChanged();
+        }, (r, offset) =>
+        {
+            var index = _orcRows.IndexOf(r); var target = Math.Clamp(index + offset, 0, _orcRows.Count - 1);
+            _orcRows.RemoveAt(index); _orcRows.Insert(target, r); _orcBox.MoveChild(r, target); RenumberOrc(); OrcChanged();
+        });
+        _orcRows.Add(row); _orcBox.AddChild(row);
+    }
+
+    private void RenumberOrc()
+    {
+        for (var i = 0; i < _orcRows.Count; i++) _orcRows[i].SetIndex(i + 1);
+        AddOrcButton.Disabled = _orcRows.Count >= 8;
+    }
+
+    /// <summary>结构编辑统一入口：脏标＋快照＋防抖编译校验。</summary>
+    private void OrcChanged()
+    {
+        if (_loading) return;
+        RenumberOrc(); Changed(); Snap(); _orcTimer.Start();
+    }
+
+    /// <summary>防抖编译校验：逐条编译编辑面，状态行＋行级错误。</summary>
+    private void OrcCheck()
+    {
+        var drafts = OrcDrafts();
+        if (drafts.Count == 0) { OrcNotice.Text = ""; return; }
+        var compiled = OrcEffectEditing.Compile(_draft.Id.Replace('/', '.'), drafts);
+        var problems = OrcEffectEditing.Problems(compiled);
+        for (var i = 0; i < _orcRows.Count; i++)
+            _orcRows[i].SetError(i < compiled.Count ? compiled[i].Error : null);
+        OrcNotice.Text = problems.Count == 0
+            ? $"编译通过：{drafts.Count} 条效果。保存后进对局生效。"
+            : $"{problems.Count} 项需要检查：{string.Join("；", problems.Take(3))}";
+        OrcNotice.AddThemeColorOverride("font_color", problems.Count == 0 ? UiStyles.Dim : new Color("dca58b"));
+    }
+
+    private IReadOnlyList<OrcEffectDraft> OrcDrafts() => _orcRows.Select(r => r.Read()).ToArray();
+
+    // ── 撤销 / 重做（对齐 Electron 检查器：结构快照差分，50 步上限）──
+    private void Snap()
+    {
+        if (_loading) return;
+        var state = System.Text.Json.JsonSerializer.Serialize(OrcDrafts());
+        if (_historyPos >= 0 && _history[_historyPos] == state) return;
+        if (_historyPos < _history.Count - 1) _history.RemoveRange(_historyPos + 1, _history.Count - _historyPos - 1);
+        _history.Add(state);
+        if (_history.Count > 50) _history.RemoveAt(0);
+        _historyPos = _history.Count - 1;
+        SyncHistory();
+    }
+    private void Undo()
+    {
+        if (_historyPos <= 0) return;
+        _historyPos--; ApplyHistory();
+    }
+    private void Redo()
+    {
+        if (_historyPos >= _history.Count - 1) return;
+        _historyPos++; ApplyHistory();
+    }
+    private void ApplyHistory()
+    {
+        var drafts = System.Text.Json.JsonSerializer.Deserialize<OrcEffectDraft[]>(_history[_historyPos]) ?? [];
+        _loading = true;
+        foreach (var row in _orcRows) { _orcBox.RemoveChild(row); row.QueueFree(); } _orcRows.Clear();
+        foreach (var draft in drafts) AddOrcRow(draft);
+        RenumberOrc();
+        _loading = false;
+        Changed(); OrcCheck(); SyncHistory();
+    }
+    private void SyncHistory()
+    {
+        UndoButton.Disabled = _historyPos <= 0;
+        RedoButton.Disabled = _historyPos >= _history.Count - 1;
+    }
+
+    /// <summary>效果 JSON 查看器（只读）：结构 → 编译产物；失败条目显错误。</summary>
+    private void OrcJsonDialog()
+    {
+        var drafts = OrcDrafts();
+        if (drafts.Count == 0) { _notice.Text = "还没有效果；先添加或解析一条。"; return; }
+        var compiled = OrcEffectEditing.Compile(_draft.Id.Replace('/', '.'), drafts);
+        var text = string.Join("\n\n", compiled.Select((e, i) =>
+            e.Error is null
+                ? $"// 效果 {i + 1}（{OrcEffectEditing.Templates.FirstOrDefault(t => t.Id == e.Draft.Template && t.Guard.ToString() == e.Draft.Guard)?.Label ?? e.Draft.Template}）\n{e.JsonText}"
+                : $"// 效果 {i + 1} 编译失败：{e.Error}"));
+        var dialog = new AcceptDialog { Title = "效果 JSON（编译产物，只读）", MinSize = new(660, 430) }; AddChild(dialog);
+        var box = new VBoxContainer(); dialog.AddChild(box);
+        box.AddChild(UiStyles.Label("这是当前结构的编译产物。编辑面是上面的结构；改结构即改效果。", 12, UiStyles.Dim));
+        var view = new TextEdit { Text = text, Editable = false, WrapMode = TextEdit.LineWrappingMode.Boundary, SizeFlagsVertical = SizeFlags.ExpandFill, CustomMinimumSize = new(620, 300) };
+        box.AddChild(view);
+        box.AddChild(UiStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(text)));
+        dialog.CloseRequested += () => dialog.QueueFree();
+        dialog.PopupCentered();
     }
     private void Run(Action action)
     {
@@ -536,5 +760,221 @@ public partial class DiyEditorScreen : VBoxContainer
             Until.Visible = buff || op == "costMod";
             _updating = false;
         }
+    }
+
+    // ───────────────────────── OrC Inspector 结构编辑行 ─────────────────────────
+
+    /// <summary>结构效果行：触发条目（模板＋守卫成对切换）＋动作序列（增删/排序/逐参数编辑）。</summary>
+    internal sealed partial class OrcEffectRow : PanelContainer
+    {
+        private readonly OptionButton _trigger;
+        private readonly Label _title, _error;
+        private readonly VBoxContainer _opsBox;
+        private readonly List<OrcOpRow> _ops = [];
+        private readonly Action _changed;
+        private readonly Action<OrcEffectRow> _remove;
+        private readonly Action<OrcEffectRow, int> _move;
+        private bool _mute = true;
+
+        internal OrcEffectRow(OrcEffectDraft draft, Action changed, Action<OrcEffectRow> remove, Action<OrcEffectRow, int> move)
+        {
+            _changed = changed; _remove = remove; _move = move;
+            var box = new VBoxContainer(); box.AddThemeConstantOverride("separation", 8); AddChild(box);
+            var head = new HBoxContainer(); head.AddThemeConstantOverride("separation", 8); box.AddChild(head);
+            _title = UiStyles.Label("效果", 14, UiStyles.Gold); head.AddChild(_title);
+            _trigger = Option(OrcEffectEditing.Templates.Select(t => new UiDiyChoice(t.Id + "|" + t.Guard, t.Label)));
+            _trigger.CustomMinimumSize = new(250, 34); head.AddChild(_trigger);
+            head.AddChild(UiStyles.Button("×", () => _remove(this)));
+            _opsBox = new VBoxContainer(); _opsBox.AddThemeConstantOverride("separation", 8); box.AddChild(_opsBox);
+            var addRow = new HBoxContainer(); addRow.AddThemeConstantOverride("separation", 8); box.AddChild(addRow);
+            var pick = Option(new[] { new UiDiyChoice("", "选择动作…") }
+                .Concat(OrcEffectEditing.Ops.Select(o => new UiDiyChoice(o.Id, o.Label + " · " + o.Group))));
+            pick.CustomMinimumSize = new(210, 34); addRow.AddChild(pick);
+            addRow.AddChild(UiStyles.Button("添加动作", () =>
+            {
+                if (pick.Selected <= 0) return;
+                AddOp(OrcEffectEditing.Seed(OrcEffectEditing.Ops[pick.Selected - 1].Id));
+                _changed();
+            }));
+            _error = UiStyles.Label("", 12, new("dca58b"));
+            _error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(_error);
+            foreach (var op in draft.Ops) AddOp(op);
+            SelectTrigger(draft);
+            _trigger.ItemSelected += _ => { if (!_mute) _changed(); };
+            _mute = false;
+        }
+
+        private static string Key(OrcTemplateEntry t) => t.Id + "|" + t.Guard;
+
+        private void SelectTrigger(OrcEffectDraft draft)
+        {
+            for (var i = 0; i < _trigger.ItemCount; i++)
+                if (_trigger.GetItemMetadata(i).AsString() == draft.Template + "|" + draft.Guard) { _trigger.Select(i); return; }
+        }
+
+        private void AddOp(OrcOpDraft draft)
+        {
+            var row = new OrcOpRow(draft, _changed, r =>
+            {
+                _ops.Remove(r); _opsBox.RemoveChild(r); r.QueueFree(); _changed();
+            }, (r, offset) =>
+            {
+                var index = _ops.IndexOf(r); var target = Math.Clamp(index + offset, 0, _ops.Count - 1);
+                _ops.RemoveAt(index); _ops.Insert(target, r); _opsBox.MoveChild(r, target); _changed();
+            });
+            _ops.Add(row); _opsBox.AddChild(row);
+        }
+
+        internal OrcEffectDraft Read()
+        {
+            var entry = _trigger.Selected >= 0 && _trigger.Selected < OrcEffectEditing.Templates.Count
+                ? OrcEffectEditing.Templates[_trigger.Selected] : null;
+            return new OrcEffectDraft
+            {
+                Template = entry?.Id ?? "deploy_basic", Hook = entry?.Hook,
+                Guard = (entry?.Guard ?? OrcTriggerGuard.SelfUnit).ToString(),
+                Ops = _ops.Select(o => o.Read()).ToArray(),
+            };
+        }
+
+        internal void SetIndex(int index) => _title.Text = "效果 " + index;
+        internal void SetError(string? error) => _error.Text = error ?? "";
+
+        internal void SetEnabled(bool enabled)
+        {
+            foreach (var child in FindChildren("*", "", true, false))
+            {
+                switch (child)
+                {
+                    case OptionButton or Button or CheckBox or CheckButton:
+                        ((BaseButton)child).Disabled = !enabled; break;
+                    case SpinBox spin: spin.Editable = enabled; break;
+                    case LineEdit line: line.Editable = enabled; break;
+                }
+            }
+        }
+    }
+
+    /// <summary>动作行：参数面按 op 目录显隐（目录＝编译面合法取值，编辑即所见）。</summary>
+    internal sealed partial class OrcOpRow : VBoxContainer
+    {
+        private readonly OrcOpInfo _info;
+        private readonly OptionButton _sel = null!, _side = null!, _selZone = null!, _fUnit = null!, _fKeyword = null!,
+            _fFaction = null!, _keyword = null!, _opZone = null!, _until = null!, _cond = null!, _condDim = null!;
+        private readonly SpinBox _selCount = null!, _amount = null!, _count = null!, _attack = null!, _defense = null!, _value = null!;
+        private readonly LineEdit _name = null!, _condValue = null!;
+        private readonly CheckBox _excludeSelf = null!;
+        private readonly Label _summary = null!;
+        private readonly List<(Control Wrap, Func<bool> Show)> _visibility = [];
+        private readonly Action _changed;
+        private bool _mute = true;
+
+        internal OrcOpRow(OrcOpDraft draft, Action changed, Action<OrcOpRow> remove, Action<OrcOpRow, int> move)
+        {
+            _changed = changed;
+            _info = OrcEffectEditing.Op(draft.Op) ?? OrcEffectEditing.Ops[0];
+            var head = new HBoxContainer(); head.AddThemeConstantOverride("separation", 6); AddChild(head);
+            _summary = UiStyles.Label("", 13);
+            _summary.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            _summary.SizeFlagsHorizontal = SizeFlags.ExpandFill; head.AddChild(_summary);
+            head.AddChild(UiStyles.Button("↑", () => move(this, -1)));
+            head.AddChild(UiStyles.Button("↓", () => move(this, 1)));
+            head.AddChild(UiStyles.Button("×", () => remove(this)));
+            var grid = new GridContainer { Columns = 4 };
+            grid.AddThemeConstantOverride("h_separation", 12); grid.AddThemeConstantOverride("v_separation", 6);
+            AddChild(grid);
+
+            // 参数面：每个控件带小标签（标签在上），按 op 目录显隐——挤在一起的可读性问题在源头杜绝。
+            _sel = Option(OrcEffectEditing.Sels); When(Field(grid, "选靶方式", _sel), () => _info.Target);
+            _side = Option(OrcEffectEditing.Sides); When(Field(grid, "阵营", _side), () => _info.Target && Value(_sel) != "self");
+            _selZone = Option(OrcEffectEditing.SelZones); When(Field(grid, "区域", _selZone), () => _info.Target && Value(_sel) != "self");
+            _selCount = Number(1, 10); When(Field(grid, "数量", _selCount), () => _info.Target && Value(_sel) == "random");
+            _fUnit = Option(OrcEffectEditing.UnitTypes); When(Field(grid, "限兵种", _fUnit), () => _info.Target && Value(_sel) != "self");
+            _fKeyword = Option(new[] { new UiDiyChoice("", "不限词条") }.Concat(OrcEffectEditing.KeywordChoices));
+            When(Field(grid, "限词条", _fKeyword), () => _info.Target && Value(_sel) != "self");
+            _fFaction = Option(OrcEffectEditing.Factions); When(Field(grid, "限阵营", _fFaction), () => _info.Target && Value(_sel) != "self");
+            _excludeSelf = new CheckBox { Text = "排除自身" }; When(Field(grid, "排除自身", _excludeSelf), () => _info.Target && Value(_sel) != "self");
+            _amount = Number(_info.AmountMin, Math.Max(_info.AmountMax, _info.AmountMin));
+            When(Field(grid, _info.AmountLabel is { Length: > 0 } ? _info.AmountLabel : "数值", _amount), () => _info.Amount);
+            _count = Number(1, 10); When(Field(grid, "张数", _count), () => _info.Count);
+            _attack = Number(-20, 20); When(Field(grid, "攻击增减", _attack), () => _info.AttackDefense);
+            _defense = Number(-20, 20); When(Field(grid, "防御增减", _defense), () => _info.AttackDefense);
+            _keyword = Option(OrcEffectEditing.KeywordChoices); When(Field(grid, "词条", _keyword), () => _info.Keyword);
+            _value = Number(0, 99); When(Field(grid, "词条参值（0＝无）", _value), () => _info.Keyword);
+            _name = new LineEdit { MaxLength = 40 }; When(Field(grid, "卡名（需与卡牌全名一致）", _name), () => _info.Name);
+            _opZone = Option(OrcEffectEditing.OpZones); When(Field(grid, "落点", _opZone), () => _info.Zone);
+            _until = Option(OrcEffectEditing.UntilChoices); When(Field(grid, "期限", _until), () => _info.Until);
+            _cond = Option(OrcEffectEditing.Conditions); When(Field(grid, "条件", _cond), () => true);
+            _condDim = Option(OrcEffectEditing.ConditionDims); When(Field(grid, "过滤维度", _condDim), () => Value(_cond) == OrcEffectEditing.EventCardFilter);
+            _condValue = new LineEdit { MaxLength = 40 }; When(Field(grid, "过滤取值", _condValue), () => Value(_cond) == OrcEffectEditing.EventCardFilter);
+
+            Load(draft);
+            foreach (var option in new[] { _sel, _side, _selZone, _fUnit, _fKeyword, _fFaction, _keyword, _opZone, _until, _cond, _condDim })
+                option.ItemSelected += _ => { if (!_mute) { UpdateVisibility(); _changed(); } };
+            foreach (var spin in new[] { _selCount, _amount, _count, _attack, _defense, _value })
+                spin.ValueChanged += _ => { if (!_mute) _changed(); };
+            _name.TextChanged += _ => { if (!_mute) _changed(); };
+            _condValue.TextChanged += _ => { if (!_mute) _changed(); };
+            _excludeSelf.Toggled += _ => { if (!_mute) _changed(); };
+            UpdateVisibility();
+            _mute = false;
+        }
+
+        private void Load(OrcOpDraft draft)
+        {
+            Select(_sel, draft.Sel ?? "one"); Select(_side, draft.Side ?? "enemy");
+            Select(_selZone, draft.SelZone ?? ""); Select(_fUnit, draft.Filter?.UnitType ?? "");
+            Select(_fKeyword, draft.Filter?.Keyword ?? ""); Select(_fFaction, draft.Filter?.Faction ?? "");
+            _excludeSelf.ButtonPressed = draft.Filter?.ExcludeSelf ?? false;
+            _selCount.Value = draft.SelCount ?? 1; _amount.Value = draft.Amount ?? _info.AmountMin;
+            _count.Value = draft.Count ?? 1; _attack.Value = draft.Attack ?? 1; _defense.Value = draft.Defense ?? 1;
+            Select(_keyword, draft.Keyword ?? OrcEffectEditing.DefaultKeyword);
+            _value.Value = draft.Value ?? 0; _name.Text = draft.Name ?? "";
+            Select(_opZone, draft.OpZone ?? "frontline"); Select(_until, draft.Until ?? "");
+            Select(_cond, draft.Condition ?? ""); Select(_condDim, Dims(draft.ConditionRaw).dim);
+            _condValue.Text = Dims(draft.ConditionRaw).value;
+        }
+
+        private static (string dim, string value) Dims(string? raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return ("keyword", "");
+            var split = raw.IndexOf(':', StringComparison.Ordinal);
+            return split < 0 ? ("keyword", raw) : (raw[..split], raw[(split + 1)..]);
+        }
+
+        internal OrcOpDraft Read() => new()
+        {
+            Op = _info.Id,
+            Sel = _info.Target ? Value(_sel) : null,
+            Side = _info.Target && Value(_sel) != "self" ? Value(_side) : null,
+            SelZone = _info.Target && Value(_sel) != "self" ? Null(Value(_selZone)) : null,
+            SelCount = _info.Target && Value(_sel) == "random" ? (int)_selCount.Value : null,
+            Filter = _info.Target && Value(_sel) != "self" &&
+                (Value(_fUnit) != "" || Value(_fKeyword) != "" || Value(_fFaction) != "" || _excludeSelf.ButtonPressed)
+                ? new OrcFilterDraft { UnitType = Null(Value(_fUnit)), Keyword = Null(Value(_fKeyword)), Faction = Null(Value(_fFaction)), ExcludeSelf = _excludeSelf.ButtonPressed }
+                : null,
+            Amount = _info.Amount ? (int)_amount.Value : null,
+            Count = _info.Count ? (int)_count.Value : null,
+            Attack = _info.AttackDefense ? (int)_attack.Value : null,
+            Defense = _info.AttackDefense ? (int)_defense.Value : null,
+            Keyword = _info.Keyword ? Value(_keyword) : null,
+            Value = _info.Keyword && _value.Value > 0 ? (int)_value.Value : null,
+            OpZone = _info.Zone ? Value(_opZone) : null,
+            Name = _info.Name ? _name.Text : null,
+            Until = _info.Until ? Null(Value(_until)) : null,
+            Condition = Null(Value(_cond)),
+            ConditionRaw = Value(_cond) == OrcEffectEditing.EventCardFilter ? Value(_condDim) + ":" + _condValue.Text.Trim() : null,
+        };
+
+        private void UpdateVisibility()
+        {
+            var hasTarget = _info.Target && Value(_sel) != "self";
+            foreach (var (wrap, show) in _visibility) wrap.Visible = show();
+            _summary.Text = OrcEffectEditing.Summarize(Read());
+        }
+
+        private void When(Control wrap, Func<bool> show) => _visibility.Add((wrap, show));
+
+        private static string? Null(string s) => s.Length == 0 ? null : s;
     }
 }

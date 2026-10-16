@@ -46,7 +46,11 @@ public sealed class DiyCardLibrary
             || card.Keywords is null || card.Keywords.Length > 16 || card.Keywords.Any(string.IsNullOrWhiteSpace)
             || card.Keywords.Distinct(StringComparer.Ordinal).Count() != card.Keywords.Length
             || card.Effects is null || card.Effects.Length > 8
-            || card.Effects.Any(e => e is null || e.Op is null || e.Target is null || e.Until is null))
+            || card.Effects.Any(e => e is null || e.Op is null || e.Target is null || e.Until is null)
+            || card.OrcEffects is null || card.OrcEffects.Length > 8
+            || card.OrcEffects.Any(e => e is null || string.IsNullOrWhiteSpace(e.Template)
+                || e.Ops is null || e.Ops.Length == 0 || e.Ops.Length > 8
+                || e.Ops.Any(o => o is null || string.IsNullOrWhiteSpace(o.Op))))
             throw new InvalidDataException("DIY 卡牌字段无效，编号必须使用 diy/ 前缀");
     }
     public void Save(DiyCardDraft card)
