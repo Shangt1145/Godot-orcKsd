@@ -51,4 +51,8 @@
 
 **集成探针（真实 Godot GUI 事件＋引擎态）**：新增 `--verify-opponent-turn`（`OPPONENT_TURN_LIVENESS_OK cycles=8`——对手回合由会话在玩家 EndTurn 内驱动，连续 8 轮均正常交回）；示范包指向探针自报 findings 已由 2 降至 0。全量回归零回归（UI 461 项＝439 通过＋22 迁移遗留基线；引擎 1122 项全绿）。
 
+**对手回合活性（防挂起）**：对手回合在玩家 EndTurn 提交内部同步驱动，引擎一旦拒绝 settle 某个请求就会永久挂起、回合再也交不回来。现驱动侧给单动作与 EndTurn 各设超时预算，超时即记为诊断并强制交回；会话侧同时取消挂起的选择请求，并把卡住的选择器名写入 `LastRejectionReason`（`OPPONENT_TURN_LIVENESS_OK` 覆盖此路径）。
+
+**部署指向的箭头**：`ChoiceKind.Reference` 单选且候选全在场上时走箭头模式（无面板），已在**真实部署链路**断言（`SAVED_DEMO_GRAPPLE_PROBE arrow=True panel=False`）——此前仅单元级验证，不足以覆盖集成路径。
+
 完整样例（上方验收清单含新增 9 行：制空/炎热寒冷/地域/船/阻击/标记/掩护/伺掠等引擎缺口词条）、导出升级验收与实机 `--capture-real` 通道仍在开发，不能以这些初步结果宣布系统完备。
