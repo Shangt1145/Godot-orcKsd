@@ -33,6 +33,29 @@ internal sealed class PresentationProjection(UiMatchView? initial)
     private static IEnumerable<UiCardView> Cards(UiMatchView view) => view.SelfHand.Concat(view.SelfLine)
         .Concat(view.EnemyLine).Concat(new[] { view.SelfHq, view.EnemyHq }.OfType<UiCardView>());
 
+    /// <summary>按 uid 索引卡片。同一 uid 若在多个列表里重复出现（引擎投影的中间态），
+    /// 取首次出现者并留诊断——绝不因投影重叠而整条演出链崩掉。</summary>
+    private static Dictionary<string, UiCardView> Index(UiMatchView view)
+    {
+        var all = Cards(view).ToArray();
+        foreach (var duplicate in all.GroupBy(c => c.Uid).Where(g => g.Count() > 1))
+        {
+            var where = string.Join("+", new[]
+            {
+                view.SelfHand.Any(c => c.Uid == duplicate.Key) ? "hand" : "",
+                view.SelfLine.Any(c => c.Uid == duplicate.Key) ? "line" : "",
+                view.EnemyLine.Any(c => c.Uid == duplicate.Key) ? "enemy" : "",
+                view.SelfHq?.Uid == duplicate.Key ? "selfHq" : "",
+                view.EnemyHq?.Uid == duplicate.Key ? "enemyHq" : "",
+            }.Where(s => s.Length > 0));
+            Console.WriteLine($"[projection] duplicate uid {duplicate.Key} in {where} x{duplicate.Count()}");
+        }
+        // 同一 uid 重复时优先取"已上场"的那份：部署中的卡先落阵线、后离手牌，
+        // 若留下手牌副本，演出会把它当手牌而不画在场上。
+        return all.GroupBy(c => c.Uid)
+            .ToDictionary(g => g.Key, g => g.FirstOrDefault(c => c.Zone != "hand") ?? g.First());
+    }
+
     private static bool Same(UiCardView? a, UiCardView? b) =>
         ReferenceEquals(a, b) || JsonSerializer.Serialize(a) == JsonSerializer.Serialize(b);
 
@@ -47,9 +70,9 @@ internal sealed class PresentationProjection(UiMatchView? initial)
             _selfOrder = after.SelfLine.Select(c => c.Uid).ToArray();
             _enemyOrder = after.EnemyLine.Select(c => c.Uid).ToArray();
         }
-        var cards = Cards(current).ToDictionary(c => c.Uid);
-        var oldCards = Cards(before).ToDictionary(c => c.Uid);
-        var newCards = Cards(after).ToDictionary(c => c.Uid);
+        var cards = Index(current);
+        var oldCards = Index(before);
+        var newCards = Index(after);
         foreach (var uid in oldCards.Keys.Union(newCards.Keys))
         {
             oldCards.TryGetValue(uid, out var oldCard); newCards.TryGetValue(uid, out var newCard);

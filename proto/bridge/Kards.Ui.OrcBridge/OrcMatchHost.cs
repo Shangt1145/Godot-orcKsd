@@ -257,7 +257,12 @@ public sealed class OrcMatchHost
                 .Where(e => e.Kind == LogEntryKind.Update)
                 .Select(e => (Update: e.Message, Payload: e.Data))
                 .ToArray();
-            var errors = segment.Entries.Where(e => e.Level == LogLevel.Error).Select(e => e.Message).ToArray();
+            // 引擎隔离订阅者异常时只把 message 写进流；data["stack"] 才是带调用栈的完整形态。
+            // 诊断靠栈、不靠猜，故优先取栈。
+            var errors = segment.Entries.Where(e => e.Level == LogLevel.Error)
+                .Select(e => e.Data is { } data && data.TryGetValue("stack", out var stack) && stack is string text
+                    ? text : e.Message)
+                .ToArray();
             // 先冻结 before 再拉取 after：Refresh() 有副作用（写 _view），若先取 after，
             // before 会被覆盖成事后状态——段差异恒为零，部署/扣费在演出链上彻底不可见。
             var before = _view;

@@ -43,7 +43,10 @@ public sealed class DesktopTargetContext : IDisposable
                 foreach(var declaration in declarations)
                 {
                     var result=await SelectCore(card,declaration.Declaration,ct);
-                    if(result.Length==0){view.CaptureBox!.CancelPrePlay();return;}
+                    // 取消/无候选＝放弃这次打出。CaptureBox 只存在于工坊预览（PrePlay 捕获框），
+                    // 真实对局里它是 null——此前无条件解引用会在玩家取消选靶时抛 NRE，
+                    // 而事件总线会静默吞掉订阅者异常，表现为"卡已扣费但什么都没发生"。
+                    if(result.Length==0){view.CaptureBox?.CancelPrePlay();return;}
                     selection[declaration.Scope+"|"+declaration.Declaration]=result;
                 }
                 _captured.Add(card,selection);
@@ -83,7 +86,12 @@ public sealed class DesktopTargetContext : IDisposable
             if(!step.IsOk)return TargeterResult.FromSelectorFailure(step.Failure);
             selected=(Card)step.Value!.Value;return TargeterResult.Ok();
         });
-        ct.ThrowIfCancellationRequested();return result.IsOk&&selected is not null?[selected]:[];
+        ct.ThrowIfCancellationRequested();
+        if(result.IsOk&&selected is not null)return [selected];
+        // 选靶"成功提交但拿不到结果"必须留下判据：这是效果静默不生效的唯一线索。
+        Console.WriteLine($"[desktop-target] empty selection ok={result.IsOk} selected={(selected is null?"null":"set")} "
+            + $"candidates={candidates.Length} declaration={declaration}");
+        return [];
     }
     private static Task<IReadOnlyList<Card>> ResolveCandidates(CardBase source,JsonElement target,CancellationToken ct=default)
     {

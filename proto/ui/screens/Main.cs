@@ -299,6 +299,8 @@ public partial class Main : Control
             CallDeferred(MethodName.VerifyDiscardAnimation);
         else if (args.Contains("--verify-opponent-turn"))
             CallDeferred(MethodName.VerifyOpponentTurnLiveness);
+        else if (args.Contains("--verify-deploy-card"))
+            CallDeferred(MethodName.VerifyDeployCard);
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>

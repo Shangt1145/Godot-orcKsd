@@ -161,7 +161,10 @@ public sealed class OrcUpdateTranslator
     // and never invent a removed keyword from the definition printed on the card.
     private static void AddVisibleChanges(List<UiPresentationStep> steps, UiMatchView before, UiMatchView after)
     {
-        var oldCards = VisibleCards(before).ToDictionary(c => c.Uid);
+        // 部署链在选择器上暂停时，同一张卡可能短暂同时出现在手牌与阵线（同一 uid）；
+        // 这里只比较"这张卡的可见状态变没变"，重复时取已上场的那份。
+        var oldCards = VisibleCards(before).GroupBy(c => c.Uid)
+            .ToDictionary(g => g.Key, g => g.FirstOrDefault(c => c.Zone != "hand") ?? g.First());
         foreach (var card in VisibleCards(after))
         {
             if (!oldCards.TryGetValue(card.Uid, out var old)) continue;

@@ -190,8 +190,11 @@ public sealed class PresentationPlayer : IDisposable
         // Some adapter actions have no explicit actor step. A departure or change of zone is
         // meaningful; merely reindexing an unrelated hand card must not make it a prerequisite.
         if (resolution.Before is not { } before) yield break;
+        // 部署链在选择器上暂停时，引擎投影会短暂把部署中的卡同时留在手牌与阵线（同一 uid）。
+        // 这里只关心"位置是否变化"，重复 uid 取首个即可——不能因中间态重叠而抛异常。
         var after = resolution.After.SelfHand.Concat(resolution.After.SelfLine).Concat(resolution.After.EnemyLine)
-            .ToDictionary(c => c.Uid);
+            .GroupBy(c => c.Uid)
+            .ToDictionary(g => g.Key, g => g.FirstOrDefault(c => c.Zone != "hand") ?? g.First());
         foreach (var card in before.SelfHand.Concat(before.SelfLine).Concat(before.EnemyLine))
             if (!after.TryGetValue(card.Uid, out var next) || next.Zone != card.Zone) yield return card.Uid;
     }
