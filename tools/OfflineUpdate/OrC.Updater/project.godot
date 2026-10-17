@@ -1,0 +1,20 @@
+config_version=5
+
+[application]
+config/name="OrC-KSD 离线更新器"
+config/version="1.0.0"
+run/main_scene="res://Updater.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[display]
+window/size/viewport_width=820
+window/size/viewport_height=600
+window/stretch/mode="canvas_items"
+
+[dotnet]
+project/assembly_name="OrC.Updater"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.06,0.085,0.075,1)

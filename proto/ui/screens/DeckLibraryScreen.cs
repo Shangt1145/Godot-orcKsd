@@ -21,6 +21,7 @@ public partial class DeckLibraryScreen : VBoxContainer
     private ConfirmationDialog _delete = null!;
     private string? _deleteId;
     public event Action<ConstructedDeck>? EditRequested;
+    public event Action? NewRequested;
     public event Action? StartRequested;
     public event Action? Changed;
     public void Initialize(DeckLibrary library, DeckConstructionService service, TextureCache textures)
@@ -64,7 +65,7 @@ public partial class DeckLibraryScreen : VBoxContainer
             var name = UiStyles.Label(deck.Name, 17, UiStyles.MenuInk); name.ClipText = true; name.HorizontalAlignment = HorizontalAlignment.Center; name.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(name);
             var summary = UiStyles.Label($"{deck.CardIds.Length + 1} 张  ·  " + (active ? "当前对战" : errors.Count == 0 ? "可对战" : "草稿"), 12, active ? UiStyles.Gold : UiStyles.MenuDim); summary.HorizontalAlignment = HorizontalAlignment.Center; summary.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(summary);
         }
-        NewButton = UiStyles.Button("＋\n新建卡组", () => EditRequested?.Invoke(new ConstructedDeck())); NewButton.Name = "NewDeckTile"; NewButton.CustomMinimumSize = new(196, 320); NewButton.AddThemeFontSizeOverride("font_size", 24); Tiles.AddChild(NewButton);
+        NewButton = UiStyles.Button("＋\n新建卡组", () => NewRequested?.Invoke()); NewButton.Name = "NewDeckTile"; NewButton.CustomMinimumSize = new(196, 320); NewButton.AddThemeFontSizeOverride("font_size", 24); Tiles.AddChild(NewButton);
         RenderDetails();
     }
     public void SetPlaySelection(bool enabled) { PlaySelection = enabled; if (Tiles is not null) Refresh(); }
@@ -86,6 +87,9 @@ public partial class DeckLibraryScreen : VBoxContainer
         var ruleText = deck.Options.UnrestrictedNations ? "混编 · 不限制主盟国" : $"{deck.Options.MainNation} / {deck.Options.AllyNation}";
         ruleText += deck.Options.UnrestrictedSize ? " · 不限张数" : $" · 目标 {deck.Options.TotalCards} 张";
         var rules = UiStyles.Label($"{deck.CardIds.Length + 1} 张（含总部）\n" + ruleText, 13, UiStyles.MenuDim); rules.AutowrapMode = TextServer.AutowrapMode.WordSmart; Details.AddChild(rules);
+        var packs = UiStyles.Label("卡包：" + string.Join("、", DeckCardPacks.Selected(deck)
+            .Select(id => _service.Packs.FirstOrDefault(p => p.Id == id)?.Name ?? "已移除的卡包")), 13, UiStyles.MenuDim);
+        packs.AutowrapMode = TextServer.AutowrapMode.WordSmart; Details.AddChild(packs);
         var validity = UiStyles.Label(errors.Count == 0 ? "准备就绪" : string.Join("\n", errors.Take(2)), 12, errors.Count == 0 ? new Color("bdcc9c") : new("dca58b")); validity.AutowrapMode = TextServer.AutowrapMode.WordSmart; validity.TooltipText = string.Join("\n", errors); Details.AddChild(validity);
         var ready = errors.Count == 0 && _library.LoadError is null;
         var start = AddAction(Details, "start", "开始对战", () => Execute(() => { _library.Activate(deck.Id); StartRequested?.Invoke(); })); start.Disabled = !ready; UiStyles.Primary(start);

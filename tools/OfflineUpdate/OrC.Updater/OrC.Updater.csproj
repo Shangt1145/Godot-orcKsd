@@ -1,0 +1,1 @@
+<Project Sdk="Godot.NET.Sdk/4.7.0"><PropertyGroup><TargetFramework>net9.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><ProjectReference Include="../OrC.Update.Core/OrC.Update.Core.csproj" /></ItemGroup></Project>

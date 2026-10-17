@@ -19,12 +19,49 @@ public sealed record ConstructedDeck
     public string Name { get; init; } = "新卡组";
     public DeckOptions Options { get; init; } = new();
     public string[] CardIds { get; init; } = [];
-    public ConstructedDeck Snapshot() => this with { CardIds = CardIds.ToArray() };
+    /// <summary>null is a legacy deck: infer only the packs its cards actually use.</summary>
+    public string[]? PackIds { get; init; }
+    public ConstructedDeck Snapshot() => this with { CardIds = CardIds.ToArray(), PackIds = PackIds?.ToArray() };
+}
+
+public static class DeckCardPacks
+{
+    private static IReadOnlyDictionary<string, string> _families = new Dictionary<string, string>();
+    private static IReadOnlyDictionary<string,string> _authoredOrigins=new Dictionary<string,string>(),_authoredFamilies=new Dictionary<string,string>();
+    public static void ConfigureAuthored(IReadOnlyDictionary<string,string> origins,IReadOnlyDictionary<string,string> families)
+    {Volatile.Write(ref _authoredOrigins,new Dictionary<string,string>(origins));Volatile.Write(ref _authoredFamilies,new Dictionary<string,string>(families));}
+    /// <summary>Package relationships come from the engine's frozen cardpack manifests.</summary>
+    public static void ConfigureFamilies(IReadOnlyDictionary<string, string> families) =>
+        Volatile.Write(ref _families, new Dictionary<string, string>(families, StringComparer.Ordinal));
+    public static string Family(string packId)
+    {
+        // Old saved decks and exported deck codes selected the single DIY pool.
+        // Keep that selection bound to the migrated legacy pack, without admitting new packs.
+        if(packId=="diy"&&Volatile.Read(ref _authoredOrigins).Values.Contains("pack/diy-legacy"))return "pack/diy-legacy";
+        return Volatile.Read(ref _authoredFamilies).TryGetValue(packId,out var parent)?Family(parent):Volatile.Read(ref _families).GetValueOrDefault(packId, packId);
+    }
+    public static string RawOf(string cardId) => Volatile.Read(ref _authoredOrigins).TryGetValue(cardId,out var authored)?authored:cardId.StartsWith("pack/", StringComparison.Ordinal)
+        ? string.Join('/', cardId.Split('/').Take(2))
+        : cardId.StartsWith("diy/", StringComparison.Ordinal) ? "diy"
+        : cardId.StartsWith("orc/", StringComparison.Ordinal) ? "orc" : "source";
+    public static string Of(string cardId) => Family(RawOf(cardId));
+    public static string[] Selected(ConstructedDeck deck) => (deck.PackIds
+        ?? (deck.CardIds.Length == 0 ? ["source"] : deck.CardIds.Select(RawOf).ToArray()))
+        .Select(Family).Distinct(StringComparer.Ordinal).ToArray();
+    public static bool Allows(ConstructedDeck deck, string cardId) => Selected(deck).Contains(Of(cardId), StringComparer.Ordinal);
+    public static bool ValidSelection(string[]? packs) => packs is null || (packs.Length is > 0 and <= 256
+        && packs.All(p => p is "source" or "diy" or "orc" || (p is not null && p.StartsWith("pack/", StringComparison.Ordinal)
+            && p.Length > 5 && p[5..].All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.')))
+        && packs.Distinct(StringComparer.Ordinal).Count() == packs.Length);
 }
 
 public static class ConstructionRules
 {
-    public static IReadOnlyList<string> MainNations { get; } = Array.AsReadOnly(new[] { "av76", "deran", "USG", "UN" });
+    private static readonly string[] BuiltInNations = [ "av76", "deran", "USG", "UN",
+        "germany", "soviet", "usa", "britain", "japan", "france", "italy", "poland", "finland", "anzac" ];
+    private static string[] _customNations=[];
+    public static IReadOnlyList<string> MainNations=>BuiltInNations.Concat(Volatile.Read(ref _customNations)).Distinct().ToArray();
+    public static void ConfigureCustomNations(IEnumerable<string> ids)=>Volatile.Write(ref _customNations,ids.Distinct().ToArray());
     // The source project's card-import.js explicitly maps these metal names to KARDS rarities.
     public static int CopyLimit(string rarity) => rarity.ToLowerInvariant() switch
     {
@@ -38,6 +75,7 @@ public static class ConstructionRules
         IReadOnlySet<string>? playable = null)
     {
         var errors = new List<string>();
+        if (!DeckCardPacks.ValidSelection(deck.PackIds)) errors.Add("请至少选择一个有效卡包，且不能重复");
         if (string.IsNullOrWhiteSpace(deck.Name) || deck.Name.Trim().Length > 64) errors.Add("卡组名称须为 1–64 个字符");
         var o = deck.Options;
         if (o.TotalCards is < 6 or > 512) errors.Add("自定义总张数须为 6–512（含总部）");
@@ -52,6 +90,7 @@ public static class ConstructionRules
         foreach (var group in deck.CardIds.GroupBy(id => id, StringComparer.Ordinal))
         {
             if (!definitions.TryGetValue(group.Key, out var card)) { errors.Add($"卡牌已不存在：{group.Key}"); continue; }
+            if (!DeckCardPacks.Allows(deck, card.CardId)) errors.Add($"{card.Name} 不属于此卡组选择的卡包");
             if (card.IsToken || CopyLimit(card.Rarity) == 0) errors.Add($"{card.Name} 无法加入普通卡组");
             else if (group.Count() > CopyLimit(card.Rarity)) errors.Add($"{card.Name} 最多 {CopyLimit(card.Rarity)} 张");
             if (playable is not null && !playable.Contains(card.CardId)) errors.Add($"{card.Name} 尚未支持实战");
@@ -67,6 +106,7 @@ public static class ConstructionRules
     }
     public static string? CannotAdd(ConstructedDeck deck, UiCardDefinition card)
     {
+        if (!DeckCardPacks.Allows(deck, card.CardId)) return "这张卡不属于所选卡包";
         if (card.IsToken || CopyLimit(card.Rarity) == 0) return "衍生卡或未知稀有度不能构筑";
         if (deck.CardIds.Count(id => id == card.CardId) >= CopyLimit(card.Rarity)) return $"同名卡已达到 {CopyLimit(card.Rarity)} 张上限";
         if (deck.CardIds.Length >= (deck.Options.UnrestrictedSize ? 511 : deck.Options.TotalCards - 1)) return "卡组张数已满";
@@ -101,6 +141,7 @@ public sealed class DeckLibrary
                 || data.Decks.Any(d => d is null || string.IsNullOrWhiteSpace(d.Id) || d.Name is null || d.Options is null
                     || d.Options.MainNation is null || d.Options.AllyNation is null
                     || d.CardIds is null || d.CardIds.Length > 511 || d.CardIds.Any(string.IsNullOrWhiteSpace))
+                || data.Decks.Any(d => !DeckCardPacks.ValidSelection(d.PackIds))
                 || data.Decks.Select(d => d.Id).Distinct().Count() != data.Decks.Length)
                 throw new InvalidDataException("卡组文件格式不受支持");
             _decks = data.Decks.Select(d => d.Snapshot()).ToList();
@@ -113,7 +154,8 @@ public sealed class DeckLibrary
     {
         if (string.IsNullOrWhiteSpace(deck.Name) || deck.Name.Trim().Length > 64 || deck.Options is null
             || deck.Options.MainNation is null || deck.Options.AllyNation is null
-            || string.IsNullOrWhiteSpace(deck.Id) || deck.CardIds.Length > 511 || deck.CardIds.Any(string.IsNullOrWhiteSpace))
+            || string.IsNullOrWhiteSpace(deck.Id) || deck.CardIds.Length > 511 || deck.CardIds.Any(string.IsNullOrWhiteSpace)
+            || !DeckCardPacks.ValidSelection(deck.PackIds))
             throw new InvalidDataException("卡组名称或卡牌列表无效");
         if (_decks.Count >= 500 && !_decks.Any(d => d.Id == deck.Id)) throw new InvalidDataException("已达到 500 副卡组的保存上限");
         Mutate(() => { _decks.RemoveAll(d => d.Id == deck.Id); _decks.Add(deck.Snapshot() with { Name = deck.Name.Trim() }); });
@@ -144,7 +186,8 @@ public sealed class DeckLibrary
                 ?? throw new InvalidDataException("卡组代码为空");
             if (d.Name is null || string.IsNullOrWhiteSpace(d.Name) || d.Name.Length > 64 || d.Options is null
                 || d.Options.MainNation is null || d.Options.AllyNation is null
-                || d.CardIds is null || d.CardIds.Length > 511 || d.CardIds.Any(string.IsNullOrWhiteSpace)) throw new InvalidDataException("卡组代码内容无效");
+                || d.CardIds is null || d.CardIds.Length > 511 || d.CardIds.Any(string.IsNullOrWhiteSpace)
+                || !DeckCardPacks.ValidSelection(d.PackIds)) throw new InvalidDataException("卡组代码内容无效");
             return d with { Id = Guid.NewGuid().ToString("N") };
         }
         catch (Exception e) when (e is FormatException or JsonException) { throw new InvalidDataException("卡组代码无效", e); }

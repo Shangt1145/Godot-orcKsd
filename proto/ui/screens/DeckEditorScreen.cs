@@ -15,7 +15,8 @@ public partial class DeckEditorScreen : VBoxContainer
     private bool _dirty;
     internal LineEdit DeckName = null!, Search = null!;
     internal OptionButton MainNation = null!, AllyNation = null!;
-    internal CheckBox FreeNations = null!, FreeSize = null!, AvailableOnly = null!;
+    internal CheckBox FreeNations = null!, FreeSize = null!;
+    internal Button PacksButton = null!, NewButton = null!;
     internal SpinBox TotalCards = null!;
     internal Button SaveButton = null!, StartButton = null!;
     internal GridContainer Grid = null!;
@@ -29,8 +30,15 @@ public partial class DeckEditorScreen : VBoxContainer
     private Action? _afterDiscard;
     public event Action? Saved;
     public event Action? StartRequested;
+    public event Action? NewRequested;
+    public event Action? PacksRequested;
     public ConstructedDeck Draft => _draft.Snapshot();
-    public void RefreshCatalog() => Render();
+    public void RefreshCatalog()
+    {
+        _loading=true;var main=_draft.Options.MainNation;var ally=_draft.Options.AllyNation;
+        foreach(var option in new[]{MainNation,AllyNation}){option.Clear();foreach(var nation in ConstructionRules.MainNations){option.AddItem(WorkshopAuthoring.NationLabel(nation));option.SetItemMetadata(option.ItemCount-1,nation);}}
+        Select(MainNation,main);Select(AllyNation,ally);_loading=false;Render();
+    }
     public void Initialize(DeckConstructionService service, DeckLibrary library, TextureCache textures)
     {
         _service = service; _library = library; _textures = textures;
@@ -41,7 +49,8 @@ public partial class DeckEditorScreen : VBoxContainer
         DeckName = new LineEdit { PlaceholderText = "卡组名称", MaxLength = 64, SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new(200, 38) };
         heading.AddChild(DeckName);
         DeckName.TextChanged += text => { if (_loading) return; _draft = _draft with { Name = text }; Changed(false); };
-        heading.AddChild(UiStyles.Button("新建", () => Open(new ConstructedDeck())));
+        NewButton = UiStyles.Button("新建", () => NewRequested?.Invoke()); heading.AddChild(NewButton);
+        PacksButton = UiStyles.Button("选择卡包…", () => PacksRequested?.Invoke()); heading.AddChild(PacksButton);
         SaveButton = UiStyles.Button("保存", () => SaveDraft()); heading.AddChild(SaveButton);
         StartButton = UiStyles.Button("使用并对战", Start); heading.AddChild(StartButton);
         UiStyles.Primary(StartButton);
@@ -64,8 +73,8 @@ public partial class DeckEditorScreen : VBoxContainer
         var pool = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; body.AddChild(pool);
         var searchRow = new HBoxContainer(); pool.AddChild(searchRow);
         Search = new LineEdit { PlaceholderText = "搜索卡名、编号、卡面文本", SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new(180, 38) }; searchRow.AddChild(Search);
-        AvailableOnly = new CheckBox { Text = "仅实战可用", ButtonPressed = true }; searchRow.AddChild(AvailableOnly);
-        Search.TextChanged += _ => { _page = 0; RenderPool(); }; AvailableOnly.Toggled += _ => { _page = 0; RenderPool(); };
+        searchRow.AddChild(UiStyles.Label("仅显示所选卡包内可实战的卡牌", 12, UiStyles.Dim));
+        Search.TextChanged += _ => { _page = 0; RenderPool(); };
         var filters = new HBoxContainer(); pool.AddChild(filters);
         Filter(filters, "全部国家", service.Cards.Select(c => c.Set), s => s);
         Filter(filters, "全部卡类", service.Cards.Select(c => c.CardType), UiStyles.TypeName);
@@ -96,7 +105,7 @@ public partial class DeckEditorScreen : VBoxContainer
         _discard.Canceled += () => _afterDiscard = null;
         _clear = new ConfirmationDialog { Title = "清空卡组", DialogText = "移除当前卡组中的全部卡牌？保存后才会覆盖已有卡组。" }; AddChild(_clear);
         _clear.Confirmed += () => { _draft = _draft with { CardIds = [] }; Changed(); };
-        Load(_library.ActiveDeck ?? new ConstructedDeck());
+        Load(_library.ActiveDeck ?? new ConstructedDeck { PackIds = [] });
     }
     private static OptionButton NationOption(IEnumerable<string> nations, bool empty)
     {
@@ -122,12 +131,20 @@ public partial class DeckEditorScreen : VBoxContainer
         if (_dirty) { _afterDiscard = () => Load(deck); _discard.PopupCentered(); }
         else Load(deck);
     }
+    public void CreateNew() => NewRequested?.Invoke();
     internal void Load(ConstructedDeck deck)
     {
-        _draft = deck.Snapshot(); _loading = true; DeckName.Text = deck.Name;
+        _draft = deck.Snapshot() with { PackIds = DeckCardPacks.Selected(deck) }; _loading = true; DeckName.Text = deck.Name;
         Select(MainNation, deck.Options.MainNation); Select(AllyNation, deck.Options.AllyNation);
         FreeNations.ButtonPressed = deck.Options.UnrestrictedNations; FreeSize.ButtonPressed = deck.Options.UnrestrictedSize; TotalCards.Value = deck.Options.TotalCards;
         _loading = false; _dirty = false; _page = 0; _notice.Text = "点击卡牌加入；右侧 − 移除；长按查看完整卡面。总部单独计数。"; Render();
+    }
+    internal void ApplyPacks(string[] packs)
+    {
+        var next = _draft with { PackIds = packs.ToArray() };
+        if (_draft.CardIds.Any(id => !DeckCardPacks.Allows(next, id)))
+        { _notice.Text = "有卡牌属于取消的卡包。请先从卡组移除这些卡牌，再取消卡包。"; return; }
+        _draft = next; _page = 0; Changed();
     }
     private void SetOptions(DeckOptions options)
     {
@@ -145,6 +162,7 @@ public partial class DeckEditorScreen : VBoxContainer
     }
     internal bool AddCard(UiCardDefinition card)
     {
+        if (!_service.PlayableIds.Contains(card.CardId)) { _notice.Text = "此卡尚未通过实战准入，不能加入卡组。"; return false; }
         var reason = ConstructionRules.CannotAdd(_draft, card);
         if (reason is null && !_draft.Options.UnrestrictedNations && card.Set == _draft.Options.AllyNation
             && _draft.CardIds.Count(id => _service.Cards.Any(c => c.CardId == id && c.Set == card.Set)) >= 12) reason = "盟国卡牌最多 12 张";
@@ -163,8 +181,8 @@ public partial class DeckEditorScreen : VBoxContainer
     {
         if (Grid is null) return;
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
-        var all = _service.Cards.Where(c => !c.IsToken && (!AvailableOnly.ButtonPressed || _service.PlayableIds.Contains(c.CardId))
-            && (FreeNations.ButtonPressed || c.Set == _draft.Options.MainNation || c.Set == _draft.Options.AllyNation)
+        var all = _service.Pool(_draft).Where(c =>
+            (FreeNations.ButtonPressed || c.Set == _draft.Options.MainNation || c.Set == _draft.Options.AllyNation)
             && (vals[0].Length == 0 || c.Set == vals[0]) && (vals[1].Length == 0 || c.CardType == vals[1])
             && (vals[2].Length == 0 || c.Rarity == vals[2]) && (vals[3].Length == 0 || c.Cost?.ToString() == vals[3])
             && (Search.Text.Length == 0 || $"{c.Name} {c.CardId} {c.Text}".Contains(Search.Text, StringComparison.OrdinalIgnoreCase)))
@@ -185,13 +203,16 @@ public partial class DeckEditorScreen : VBoxContainer
             var b = UiStyles.Button($"{copies}/{limit}  ＋", () => AddCard(c));
             b.Name = "AddCard"; b.Disabled = ConstructionRules.CannotAdd(_draft, c) is not null;
             item.AddChild(b);
-            var support = UiStyles.Label(_service.PlayableIds.Contains(c.CardId) ? $"{c.Set} · {UiStyles.RarityName(c.Rarity)}" : "未支持实战 · 可保存草稿", 11, UiStyles.Dim);
+            var support = UiStyles.Label($"{c.Set} · {UiStyles.RarityName(c.Rarity)}", 11, UiStyles.Dim);
             support.ClipText = true; support.TooltipText = support.Text; item.AddChild(support);
         }
         if (all.Length == 0) Grid.AddChild(UiStyles.Label("没有符合筛选条件的卡牌", 16, UiStyles.Dim));
     }
     private void RenderDeck()
     {
+        var selectedPacks = DeckCardPacks.Selected(_draft);
+        PacksButton.Text = $"卡包 · {selectedPacks.Length}";
+        PacksButton.TooltipText = string.Join("、", selectedPacks.Select(id => _service.Packs.FirstOrDefault(p => p.Id == id)?.Name ?? "已移除的卡包"));
         TotalCards.Editable = !FreeSize.ButtonPressed; AllyNation.Disabled = FreeNations.ButtonPressed;
         _count.Text = FreeSize.ButtonPressed ? $"{_draft.CardIds.Length + 1} 张（含总部）" : $"{_draft.CardIds.Length + 1} / {_draft.Options.TotalCards} 张（含总部）";
         var definitions = _service.Cards.ToDictionary(c => c.CardId);

@@ -2,6 +2,7 @@ using Orc.Packages;
 using Orc.Plugins.BuiltIn;
 using Orc.UI;
 using Kards.Ui.Contracts;
+using Kards.Ui.Core;
 
 namespace Kards.Ui.OrcBridge;
 
@@ -61,6 +62,19 @@ public static class OrcEngineHost
                     .. UiPluginPackage.Packages(uiPluginRoot),
                 ]);
 
+            var packages = _host.CreateSnapshot().CardPacks;
+            var ids = packages.Select(p => p.Manifest.Id).ToHashSet(StringComparer.Ordinal);
+            var parents = packages.ToDictionary(p => p.Manifest.Id,
+                p => p.Manifest.Dependencies.Where(d => ids.Contains(d.Id)).Select(d => d.Id).ToArray(), StringComparer.Ordinal);
+            var families = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var id in ids)
+            {
+                var root = id; var visited = new HashSet<string>(StringComparer.Ordinal);
+                while (visited.Add(root) && parents[root].Length == 1) root = parents[root][0];
+                families["pack/" + id] = "pack/" + root;
+            }
+            DeckCardPacks.ConfigureFamilies(families);
+
             return _host;
         }
     }
@@ -80,6 +94,8 @@ public static class OrcEngineHost
         lock (Gate)
         {
             _host = null;
+            _lastPacks = [];
+            DeckCardPacks.ConfigureFamilies(new Dictionary<string, string>());
         }
     }
 
@@ -112,6 +128,8 @@ public static class OrcEngineHost
             try
             {
                 var content = CardPackLoader.Load(package.RootDirectory, package.Manifest);
+                var texts = PackPresentationData.Texts(content);
+                _ = PackPresentationData.Plans(content);
                 var prefix = content.Prefix;
                 foreach (var entry in content.Definitions)
                 {
@@ -120,7 +138,7 @@ public static class OrcEngineHost
                         : entry.Id;
                     cards.Add(StaticCardProjection.Project(
                         entry.Id, entry.Definition, artLookup,
-                        text: content.Texts.TryGetValue(rawId, out var text) ? text : null));
+                        text: texts.TryGetValue(rawId, out var text) ? text : null));
                 }
 
                 packs.Add(new PackDescriptor(

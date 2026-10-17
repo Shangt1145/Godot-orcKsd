@@ -27,7 +27,7 @@ public partial class DiyEditorScreen : VBoxContainer
     private Label _notice = null!, _identity = null!, _effectsSummary = null!;
     internal ItemList Cards = null!;
     internal LineEdit CardName = null!, Search = null!;
-    internal OptionButton CardType = null!, Nation = null!, Rarity = null!, UnitType = null!, Art = null!;
+    internal OptionButton CardType = null!, Nation = null!, Rarity = null!, UnitType = null!;
     internal SpinBox Cost = null!, OpCost = null!, Attack = null!, Defense = null!, Armor = null!;
     // ── 自导入卡图 ──
     internal SpinBox ArtZoom = null!;
@@ -75,7 +75,7 @@ public partial class DiyEditorScreen : VBoxContainer
         var title = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; heading.AddChild(title);
         title.AddChild(UiStyles.Label("DIY 卡牌", 26, UiStyles.Gold));
         title.AddChild(UiStyles.Label("编辑 → 校验 → 保存 → 构筑 / 试打", 13, UiStyles.Dim));
-        NewButton = UiStyles.Button("新建", () => Guard(() => Load(new()))); heading.AddChild(NewButton);
+        NewButton = UiStyles.Button("新建", () => Guard(() => Load(new(){PackId=_scopePack}))); heading.AddChild(NewButton);
         CopyButton = UiStyles.Button("复制", Copy); heading.AddChild(CopyButton);
         SaveButton = UiStyles.Button("保存", () => Save()); heading.AddChild(SaveButton);
         ImportButton = UiStyles.Button("导入", () => Guard(Import)); heading.AddChild(ImportButton);
@@ -144,22 +144,19 @@ public partial class DiyEditorScreen : VBoxContainer
         Armor = Number(0, 3); Field(stats, "重甲参值", Armor);
         foreach (var o in new[] { CardType, Nation, Rarity, UnitType }) o.ItemSelected += _ => Changed();
         foreach (var n in new[] { Cost, OpCost, Attack, Defense, Armor }) n.ValueChanged += _ => Changed();
+        BuildNationFields(basic);
         basic.AddChild(UiStyles.Label("单位词条", 14, UiStyles.Gold));
-        var keywordGrid = new GridContainer { Columns = 4 }; basic.AddChild(keywordGrid);
+        var keywordGrid = new GridContainer { Columns = 4 }; _keywordGrid=keywordGrid;basic.AddChild(keywordGrid);
         foreach (var keyword in DiyCardCompiler.Keywords)
         {
             var box = new CheckBox { Text = keyword.Label, TooltipText = keyword.Label }; keywordGrid.AddChild(box);
             _keywords[keyword.Id] = box; box.Toggled += _ => Changed();
         }
-        Art = Option(new[] { new UiDiyChoice("", "文字卡面") }.Concat(catalog()
-            .Where(c => c.ArtPath.Length > 0 && !c.CardId.StartsWith("diy/", StringComparison.Ordinal))
-            .OrderBy(c => c.Name).Select(c => new UiDiyChoice(c.CardId, c.Name + " · " + c.Set))).ToArray());
-        Field(basic, "卡图（现有素材）", Art); Art.ItemSelected += _ => Changed();
         // 自导入卡图：本机图片 → 卡库旁 art/ 目录（PNG），缩放 50–300% 只作用于导入图。
         var artRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         artRow.AddThemeConstantOverride("separation", 8); basic.AddChild(artRow);
         ImportArtButton = UiStyles.Button("导入卡图…", () => _artDialog.Popup()); artRow.AddChild(ImportArtButton);
-        RemoveArtButton = UiStyles.Button("移除导入图", () => { _importedArt = ""; Changed(); RefreshPreview(); });
+        RemoveArtButton = UiStyles.Button("移除卡图", () => { _importedArt = ""; _draft = _draft with { ArtCardId = "",ArtSourceFile="",ArtRegion=new(0,0,1,1) };_cropApply.Disabled=true; Changed(); RefreshPreview(); });
         artRow.AddChild(RemoveArtButton);
         _artStatus = UiStyles.Label("", 12, UiStyles.Dim);
         _artStatus.SizeFlagsHorizontal = SizeFlags.ExpandFill; _artStatus.ClipText = true;
@@ -173,6 +170,7 @@ public partial class DiyEditorScreen : VBoxContainer
         };
         _artDialog.Filters = ["*.png ; PNG 图片", "*.jpg ; JPEG 图片", "*.jpeg ; JPEG 图片", "*.webp ; WebP 图片"];
         _artDialog.FileSelected += OnArtImported; AddChild(_artDialog);
+        BuildArtAdaptation(basic);
 
         var textSec = Section(form, "规则文本 —— 自然语言解析入口");
         var hintText = UiStyles.Label("写一句效果（例：部署：随机对 1 个敌方单位造成 2 点伤害。），解析后落到下方效果结构；文本同时作为卡面规则文字。解析失败时不改动现有结构。", 12, UiStyles.Dim);
@@ -283,15 +281,24 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         if (_blocked is not null) { _notice.Text = _storedError(_blocked.Id) ?? "这张卡未通过校验，请删除或新建。"; return; }
         var current = Read();
-        Load(current with { Id = "diy/" + Guid.NewGuid().ToString("N"), Name = (current.Name + " 副本")[..Math.Min(40, current.Name.Length + 3)] });
+        var id="diy/"+Guid.NewGuid().ToString("N");
+        try
+        {
+            var art=current.ArtFile.Length>0?_library.SaveArt(id,_library.ReadArt(current.ArtFile)):"";
+            var source=current.ArtSourceFile.Length>0?_library.SaveArtSource(id,_library.ReadArt(current.ArtSourceFile)):"";
+            Load(current with { Id = id, ArtFile=art, ArtSourceFile=source, Name = (current.Name + " 副本")[..Math.Min(40, current.Name.Length + 3)] });
+        }
+        catch(Exception e){_notice.Text="复制卡图失败："+e.Message;return;}
         Changed(); _notice.Text = "已创建副本，保存后才会进入卡库。";
     }
     internal void Load(DiyCardDraft draft)
     {
-        _blocked = _storedError(draft.Id) is null ? null : draft.Snapshot();
+        if(draft.PackId.Length==0&&_scopePack.Length>0)draft=draft with{PackId=_scopePack};
+        _blocked = _storedError(draft.Id) is null || draft.OrcEffects.Any(e=>e.DesktopJson is not null) ? null : draft.Snapshot();
         _loading = true; _draft = draft.Snapshot();
+        RefreshWorkshopVocabulary(draft.PackId);
         CardName.Text = draft.Name; Select(CardType, draft.CardType); Select(Nation, draft.Nation); Select(Rarity, draft.Rarity);
-        Select(UnitType, draft.UnitType); Select(Art, draft.ArtCardId);
+        Select(UnitType, draft.UnitType);
         _importedArt = draft.ArtFile; ArtZoom.Value = draft.ArtScale;
         Cost.Value = draft.Cost; OpCost.Value = draft.OpCost; Attack.Value = draft.Attack; Defense.Value = draft.Defense; Armor.Value = draft.Armor;
         foreach (var pair in _keywords) pair.Value.ButtonPressed = draft.Keywords.Contains(pair.Key);
@@ -299,7 +306,7 @@ public partial class DiyEditorScreen : VBoxContainer
         if (draft.OrcEffects.Length == 0 && draft.EffectText.Trim().Length > 0)
         {
             // 旧版文本卡自动升级：完整解析则落到结构（效果编辑器可见可编辑）；不完整保持原样。
-            var hydration = OrcInspector.CompileText(draft.Id.Replace('/', '.'), draft.EffectText.Trim(), draft.CardType);
+            var hydration = OrcInspector.CompileText(draft.Id.Replace('/', '.'), draft.EffectText.Trim(), draft.CardType, _catalog());
             if (hydration.Parse.Complete)
             {
                 var hydrated = new List<OrcEffectDraft>();
@@ -316,8 +323,8 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         Name = CardName.Text, CardType = Value(CardType), Nation = Value(Nation), Rarity = Value(Rarity), UnitType = Value(UnitType),
         Cost = (int)Cost.Value, OpCost = (int)OpCost.Value, Attack = (int)Attack.Value, Defense = (int)Defense.Value,
-        Keywords = Value(CardType) == "unit" ? _keywords.Where(k => k.Value.ButtonPressed).Select(k => k.Key).ToArray() : [],
-        Armor = (int)Armor.Value, ArtCardId = Value(Art), ArtFile = _importedArt,
+        Keywords = _draft.DesktopCardJson is not null ? _draft.Keywords : Value(CardType) == "unit" ? _keywords.Where(k => k.Value.ButtonPressed).Select(k => k.Key).ToArray() : [],
+        Armor = (int)Armor.Value, ArtFile = _importedArt,
         ArtScale = _importedArt.Length > 0 ? (int)ArtZoom.Value : 100,
         Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
         // 效果编辑在独立屏幕：结构/简易行真源留在 _draft（经 ApplyEffects 写回）。
@@ -330,6 +337,19 @@ public partial class DiyEditorScreen : VBoxContainer
         _draft = _draft.Snapshot() with { OrcEffects = orcEffects, Effects = legacyEffects };
         Changed(); RefreshEffectsSummary();
     }
+    internal void MarkInspectorDirty()=>Changed();
+    internal void ApplyInspectorDraft(DiyCardDraft draft)
+    {
+        Load(draft.PackId.Length==0&&_scopePack.Length>0?draft with{PackId=_scopePack}:draft);Changed();
+    }
+    internal void AcceptInspectorDraft(DiyCardDraft draft)
+    {
+        if(draft.PackId.Length==0&&_scopePack.Length>0)draft=draft with{PackId=_scopePack};
+        try{_library.Save(draft);Load(draft);Saved?.Invoke();_notice.Text="完整 Inspector 草稿已保存；原生编译通过后方可用于实战。";}
+        catch(Exception e) when(e is IOException or InvalidDataException or UnauthorizedAccessException){_notice.Text="Inspector 草稿尚未落盘："+e.Message;throw;}
+    }
+    internal IReadOnlyList<DiyCardDraft> AuthoredCards=>_library.Cards.Where(c=>_scopePack.Length==0||c.PackId==_scopePack).ToArray();
+    internal void DeleteDesktopDraft(string id){_library.Delete(id);Saved?.Invoke();RefreshList();}
     /// <summary>效果摘要（不把编辑控件堆在本屏——可读性硬要求）。</summary>
     private void RefreshEffectsSummary()
     {
@@ -349,16 +369,16 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         var draft = Read(); var isUnit = draft.CardType == "unit";
         UnitType.Disabled = !isUnit; OpCost.Editable = isUnit; Attack.Editable = isUnit; Defense.Editable = isUnit;
-        foreach (var keyword in _keywords.Values) keyword.Disabled = !isUnit;
-        Armor.Editable = isUnit && _keywords["armor"].ButtonPressed;
+        foreach (var keyword in _keywords.Values) keyword.Disabled = !isUnit || draft.DesktopCardJson is not null;
+        Armor.Editable = isUnit && _keywords["armor"].ButtonPressed && draft.DesktopCardJson is null;
         _identity.Text = draft.Id; _identity.ClipText = true; _identity.TooltipText = draft.Id;
-        // 自导入卡图控件状态：有导入图时禁用素材下拉（互斥口径），状态行显示文件与缩放。
+        // 新卡图只能由本机文件导入；旧存档引用只读兼容，可移除或导入替换。
         var imported = _importedArt.Length > 0;
         ImportArtButton.Disabled = _blocked is not null;
-        RemoveArtButton.Disabled = !imported;
-        Art.Disabled = imported || _blocked is not null;
+        RemoveArtButton.Disabled = _blocked is not null || (!imported && draft.ArtCardId.Length == 0);
         ArtZoom.Editable = imported;
-        _artStatus.Text = imported ? $"已导入 {draft.ArtFile} · {draft.ArtScale}%" : "未导入（可用现有素材或导入本机图片）";
+        _artStatus.Text = imported ? $"已导入 {draft.ArtFile} · {draft.ArtScale}%"
+            : draft.ArtCardId.Length > 0 ? "旧版卡图（导入可替换）" : "未导入 · 请选择本机图片";
         OpenEffectsButton.Disabled = _blocked is not null;
         OpenEffectsButton.TooltipText = _blocked is not null ? "卡牌未通过校验，先处理无效字段。" : "";
         var textMode = EffectTextInput.Text.Trim().Length > 0;
@@ -380,7 +400,7 @@ public partial class DiyEditorScreen : VBoxContainer
         EffectTextInput.Editable = !blocked;
         if (blocked)
         {
-            foreach (var option in new[] { CardType, Nation, Rarity, UnitType, Art }) option.Disabled = true;
+            foreach (var option in new[] { CardType, Nation, Rarity, UnitType }) option.Disabled = true;
             foreach (var spin in new[] { OpCost, Attack, Defense, Armor }) spin.Editable = false;
             foreach (var keyword in _keywords.Values) keyword.Disabled = true;
             ParseReplaceButton.Disabled = ParseAppendButton.Disabled = true;
@@ -389,7 +409,6 @@ public partial class DiyEditorScreen : VBoxContainer
         else
         {
             foreach (var option in new[] { CardType, Nation, Rarity }) option.Disabled = false;
-            Art.Disabled = _importedArt.Length > 0; // 导入图与素材引用互斥：有导入图时素材下拉保持禁用
             ParseReplaceButton.Disabled = ParseAppendButton.Disabled = false;
             OpenEffectsButton.Disabled = false;
         }
@@ -398,7 +417,7 @@ public partial class DiyEditorScreen : VBoxContainer
     private void RefreshList()
     {
         Cards.Clear(); _listed.Clear(); _importedListed.Clear();
-        foreach (var card in _library.Cards.Where(c => $"{c.Name} {c.Id}".Contains(Search.Text, StringComparison.OrdinalIgnoreCase)).OrderBy(c => c.Name))
+        foreach (var card in _library.Cards.Where(c => (_scopePack.Length==0||c.PackId==_scopePack)&&$"{c.Name} {c.Id}".Contains(Search.Text, StringComparison.OrdinalIgnoreCase)).OrderBy(c => c.Name))
         {
             _listed.Add(card.Id); Cards.AddItem((_storedError(card.Id) is null ? "" : "⚠ ") + card.Name + (card.CardType == "unit" ? " · 单位" : " · 指令"));
             Cards.SetItemTooltip(_listed.Count - 1, card.Id);
@@ -432,12 +451,12 @@ public partial class DiyEditorScreen : VBoxContainer
         if (_blocked is not null) { _notice.Text = _storedError(_blocked.Id) ?? "这张卡未通过校验。"; return false; }
         var draft = Read();
         var validation = DiyCardCompiler.Validate(draft, _catalog());
-        if (!validation.Success) { _notice.Text = string.Join("；", validation.Errors); return false; }
+        if (!validation.Success && !draft.OrcEffects.Any(e=>e.DesktopJson is not null)) { _notice.Text = string.Join("；", validation.Errors); return false; }
         try
         {
             _library.Save(draft); _draft = draft.Snapshot() with { Name = draft.Name.Trim() };
             _dirty = false; SaveButton.Text = "保存"; Saved?.Invoke(); RefreshList(); RefreshPreview();
-            _notice.Text = "已校验并保存，可构筑或试打。";
+            _notice.Text = validation.Success ? "已校验并保存，可构筑或试打。" : "完整声明草稿已保存，暂不能用于实战："+string.Join("；",validation.Errors);
             return true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -450,7 +469,7 @@ public partial class DiyEditorScreen : VBoxContainer
             : string.Join("；", result.Errors);
     }
     /// <summary>导入本机图片为卡图：解码→转 PNG 存卡库旁 art/（≤4MB），预览即时生效。</summary>
-    private void OnArtImported(string path)
+    internal void OnArtImported(string path)
     {
         try
         {
@@ -458,14 +477,7 @@ public partial class DiyEditorScreen : VBoxContainer
             if (image is null) { _notice.Text = "无法解码该图片（支持 PNG/JPEG/WebP）。"; return; }
             if (image.GetWidth() is < 16 or > 4096 || image.GetHeight() is < 16 or > 4096)
             { _notice.Text = $"图片尺寸须在 16–4096 像素（当前 {image.GetWidth()}×{image.GetHeight()}）。"; return; }
-            var png = image.SavePngToBuffer();
-            var name = _library.SaveArt(_draft.Id, png);
-            _importedArt = name;
-            ArtZoom.Value = 100;
-            DiyArtStore.UpdateZoom(_draft.Id, 100);
-            Select(Art, ""); // 导入图与素材引用互斥：清掉素材选择
-            Changed(); RefreshPreview();
-            _notice.Text = "卡图已导入（保存卡牌后生效到构筑）。";
+            ImportAdaptedImage(image);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException)
         { _notice.Text = $"导入失败：{e.Message}"; }
@@ -477,9 +489,9 @@ public partial class DiyEditorScreen : VBoxContainer
         if (text.Length == 0) { TextNotice.Text = ""; return; }
         try
         {
-            var compile = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType));
+            var compile = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType), _catalog());
             TextNotice.Text = compile.Parse.Complete
-                ? $"可解析：{compile.Effects.Count} 条效果，编译通过。点「解析并替换 / 追加」落到效果结构。"
+                ? $"完整解析：{compile.Effects.Count} 条效果。" + (compile.AllCompiled ? "原生编译通过。" : "原生准入：" + string.Join("；", compile.Problems.Take(2))) + "点解析按钮保留完整结构。"
                 : string.Join("\n", compile.Parse.Diagnostics.Select(d => d.ToString()).Take(4));
             TextNotice.AddThemeColorOverride("font_color", compile.Parse.Complete ? UiStyles.Dim : new Color("dca58b"));
         }
@@ -492,7 +504,7 @@ public partial class DiyEditorScreen : VBoxContainer
         var text = EffectTextInput.Text.Trim();
         if (text.Length == 0) { TextNotice.Text = "规则文本为空。"; return; }
         OrcCompileResult parse;
-        try { parse = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType)).Parse; }
+        try { parse = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType), _catalog()).Parse; }
         catch (Exception e) { TextNotice.Text = "解析失败：" + e.Message; return; }
         if (!parse.Complete)
         {
@@ -508,7 +520,7 @@ public partial class DiyEditorScreen : VBoxContainer
             TextNotice.AddThemeColorOverride("font_color", new Color("dca58b"));
             return;
         }
-        // 文本词条并入勾选：量化重甲落到重甲参值；表达不了的诚实提示，不静默丢。
+        // 文本词条并入勾选：量化重甲落到重甲参值，其余参值保留在完整声明中。
         var notes = new List<string>();
         foreach (var keyword in parse.Keywords)
         {
@@ -518,12 +530,32 @@ public partial class DiyEditorScreen : VBoxContainer
                 box.ButtonPressed = true;
                 if (keyword.Quantified && token == "armor") Armor.Value = keyword.Value;
                 else if (keyword.Quantified)
-                    notes.Add($"词条「{keyword.Id}」的参值 {keyword.Value} 没有独立输入框；如需精确参值请用「获得词条」动作。");
+                    notes.Add($"词条「{keyword.Id}」的参值 {keyword.Value} 已保留，可在完整 Inspector 的 kwValues 中修改。");
             }
-            else notes.Add($"词条「{keyword.Id}」不在 DIY 词条表，未并入勾选。");
+            else notes.Add($"词条「{keyword.Id}」保留在完整声明中，可在完整 Inspector 的 kwMap 中修改。");
+        }
+        if(!replace)
+        {
+            var used=_draft.OrcEffects.Where(e=>e.DesktopJson is not null)
+                .SelectMany(e=>System.Text.Json.Nodes.JsonNode.Parse(e.DesktopJson!)!["targets"]?.AsArray().Select(t=>t?["id"]?.ToString())??[]).Where(id=>id is not null).ToArray();
+            var merged=DesktopOrc.Request(new {method="merge",effects=drafts.Select(d=>System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(d.DesktopJson!)),used});
+            drafts=merged.EnumerateArray().Select(e=>new OrcEffectDraft{Template=e.GetProperty("trigger").GetString()!,DesktopJson=e.GetRawText()}).ToList();
         }
         if (replace) ApplyEffects([.. drafts], []);
         else ApplyEffects([.. _draft.OrcEffects, .. drafts], _draft.Effects);
+        if(parse.DesktopResultJson is { } resultJson)
+        {
+            using var result=System.Text.Json.JsonDocument.Parse(resultJson);
+            var metadata=_draft.DesktopCardJson is { } previous?System.Text.Json.Nodes.JsonNode.Parse(previous)!.AsObject():new System.Text.Json.Nodes.JsonObject();
+            foreach(var field in result.RootElement.GetProperty("cardFields").EnumerateObject())metadata[field.Name]=System.Text.Json.Nodes.JsonNode.Parse(field.Value.GetRawText());
+            foreach(var name in new[]{"kwMap","kwValues"})
+            {
+                var merged=metadata[name]?.DeepClone() as System.Text.Json.Nodes.JsonObject??new();
+                foreach(var p in result.RootElement.GetProperty(name).EnumerateObject())merged[p.Name]=System.Text.Json.Nodes.JsonNode.Parse(p.Value.GetRawText());
+                metadata[name]=merged;
+            }
+            _draft=_draft with {DesktopCardJson=metadata.ToJsonString(),Keywords=_draft.Keywords.Concat(parse.Keywords.Select(k=>DiyCardCompiler.KeywordToken(k.Id))).Distinct(StringComparer.Ordinal).ToArray()};
+        }
         TextNotice.Text = $"已解析 {drafts.Count} 条效果并{(replace ? "替换" : "追加")}到效果结构（点「打开效果编辑器」查看）。" + (notes.Count > 0 ? "\n" + string.Join("\n", notes) : "");
         TextNotice.AddThemeColorOverride("font_color", UiStyles.Dim);
     }
@@ -548,7 +580,7 @@ public partial class DiyEditorScreen : VBoxContainer
             page.AddChild(new TextEdit { Text = text, Editable = false, WrapMode = TextEdit.LineWrappingMode.Boundary, SizeFlagsVertical = SizeFlags.ExpandFill });
             page.AddChild(UiStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(text)));
         }
-        Tab("卡牌代码", LastExportCode); Tab("引擎单卡 JSON", result.EngineCardJson!);
+        Tab("卡牌代码", LastExportCode); Tab("引擎单卡 JSON", result.EngineCardJson??string.Join("\n",result.Errors));
         dialog.Confirmed += () => { ActiveExport = null; dialog.QueueFree(); };
         dialog.Canceled += () => { ActiveExport = null; dialog.QueueFree(); };
         dialog.PopupCentered();
@@ -557,7 +589,7 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         var dialog = new ConfirmationDialog { Title = "OrC 批量导入", MinSize = new(700, 460), DialogHideOnOk = false }; AddChild(dialog);
         var box = new VBoxContainer(); dialog.AddChild(box);
-        box.AddChild(UiStyles.Label("粘贴官方语料 JSON（行数组或 {\"cards\":[…]}）。解析成功的卡直接编译入池；解析不了的保留原文与诊断（待核对），可随解析器演进而重导。", 13, UiStyles.Dim));
+        box.AddChild(UiStyles.Label("粘贴 CSV、单卡 JSON、卡牌数组或官方语料 {\"cards\":[…]}。原版 OrC 解析后经 OrC-KSD 编译与实例化；未通过准入的声明完整保留待核对。", 13, UiStyles.Dim));
         var text = new TextEdit { CustomMinimumSize = new(640, 260), WrapMode = TextEdit.LineWrappingMode.Boundary }; box.AddChild(text);
         var error = UiStyles.Label("", 13, new("dca58b")); error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(error);
         dialog.Confirmed += () =>
@@ -595,7 +627,7 @@ public partial class DiyEditorScreen : VBoxContainer
         {
             try
             {
-                var card = DiyCardLibrary.Import(text.Text);
+                var card = DiyCardLibrary.Import(text.Text) with{PackId=_scopePack};
                 var validation = DiyCardCompiler.Validate(card, _catalog());
                 if (!validation.Success) { error.Text = string.Join("；", validation.Errors); return; }
                 _library.Save(card); Saved?.Invoke(); Load(card); _notice.Text = "已导入并保存为新卡。";

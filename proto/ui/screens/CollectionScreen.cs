@@ -8,6 +8,9 @@ namespace Kards.Ui;
 public partial class CollectionScreen : VBoxContainer
 {
     private CardCatalog _catalog = null!;
+    private Func<string, bool> _canPlay = _ => true;
+    private IReadOnlyList<UiCardDefinition> Cards => _catalog.Cards.Where(c => _canPlay(c.CardId)
+        && !c.IsToken && ConstructionRules.CopyLimit(c.Rarity) > 0).ToArray();
     private TextureCache _textures = null!;
     private readonly List<OptionButton> _filters = [];
     private LineEdit _search = null!;
@@ -37,8 +40,8 @@ public partial class CollectionScreen : VBoxContainer
     internal string? SelectedCardId => _selected?.CardId;
     public void RefreshCatalog()
     {
-        var values = new IEnumerable<string>[] { _catalog.Cards.Select(c => c.Set), _catalog.Cards.Select(c => c.CardType),
-            _catalog.Cards.Select(c => c.UnitType), _catalog.Cards.Select(c => c.Rarity), _catalog.Cards.SelectMany(c => c.Keywords) };
+        var values = new IEnumerable<string>[] { Cards.Select(c => c.Set), Cards.Select(c => c.CardType),
+            Cards.Select(c => c.UnitType), Cards.Select(c => c.Rarity), Cards.SelectMany(c => c.Keywords) };
         for (var i = 0; i < _filters.Count; i++)
         {
             var filter = _filters[i]; var selected = filter.GetItemMetadata(filter.Selected).AsString();
@@ -52,11 +55,14 @@ public partial class CollectionScreen : VBoxContainer
             }
         }
         RenderPackPage();
-        Render(); ShowDetail(_catalog.Cards.FirstOrDefault(c => c.CardId == _selected?.CardId) ?? _catalog.Cards.FirstOrDefault());
+        Render();
+        if (_activePack is null)
+            ShowDetail(Cards.FirstOrDefault(c => c.CardId == _selected?.CardId) ?? Cards.FirstOrDefault());
     }
-    public void Initialize(CardCatalog catalog, TextureCache textures)
+    public void Initialize(CardCatalog catalog, TextureCache textures, Func<string, bool>? canPlay = null)
     {
         _catalog = catalog;
+        _canPlay = canPlay ?? (_ => true);
         _textures = textures;
         SizeFlagsVertical = SizeFlags.ExpandFill;
         var heading = new HBoxContainer();
@@ -132,15 +138,14 @@ public partial class CollectionScreen : VBoxContainer
     }
 
     /// <summary>Card count for one family: the base pack's cards plus every expansion's.</summary>
-    private static int ScopedCount(CardCatalog catalog, PackFamily family) =>
-        catalog.Cards.Count(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
+    private int ScopedCount(CardCatalog catalog, PackFamily family) =>
+        Cards.Count(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
             || family.ExpansionIds.Any(e => c.CardId.StartsWith("pack/" + e + "/", StringComparison.Ordinal)));
 
-    private static IReadOnlyList<PackTile> PackTiles(CardCatalog catalog)
+    private IReadOnlyList<PackTile> PackTiles(CardCatalog catalog)
     {
-        var cards = catalog.Cards;
-        var source = cards.Where(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
-            && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)).Count();
+        var cards = Cards;
+        var source = cards.Count(c => DeckCardPacks.Of(c.CardId) == "source");
         var tiles = new List<PackTile>();
         if (source > 0) tiles.Add(new("太空战争", "builtin:taikong", source));
         // Only base packs get tiles; their expansions are already part of the pack's pool and
@@ -148,6 +153,11 @@ public partial class CollectionScreen : VBoxContainer
         tiles.AddRange(PackFamilies()
             .Select(f => new PackTile(f.Name, "pack/" + f.Id, ScopedCount(catalog, f)))
             .Where(t => t.Count > 0));
+        foreach (var (id, name) in new[] { ("diy", "我的 DIY 卡牌"), ("orc", "已导入卡牌") })
+        {
+            var count = cards.Count(c => DeckCardPacks.Of(c.CardId) == id);
+            if (count > 0) tiles.Add(new(name, id, count));
+        }
         return tiles;
     }
 
@@ -222,6 +232,8 @@ public partial class CollectionScreen : VBoxContainer
         var packName = _activePack switch
         {
             "builtin:taikong" => "太空战争",
+            "diy" => "我的 DIY 卡牌",
+            "orc" => "已导入卡牌",
             _ when family is not null => family.Name,
             _ => _catalog.Cards.FirstOrDefault(c => c.CardId.StartsWith(_activePack + "/", StringComparison.Ordinal))?.Set
                 is { } set && set.StartsWith("pack:", StringComparison.Ordinal) ? set["pack:".Length..] : _activePack!,
@@ -249,11 +261,11 @@ public partial class CollectionScreen : VBoxContainer
         if (_expansionFilter is not null)
             _expansionFilter.Visible = family is { ExpansionIds.Count: > 0 };
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
-        IEnumerable<UiCardDefinition> query = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4]);
+        IEnumerable<UiCardDefinition> query = _catalog.Filter(_search.Text.Trim(), vals[0], vals[1], vals[2], vals[3], vals[4])
+            .Where(c => _canPlay(c.CardId) && !c.IsToken && ConstructionRules.CopyLimit(c.Rarity) > 0);
         query = _activePack switch
         {
-            "builtin:taikong" => query.Where(c => !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
-                && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)),
+            "builtin:taikong" => query.Where(c => DeckCardPacks.Of(c.CardId) == "source"),
             _ when family is not null => query.Where(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
                 || family.ExpansionIds.Any(e => c.CardId.StartsWith("pack/" + e + "/", StringComparison.Ordinal))),
             var pack => query.Where(c => c.CardId.StartsWith(pack + "/", StringComparison.Ordinal))
@@ -265,6 +277,7 @@ public partial class CollectionScreen : VBoxContainer
                 query = query.Where(c => c.CardId.StartsWith(source + "/", StringComparison.Ordinal));
         }
         _results = query.ToArray();
+        ShowDetail(_results.FirstOrDefault(c => c.CardId == _selected?.CardId) ?? _results.FirstOrDefault());
         _count.Text = $"{_results.Length} 张";
         var filterCount = vals.Count(v => v.Length > 0); _filterToggle.Text = filterCount == 0 ? "筛选" : $"筛选 · {filterCount}";
         _scroll.ScrollVertical = 0;

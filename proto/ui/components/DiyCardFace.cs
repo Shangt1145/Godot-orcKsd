@@ -21,6 +21,7 @@ public partial class DiyCardFace : Control
         var size = canvas.Size; var font = canvas.GetThemeDefaultFont();
         var paper = new Color("d4ccb2"); var ink = new Color("34392e");
         var nation = definition.Set switch { "av76" => new Color("825747"), "USG" => new("506783"), "UN" => new("4f645b"), _ => new("686053") };
+        if(definition.Set.StartsWith("nation-",StringComparison.Ordinal))nation=WorkshopVisuals.ColorOf(definition.Set);
         Rect2 Box(float x, float y, float w, float h) => new(size.X * x, size.Y * y, size.X * w, size.Y * h);
         void Text(string text, Rect2 box, int point, Color color, bool centered = true)
         {
@@ -34,7 +35,9 @@ public partial class DiyCardFace : Control
         canvas.DrawRect(Box(.03f, .03f, .94f, .105f), nation);
         canvas.DrawRect(Box(.03f, .03f, .15f, .105f), ink);
         Text((view?.EffectiveCost ?? definition.Cost)?.ToString() ?? "—", Box(.03f, .03f, .15f, .105f), number, paper);
-        Text(definition.Name, Box(.20f, .045f, .69f, .08f), body + 1, paper, false);
+        var icon=WorkshopVisuals.Icon(definition.Set);
+        Text(definition.Name, Box(.20f, .045f, icon is null?.69f:.60f, .08f), body + 1, paper, false);
+        if(icon is not null)canvas.DrawTextureRect(icon,Box(.84f,.047f,.10f,.067f),false);
         var art = Box(.03f, .145f, .94f, .49f);
         if (texture is not null && rawArt)
         {

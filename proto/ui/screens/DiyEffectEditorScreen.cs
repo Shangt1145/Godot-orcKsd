@@ -12,7 +12,7 @@ namespace Kards.Ui;
 /// </summary>
 public partial class DiyEffectEditorScreen : VBoxContainer
 {
-    internal Button FinishButton = null!, UndoButton = null!, RedoButton = null!, AddOrcButton = null!, AddEffectButton = null!;
+    internal Button SaveButton = null!, FinishButton = null!, UndoButton = null!, RedoButton = null!, AddOrcButton = null!, AddEffectButton = null!;
     internal OptionButton RecipePick = null!;
     internal Label OrcNotice = null!, _trigger = null!;
     internal ScrollContainer EditorScroll = null!;
@@ -21,6 +21,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     public event Action<OrcEffectDraft[], DiyEffectDraft[]>? Applied;
     /// <summary>「完成」返回主编辑器（Main 负责 Show 切屏）。</summary>
     public event Action? Finished;
+    public event Action? DraftTouched;
     private string _cardId = "diy/none", _cardType = "unit";
     private bool _loading;
     private readonly List<OrcEffectRow> _orcRows = [];
@@ -31,29 +32,44 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     private Godot.Timer _orcTimer = null!;
     private readonly List<string> _history = [];
     private int _historyPos = -1;
+    private DiyCardDraft _openedDraft = new();
+    internal NativeEffectInspector NativeInspector = null!;
+    private TabContainer _editorTabs=null!;
+    private bool _nativeSync;
+    public Func<IReadOnlyList<UiCardDefinition>>? Catalog {get;set;}
+    public Func<IReadOnlyList<DiyCardDraft>>? Drafts {get;set;}
+    public event Action<DiyCardDraft>? InspectorSaved;
+    public event Action<DiyCardDraft>? DraftEdited;
+
 
     public void Initialize()
     {
         SizeFlagsVertical = SizeFlags.ExpandFill;
         AddThemeConstantOverride("separation", 10);
         var heading = new HBoxContainer(); AddChild(heading);
+        var legacyTools=new HBoxContainer();
         var title = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; heading.AddChild(title);
         title.AddChild(UiStyles.Label("效果编辑器", 26, UiStyles.Gold));
-        title.AddChild(UiStyles.Label("① 选发生时机 → ② 改对象和动作 → ③ 完成后回卡牌编辑器保存。编辑实时写回草稿。", 13, UiStyles.Dim));
-        UndoButton = UiStyles.Button("撤销", Undo); heading.AddChild(UndoButton);
-        RedoButton = UiStyles.Button("重做", Redo); heading.AddChild(RedoButton);
+        title.AddChild(UiStyles.Label("先选发生时机，再组合动作。修改会保留在草稿中。", 13, UiStyles.Dim));
+        UndoButton = UiStyles.Button("撤销", Undo); legacyTools.AddChild(UndoButton);
+        RedoButton = UiStyles.Button("重做", Redo); legacyTools.AddChild(RedoButton);
         RecipePick = DiyEditorScreen.Option(new[] { new UiDiyChoice("", "从常见效果开始…") }
             .Concat(OrcEffectEditing.Recipes.Select((r, i) => new UiDiyChoice(i.ToString(), r.Name))).ToArray());
-        heading.AddChild(RecipePick);
-        heading.AddChild(UiStyles.Button("添加", () =>
+        legacyTools.AddChild(RecipePick);
+        legacyTools.AddChild(UiStyles.Button("添加", () =>
         {
             if (RecipePick.Selected <= 0) { OrcNotice.Text = "先选一个常见效果。"; return; }
             AddOrc(OrcEffectEditing.Recipes[RecipePick.Selected - 1].Effect);
             OrcNotice.Text = "已添加「" + OrcEffectEditing.Recipes[RecipePick.Selected - 1].Name + "」。";
         }));
-        FinishButton = UiStyles.Button("完成", () => Finished?.Invoke()); heading.AddChild(FinishButton);
+        FinishButton = UiStyles.Button("完成", () => {if(NativeInspector.CommitPendingRaw())Finished?.Invoke();}); heading.AddChild(FinishButton);
+        SaveButton=UiStyles.Button("保存卡牌",SaveNative);heading.AddChild(SaveButton);
+        _editorTabs=new TabContainer{TabsVisible=false,SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_editorTabs);
+        NativeInspector=new NativeEffectInspector{Name="效果搭建"};NativeInspector.Initialize();_editorTabs.AddChild(NativeInspector);
+        NativeInspector.Edited+=NativeChanged;
+        NativeInspector.RawEdited+=()=>DraftTouched?.Invoke();
 
-        var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; AddChild(body);
+        var body = new HBoxContainer { Name="旧结构兼容", SizeFlagsVertical = SizeFlags.ExpandFill }; _editorTabs.AddChild(body);
         var editPanel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
         body.AddChild(editPanel);
         var margin = new MarginContainer();
@@ -61,9 +77,9 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             margin.AddThemeConstantOverride(name, value);
         editPanel.AddChild(margin);
         var editColumn = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
-        margin.AddChild(editColumn);
+        margin.AddChild(editColumn);editColumn.AddChild(legacyTools);
         OrcNotice = UiStyles.Label("", 12, UiStyles.Dim);
-        OrcNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; editColumn.AddChild(OrcNotice);
+        OrcNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; AddChild(OrcNotice);
         var editScroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
         editColumn.AddChild(editScroll); EditorScroll = editScroll;
         var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -104,12 +120,14 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         _dslNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; dslColumn.AddChild(_dslNotice);
         dslColumn.AddChild(UiStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(_dslView.Text)));
         _orcTimer = new Godot.Timer { OneShot = true, WaitTime = 0.5 }; AddChild(_orcTimer);
-        _orcTimer.Timeout += OrcCheck;
+        _orcTimer.Timeout += ()=>{OrcCheck();RefreshDsl();};
     }
 
     /// <summary>打开编辑器：以主编辑器当前草稿为工作副本（结构＋简易行），重置历史。</summary>
+    internal void ShowCompatibility(){_editorTabs.TabsVisible=true;_editorTabs.CurrentTab=1;}
     public void Open(DiyCardDraft draft)
     {
+        _openedDraft=draft.Snapshot();
         _cardId = draft.Id; _cardType = draft.CardType;
         _loading = true;
         foreach (var row in _orcRows) { _orcBox.RemoveChild(row); row.QueueFree(); } _orcRows.Clear();
@@ -118,9 +136,46 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         foreach (var effect in draft.Effects) AddEffect(effect);
         RenumberOrc();
         _trigger.Text = _cardType == "unit" ? "部署完成时执行" : "打出时执行";
-        _history.Clear(); _historyPos = -1; Snap();
-        _loading = false;
+        _history.Clear(); _historyPos = -1;
+        _loading = false; Snap();
         OrcCheck(); RefreshDsl();
+        NativeInspector.Catalog=Catalog;_nativeSync=true;NativeInspector.Open(InspectorCardRecord.FromDraft(draft));_nativeSync=false;
+        _editorTabs.TabsVisible=draft.OrcEffects.Any(e=>e.DesktopJson is null)||draft.Effects.Length>0;
+        _editorTabs.CurrentTab=draft.OrcEffects.Any(e=>e.DesktopJson is null)||draft.Effects.Length>0?1:0;
+    }
+
+    private void NativeChanged()
+    {
+        if(_nativeSync)return;
+        DraftTouched?.Invoke();
+        try
+        {
+            var updated=InspectorCardRecord.ApplyRecord(_openedDraft,NativeInspector.Document.Element());
+            // Old finite declarations stay in their dedicated compatibility tab until explicitly replaced.
+            var retained=OrcDrafts().Where(e=>e.DesktopJson is null).ToArray();
+            updated=updated with {OrcEffects=updated.OrcEffects.Concat(retained).ToArray(),Effects=LegacyDrafts()};
+            _openedDraft=updated;_cardId=updated.Id;_cardType=updated.CardType;
+            _loading=true;
+            foreach(var row in _orcRows){_orcBox.RemoveChild(row);row.QueueFree();}_orcRows.Clear();
+            foreach(var effect in updated.OrcEffects)AddOrcRow(effect);
+            _loading=false;RenumberOrc();
+            DraftEdited?.Invoke(updated);_orcTimer.Start();
+        }
+        catch(Exception e){OrcNotice.Text="声明未写回："+e.Message;}
+    }
+    internal void SaveNative()
+    {
+        try
+        {
+            if(!NativeInspector.CommitPendingRaw())throw new InvalidDataException("完整声明 JSON 尚未应用；请修正后再保存。");
+            var current=_editorTabs.CurrentTab==0
+                ? InspectorCardRecord.ApplyRecord(_openedDraft,NativeInspector.Document.Element()) with {OrcEffects=OrcDrafts(),Effects=LegacyDrafts()}
+                : _openedDraft with {OrcEffects=OrcDrafts(),Effects=LegacyDrafts()};
+            InspectorSaved?.Invoke(current);_openedDraft=current.Snapshot();
+            var check=DiyCardCompiler.Validate(current,Catalog?.Invoke()??[]);
+            OrcNotice.Text=check.Success?"卡牌已保存，可以用于对局。":"草稿已保存。部分效果暂不能用于对局，详细原因在高级工具中。";
+        }
+        catch(Exception e){OrcNotice.Text="保存失败，草稿仍保留："+e.Message;}
     }
 
     private static VBoxContainer Section(VBoxContainer parent, string title)
@@ -172,6 +227,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         if (_loading) return;
         RenumberOrc(); Snap(); _orcTimer.Start();
         Applied?.Invoke(OrcDrafts(), LegacyDrafts());
+        if(!_nativeSync){_nativeSync=true;NativeInspector.Open(InspectorCardRecord.FromDraft(_openedDraft with {OrcEffects=OrcDrafts()}));_nativeSync=false;}
         RefreshDsl();
     }
 
@@ -185,12 +241,18 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     private void OrcCheck()
     {
         var drafts = OrcDrafts();
+        NativeInspector.RefreshSourceCheck();
         if (drafts.Length == 0) { OrcNotice.Text = ""; return; }
         var compiled = OrcEffectEditing.Compile(_cardId.Replace('/', '.'), drafts);
-        var problems = OrcEffectEditing.Problems(compiled);
+        var problems = OrcEffectEditing.Problems(compiled).ToList();
+        if(_editorTabs.CurrentTab==0)
+        {
+            var admission=DiyCardCompiler.Validate(_openedDraft with {OrcEffects=drafts,Effects=LegacyDrafts()},Catalog?.Invoke()??[]);
+            problems.AddRange(admission.Errors.Where(e=>!problems.Contains(e)));
+        }
         for (var i = 0; i < _orcRows.Count; i++)
             _orcRows[i].SetError(i < compiled.Count ? compiled[i].Error : null);
-        OrcNotice.Text = problems.Count == 0
+        OrcNotice.Text = !NativeInspector.AdvancedVisible ? (problems.Count==0?"设置已通过规则检查，保存后即可用于对局。":"还有设置需要检查，或存在规则暂不支持的效果。草稿可以保留，详情见高级工具。") : problems.Count == 0
             ? $"编译通过：{drafts.Length} 条效果。回卡牌编辑器保存后进对局生效。"
             : $"{problems.Count} 项需要检查：{string.Join("；", problems.Take(3))}";
         OrcNotice.AddThemeColorOverride("font_color", problems.Count == 0 ? UiStyles.Dim : new Color("dca58b"));
@@ -206,7 +268,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         if (drafts.Length == 0)
         {
             _dslView.Text = "// 还没有结构效果；先添加一条，或回卡牌编辑器用规则文本解析。";
-            _dslNotice.Text = "";
+            _dslNotice.Text = "";NativeInspector.SetEngineReport(_dslView.Text);
             return;
         }
         var compiled = OrcEffectEditing.Compile(_cardId.Replace('/', '.'), drafts);
@@ -215,6 +277,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
                 ? $"// 效果 {i + 1}（{OrcEffectEditing.Templates.FirstOrDefault(t => t.Id == e.Draft.Template && t.Guard.ToString() == e.Draft.Guard)?.Label ?? e.Draft.Template}）\n{e.JsonText}"
                 : $"// 效果 {i + 1} 编译失败：{e.Error}"));
         var problems = OrcEffectEditing.Problems(compiled);
+        NativeInspector.SetEngineReport(_dslView.Text);
         _dslNotice.Text = problems.Count == 0 ? $"共 {compiled.Count} 条，编译通过。" : $"{problems.Count} 项编译失败，见上方注释。";
     }
 
@@ -337,6 +400,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         private readonly Action<OrcEffectRow> _remove;
         private readonly Action<OrcEffectRow, int> _move;
         private bool _mute = true;
+        private OrcEffectDraft? _desktopDraft;
 
         internal OrcEffectRow(OrcEffectDraft draft, Action changed, Action<OrcEffectRow> remove, Action<OrcEffectRow, int> move)
         {
@@ -344,6 +408,31 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             var box = new VBoxContainer(); box.AddThemeConstantOverride("separation", 8); AddChild(box);
             var head = new HBoxContainer(); head.AddThemeConstantOverride("separation", 8); box.AddChild(head);
             _title = UiStyles.Label("效果", 14, UiStyles.Gold); head.AddChild(_title);
+            head.AddChild(UiStyles.Button("↑",()=>_move(this,-1)));
+            head.AddChild(UiStyles.Button("↓",()=>_move(this,1)));
+            if(draft.DesktopJson is { } graph)
+            {
+                _desktopDraft=draft.Snapshot();
+                head.AddChild(UiStyles.Button("复制",()=>DisplayServer.ClipboardSet(_desktopDraft.DesktopJson!)));
+                head.AddChild(UiStyles.Button("×",()=>_remove(this)));
+                _trigger=null!;_opsBox=null!;
+                box.AddChild(UiStyles.Label("完整声明：触发、变量、条件、嵌套效果与未知字段均保留。完整表单位于“完整 Inspector”标签。",12,UiStyles.Dim));
+                var editor=new TextEdit {Text=System.Text.Json.Nodes.JsonNode.Parse(graph)!.ToJsonString(new(){WriteIndented=true}),
+                    CustomMinimumSize=new(440,210),SizeFlagsHorizontal=SizeFlags.ExpandFill,WrapMode=TextEdit.LineWrappingMode.Boundary};
+                box.AddChild(editor);_error=UiStyles.Label("",12,new("dca58b"));box.AddChild(_error);
+                editor.TextChanged+=()=>
+                {
+                    try
+                    {
+                        using var doc=System.Text.Json.JsonDocument.Parse(editor.Text);
+                        if(doc.RootElement.ValueKind!=System.Text.Json.JsonValueKind.Object)throw new System.Text.Json.JsonException("效果必须是对象");
+                        _desktopDraft=_desktopDraft with {DesktopJson=doc.RootElement.GetRawText(),Template=doc.RootElement.TryGetProperty("trigger",out var t)?t.GetString()??"unknown":"unknown"};
+                        _error.Text="";_changed();
+                    }
+                    catch(System.Text.Json.JsonException e){_error.Text="JSON 未生效，上一份有效结构仍保留："+e.Message;}
+                };
+                return;
+            }
             _trigger = DiyEditorScreen.Option(OrcEffectEditing.Templates.Select(t => new UiDiyChoice(t.Id + "|" + t.Guard, t.Label)));
             _trigger.CustomMinimumSize = new(250, 34); head.AddChild(_trigger);
             head.AddChild(UiStyles.Button("×", () => _remove(this)));
@@ -387,6 +476,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
 
         internal OrcEffectDraft Read()
         {
+            if(_desktopDraft is not null)return _desktopDraft.Snapshot();
             var entry = _trigger.Selected >= 0 && _trigger.Selected < OrcEffectEditing.Templates.Count
                 ? OrcEffectEditing.Templates[_trigger.Selected] : null;
             return new OrcEffectDraft

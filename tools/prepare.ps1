@@ -43,5 +43,40 @@ if (!$SkipAssets) {
 # Non-destructive synchronization. Generated output never copies back into source.
 & robocopy $sourceRoot $targetRoot /E /NFL /NDL /NJH /NJS /NP /XD .git .godot bin obj artifacts /XF '*.user' '.kards-ui-workspace'
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
+# Package data is generated content. Remove obsolete copies left by the old directory
+# layout so exports contain exactly the source card packs, without touching other assets.
+$packSource = [IO.Path]::GetFullPath((Join-Path $sourceRoot 'proto/data/kards'))
+$packTarget = [IO.Path]::GetFullPath((Join-Path $targetRoot 'proto/data/kards'))
+if (!$packTarget.StartsWith($targetRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Package sync escaped build workspace.' }
+if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne $sourceRoot) { throw 'Package cleanup requires the matching managed workspace marker.' }
+if ((Test-Path -LiteralPath $packSource) -and (Test-Path -LiteralPath $packTarget)) {
+    $packPrefix = $packTarget.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    Get-ChildItem -LiteralPath $packTarget -File -Recurse | ForEach-Object {
+        $packFile = [IO.Path]::GetFullPath($_.FullName)
+        if (!$packFile.StartsWith($packPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Package file escaped build workspace.' }
+        # Windows PowerShell 5.1 uses .NET Framework, which has no Path.GetRelativePath.
+        $relative = $packFile.Substring($packPrefix.Length)
+        if (!(Test-Path -LiteralPath (Join-Path $packSource $relative))) { Remove-Item -LiteralPath $_.FullName -Force }
+    }
+    Get-ChildItem -LiteralPath $packTarget -Directory -Recurse | Sort-Object { $_.FullName.Length } -Descending | ForEach-Object {
+        if (!(Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $_.FullName -Force }
+    }
+}
+# Retired authoring web tools must not survive the non-destructive source sync.
+foreach ($obsoleteRelative in @(
+    'proto/bridge/Kards.Ui.OrcBridge/DesktopInspectorSession.cs',
+    'proto/bridge/Kards.Ui.OrcBridge/DesktopAuthoring/host.cjs',
+    'proto/bridge/Kards.Ui.OrcBridge/DesktopAuthoring/index.html',
+    'proto/bridge/Kards.Ui.OrcBridge/DesktopAuthoring/workbench.js',
+    'tools/check-desktop-authoring.cjs',
+    'tools/AuthoringPreview/Program.cs',
+    'tools/AuthoringPreview/AuthoringPreview.csproj'
+)) {
+    $obsoleteAuthoringFile = [IO.Path]::GetFullPath((Join-Path $targetRoot $obsoleteRelative))
+    if (!$obsoleteAuthoringFile.StartsWith($targetRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected obsolete source path.' }
+    if (!(Test-Path -LiteralPath (Join-Path $sourceRoot $obsoleteRelative)) -and (Test-Path -LiteralPath $obsoleteAuthoringFile)) {
+        Remove-Item -LiteralPath $obsoleteAuthoringFile
+    }
+}
 Write-Host "Prepared $targetRoot from $sourceRoot"
 exit 0

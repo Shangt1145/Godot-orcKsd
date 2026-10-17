@@ -10,6 +10,12 @@ public sealed class TextureCache
     private readonly HashSet<string> _missing = new();
     public int Count => _items.Count;
     public int Capacity { get; } = 64;
+    /// <summary>Imported files can change without changing their managed filename.</summary>
+    public void Invalidate(string path)
+    {
+        _missing.Remove(path);
+        if (_items.Remove(path, out var cached)) _order.Remove(cached.Node);
+    }
     /// <summary>缓存写入（null＝记为缺失并返回 null），res:// 与 diyart:// 两路共用。</summary>
     private Texture2D? Store(string path, Texture2D? tex)
     {

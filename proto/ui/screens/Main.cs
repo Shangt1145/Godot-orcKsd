@@ -29,6 +29,7 @@ public partial class Main : Control
     private DeckLibrary _decks = null!;
     private DeckEditorScreen _deckEditor = null!;
     private DeckLibraryScreen _deckLibrary = null!;
+    private DeckPackPicker _deckPackPicker = null!;
     private DiyCardLibrary _diy = null!;
     private DiyEditorScreen _diyEditor = null!;
     private DiyEffectEditorScreen _diyEffects = null!;
@@ -39,9 +40,12 @@ public partial class Main : Control
     private string _diyPath = "";
     private bool _verificationRun;
     private string _deckPath = "";
+    private DiyWorkshopLibrary _workshopLibrary=null!;
+    private DiyWorkshopScreen _workshop=null!;
 
     public override async void _Ready()
     {
+        if(ResumeInterruptedUpdate())return;
 #if DEBUG
         const string managedConfiguration = "Debug";
 #else
@@ -72,7 +76,7 @@ public partial class Main : Control
         await StartupStageAsync(.08f, "整理卡牌收藏…");
         try
         {
-            _catalog.Load(ProjectSettings.GlobalizePath("res://proto/data/nations"), CardCatalog.ResolveArtResource);
+            _catalog.Load(RuntimeGameData.Directory("nations"), CardCatalog.ResolveArtResource);
         }
         catch (Exception e) { throw new InvalidDataException("卡池加载失败，请先运行 tools/prepare.ps1", e); }
         // The engine knows nothing about art, so the catalog is the single place a card id becomes
@@ -85,11 +89,19 @@ public partial class Main : Control
         // 迁移 S8：内建词条注册面是进程级静态（orc.builtin.core 进程相内容），必须先于任何
         // CardDefinition 解析装配（ResolveKeywords 对未注册标识 fail-fast）；此处一并完成卡包发现，
         // ReloadPacks 的 LoadPackCards 幂等复用同一宿主。
-        OrcEngineHost.WarmUp(ProjectSettings.GlobalizePath("res://proto/data/kards"));
-        _deckService = new DeckConstructionService(_catalog.Cards, ProjectSettings.GlobalizePath("res://proto/data/nations"));
+        OrcEngineHost.WarmUp(RuntimeGameData.Directory("kards"));
+        _deckService = new DeckConstructionService(_catalog.Cards, RuntimeGameData.Directory("nations"));
         _diyPath = ProjectSettings.GlobalizePath(_verificationRun
             ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
         _diy = new DiyCardLibrary(_diyPath);
+        _workshopLibrary=new DiyWorkshopLibrary(ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/diy/packs-{Guid.NewGuid():N}.json":"user://diy-packs.json"));
+        if(_diy.LoadError is null&&_workshopLibrary.LoadError is null&&_diy.Cards.Any(c=>c.PackId.Length==0))
+        {
+            const string legacy="pack/diy-legacy";
+            if(!_workshopLibrary.Packs.Any(p=>p.Id==legacy))_workshopLibrary.Save(new(){Id=legacy,Name="我的 DIY 卡包"});
+            foreach(var card in _diy.Cards.Where(c=>c.PackId.Length==0))_diy.Save(card with{PackId=legacy});
+        }
+        WorkshopAuthoring.Configure(_workshopLibrary,_diy.Cards);
         // 自导入卡图：art/ 目录与卡库同生命周期；缩放表随卡库刷新（RefreshImportedDiyArt）。
         DiyArtStore.Configure(Path.Combine(Path.GetDirectoryName(_diyPath)!, "art"),
             _diy.Cards.Where(c => c.ArtFile.Length > 0).Select(c => (c.Id, c.ArtScale)));
@@ -104,7 +116,7 @@ public partial class Main : Control
         ReloadPacks();
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
         _decks = new DeckLibrary(_deckPath);
-        if (_decks.Decks.Count == 0 && _decks.LoadError is null)
+        if (_verificationRun && _decks.Decks.Count == 0 && _decks.LoadError is null)
         {
             try { var starter = _deckService.Starter(); _decks.Save(starter); _decks.Activate(starter.Id); }
             catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException) { GD.PushError(e.Message); }
@@ -117,7 +129,7 @@ public partial class Main : Control
         var content = BuildMenuShell(root);
         var collection = new CollectionScreen();
         _collection = collection;
-        collection.Initialize(_catalog, _textures);
+        collection.Initialize(_catalog, _textures, id => _deckService.PlayableIds.Contains(id));
         AddScreen(content, "collection", collection);
         _battle = new BattleScreen();
         _battle.Theme = UiStyles.CreateTheme();
@@ -132,10 +144,23 @@ public partial class Main : Control
             CommandRequested?.Invoke(command);
         };
         _battle.RealMatchRequested += () => _ = StartRealMatchAsync(trialDeck: _trialDeck);
-        _battle.NavigationRequested += Show;
+        _battle.NavigationRequested += id => {
+            if (id == "deck" && _deckEditor.Draft.PackIds is { Length: 0 }) _deckEditor.CreateNew();
+            else Show(id);
+        };
         AddScreen(content, "battle", _battle);
         _deckEditor = new DeckEditorScreen(); _deckEditor.Initialize(_deckService, _decks, _textures);
         _deckLibrary = new DeckLibraryScreen(); _deckLibrary.Initialize(_decks, _deckService, _textures);
+        _deckPackPicker = new DeckPackPicker(); AddChild(_deckPackPicker); _deckPackPicker.Initialize(_deckService);
+        void NewDeck() => _deckPackPicker.Open([], packs => {
+            var countries = _deckService.PlayableCards.Where(c => packs.Contains(DeckCardPacks.Of(c.CardId)))
+                .Select(c => c.Set).Where(ConstructionRules.MainNations.Contains).Distinct().ToArray();
+            var options = new DeckOptions { MainNation = countries.FirstOrDefault() ?? "av76",
+                AllyNation = countries.Skip(1).FirstOrDefault() ?? ConstructionRules.MainNations.First(n => n != (countries.FirstOrDefault() ?? "av76")) };
+            _deckEditor.Open(new ConstructedDeck { PackIds = packs, Options = options }); Show("deck");
+        });
+        _deckLibrary.NewRequested += NewDeck; _deckEditor.NewRequested += NewDeck;
+        _deckEditor.PacksRequested += () => _deckPackPicker.Open(DeckCardPacks.Selected(_deckEditor.Draft), _deckEditor.ApplyPacks, creating: false);
         _deckEditor.Saved += RefreshMenuData;
         _deckEditor.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
         _deckLibrary.EditRequested += deck => { _deckEditor.Open(deck); Show("deck"); };
@@ -163,7 +188,9 @@ public partial class Main : Control
         _diyEditor.ConstructRequested += id =>
         {
             _deckEditor.Search.Text = _catalog.Cards.First(c => c.CardId == id).Name;
-            _deckEditor.AvailableOnly.ButtonPressed = true; Show("deck");
+            if (!DeckCardPacks.Allows(_deckEditor.Draft, id))
+                _deckPackPicker.Open(DeckCardPacks.Selected(_deckEditor.Draft), packs => { _deckEditor.ApplyPacks(packs); Show("deck"); }, creating: false);
+            else Show("deck");
         };
         _diyEditor.TrialRequested += card =>
         {
@@ -173,10 +200,17 @@ public partial class Main : Control
                 CardIds = Enumerable.Repeat(card.Id, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
             Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
         };
-        AddScreen(content, "editor", _diyEditor);
+        _diyEditor.ConfigureWorkshop(_workshopLibrary,RefreshDiy);
+        _workshop=new DiyWorkshopScreen();_workshop.Initialize(_workshopLibrary,_diy,_diyEditor,_deckService,_textures,RefreshDiy,()=>_clock.ReducedMotion);
+        AddScreen(content, "editor", _workshop);
         // 效果编辑器（独立屏幕）：主编辑器入口按钮进入，编辑实时写回草稿，完成后返回。
         _diyEffects = new DiyEffectEditorScreen(); _diyEffects.Initialize();
-        _diyEditor.EffectsEditorRequested += () => { _diyEffects.Open(_diyEditor.CurrentDraft); Show("diyfx"); };
+        _diyEffects.Catalog=()=>_catalog.Cards;
+        _diyEffects.Drafts=()=>_diyEditor.AuthoredCards;
+        _diyEffects.InspectorSaved+=draft=>_diyEditor.AcceptInspectorDraft(draft);
+        _diyEffects.DraftEdited+=draft=>_diyEditor.ApplyInspectorDraft(draft);
+        _diyEffects.DraftTouched+=()=>_diyEditor.MarkInspectorDirty();
+        _diyEditor.EffectsEditorRequested += () => { _diyEffects.Open(_diyEditor.Draft); Show("diyfx"); };
         _diyEffects.Applied += (orc, legacy) => _diyEditor.ApplyEffects(orc, legacy);
         _diyEffects.Finished += () => Show("editor");
         AddScreen(content, "diyfx", _diyEffects);
@@ -212,9 +246,15 @@ public partial class Main : Control
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
+        else if (args.Contains("--verify-export")) CallDeferred(MethodName.VerifyExport);
+        else if (args.Contains("--capture-official-art")) CallDeferred(MethodName.CaptureOfficialArt);
         else if (args.Contains("--verify-inflight-draw")) CallDeferred(MethodName.VerifyInFlightDrawOnly);
         else if (args.Contains("--verify-action-portals") || args.Contains("--capture-action-portals"))
             CallDeferred(MethodName.VerifyActionPortals);
+        else if (args.Contains("--verify-desktop-authoring") || args.Contains("--capture-desktop-authoring"))
+            CallDeferred(MethodName.VerifyDesktopAuthoring);
+        else if(args.Contains("--verify-workshop")||args.Contains("--capture-workshop"))
+            CallDeferred(MethodName.VerifyWorkshop);
         else if (args.Contains("--verify-diy") || args.Contains("--capture-diy"))
             CallDeferred(MethodName.VerifyDiy);
         else if (args.Contains("--verify-decks") || args.Contains("--capture-decks"))
@@ -282,7 +322,7 @@ public partial class Main : Control
             CatalogCards = probe ? null : _deckService.Cards.ToArray(),
             CustomCards = probe ? null : _diy.Cards.Where(c => _deckService.PlayableIds.Contains(c.Id)).Select(c => c.Snapshot()).ToArray(),
             ImportedCards = probe ? null : _importedOutcomes.Where(o => o.Complete).ToArray(),
-            CatalogSourceDirectory = ProjectSettings.GlobalizePath("res://proto/data/nations"),
+            CatalogSourceDirectory = RuntimeGameData.Directory("nations"),
             ManualOpponentForVerification = manualOpponentForVerification,
             DeckSeed = deckSeed,
             // Pinning the hand is a demonstration aid, not the default: the verify and capture paths
@@ -661,7 +701,7 @@ public partial class Main : Control
             // 迁移 S8：中立视图契约上移到 Orc.UI.Contracts（零引擎依赖），proto/ui 经全局 Using 消费
             // 它不算越界；引擎运行时程序集（Orc / Orc.Game / Orc.Packages / ...）仍然一律禁止。
             var engineRefs = typeof(Main).Assembly.GetReferencedAssemblies()
-                .Select(a => a.Name).Where(n => n is not null)
+                .Select(a => a.Name).OfType<string>()
                 .Where(n => n == "Orc" || (n.StartsWith("Orc.", StringComparison.Ordinal) && n != "Orc.UI.Contracts"))
                 .ToList();
             if (engineRefs.Count > 0)
@@ -687,6 +727,11 @@ public partial class Main : Control
                 && !c.CardId.StartsWith("diy/", StringComparison.Ordinal));
             if (sourceCount != 315)
                 throw new Exception("Wrong catalogue size.");
+            var originalCards = _catalog.Cards.Where(c => c.CardId.StartsWith("pack/", StringComparison.Ordinal)).ToArray();
+            var expectedOriginal = System.IO.Directory.GetFiles(RuntimeGameData.Directory("kards"), "*.card.json", System.IO.SearchOption.AllDirectories).Length;
+            if (originalCards.Length != expectedOriginal || originalCards.Any(c => c.ArtPath.Length == 0 || _textures.Get(c.ArtPath) is null))
+                throw new Exception("Original KARDS artwork is missing or cannot be decoded.");
+            GD.Print($"OFFICIAL_ART_VERIFY_OK cards={originalCards.Length}");
             foreach (var c in _catalog.Cards.Where(c => c.ArtPath.Length > 0 && !c.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)))
                 if (!ResourceLoader.Exists(c.ArtPath))
                     throw new Exception($"Missing texture: {c.CardId}");

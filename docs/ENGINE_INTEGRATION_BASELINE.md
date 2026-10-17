@@ -1,5 +1,13 @@
 # OrC-KSD 接入基线
 
+## Beta.1 工坊与原版卡依赖（2026-10-17）
+
+本次已验收源码使用引擎提交 `750e11efcc34d8c96188e6f5a9044bec594b807a` 加 [beta1-workshop-native.patch](engine-patches/beta1-workshop-native.patch)。补丁包含自定义国家、可执行声明式词条、词条 JSON 往返、总部目标与死亡效果生命周期修复及原生测试调整；本次只随 Godot 仓库存放补丁，没有推送引擎仓库。
+
+在独立引擎 checkout 中切换到上述提交，再执行 `git apply --check <此项目绝对路径>/docs/engine-patches/beta1-workshop-native.patch`，检查成功后 `git apply` 同一文件。构建时将 `OrcEngineRoot` 指向该 checkout 的 `src/Orc.Game`。本地现用引擎已包含补丁，不能重复应用。原生测试 1101 项通过；Godot 发布相关 162 项、导出 EXE 工坊及真实增量升级验证通过。
+
+以下记录保留为历史接入过程，早期 HEAD 和能力范围不代表上述 Beta.1 基线。
+
 记录日期：2026-10-09。按用户要求 fetch 后快进更新上游，再恢复已有部署修改；新增能力未绕过卡池审核。
 
 客户端 A.18 增量（2026-10-10）：只使用上述现有引擎，新增真实战场状态和原生终局接入，未重新拉取或改动引擎。详情见 [STAGE_6C3_ACCEPTANCE.md](STAGE_6C3_ACCEPTANCE.md)。

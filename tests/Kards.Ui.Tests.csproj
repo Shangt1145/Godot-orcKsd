@@ -11,6 +11,8 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <ProjectReference Include="../proto/core/Kards.Ui.Core.csproj" />
+    <ProjectReference Include="../tools/OfflineUpdate/OrC.Update.Core/OrC.Update.Core.csproj" />
+    <ProjectReference Include="../tools/OfflineUpdate/OrC.Update.Cli/OrC.Update.Cli.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../proto/bridge/Kards.Ui.OrcBridge/Kards.Ui.OrcBridge.csproj" />
   </ItemGroup>
 </Project>

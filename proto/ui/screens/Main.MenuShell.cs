@@ -25,8 +25,10 @@ public partial class Main
             button.CustomMinimumSize = new(116, 46); bar.AddChild(button); _nav[id] = button;
         }
         bar.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+        var update=UiStyles.Button("离线更新",OpenOfflineUpdater);bar.AddChild(update);
+        update.Disabled=OS.HasFeature("editor");update.TooltipText="使用已下载的增量补丁更新游戏";
         _resume = UiStyles.Button("返回战场 →", () => Show("battle")); bar.AddChild(_resume);
-        _pool = UiStyles.Label($"{_catalog.Cards.Count} 张卡牌", 13, UiStyles.MenuDim); bar.AddChild(_pool);
+        _pool = UiStyles.Label($"{_deckService.PlayableCards.Count} 张可用卡牌", 13, UiStyles.MenuDim); bar.AddChild(_pool);
         foreach (var (id, text) in new[] { ("help", "帮助"), ("settings", "设置") })
         {
             var key = id; var button = UiStyles.Button(text, () => Show(key)); button.ToggleMode = true;

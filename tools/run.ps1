@@ -26,6 +26,9 @@ try {
     Get-ChildItem $runtimeOut -Filter '*.dll' |
         Where-Object { -not (Test-Path (Join-Path $assemblyDir $_.Name)) } |
         Copy-Item -Destination $assemblyDir -Force
+    # In-process parser runtime; shipped next to the game, no Node/browser installation.
+    Get-ChildItem (Join-Path $runtimeOut 'runtimes/win-x64/native') -Filter '*.dll' |
+        Copy-Item -Destination $assemblyDir -Force
     if ($Test) {
         & dotnet test 'tests\Kards.Ui.Tests.csproj' --nologo
         if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }

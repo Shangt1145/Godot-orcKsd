@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Inspector 新手教程</title><link rel="stylesheet" href="css/inspector-tutorial.css?v=1"><link rel="stylesheet" href="css/inspector-polish.css?v=1"></head>
+<body><header class="tutorial-header"><span>效果检查器 · 新手教程</span><nav class="standalone-navigation" aria-label="返回"><a href="./inspector.html">返回检查器</a><a href="./index.html">返回游戏</a></nav></header>
+<div class="tutorial-layout"><aside><details id="tutorial-toc" open><summary>课程目录</summary><nav aria-label="课程目录"><ol><li><a href="#lesson-1">1. 先看懂一个效果</a></li><li><a href="#lesson-2">2. 第一课：部署时抽两张牌</a></li><li><a href="#lesson-3">3. 第二课：让本单位获得 +1/+1</a></li><li><a href="#lesson-4">4. 第三课：让玩家选一个敌方单位</a></li><li><a href="#lesson-5">5. 第四课：筛选费用不超过 3 的单位</a></li><li><a href="#lesson-6">6. 第五课：加入手牌、三选一和开发</a></li><li><a href="#lesson-7">7. 进阶：只加强刚抽到的那张牌</a></li><li><a href="#lesson-8">8. 进阶：条件、重复、逐个执行怎么选</a></li><li><a href="#lesson-9">9. 常用属性和对象名称速查</a></li><li><a href="#lesson-10">10. 保存、验证和常见问题</a></li><li><a href="#lesson-11">11. 手机操作和 OrC 的位置</a></li><li><a href="#lesson-12">12. 可选：用原始数据核对第一课</a></li></ol></nav></details></aside><main><h1>Inspector 新手教程</h1>
+<p>Inspector 就是游戏里的「效果检查器」。它把卡牌效果拆成时机、对象、判断和动作，让你用界面组合效果。</p>
+<p>第一次使用，点击「新建卡」，在「从常见效果开始」中选择「部署时抽两张牌」。填好抽牌张数，点击「保存修改」即可。加攻防、选目标伤害和总部治疗也有现成例子。</p>
+<p>默认界面先显示常用设置。需要变量或算式时，展开「更多取值方式」，或点击顶部「显示进阶设置」。查看原始数据和标记实测通过的按钮在底部「更多工具」中。后面的课程可以按需要查阅。</p>
+<h2 id="lesson-1">1. 先看懂一个效果</h2>
+<p>例如：<strong>部署：对一个敌方单位造成 2 点伤害。</strong></p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>卡面里的话</th>
+<th>在检查器里设置什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>部署</td>
+<td>「什么时候执行」选「部署时」</td>
+</tr>
+<tr>
+<td>一个敌方单位</td>
+<td>添加一个由玩家选择的目标</td>
+</tr>
+<tr>
+<td>造成 2 点伤害</td>
+<td>添加「造成伤害」动作，数值填 2</td>
+</tr>
+</tbody>
+</table></div>
+<p>一张卡可以有多个效果；一个效果可以有多个动作。动作按从上到下的顺序执行，用动作标题旁的 ↑、↓ 调整顺序。</p>
+<p>「满足什么条件」决定这一整个效果是否执行；动作里的对象筛选决定哪些对象受到影响。这两个地方用途不同。</p>
+<h2 id="lesson-2">2. 第一课：部署时抽两张牌</h2>
+<p>在检查器里点击「新建卡」。展开「卡名和卡面说明」，把卡名改成「练习：补给」，卡面文字填成「部署：抽两张牌。」。新建卡默认是单位，适合这节练习。</p>
+<blockquote>
+<p>卡面文字是说明。只修改这段文字，不会自动改变下面的动作；文字和实际效果都要设置。</p>
+</blockquote>
+<ol>
+<li>在「从常见效果开始」中，点击「部署时抽两张牌」。</li>
+<li>在「效果 1」里，把「什么时候生效」设为「部署时」。</li>
+<li>在「抽几张牌」里填 <code>2</code>，「谁来抽牌」选「我方」。</li>
+<li>点击底部的「保存修改」。</li>
+</ol>
+<p>现在的效果是：<strong>部署时 → 我方抽两张牌</strong>。如果想研究底层组合，点击「显示进阶设置」，可看到它由「重复做几次」和「抽一张牌」组成。</p>
+<p>回到游戏，把这张练习卡加入牌组，在对战中部署它。保证卡组里还有牌、手牌至少有两个空位，观察是否抽到两张牌。</p>
+<p>卡组没牌或手牌已满时，不能只靠“手牌没有增加两张”判断效果有错。先在条件满足的局面验证。</p>
+<h2 id="lesson-3">3. 第二课：让本单位获得 +1/+1</h2>
+<p>创建另一张练习单位卡，使用「部署时」效果。分别添加两个「修改一个属性」动作。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>设置</th>
+<th>第一个动作</th>
+<th>第二个动作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>作用对象 → 选择方式</td>
+<td>效果来源</td>
+<td>效果来源</td>
+</tr>
+<tr>
+<td>属性</td>
+<td>攻击力</td>
+<td>防御力</td>
+</tr>
+<tr>
+<td>修改方式</td>
+<td>增加或减少</td>
+<td>增加或减少</td>
+</tr>
+<tr>
+<td>取值</td>
+<td>常量 → 数字 → <code>1</code></td>
+<td>常量 → 数字 → <code>1</code></td>
+</tr>
+<tr>
+<td>持续时间</td>
+<td>永久</td>
+<td>永久</td>
+</tr>
+</tbody>
+</table></div>
+<p>这里的「效果来源」就是拥有这个部署效果的单位。<code>+1/+1</code> 用两次属性修改组合出来。</p>
+<p>需要 <code>-1</code> 时，在「增加或减少」模式里填负数。需要把攻击力变成固定的 <code>5</code> 时，改用「设为」，再填 <code>5</code>。</p>
+<p>「本回合」表示当前回合结束时到期。手牌属性的临时修改尚不支持，新手先用永久修改。</p>
+<h2 id="lesson-4">4. 第三课：让玩家选一个敌方单位</h2>
+<p>目标：<strong>部署：对一个敌方单位造成 2 点伤害。</strong></p>
+<ol>
+<li>在效果里点击「＋ 玩家先选一个目标」。</li>
+<li>「目标名称」保留为 <code>target1</code>；「玩家提示」填「选择一个敌方单位」。</li>
+<li>「目标归属」选「敌方」，「可选区域」选「整个战场」，「对象种类」选「单位」。</li>
+<li>添加「造成伤害」动作。</li>
+<li>在动作的「作用对象」中，「选择方式」选「命名对象 / 列表」，「名称」填 <code>target1</code>。</li>
+<li>「数值」设为「常量 → 数字 → <code>2</code>」，保存修改。</li>
+</ol>
+<p>关键是：<strong>先把玩家选中的单位记作 <code>target1</code>，再让伤害动作使用 <code>target1</code>。</strong></p>
+<p>只添加目标、没有把动作指向它，动作不会自动改成“对玩家选中的单位生效”。名称必须完全一致，包括大小写。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>想要什么效果</th>
+<th>动作里的选择方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>影响全部符合条件的对象</td>
+<td>全部符合者</td>
+</tr>
+<tr>
+<td>随机影响一个对象</td>
+<td>随机选取，数量填 <code>1</code></td>
+</tr>
+<tr>
+<td>影响玩家选中的对象</td>
+<td>先声明目标，再用命名对象 / 列表</td>
+</tr>
+<tr>
+<td>影响拥有这个效果的单位</td>
+<td>效果来源</td>
+</tr>
+</tbody>
+</table></div>
+<p>想做「消灭一个单位及其相邻单位」：先照上面声明 <code>target1</code>，再添加「消灭单位」，作用对象改成「相邻单位」，名称填 <code>target1</code>，「包括指定单位」选「指定单位及相邻单位」。相邻关系只看同一阵线的实际位置，总部会隔开两侧的单位。</p>
+<h2 id="lesson-5">5. 第四课：筛选费用不超过 3 的单位</h2>
+<p>目标：<strong>部署：对所有费用不超过 3 的敌方单位造成 1 点伤害。</strong></p>
+<ol>
+<li>添加「造成伤害」，数值填 <code>1</code>。</li>
+<li>作用对象设为「全部符合者」「敌方」「整个战场」。</li>
+<li>点击「＋ 属性筛选（且 / 或 / 非）」。</li>
+<li>筛选保留「全部满足（且）」，点击「＋ 条件」。</li>
+<li>在新增的比较条件中，「对象属性」填 <code>cost</code>。</li>
+<li>比较方式选「不大于」，「右值」选「常量 → 数字」，填 <code>3</code>。</li>
+</ol>
+<p><code>cost</code> 是程序使用的属性名，意思是卡牌费用。可以从输入框的提示里选择，也可以直接输入。筛选字段不要填成中文「费用」。</p>
+<p>如果还要求“攻击力至少为 2”，就在同一个「全部满足（且）」下再加一项：属性 <code>attack</code>，比较方式「不小于」，右值 <code>2</code>。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>判断方式</th>
+<th>读成一句话</th>
+<th>空条件的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>全部满足（且）</td>
+<td>费用不超过 3，且攻击力至少为 2</td>
+<td>全部对象通过</td>
+</tr>
+<tr>
+<td>至少一个满足（或）</td>
+<td>是英国单位，或是美国单位</td>
+<td>没有对象通过</td>
+</tr>
+<tr>
+<td>取反（非）</td>
+<td>不满足里面的条件</td>
+<td>由里面的条件决定</td>
+</tr>
+</tbody>
+</table></div>
+<p>随机选择也会<strong>先筛选，再从符合条件的对象里随机取</strong>。区域选「整个战场」时不包含总部；想影响总部，要明确选择总部。</p>
+<h2 id="lesson-6">6. 第五课：加入手牌、三选一和开发</h2>
+<p>这三个动作都在「卡牌」分组里。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>动作</th>
+<th>适合哪种卡面</th>
+<th>怎么得到牌</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>加入手牌</td>
+<td>将一张指定牌加入手牌</td>
+<td>直接生成指定卡牌</td>
+</tr>
+<tr>
+<td>三选一</td>
+<td>从几张候选牌中选择一张</td>
+<td>展示候选，选一张加入手牌</td>
+</tr>
+<tr>
+<td>开发</td>
+<td>从指定范围开发一张牌</td>
+<td>随机展示最多三张不同的候选，选一张生成副本，并触发开发事件</td>
+</tr>
+</tbody>
+</table></div>
+<h3>直接加入一张指定牌</h3>
+<p>添加「加入手牌」。在「卡牌」字段选择或输入已有卡的 <strong>ID</strong>，归属选「我方」。输入框会提供卡牌提示。</p>
+<p>卡名是显示名称；ID 是定位卡牌的标识。不能随便填一个不存在的 ID。想生成一张新的衍生牌，要先把那张牌建好并保存进卡池。</p>
+<h3>固定三选一</h3>
+<ol>
+<li>添加「三选一」，「候选方式」选「指定候选牌」。</li>
+<li>在「候选卡池」里搜索一张牌，在候选下拉框中选中它，点击「加入候选卡池」。</li>
+<li>重复添加，最多指定三张不同的牌；用「移除」删掉不需要的候选。</li>
+<li>归属选「我方」，保存修改。</li>
+</ol>
+<p>候选按添加顺序展示。只有一张或两张也能运行；要做通常的“三选一”，就把三张都添加完整。只在搜索框里输入卡名，不会把它加入候选卡池。</p>
+<h3>从自定义范围随机三选一</h3>
+<p>把「候选方式」改成「从卡池随机取三张」，再设置「候选来源」。可以先指定一个更大的卡牌列表，也可以选完整卡池、卡组、手牌或弃牌区。</p>
+<p>例如“随机三选一英国单位”：来源选「完整卡池」，点击「＋ 卡池筛选条件」，在「全部满足（且）」里加入两项：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>对象属性</th>
+<th>比较方式</th>
+<th>右值类型</th>
+<th>右值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set</code></td>
+<td>等于</td>
+<td>常量 → 文字</td>
+<td><code>英国</code></td>
+</tr>
+<tr>
+<td><code>cardType</code></td>
+<td>等于</td>
+<td>常量 → 文字</td>
+<td><code>unit</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>想再限制费用不超过 3，增加 <code>cost</code> 不大于数字 <code>3</code> 的条件。</p>
+<h3>开发</h3>
+<p>添加「开发」，直接设置「候选卡池」。它使用和随机三选一一样的来源与筛选方法。</p>
+<p>例如“从自己的卡组中开发一个单位”：来源选「卡组」，「卡池归属」选「我方」，筛选 <code>cardType</code> 等于文字 <code>unit</code>。</p>
+<p>这里会<strong>复制</strong>所选卡牌；卡组里的原卡不会被抽走。开发还会触发「友方开发时」事件，单纯的三选一没有这个事件。</p>
+<p>几个边界要记住：</p>
+<ul>
+<li>从完整卡池、卡组等范围生成候选时，默认排除衍生牌和预备牌；需要时打开对应的「包含」选项。</li>
+<li>逐张指定候选 ID 时，可以有意加入衍生牌和预备牌。</li>
+<li>同一种卡不会重复占用多个候选位置。卡池不足三张时，展示实际候选。</li>
+<li>没有候选时，不出现选择窗口，也不产生开发事件。</li>
+<li>手牌已满时，选中的牌无法加入手牌；开发选择已经完成，开发事件仍会发生。</li>
+<li>卡组、手牌、弃牌区来源都是生成副本；隐藏的敌方手牌不能作为候选来源。</li>
+</ul>
+<p>「展开为基本动作」会把选择、读取卡牌 ID、加入手牌等步骤展开。刚入门时用这三个现成动作就够了；想精细调整每一步时再展开。保存前可以用 ↶ 撤销展开。</p>
+<h2 id="lesson-7">7. 进阶：只加强刚抽到的那张牌</h2>
+<p>目标：<strong>部署：抽一个单位，使其获得 +1/+1。</strong></p>
+<p>先添加「抽一张牌」：归属选「我方」，点击「＋ 作用对象」，用卡组查询筛选 <code>cardType</code> 等于文字 <code>unit</code>。它会抽出实际卡组中的单位。</p>
+<p>然后点击抽牌动作里的「＋ 当前对象名称」，把名称设为 <code>drawn</code>。这个名称记录实际抽到的手牌实例。</p>
+<p>接着添加两个「修改一个属性」，作用对象都使用「命名对象 / 列表」，名称填 <code>drawn</code>。分别永久增加攻击力和防御力 <code>1</code>。</p>
+<p>这样只会加强刚抽到的那张牌。直接查询“所有同名手牌”，可能连原先手里的另一张同名牌也一起加强。</p>
+<p>抽牌失败或新牌未能进入手牌时，<code>drawn</code> 是空列表，后面的属性修改不会改到其他牌。「加入手牌」「三选一」「开发」也能用「＋ 当前对象名称」记录实际加入的牌。</p>
+<h2 id="lesson-8">8. 进阶：条件、重复、逐个执行怎么选</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>需求</th>
+<th>用什么</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>整个效果满足条件才发动</td>
+<td>＋ 生效条件</td>
+<td>手牌少于 2 张时，才执行这个部署效果</td>
+</tr>
+<tr>
+<td>一部分动作有条件，另一部分照常执行</td>
+<td>条件分支</td>
+<td>手牌少于 2 张时抽牌，之后总是获得指挥点</td>
+</tr>
+<tr>
+<td>同一动作做固定次数</td>
+<td>重复执行</td>
+<td>抽两张牌 = 重复 2 次抽一张牌</td>
+</tr>
+<tr>
+<td>对一组对象分别计算或执行</td>
+<td>逐个执行</td>
+<td>每个单位按自己的攻击力获得防御力</td>
+</tr>
+<tr>
+<td>后面还要使用刚才的结果</td>
+<td>定义变量或动作的结果名称</td>
+<td>先记住一个随机单位，再连续加强它</td>
+</tr>
+<tr>
+<td>跨回合、跨事件保留计数</td>
+<td>写入记忆</td>
+<td>记录一个能力已经发动几次</td>
+</tr>
+</tbody>
+</table></div>
+<p>「逐个执行」中的「当前对象名称」默认是 <code>current</code>，它代表这一次遍历的对象。内部动作可用命名对象 <code>current</code>。</p>
+<p>「读取属性」用来拿到一个对象的值。选择后，第一个输入框填对象名称，如 <code>self</code>、<code>target1</code>、<code>drawn</code>；第二个输入框填属性路径，如 <code>attack</code>、<code>defense</code>。想获得“等于本单位防御力的攻击力”，就把修改攻击力的取值设为读取 <code>self</code> 的 <code>defense</code>。</p>
+<p>「计数」得到一组对象的数量；「算式」用来加、减、乘、除。变量通常只在本次效果的相应作用域里使用，分支、循环里新定义的变量不要当作外层结果使用。记忆适合跨事件计数，不用来保存单位列表。</p>
+<h2 id="lesson-9">9. 常用属性和对象名称速查</h2>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>属性路径</th>
+<th>意思</th>
+<th>比较时常用的值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>attack</code></td>
+<td>当前攻击力</td>
+<td>数字</td>
+</tr>
+<tr>
+<td><code>defense</code></td>
+<td>当前防御力</td>
+<td>数字</td>
+</tr>
+<tr>
+<td><code>printed.attack</code></td>
+<td>卡面攻击力</td>
+<td>数字</td>
+</tr>
+<tr>
+<td><code>printed.defense</code></td>
+<td>卡面防御力</td>
+<td>数字</td>
+</tr>
+<tr>
+<td><code>cost</code></td>
+<td>卡牌费用；手牌查询中读取实际费用</td>
+<td>数字</td>
+</tr>
+<tr>
+<td><code>opCost</code></td>
+<td>行动费用</td>
+<td>数字</td>
+</tr>
+<tr>
+<td><code>cardType</code></td>
+<td>卡牌种类</td>
+<td>文字 <code>unit</code>、<code>order</code>、<code>counter</code></td>
+</tr>
+<tr>
+<td><code>unitType</code></td>
+<td>兵种</td>
+<td>文字 <code>infantry</code>、<code>tank</code>、<code>artillery</code>、<code>fighter</code>、<code>bomber</code></td>
+</tr>
+<tr>
+<td><code>set</code></td>
+<td>本项目中通常用于国家</td>
+<td>文字 <code>英国</code>、<code>德国</code> 等；以实际卡牌资料为准</td>
+</tr>
+<tr>
+<td><code>keywords</code></td>
+<td>当前词条列表</td>
+<td>用「包含」比较词条 ID，如文字 <code>blitz</code>、<code>guard</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>blitz</code> 是闪击，<code>guard</code> 是固守。比较关键词时填词条 ID；为单位添加词条时，可以直接使用「设置一个词条」的中文选项。重甲等有数值的词条，还要设置相应的「取值」。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>对象名称</th>
+<th>指谁</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>self</code> / <code>source</code></td>
+<td>拥有当前效果的来源单位</td>
+</tr>
+<tr>
+<td><code>candidate</code></td>
+<td>正在筛选或为其计算数值的候选对象</td>
+</tr>
+<tr>
+<td><code>target1</code></td>
+<td>你声明的第一个玩家目标，名称可以自定义</td>
+</tr>
+<tr>
+<td><code>current</code></td>
+<td>「逐个执行」默认绑定的当前对象</td>
+</tr>
+<tr>
+<td><code>drawn</code> 等自定义名称</td>
+<td>你在前面的动作里记录的结果</td>
+</tr>
+<tr>
+<td><code>friendlyPlayer</code></td>
+<td>我方玩家，用于读取手牌数量、指挥点等</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些提示不是完整的字段白名单，自定义属性也可以读取。先用表里的字段练习，复杂字段再按实际卡牌数据查。</p>
+<h2 id="lesson-10">10. 保存、验证和常见问题</h2>
+<p><strong>保存修改</strong>把当前效果写入卡牌。普通保存不会把新效果自动标成“已在对战中验证”。<strong>标记已验证</strong>也会保存，适合实际测试过效果后使用；手机窄屏会隐藏这个按钮，用普通保存即可。</p>
+<p>底部显示「结构可执行；请在对战中验证行为。」表示结构检查通过，还要实际测试目标、动作顺序和数值。红色结构错误需要先修正，否则不能保存。</p>
+<p>↶、↷ 用来撤销和重做本次编辑。保存后撤销历史会重置，不能靠 ↶ 找回保存前的版本。未保存的草稿通常会在重新打开检查器时恢复，但草稿不等于正式保存。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>遇到的问题</th>
+<th>先检查什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>改了卡面文字，效果没变</td>
+<td>下方动作有没有同步修改</td>
+</tr>
+<tr>
+<td>本来只想影响一个单位，却影响了全部</td>
+<td>作用对象是否仍是「全部符合者」；是否引用了正确目标名称</td>
+</tr>
+<tr>
+<td>筛选没选出任何对象</td>
+<td>属性名、右值类型、内部 ID、区域和归属是否正确</td>
+</tr>
+<tr>
+<td>用了“或”，结果什么都不选</td>
+<td>「至少一个满足（或）」里面有没有条件</td>
+</tr>
+<tr>
+<td>后面动作找不到刚抽到的牌</td>
+<td>前面是否填写结果名称；后面名称是否完全一致；新牌是否实际进入手牌</td>
+</tr>
+<tr>
+<td>候选搜索到了，但三选一还是空池</td>
+<td>是否点击「加入候选卡池」；指定卡是否仍在卡池里</td>
+</tr>
+<tr>
+<td>部署效果不发动</td>
+<td>测试的是单位卡还是指令卡；单位用「部署时」，指令用「打出指令（默认）」</td>
+</tr>
+<tr>
+<td>效果反复叠加或重复抽牌</td>
+<td>是否误选「常驻 / 光环」；抽牌、伤害和生成卡牌应使用事件时机</td>
+</tr>
+<tr>
+<td>旧效果只显示保留数据</td>
+<td>目前没有可证明等价的拆分规则；可按卡面重新搭建，确认后再替换</td>
+</tr>
+</tbody>
+</table></div>
+<p>「常驻 / 光环」适合持续属性或词条修正，支持的动作范围比事件效果小。新手先完成部署效果，再学习光环。</p>
+<h2 id="lesson-11">11. 手机操作和 OrC 的位置</h2>
+<p>手机上点击「卡牌」可以切回卡牌列表，选卡后再进入编辑。内容较长时，在编辑区域上下滚动；底部「保存修改」一直保留。点开「新手教程」可以阅读本文，关闭教程后继续编辑。教程中的宽表格可以左右滑动；课程目录可以展开或收起。</p>
+<p>OrC 是卡面文字的自动解析器。卡牌编辑中的「自动解析效果」适合先生成草稿，Inspector 用来检查和手工调整每一步。未完整解析的内容要继续核对，不能只凭“有一些动作”就认定整段卡面都已实现。</p>
+<p>刚入门时，先用一张练习卡只测试一个简单效果。确认行为后，再叠加条件、多个目标和复杂表达式。</p>
+<h2 id="lesson-12">12. 可选：用原始数据核对第一课</h2>
+<p>不需要写 JSON 才能使用检查器。如果想核对结构，下面是第一课的完整效果数据。</p>
+<p>点击「原始数据」可查看当前卡的<strong>全部效果列表</strong>。粘贴下面内容会替换该列表，先在练习卡使用。数据必须是列表，注意开头和结尾的方括号；粘贴后仍要点击「保存修改」。</p>
+<pre><code class="language-json">[
+  {
+    &quot;trigger&quot;: &quot;deploy&quot;,
+    &quot;actions&quot;: [
+      {
+        &quot;op&quot;: &quot;loop&quot;,
+        &quot;times&quot;: 2,
+        &quot;actions&quot;: [
+          { &quot;op&quot;: &quot;drawOne&quot;, &quot;side&quot;: &quot;self&quot; }
+        ]
+      }
+    ]
+  }
+]
+</code></pre>
+<p>下一步可以把 <code>times</code> 改成 <code>3</code>，观察部署时是否抽三张牌。这和在界面里修改「重复次数」是同一件事。</p>
+</main></div>
+<script>
+document.documentElement.classList.toggle('embedded',window.self!==window.top);
+const narrow=matchMedia('(max-width: 760px)'),syncToc=()=>{document.getElementById('tutorial-toc').open=!narrow.matches;};syncToc();narrow.addEventListener('change',syncToc);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&window.self!==window.top){event.preventDefault();parent.postMessage({type:'inspector-tutorial-close'},'*');}});
+</script></body></html>

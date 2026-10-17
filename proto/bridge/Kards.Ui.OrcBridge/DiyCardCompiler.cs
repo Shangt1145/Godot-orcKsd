@@ -22,8 +22,9 @@ internal sealed record CompiledDiyCard(DiyCardDraft Draft, UiCardDefinition Card
 /// <summary>Finite authoring surface over native definitions/DSL. Never interprets editable prose as rules.</summary>
 public static class DiyCardCompiler
 {
-    public static IReadOnlyList<UiDiyChoice> Nations { get; } =
+    public static IReadOnlyList<UiDiyChoice> BuiltInNations { get; } =
         [new("av76", "苏联"), new("deran", "德国"), new("USG", "美国"), new("UN", "英国")];
+    public static IReadOnlyList<UiDiyChoice> Nations=>BuiltInNations.Concat(WorkshopAuthoring.Nations.Select(n=>new UiDiyChoice(n.Id,n.Name))).ToArray();
     public static IReadOnlyList<UiDiyChoice> Rarities { get; } =
         [new("iron", "基础"), new("bronze", "限定"), new("silver", "特殊"), new("gold", "精英")];
     // 引擎侧单位类型已数据化为 string 常量类（`UnitType.All` 即内置标识清单，规范小写）。
@@ -67,7 +68,7 @@ public static class DiyCardCompiler
         }
     }
 
-    public static IReadOnlyList<UiDiyChoice> Keywords { get { lock (KeywordGate) return _keywords; } }
+    public static IReadOnlyList<UiDiyChoice> Keywords { get { lock (KeywordGate) return _keywords.Concat(WorkshopAuthoring.KeywordChoices).ToArray(); } }
     public static IReadOnlyList<UiDiyChoice> Operations { get; } =
         [new("draw", "抽牌"), new("gainPoint", "获得指挥点"), new("gainSlot", "获得指挥点槽"),
          new("damage", "单位伤害"), new("buff", "攻防增益"), new("pin", "压制"),
@@ -100,9 +101,19 @@ public static class DiyCardCompiler
         foreach (var asset in assets)
         {
             var path = Path.Combine(directory, asset.File);
-            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllText(temporary, asset.Content, new UTF8Encoding(false));
-            File.Move(temporary, path, overwrite: true); paths.Add(path);
+            if (!File.Exists(path))
+            {
+                var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    File.WriteAllText(temporary, asset.Content, new UTF8Encoding(false));
+                    try { File.Move(temporary, path); }
+                    catch (Exception e) when ((e is IOException or UnauthorizedAccessException) && File.Exists(path))
+                    { /* Another host installed the same immutable, content-addressed asset. */ }
+                }
+                finally { File.Delete(temporary); }
+            }
+            paths.Add(path);
         }
         var ops = OpTemplateCatalog.LoadFiles(paths, out var failures);
         if (failures.Count > 0) throw new InvalidDataException(string.Join("；", failures.Select(f => f.Error)));
@@ -157,7 +168,10 @@ public static class DiyCardCompiler
     }
     internal static CompiledDiyCard Compile(DiyCardDraft draft, IReadOnlyList<UiCardDefinition> catalog)
     {
+        Orc.Plugins.BuiltIn.BuiltInPlugin.RegisterProcessDefaults();
+        _=DesktopCardAdmission.Read(draft);
         DiyCardLibrary.CheckShape(draft);
+        if(WorkshopAuthoring.CheckScope(draft) is { } scopeError)throw new InvalidDataException(scopeError);
         if (catalog.Any(c => c.CardId == draft.Id && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)))
             throw new InvalidDataException("DIY 卡牌不能覆盖原始卡牌");
         if (!Nations.Any(n => n.Id == draft.Nation) || !Rarities.Any(r => r.Id == draft.Rarity)
@@ -184,7 +198,7 @@ public static class DiyCardCompiler
         OrcTextCompile? textCompile = null;
         if (textMode)
         {
-            textCompile = OrcInspector.CompileText(draft.Id.Replace('/', '.'), effectText, draft.CardType);
+            textCompile = OrcInspector.CompileText(draft.Id.Replace('/', '.'), effectText, draft.CardType,catalog);
             if (textCompile.Problems.Count > 0)
                 throw new InvalidDataException(string.Join("；", textCompile.Problems));
             if (textCompile.Effects.Count == 0)
@@ -197,7 +211,7 @@ public static class DiyCardCompiler
             category: draft.CardType == "unit" ? CardCategory.Unit : CardCategory.Command,
             unitTypes: draft.CardType == "unit" ? [unitType] : [],
             keywords: KeywordDecls(draft, textCompile?.Parse),
-            faction: draft.Nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany, "USG" => Faction.USA, _ => Faction.Britain },
+            faction: draft.Nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany, "USG" => Faction.USA, "UN"=>Faction.Britain, _=>Faction.TryNormalize(draft.Nation,out var faction)?faction:throw new InvalidDataException("国家未注册") },
             rarity: draft.Rarity switch { "iron" => Rarity.Standard, "bronze" => Rarity.Limited, "silver" => Rarity.Special, _ => Rarity.Elite });
         var snapshots = new List<EffectSnapshot>();
         var components = native.Components.ToList();
@@ -282,6 +296,7 @@ public static class DiyCardCompiler
     private static KeywordDeclaration[] KeywordDecls(DiyCardDraft draft, OrcCompileResult? parse)
     {
         var list = new List<KeywordDeclaration>();
+        list.AddRange(DesktopCardAdmission.Read(draft));
         if (parse is not null)
             foreach (var keyword in parse.Keywords)
                 list.Add(new KeywordDeclaration(keyword.Id, keyword.Quantified ? keyword.Value : null));
@@ -316,13 +331,15 @@ public static class DiyCardCompiler
     private static bool KnownKeyword(string token)
     {
         lock (KeywordGate)
-            return KeywordMap.ContainsKey(token) || _packKeywords.ContainsKey(token);
+            return KeywordMap.ContainsKey(token) || _packKeywords.ContainsKey(token) || KeywordIds.All.Contains(token,StringComparer.Ordinal)||WorkshopAuthoring.TryKeyword(token,out _);
     }
     private static string EngineKeywordId(string token)
     {
         lock (KeywordGate)
             return KeywordMap.TryGetValue(token, out var engine) ? engine
                 : _packKeywords.TryGetValue(token, out var pack) ? pack
+                : WorkshopAuthoring.TryKeyword(token,out var workshop)?workshop
+                : KeywordIds.All.Contains(token,StringComparer.Ordinal)?token
                 : throw new InvalidDataException("含未接入的词条：" + token);
     }
     private static void CheckEffect(string type, DiyEffectDraft e)

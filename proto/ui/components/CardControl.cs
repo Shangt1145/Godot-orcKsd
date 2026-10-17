@@ -175,7 +175,7 @@ public partial class CardControl : Control
             "smokescreen" => "烟幕", "mobilize" => "动员", "pincer" => "钳击",
             "covert" => "隐蔽", "suppressed" => "被压制", "inhibited" => "被抑制",
             "veteran" => "★ 老兵",
-            _ => "◇ " + keyword
+            _ => "◇ " + Kards.Ui.OrcBridge.WorkshopAuthoring.KeywordLabel(keyword)
         };
         return values.TryGetValue(keyword, out var n) ? $"{name} {n}" : name;
     }

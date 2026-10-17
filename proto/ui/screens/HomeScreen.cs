@@ -72,6 +72,6 @@ public partial class HomeScreen : VBoxContainer
         _deckDetail.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
         var hint = UiStyles.Label("在顶部“我的卡组”中更换、编辑或导入卡组。", 14, UiStyles.MenuDim); hint.AutowrapMode = TextServer.AutowrapMode.WordSmart; _deckDetail.AddChild(hint);
         PlayButton.Text = ReadyToPlay ? "开始对战  →" : "选择卡组  →";
-        _inventory.Text = $"已保存卡组  {_library.Decks.Count}       /       卡牌收藏  {_service.Cards.Count}       /       自定义卡牌  {_service.CustomCards.Count}";
+        _inventory.Text = $"已保存卡组  {_library.Decks.Count}       /       可用卡牌  {_service.PlayableCards.Count}       /       自定义卡牌  {_service.CustomCards.Count}";
     }
 }

@@ -1,0 +1,67 @@
+[
+  {
+    "id": "bloody_sickle",
+    "sha256": "4784266C4214520F5C37E8413FAF98514B3874FC46920FCC2A39583FCD57D008",
+    "text": "对 1 个单位和友方总部造成 1 点伤害，抽 1 张牌。"
+  },
+  {
+    "id": "winter_warfare",
+    "sha256": "034FC52350B10EE7FE7B9745DD5FF49DA2E3489125E933A83D34899545B70A09",
+    "text": "对所有目标造成 1 点伤害。"
+  },
+  {
+    "id": "95th_rifle_regiment",
+    "sha256": "ED011CD9B3E36BA0A56F6EE8E6AD8D796303DA8C8D4352E80C0FD9547B9C9823",
+    "text": "部署：对 1 个单位和友方总部造成 1 点伤害。"
+  },
+  {
+    "id": "desperate_measures",
+    "sha256": "823021E6CF9A976C5B8FFF88B55A060573C8D19FC01F114F1ABE314E61BCB878",
+    "text": "对所有敌方目标造成 2 点伤害。友方失去 1 个指挥点槽。"
+  },
+  {
+    "id": "t35",
+    "sha256": "D96E6E9FDABFA095C52DFAB7AD428EB745E4ECC3F080311D5C6C97C13D3E2877",
+    "text": "友方回合结束时，对双方总部造成 1 点伤害。"
+  },
+  {
+    "id": "tora_tora_tora",
+    "sha256": "5149C1879177985130334FFEF2F50A2B99FBEB853BE762A0B9BBD6ADEEF38501",
+    "text": "对所有敌方目标造成 1 点伤害。"
+  },
+  {
+    "id": "152mm_howitzer_gun",
+    "sha256": "927B1A7BD0D33F2F33041515B0E32773A396AEC0292909DC1EBB71C5D5D86008",
+    "text": "亡计：对所有目标造成 1 点伤害。"
+  },
+  {
+    "id": "at_all_cost",
+    "sha256": "7481F578E169D00D2990FCF5D79DEEB3362A3E7E6DF30DC8945848F303E9B336",
+    "text": "消灭 1 个友方单位。对所有目标造成 2 点伤害。"
+  },
+  {
+    "id": "breda_ba_65",
+    "sha256": "AA11B5F8CF8C682C133983E32BA37BBE35EDBBAEA0DA968CCA078BF03455D6CC",
+    "text": "部署：对所有敌方目标造成 1 点伤害。"
+  },
+  {
+    "id": "great_patriotic_war",
+    "sha256": "0805DB32A10462006EDA531547AF80990E3983A2941F4436B5E48CD17FF6262A",
+    "text": "使双方总部的防御力为 12。"
+  },
+  {
+    "id": "manhattan_project",
+    "sha256": "48E3692086CAE17317EB170432810D09C63BAE392FF791CA9287642755F34C87",
+    "text": "对所有敌方目标造成 6 点伤害。"
+  },
+  {
+    "id": "strategic_bombing",
+    "sha256": "9DD273D188B67CC0B41A7A954D7E45C3043AB06E750DCABCCD36D813E865D711",
+    "text": "对敌方支援阵线所有目标造成 3 点伤害。敌方失去 1 个指挥点槽。"
+  },
+  {
+    "id": "winter_offensive",
+    "sha256": "886C4DC61CE28BD2A262A026DD4A51541E728A0F0A5EBDC7FAB5EEC84B5CA01F",
+    "text": "对所有目标造成 4 点伤害。"
+  }
+]

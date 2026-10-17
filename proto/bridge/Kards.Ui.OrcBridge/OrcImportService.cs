@@ -25,7 +25,7 @@ namespace Kards.Ui.OrcBridge;
 
 /// <summary>一行导入源卡（字段取官方语料口径；Type 兼容英文枚举与中文）。</summary>
 public sealed record OrcImportRow(string Id, string Name, string Type,
-    int Cost, int OpCost, int Attack, int Defense, string Text);
+    int Cost, int OpCost, int Attack, int Defense, string Text,string? DesktopJson=null);
 
 /// <summary>单行导入结果。Complete＝零诊断且编译成功；否则为待核对（诊断 + 原文）。
 /// Entry/Snapshots 供对局装配（pool 条目 + 效果注册）；Pending 两项为空。</summary>
@@ -35,21 +35,23 @@ public sealed record OrcImportOutcome(
     string SourceText, IReadOnlyList<string> Diagnostics,
     CardDefinitionEntry? Entry = null, IReadOnlyList<EffectSnapshot>? Snapshots = null)
 {
+    public string? DesktopEffectsJson {get;init;}
     public static OrcImportOutcome Pending(OrcImportRow row, IReadOnlyList<string> diagnostics) =>
         new(row.Id, row.Name, false, null, null, row.Text, diagnostics);
 }
 
 public static class OrcImportService
 {
-    private static readonly Wordbook Book = Wordbook.Create(null);
 
     public static IReadOnlyList<OrcImportOutcome> ImportBatch(IEnumerable<OrcImportRow> rows,
         IReadOnlyList<UiCardDefinition> catalog)
     {
+        var rowList=rows.ToArray();
+        var names=catalog.Concat(rowList.Select(r=>DiyCardCompiler.Preview(new DiyCardDraft {Id=r.Id,Name=r.Name,CardType=NormalizeType(r.Type)?.Item1??"counter",UnitType=NormalizeType(r.Type)?.Item2??"",Cost=r.Cost,Attack=r.Attack,Defense=r.Defense,OpCost=r.OpCost},catalog))).GroupBy(c=>c.CardId).Select(g=>g.Last()).ToArray();
         var outcomes = new List<OrcImportOutcome>();
-        foreach (var row in rows)
+        foreach (var row in rowList)
         {
-            try { outcomes.Add(ImportOne(row, catalog)); }
+            try { outcomes.Add(ImportOne(row, names)); }
             catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException
                 or JsonException or ArgumentException or InvalidOperationException or FormatException
                 or OrcReject)
@@ -62,9 +64,33 @@ public static class OrcImportService
 
     private static OrcImportOutcome ImportOne(OrcImportRow row, IReadOnlyList<UiCardDefinition> catalog)
     {
+        Orc.Plugins.BuiltIn.BuiltInPlugin.RegisterProcessDefaults();
         var (cardType, unitType) = NormalizeType(row.Type)
             ?? throw new InvalidDataException("反制卡不在当前导入编译面（unit/order）内");
-        var compile = OrcParser.Compile(row.Text, cardType, Book);
+        var compile = DesktopOrc.Compile(row.Text, cardType, catalog,row.DesktopJson);
+        var faction=Faction.Soviet;var rarity=Rarity.Standard;var nation="av76";var rarityToken="iron";
+        if(row.DesktopJson is { } metadata)
+        {
+            using var metadataDoc=JsonDocument.Parse(metadata);var raw=metadataDoc.RootElement;
+            var accepted=new[]{"id","name","type","cardType","unitType","cost","attack","defense","opCost","text","effects","nation","set","rarity","keywords","kwMap","kwValues","art","file","src","custom","official","expansion","reserved","importDiagnostics","effectStatus","compileWarnings","orc","token"};
+            foreach(var field in raw.EnumerateObject())if(!accepted.Contains(field.Name,StringComparer.Ordinal))return OrcImportOutcome.Pending(row,["OrC-KSD 导入字段尚无无损执行适配："+field.Name]);
+            foreach(var mechanism in new[]{"upgradeTo","baseForm","exileNation","aura","hqEffects","system"})
+                if(raw.TryGetProperty(mechanism,out _))return OrcImportOutcome.Pending(row,["OrC-KSD 导入机制字段尚无无损适配："+mechanism]);
+            if(raw.TryGetProperty("token",out var token)&&token.ValueKind==JsonValueKind.True)return OrcImportOutcome.Pending(row,["衍生卡已保留；普通构筑准入尚未适配衍生标记"]);
+            var country=raw.TryGetProperty("nation",out var n)?n.GetString():raw.TryGetProperty("set",out var set)?set.GetString():null;
+            faction=country switch{"德国" or "deran"=>Faction.Germany,"美国" or "USG"=>Faction.USA,"英国" or "UN"=>Faction.Britain,"苏联" or "av76" or "自定义" or null=>Faction.Soviet,_=>country};
+            if(!Faction.All.Contains(faction,StringComparer.Ordinal))return OrcImportOutcome.Pending(row,["OrC-KSD 导入国籍未适配："+country]);
+            nation=faction switch{Faction.Germany=>"deran",Faction.USA=>"USG",Faction.Britain=>"UN",Faction.Soviet=>"av76",_=>faction};
+            rarityToken=raw.TryGetProperty("rarity",out var r)&&r.ValueKind==JsonValueKind.String?r.GetString()!:"iron";
+            rarity=rarityToken switch{"iron" or "Standard"=>Rarity.Standard,"bronze" or "Limited"=>Rarity.Limited,"silver" or "Special"=>Rarity.Special,"gold" or "Elite"=>Rarity.Elite,_=>rarityToken};
+            if(!Rarity.All.Contains(rarity,StringComparer.Ordinal))return OrcImportOutcome.Pending(row,["OrC-KSD 导入稀有度未适配："+rarityToken]);
+        }
+        if(compile.DesktopResultJson is { } full)
+        {
+            using var original=JsonDocument.Parse(full);
+            if(original.RootElement.GetProperty("cardFields").EnumerateObject().Any())
+                return OrcImportOutcome.Pending(row,["OrC-KSD 卡面机制字段尚无无损适配："+original.RootElement.GetProperty("cardFields").GetRawText()]);
+        }
         if (compile.Diagnostics.Count > 0)
             return OrcImportOutcome.Pending(row, compile.Diagnostics.Select(d => d.ToString()).ToList());
 
@@ -73,13 +99,16 @@ public static class OrcImportService
         // 会编译冲突（引擎面限制，禁改引擎）——逐 op 实例语义等价且天然顺序执行。
         var snapshots = new List<EffectSnapshot>();
         var snapshotJsons = new List<JsonElement>();
-        foreach (var parsedEffect in compile.Effects)
+        foreach (var rawEffect in compile.Effects)
+        {
+        var parsedEffect=rawEffect.DesktopJson is {Length:>0} graph ? DesktopNativeLowering.Lower(graph) : rawEffect;
         foreach (var op in parsedEffect.Ops)
         {
             var (snapshot, snapshotText) = CompileOrcEffect(row.Id, parsedEffect with { Ops = [op] });
             snapshots.Add(snapshot);
             using var doc = JsonDocument.Parse(snapshotText);
             snapshotJsons.Add(doc.RootElement.Clone());
+        }
         }
 
         var cardId = "orc/" + row.Id;
@@ -90,8 +119,7 @@ public static class OrcImportService
             unitTypes: cardType == "unit" ? [unitType] : [],
             keywords: compile.Keywords.Select(k => new KeywordDeclaration(k.Id,
                 k.Quantified ? k.Value : null)).ToArray(),
-            faction: Faction.Soviet, // 国家面待导入元数据补全（语料 nation 字段），默认苏联占位并在诊断面提示
-            rarity: Rarity.Standard);
+            faction: faction,rarity: rarity);
         var components = native.Components.ToList();
         if (snapshotJsons.Count > 0)
         {
@@ -120,13 +148,15 @@ public static class OrcImportService
         var draft = new DiyCardDraft
         {
             Id = cardId, Name = row.Name.Trim(), CardType = cardType, UnitType = unitType,
+            Nation=nation,Rarity=rarityToken,
             Cost = row.Cost, OpCost = row.OpCost, Attack = row.Attack, Defense = row.Defense,
             Keywords = [.. compile.Keywords.Select(k => k.Id)],
         };
         var card = DiyCardCompiler.Preview(draft, catalog);
         // roundTrip（反序列化产物）作为 pool 条目——与对局装载走同一解析面，杜绝"预检能过、装载报错"。
         return new(row.Id, row.Name, true, card, json, row.Text, [],
-            new CardDefinitionEntry(cardId, roundTrip), snapshots.AsReadOnly());
+            new CardDefinitionEntry(cardId, roundTrip), snapshots.AsReadOnly())
+            {DesktopEffectsJson=JsonSerializer.Serialize(compile.Effects.Select(e=>JsonSerializer.Deserialize<JsonElement>(e.DesktopJson!)))};
     }
 
     /// <summary>
@@ -135,45 +165,14 @@ public static class OrcImportService
     /// </summary>
     public static IReadOnlyList<OrcImportRow> ParseRows(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        List<JsonElement> items;
-        if (doc.RootElement.ValueKind == JsonValueKind.Array) items = doc.RootElement.EnumerateArray().ToList();
-        else if (doc.RootElement.ValueKind == JsonValueKind.Object
-            && doc.RootElement.TryGetProperty("cards", out var cards)
-            && cards.ValueKind == JsonValueKind.Array)
+        var normalized=DesktopOrc.Request(new {method="importRows",text=json});
+        return normalized.EnumerateArray().Select(c=>
         {
-            items = [];
-            foreach (var card in cards.EnumerateArray())
-            {
-                if (card.ValueKind != JsonValueKind.Object) continue;
-                items.Add(card.TryGetProperty("json", out var inner) && inner.ValueKind == JsonValueKind.Object
-                    ? inner.Clone() : card.Clone());
-            }
-        }
-        else throw new InvalidDataException("导入 JSON 需为行数组或 {\"cards\":[…]} 语料结构");
-        var rows = new List<OrcImportRow>();
-        foreach (var item in items)
-        {
-            if (item.ValueKind != JsonValueKind.Object) continue;
-            string Text(string key) => item.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
-                ? v.GetString()! : "";
-            int Num(string key, int fallback) => item.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number
-                ? v.GetInt32() : fallback;
-            var name = Text("name");
-            var text = item.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.Object
-                && t.TryGetProperty("zh-Hans", out var zh) && zh.ValueKind == JsonValueKind.String
-                    ? zh.GetString()! : Text("text");
-            if (name.Length == 0 && text.Length == 0) continue; // 无名无文的条目跳过（非卡数据）
-            var id = Text("id");
-            if (id.Length == 0) id = "row-" + (rows.Count + 1);
-            rows.Add(new OrcImportRow(id, name.Length == 0 ? id : name,
-                Text("type").Length == 0 ? "unit" : Text("type"),
-                Num("cost", 1), Num("opCost", 1), Num("attack", 0), Num("defense", 1), text));
-        }
-        if (rows.Count == 0) throw new InvalidDataException("导入 JSON 未发现可导入的卡行");
-        return rows;
+            string Str(string key)=>c.TryGetProperty(key,out var v)&&v.ValueKind==JsonValueKind.String?v.GetString()!:"";
+            int Num(string key,int fallback)=>c.TryGetProperty(key,out var v)&&v.ValueKind==JsonValueKind.Number?v.GetInt32():fallback;
+            return new OrcImportRow(Str("id"),Str("name"),Str("cardType")=="unit"?Str("unitType"):Str("cardType"),Num("cost",1),Num("opCost",1),Num("attack",0),Num("defense",1),Str("text"),c.GetRawText());
+        }).ToArray();
     }
-
     /// <summary>语料类型 → (编译卡类型, 引擎兵种)。反制卡返回 null（编译面外，待核对）。</summary>
     private static (string, string)? NormalizeType(string type) => type.Trim() switch
     {
@@ -184,7 +183,8 @@ public static class OrcImportService
         "artillery" or "火炮" or "炮兵" => ("unit", "artillery"),
         "fighter" or "战斗机" => ("unit", "fighter"),
         "bomber" or "轰炸机" => ("unit", "bomber"),
-        _ => ("unit", "infantry"),
+        "unit" or "单位" => ("unit", "infantry"),
+        _ => null,
     };
 
     /// <summary>编译单个触发效果：引擎触发模板（嵌入资源）+ op 资产 → EffectSnapshot。</summary>
@@ -197,6 +197,8 @@ public static class OrcImportService
         IReadOnlyList<DslOp> ops = effect.Ops;
         if (effect.Hook is { } hook)
         {
+            if (hook == "card.died" && effect.Guard == OrcTriggerGuard.SelfCard)
+                hook = Orc.Game.GameHooks.CardDying;
             template = EffectTemplateJson.Deserialize(JsonSerializer.Serialize(new
             {
                 schemaVersion = 1,
@@ -243,13 +245,18 @@ public static class OrcImportService
         var result = driver.CompileDsl(DslJson.Serialize(dsl),
             rowId.Replace('/', '.') + "." + effect.TemplateId + ".effect");
         if (result.Report.Failures.Count > 0 || result.Report.UnresolvedTraces.Count > 0
-            || result.Report.NeedsCsxTraces.Count > 0 || result.Report.PlaceholderConditionTraces.Count > 0
+            || (!effect.NativeGenerated && result.Report.NeedsCsxTraces.Count > 0) || result.Report.PlaceholderConditionTraces.Count > 0
             || result.Artifacts.Count != 1)
             throw new InvalidDataException("效果无法完整编译：" + string.Join("；", result.Report.Failures
                 .Select(f => f.Reason)
                 .Concat(result.Report.UnresolvedTraces.Select(t => t.Reason))
                 .Concat(result.Report.NeedsCsxTraces.Select(t => $"{t.Location} 需要补全脚本：{t.Script}"))
                 .Concat(result.Report.PlaceholderConditionTraces.Select(t => $"{t.Location} 条件未实现：{t.RawText}"))));
+        if(effect.NativeGenerated)
+        {
+            var instance=DynamicEffectFactory.Instantiate(new LogicEngine {ScriptEvaluator=NativeScriptHost.Evaluator},result.Artifacts[0].Snapshot);
+            if(!instance.Success)throw new InvalidDataException("原生声明脚本无法实例化："+instance.Error);
+        }
         return (result.Artifacts[0].Snapshot, result.Artifacts[0].JsonText);
     }
 

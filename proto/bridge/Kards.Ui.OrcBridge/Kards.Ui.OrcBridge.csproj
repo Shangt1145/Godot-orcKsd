@@ -22,12 +22,11 @@
     <EmbeddedResource Include="Resources/verified-cards.json" LogicalName="Kards.Ui.OrcBridge.verified-cards.json" />
     <!-- 测试直测转换器的拒绝分支（块级 condition 等无法经公开准入面触发的形状）。 -->
     <InternalsVisibleTo Include="Kards.Ui.Tests" />
+    <EmbeddedResource Include="DesktopAuthoring/**/*" Exclude="DesktopAuthoring/css/**;DesktopAuthoring/*.html;DesktopAuthoring/*.cjs;DesktopAuthoring/workbench.js;DesktopAuthoring/js/effect-editor.js;DesktopAuthoring/js/inspector-help.js" LogicalName="Kards.Ui.Desktop.%(RecursiveDir)%(Filename)%(Extension)" />
     <!-- Runtime assets, embedded so Godot's in-memory assembly loading needs no Assembly.Location. -->
-    <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/ops/*.csx.tpl"
-                      LogicalName="Kards.Ui.OrcBridge.DiyOps.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/ops/*.csx.tpl" LogicalName="Kards.Ui.OrcBridge.DiyOps.%(Filename)%(Extension)" />
     <!-- OrC 导入：引擎触发模板（effectHost 语义原版，31 张）——模板 id 与 DslEffectInstance 对齐。 -->
-    <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/*.tpl.json"
-                      LogicalName="Kards.Ui.OrcBridge.OrcTpl.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/*.tpl.json" LogicalName="Kards.Ui.OrcBridge.OrcTpl.%(Filename)%(Extension)" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
     <!-- 迁移 S8：宿主/包管理（EngineHost / CardPackLoader）、脚本求值器与内置 UI 插件（投影提供者）。 -->
@@ -35,5 +34,10 @@
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Packages/Orc.Packages.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/Orc.Plugins.BuiltIn.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.UI/Orc.UI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ClearScript.V8" Version="7.5.1.1" />
+    <PackageReference Include="Microsoft.ClearScript.V8.Native.win-x64" Version="7.5.1.1" />
   </ItemGroup>
 </Project>

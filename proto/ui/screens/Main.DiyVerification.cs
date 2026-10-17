@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 using Kards.Ui.OrcBridge;
@@ -40,6 +40,8 @@ public partial class Main
         var speed = _clock.Current; var quiet = _clock.ReducedMotion;
         _clock.SetSpeed(Enum.GetValues<AnimClock.Speed>().Last()); _clock.SetReducedMotion(false);
         StopRealMatch(); Show("editor");
+        var testPack=_workshopLibrary.Packs.FirstOrDefault(p=>!p.IsExpansion)??new Kards.Ui.Contracts.DiyPackDraft{Name="工坊回归测试卡包"};
+        _workshopLibrary.Save(testPack);RefreshDiy();_workshop.OpenPack(testPack);
         async Task Until(Func<bool> done)
         {
             var deadline = Time.GetTicksMsec() + 20_000;
@@ -54,12 +56,29 @@ public partial class Main
         {
             _diyEditor.Load(new DiyCardDraft());
             _diyEditor.CardName.Text = "DIY 补给步兵"; _diyEditor.Cost.Value = 0; _diyEditor.OpCost.Value = 0;
-            DiyEditorScreen.Select(_diyEditor.Art, "USG/units/_4");
+            var importedImage = ProjectSettings.GlobalizePath("res://artifacts/diy/import-only-probe.png");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(importedImage)!);
+            var image = Image.CreateEmpty(64, 64, false, Image.Format.Rgba8);
+            image.Fill(new Color("426b87")); image.SavePng(importedImage);
+            _diyEditor.OnArtImported(importedImage);
+            Check(_diyEditor.Draft.ArtFile.Length > 0 && _diyEditor.Draft.ArtCardId.Length == 0,
+                "DIY image import did not replace legacy artwork references.");
+            Check(DiyArtStore.Load(_diyEditor.Draft.ArtFile) is not null, "Imported artwork cannot be decoded.");
+            image.Fill(new Color("a45136")); image.SavePng(importedImage);
+            _diyEditor.OnArtImported(importedImage);
+            var replaced = _textures.Get("diyart://" + _diyEditor.Draft.ArtFile)!.GetImage().GetPixel(0, 0);
+            Check(replaced.IsEqualApprox(new Color("a45136")), "Replacing imported artwork retained a cached old image.");
+            _diyEditor.ArtZoom.Value = 150;
+            await DiyClickAsync(_diyEditor.RemoveArtButton);
+            Check(_diyEditor.Draft.ArtFile.Length == 0 && _diyEditor.Draft.ArtCardId.Length == 0,
+                "Removing artwork restored an existing-card reference.");
+            _diyEditor.OnArtImported(importedImage);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await DiyCaptureAsync("initial");
             await DiyClickAsync(_diyEditor.OpenEffectsButton);
             Check(_active == "diyfx", "Open effects editor button did not switch screens.");
+            _diyEffects.ShowCompatibility(); // This regression covers the retained legacy rows.
             await DiyClickAsync(_diyEffects.AddEffectButton);
             Check(_diyEffects.EffectRows.Count == 1, "Add effect mouse click failed.");
             _diyEffects.EffectRows[0].Amount.Value = 2;
@@ -71,6 +90,9 @@ public partial class Main
             var unit = _diyEditor.Draft;
             Check(_diy.Cards.Any(c => c.Id == unit.Id) && !_diyEditor.IsDirty, "DIY unit was not saved: " + _diyEditor.Notice);
             Check(new DiyCardLibrary(_diyPath).Cards.Any(c => c.Id == unit.Id), "DIY unit did not survive reload.");
+            var savedArt = new DiyCardLibrary(_diyPath).Cards.Single(c => c.Id == unit.Id);
+            Check(savedArt.ArtFile == unit.ArtFile && savedArt.ArtCardId.Length == 0 && DiyArtStore.Has(savedArt.ArtFile),
+                "Imported artwork was not preserved on save/reload.");
             Check(_deckService.PlayableIds.Contains(unit.Id) && _catalog.Cards.Any(c => c.CardId == unit.Id), "Saved DIY did not reach catalog/deck pool.");
             _diyEditor.Attack.Value = 5; await DiyClickAsync(_diyEditor.SaveButton);
             unit = _diyEditor.Draft; Check(_diy.Cards.Single(c => c.Id == unit.Id).Attack == 5, "DIY edit did not overwrite its own identity.");
@@ -132,6 +154,11 @@ public partial class Main
             var baseDeck = _deckService.Starter(5);
             _deckEditor.Load(baseDeck with { Name = "DIY 验收卡组", CardIds = baseDeck.CardIds.Take(4).ToArray() });
             _diyEditor.Load(unit); await DiyClickAsync(_diyEditor.ConstructButton);
+            if (_deckPackPicker.Visible)
+            {
+                await DeckClickAsync(_deckPackPicker.Choices[DeckCardPacks.Of(unit.Id)]);
+                await DeckClickAsync(_deckPackPicker.GetOkButton());
+            }
             Check(_active == "deck", "DIY construct button did not open builder.");
             _deckEditor.Search.Text = unit.Id;
             _deckEditor.Search.EmitSignal(LineEdit.SignalName.TextChanged, unit.Id);

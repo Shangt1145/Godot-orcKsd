@@ -38,6 +38,7 @@ public sealed partial class OrcMatchSession : IDisposable
     private string[]? _pendingSelection;
     private int? _pendingSlot;
     private SourceEffectAssembly? _effects;
+    private DesktopTargetContext? _desktopTargets;
     private bool _interactiveCommand;
     private CancellationToken _activeCommandToken;
     private string? _pendingGapId;
@@ -85,6 +86,7 @@ public sealed partial class OrcMatchSession : IDisposable
         _lifetime.Cancel();
         CancelTargetChoice();
         _effects?.Dispose();
+        _desktopTargets?.Dispose();
         if (_pendingMulligan is { } pending) pending.Submit(new CancelEvent());
         _pendingMulligan = null;
         MulliganRequestId = null;
@@ -142,8 +144,11 @@ public sealed partial class OrcMatchSession : IDisposable
         constructedDeck = constructedDeck?.Snapshot();
         if (constructedDeck is not null)
         {
-            var problems = ConstructionRules.Validate(constructedDeck, completeCards, pool.Select(e => e.Id).ToHashSet());
-            if (problems.Count > 0) throw new InvalidDataException(string.Join("；", problems));
+            var availablePacks = pool.Select(e => DeckCardPacks.Of(e.Id)).ToHashSet(StringComparer.Ordinal);
+            var problems = ConstructionRules.Validate(constructedDeck, completeCards, pool.Select(e => e.Id).ToHashSet())
+                .Concat(DeckCardPacks.Selected(constructedDeck).Where(p => !availablePacks.Contains(p))
+                    .Select(p => "所选卡包已不可用：" + p)).ToArray();
+            if (problems.Length > 0) throw new InvalidDataException(string.Join("；", problems));
             if (openingHand is not null) throw new InvalidDataException("构筑卡组不能替换起手牌");
         }
         IReadOnlyList<string> deck = constructedDeck?.CardIds ?? DeckBuilder.BuildVerified(reviewed, seed);
@@ -157,7 +162,16 @@ public sealed partial class OrcMatchSession : IDisposable
         try
         {
             session._effects = new SourceEffectAssembly(session.Match, effects, reason => session.LastRejectionReason ??= reason);
-            session._host.SetOrderTargetReader(session._effects.ReadOrderTargets);
+            var desktopPlans=new Dictionary<string,string[]>(StringComparer.Ordinal);
+            foreach(var content in packSet.Contents)
+                foreach(var plan in PackPresentationData.Plans(content)) desktopPlans.Add(plan.Key,plan.Value);
+            foreach(var card in custom)desktopPlans[card.Draft.Id]=(card.Draft.OrcEffects.Length>0
+                ?card.Draft.OrcEffects.Where(e=>e.DesktopJson is not null).Select(e=>e.DesktopJson!).ToArray()
+                :card.Draft.EffectText.Length>0?OrcInspector.CompileText(card.Draft.Id,card.Draft.EffectText,card.Draft.CardType).Parse.Effects.Select(e=>e.DesktopJson!).ToArray():[]).Concat(WorkshopAuthoring.KeywordGraphs(card.Draft)).ToArray();
+            foreach(var card in importedCards.Where(c=>c.DesktopEffectsJson is not null))
+            {using var graph=System.Text.Json.JsonDocument.Parse(card.DesktopEffectsJson!);desktopPlans[card.Entry!.Id]=graph.RootElement.EnumerateArray().Select(e=>e.GetRawText()).ToArray();}
+            session._desktopTargets=new DesktopTargetContext(session.Match,desktopPlans);
+            session._host.SetOrderTargetReader(p=>session._effects.ReadOrderTargets(p).Concat(session._desktopTargets.ReadOrderTargets(p)).ToArray());
             session._host.SetSourceDefinitions(completeCards);
             session.CardPoolReport = report;
             return session;
@@ -240,7 +254,7 @@ public sealed partial class OrcMatchSession : IDisposable
         });
         // 引擎侧阵营已数据化为 string 常量类（真源＝资产服务）。
         string FactionOf(string nation) => nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany,
-            "USG" => Faction.USA, "UN" => Faction.Britain, _ => throw new InvalidDataException("未知构筑国家") };
+            "USG" => Faction.USA, "UN" => Faction.Britain, _ => Faction.TryNormalize(nation, out var faction) ? faction : throw new InvalidDataException("未知构筑国家") };
         PlayerDeckConfiguration? Config(DeckOptions? options) => options is null ? null
             : new PlayerDeckConfiguration(FactionOf(options.MainNation), FactionOf(options.AllyNation));
         var packSet = packs ?? PackSet.FromSnapshot(OrcEngineHost.Snapshot());
@@ -326,6 +340,7 @@ public sealed partial class OrcMatchSession : IDisposable
         foreach (var content in packSet.Contents)
         {
             var prefix = content.Prefix;
+            var texts = PackPresentationData.Texts(content);
             foreach (var entry in content.Definitions)
             {
                 var rawId = entry.Id.StartsWith(prefix, StringComparison.Ordinal)
@@ -333,7 +348,7 @@ public sealed partial class OrcMatchSession : IDisposable
                     : entry.Id;
                 result.Add(StaticCardProjection.Project(
                     entry.Id, entry.Definition, artLookup,
-                    text: content.Texts.TryGetValue(rawId, out var text) ? text : null));
+                    text: texts.TryGetValue(rawId, out var text) ? text : null));
             }
         }
 

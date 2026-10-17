@@ -82,10 +82,11 @@ public class DiyInspectorTests(ITestOutputHelper output)
         var fromStructure = OrcEffectEditing.Compile(id, drafts);
         Assert.Null(fromStructure[0].Error);
         // 同一解析链（ToDraft/ToParsed 无损往返已单测）：两条通道产物同为 deploy 触发 + 随机敌方伤害。
-        var summary = OrcEffectEditing.Summarize(drafts[0].Ops[0]);
-        Assert.Contains("随机", summary);
-        Assert.Contains("敌方", summary);
-        Assert.Contains("伤害 2", summary);
+        Assert.Equal(fromText.Parse.Effects[0].DesktopJson,drafts[0].DesktopJson);
+        Assert.Contains("random",drafts[0].DesktopJson!);
+        Assert.Contains("enemy",drafts[0].DesktopJson!);
+        Assert.Contains("dealDamage",drafts[0].DesktopJson!);
+        Assert.Contains("\"amount\":2",drafts[0].DesktopJson!);
     }
 
     [Fact]

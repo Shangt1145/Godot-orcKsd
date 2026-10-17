@@ -16,6 +16,7 @@ public sealed record DiyCardDraft
     public string Id { get; init; } = "diy/" + Guid.NewGuid().ToString("N");
     public string Name { get; init; } = "新卡牌";
     public string Nation { get; init; } = "av76";
+    public string PackId { get; init; } = "";
     public string Rarity { get; init; } = "iron";
     public string CardType { get; init; } = "unit";
     public string UnitType { get; init; } = "infantry";
@@ -25,12 +26,16 @@ public sealed record DiyCardDraft
     public int Defense { get; init; } = 3;
     public string[] Keywords { get; init; } = [];
     public int Armor { get; init; } = 1;
+    /// <summary>旧存档兼容字段；Beta.1 不再提供现有卡图选择，新卡图只能导入。</summary>
     public string ArtCardId { get; init; } = "";
     /// <summary>
     /// 自导入卡图文件名（存于卡库旁 art/ 目录，内容经 CheckShape 校验的受限文件名）。
     /// 非空时优先于 <see cref="ArtCardId"/>（互斥口径：导入图覆盖素材引用）。
     /// </summary>
     public string ArtFile { get; init; } = "";
+    public string ArtSourceFile { get; init; } = "";
+    public string ArtImportMode { get; init; } = "illustration";
+    public DiyArtRegion ArtRegion { get; init; } = new(0,0,1,1);
     /// <summary>自导入卡图的绘制缩放（百分比 50–300；仅对 ArtFile 生效，素材引用不缩放）。</summary>
     public int ArtScale { get; init; } = 100;
     public string Flavor { get; init; } = "";
@@ -47,6 +52,8 @@ public sealed record DiyCardDraft
     /// 空且 EffectText 非空＝旧版文本模式（解析器演进后重编译自动跟随）。
     /// </summary>
     public OrcEffectDraft[] OrcEffects { get; init; } = [];
+    /// <summary>原版检查器卡面级扩展字段（含未知字段）；必须无损保存，准入时逐项校验。</summary>
+    public string? DesktopCardJson { get; init; }
     public DiyCardDraft Snapshot() => this with
     {
         Keywords = Keywords.ToArray(), Effects = Effects.ToArray(),
@@ -57,6 +64,8 @@ public sealed record DiyCardDraft
 /// <summary>一条结构化效果：触发模板 ＋ 守卫 ＋ op 序列（编辑器持久化形态，纯 POCO）。</summary>
 public sealed record OrcEffectDraft
 {
+    /// <summary>Desktop OrC/Inspector 的完整声明图。存在时为唯一效果真源；未知字段也必须保留。</summary>
+    public string? DesktopJson { get; init; }
     public string Template { get; init; } = "deploy_basic";
     /// <summary>触发钩子（如 unit.deployed）；null＝走引擎原版特化模板（attack_basic）。</summary>
     public string? Hook { get; init; }

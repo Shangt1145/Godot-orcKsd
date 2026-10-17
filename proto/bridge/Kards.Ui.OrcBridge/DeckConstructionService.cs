@@ -14,6 +14,14 @@ public sealed class DeckConstructionService
     public IReadOnlyList<UiCardDefinition> PackCards => _packCards;
     public IReadOnlyDictionary<string, string> CustomErrors { get; private set; } = new Dictionary<string, string>();
     public IReadOnlySet<string> PlayableIds { get; private set; }
+    public IReadOnlyList<UiCardDefinition> PlayableCards => Cards.Where(c => PlayableIds.Contains(c.CardId)
+        && !c.IsToken && ConstructionRules.CopyLimit(c.Rarity) > 0).ToArray();
+    public IReadOnlyList<UiCardDefinition> Pool(ConstructedDeck deck) => PlayableCards
+        .Where(c => DeckCardPacks.Allows(deck, c.CardId)).ToArray();
+    public IReadOnlyList<DeckPackChoice> Packs => PlayableCards.GroupBy(c => DeckCardPacks.Of(c.CardId))
+        .Select(g => new DeckPackChoice(g.Key, g.Key switch { "source" => "太空战争", "diy" => "我的 DIY 卡牌", "orc" => "已导入卡牌",
+            _ => WorkshopAuthoring.PackNames.GetValueOrDefault(g.Key)??OrcEngineHost.PackDescriptors.FirstOrDefault(p => "pack/" + p.Id == g.Key)?.Name ?? g.Key[5..] }, g.Count()))
+        .OrderBy(p => p.Id == "source" ? 0 : p.Id.StartsWith("pack/") ? 1 : 2).ThenBy(p => p.Name).ToArray();
     public UiCardPoolReport Report { get; }
     public DeckConstructionService(IReadOnlyList<UiCardDefinition> cards, string sourceDirectory)
     {
@@ -61,7 +69,9 @@ public sealed class DeckConstructionService
             .Concat(_imported.Select(c => c.CardId))
             .ToHashSet(StringComparer.Ordinal);
     }
-    public IReadOnlyList<string> Validate(ConstructedDeck deck) => ConstructionRules.Validate(deck, Cards, PlayableIds);
+    public IReadOnlyList<string> Validate(ConstructedDeck deck) => ConstructionRules.Validate(deck, Cards, PlayableIds)
+        .Concat(DeckCardPacks.Selected(deck).Where(p => !Packs.Any(available => available.Id == p))
+            .Select(p => "所选卡包已不可用：" + p)).ToArray();
     public ConstructedDeck Starter(int size = 39, int seed = 20261009)
     {
         var random = new Random(seed);
@@ -73,3 +83,5 @@ public sealed class DeckConstructionService
         return new ConstructedDeck { Name = "混编初始卡组", Options = new DeckOptions { UnrestrictedNations = true, TotalCards = size + 1 }, CardIds = choices.Take(size).ToArray() };
     }
 }
+
+public sealed record DeckPackChoice(string Id, string Name, int CardCount);

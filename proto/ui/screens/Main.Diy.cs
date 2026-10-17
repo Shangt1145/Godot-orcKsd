@@ -6,13 +6,16 @@ public partial class Main
 {
     private void RefreshDiy()
     {
+        WorkshopAuthoring.Configure(_workshopLibrary,_diy.Cards);WorkshopVisuals.Reset();
+        _diyEditor?.RefreshWorkshopOptions();
         _deckService.UpdateCustom(_diy.Cards);
         _catalog.SetCustomCards(_deckService.CustomCards);
-        if (_pool is not null) _pool.Text = $"{_catalog.Cards.Count} 张卡牌";
+        if (_pool is not null) _pool.Text = $"{_deckService.PlayableCards.Count} 张可用卡牌";
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
         _collection.RefreshCatalog();
         _deckEditor.RefreshCatalog(); _deckLibrary.Refresh();
         _home.Refresh();
+        _workshop?.RefreshData();
         if (_deckService.CustomErrors.Count > 0)
             Godot.GD.PushWarning(string.Join("；", _deckService.CustomErrors.Select(p => $"{p.Key}：{p.Value}")));
     }
@@ -42,7 +45,7 @@ public partial class Main
             _deckService.UpdateImported([]);
             _catalog.SetImportedCards([]);
         }
-        if (_pool is not null) _pool.Text = $"{_catalog.Cards.Count} 张卡牌";
+        if (_pool is not null) _pool.Text = $"{_deckService.PlayableCards.Count} 张可用卡牌";
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
         _collection?.RefreshCatalog();
         _deckEditor?.RefreshCatalog(); _deckLibrary?.Refresh();
@@ -54,12 +57,21 @@ public partial class Main
     /// 并注入内置插件与 `.ui` 投影插件），再从快照取卡包卡的**静态投影**喂给图鉴/构筑。
     /// 单包装载失败＝隔离该包并记警告，绝不抛到启动链上。
     /// </summary>
+    private static string OfficialCardArt(string id)
+    {
+        // Pack ids are namespaced; image names use the official card id only.
+        var parts = id.Split('/');
+        if (parts.Length != 3 || parts[0] != "pack"
+            || parts[2].Length == 0 || parts[2].Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '_' and not '-')) return "";
+        var path = "res://proto/art/kards/" + parts[2] + ".png";
+        return Godot.ResourceLoader.Exists(path) ? path : "";
+    }
     private void ReloadPacks()
     {
         try
         {
-            var baseDirectory = Godot.ProjectSettings.GlobalizePath("res://proto/data/kards");
-            var (cards, failures, _) = OrcEngineHost.LoadPackCards(baseDirectory);
+            var baseDirectory = RuntimeGameData.Directory("kards");
+            var (cards, failures, _) = OrcEngineHost.LoadPackCards(baseDirectory, OfficialCardArt);
             foreach (var failure in failures)
                 Godot.GD.PushWarning($"卡包/插件装载隔离：{failure}");
             _catalog.SetPackCards(cards);
@@ -69,7 +81,7 @@ public partial class Main
         {
             Godot.GD.PushError($"卡包装载失败：{e.Message}");
         }
-        if (_pool is not null) _pool.Text = $"{_catalog.Cards.Count} 张卡牌";
+        if (_pool is not null) _pool.Text = $"{_deckService.PlayableCards.Count} 张可用卡牌";
         _artById = _catalog.Cards.Where(c => c.ArtPath.Length > 0).ToDictionary(c => c.CardId, c => c.ArtPath);
         _collection?.RefreshCatalog();
         _deckEditor?.RefreshCatalog(); _deckLibrary?.Refresh();

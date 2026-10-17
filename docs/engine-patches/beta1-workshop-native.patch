@@ -1,0 +1,330 @@
+diff --git "a/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md" "b/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md"
+index be50ac2..9e82eb5 100644
+--- "a/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md"
++++ "b/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md"
+@@ -260,3 +260,6 @@
+ | 文本编译管线 | 无（OrC 卡牌为代码定义，无 JSON 载入） | 需新增（见报告 3 缺口） |
+ | `chooser` / `KG.ask` | `TargeterManager.RunAsync` + `ITargeterBridge`（会话 / 选择器 / 语义事件） | 语义接近，结构不同 |
+ | `Net.hooks` / `fxPops` | `Orc/Output/*`（段轮询 `TakeSegments`） | 观察模型不同（推 vs 拉） |
++
++2026-10-17 本地集成补充：新增 `card.dying`（GameUpdates/GameHooks 导出名为 CardDying），在死亡确认、槽位清空后以及效果卸载前发射，载荷为 Card/Killer。宿主自己的亡计在此阶段结算；旁观者的“单位被消灭”继续使用清理完成后的 card.died。重复死亡入口不重复结算。原生效果选靶增加显式 hq 区域，按 friendly/enemy/both 枚举总部；单位区域仍只返回单位。EffectRuntime.BuffAsync 对总部的 defense 增量写入 HqHealth 修饰面。
++
+diff --git a/src/Orc.Game/Cards/Data/CardAttributeMap.cs b/src/Orc.Game/Cards/Data/CardAttributeMap.cs
+index 0a6c2fc..b3e262e 100644
+--- a/src/Orc.Game/Cards/Data/CardAttributeMap.cs
++++ b/src/Orc.Game/Cards/Data/CardAttributeMap.cs
+@@ -79,6 +79,9 @@ internal static class CardAttributeMap
+             declaration = new KeywordDeclaration(keywordId);
+             return true;
+         }
++        const string customPrefix="Keyword:";
++        if(attribute.StartsWith(customPrefix,StringComparison.Ordinal)&&KeywordRegistry.IsDefined(attribute[customPrefix.Length..]))
++        {declaration=new KeywordDeclaration(attribute[customPrefix.Length..]);return true;}
+ 
+         foreach (var (prefix, keyword) in Valued)
+         {
+@@ -151,6 +154,8 @@ internal static class CardAttributeMap
+             attribute = found;
+             return true;
+         }
++        if(KeywordRegistry.IsDefined(keywordId)&&!KeywordIds.All.Contains(keywordId,StringComparer.Ordinal))
++        {attribute="Keyword:"+keywordId;return true;}
+ 
+         return false;
+     }
+diff --git a/src/Orc.Game/Cards/FactionRules.cs b/src/Orc.Game/Cards/FactionRules.cs
+index cd0f108..094a823 100644
+--- a/src/Orc.Game/Cards/FactionRules.cs
++++ b/src/Orc.Game/Cards/FactionRules.cs
+@@ -22,7 +22,7 @@ public static class FactionRules
+ 
+     /// <summary>是否五大主国（主国值域判定——对局创建期校验消费）。</summary>
+     public static bool IsMajorFaction(string faction)
+-        => faction is not null && MajorFactions.Contains(faction, StringComparer.Ordinal);
++        => faction is not null && (MajorFactions.Contains(faction, StringComparer.Ordinal)||Faction.IsCustomMajor(faction));
+ 
+     /// <summary>
+     /// 盟国值域判定：已定义标识 ∧ 非 Neutral（Neutral 不得作为盟国）∧ 非主国自身
+diff --git a/src/Orc.Game/Cards/TagData.cs b/src/Orc.Game/Cards/TagData.cs
+index 2ab8e32..3acfbe4 100644
+--- a/src/Orc.Game/Cards/TagData.cs
++++ b/src/Orc.Game/Cards/TagData.cs
+@@ -11,6 +11,15 @@ namespace Orc.Game.Cards;
+ /// </summary>
+ public static class Faction
+ {
++    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string,bool> Custom=new(StringComparer.Ordinal);
++    /// <summary>Registers a namespaced content faction without changing the built-in constants.</summary>
++    public static void RegisterCustom(string id,bool major=true)
++    {
++        if(string.IsNullOrWhiteSpace(id)||id!=id.ToLowerInvariant()||!id.All(c=>char.IsAsciiLetterOrDigit(c)||c is '.' or '_' or '-')||All.Contains(id))
++            throw new ArgumentException("Custom faction requires a distinct canonical id.",nameof(id));
++        Custom[id]=major;
++    }
++    public static bool IsCustomMajor(string id)=>Custom.TryGetValue(id,out var major)&&major;
+     /// <summary>德国。</summary>
+     public const string Germany = "germany";
+ 
+@@ -52,7 +61,7 @@ public static class Faction
+ 
+     /// <summary>是否为已定义阵营标识（null/空白＝false、不抛错）。</summary>
+     public static bool IsDefined(string? value)
+-        => value is not null && All.Contains(value, StringComparer.Ordinal);
++        => value is not null && (All.Contains(value, StringComparer.Ordinal)||Custom.ContainsKey(value));
+ 
+     /// <summary>
+     /// 归一到规范阵营标识（大小写不敏感——官方语料用 PascalCase 如 <c>Germany</c>，规范 id 为小写
+@@ -67,7 +76,7 @@ public static class Faction
+         }
+ 
+         var lowered = value.Trim().ToLowerInvariant();
+-        if (!All.Contains(lowered, StringComparer.Ordinal))
++        if (!IsDefined(lowered))
+         {
+             return false;
+         }
+diff --git a/src/Orc.Game/Commanding/CommandManager.cs b/src/Orc.Game/Commanding/CommandManager.cs
+index 8fa2bd2..c20f01d 100644
+--- a/src/Orc.Game/Commanding/CommandManager.cs
++++ b/src/Orc.Game/Commanding/CommandManager.cs
+@@ -1458,10 +1458,15 @@ public sealed class CommandManager
+     private async Task ProcessDeathAsync(UnitCard unit, CancellationToken ct, UnitCard? killer = null)
+     {
+         var state = unit.GetData<UnitStateData>();
++        if (state.IsDestroyed) return;
+ 
+         state.Position?.Clear();
+         state.IsDestroyed = true;
+ 
++        // Host-bound death effects must settle while their registrations still exist.
++        // The completed-death observation remains after cleanup in card.died.
++        await GameUpdates.EmitCardDying(_engine, unit, killer, ct);
++
+         // A4：亡计结算（新增步——置毁之后、词条死亡注销之前；清理前结算）。
+         // 经再触发服务统一执行面（单源＋重入防护）；独立构造（无服务）＝直调执行面降级（无重入防护）。
+         if (_retrigger is not null)
+diff --git a/src/Orc.Game/Effects/EffectRuntime.cs b/src/Orc.Game/Effects/EffectRuntime.cs
+index 3615127..9c0705d 100644
+--- a/src/Orc.Game/Effects/EffectRuntime.cs
++++ b/src/Orc.Game/Effects/EffectRuntime.cs
+@@ -176,6 +176,15 @@ public sealed partial class EffectRuntime
+         EffectDuration duration = EffectDuration.Permanent, CancellationToken ct = default)
+     {
+         ArgumentNullException.ThrowIfNull(target);
++        if (target is Hq hq && attack == 0)
++        {
++            if (defense == 0) return false;
++            await hq.Modifiers.AddModifiersAsync(new[]
++            {
++                new AddModifier(CardStatFields.HqHealth, defense, this, ExpiryFor(duration, target))
++            }, ct).ConfigureAwait(false);
++            return true;
++        }
+         if (target is not CardBase cardBase)
+         {
+             return false;
+diff --git a/src/Orc.Game/GameHooks.cs b/src/Orc.Game/GameHooks.cs
+index 293399e..01f2d9c 100644
+--- a/src/Orc.Game/GameHooks.cs
++++ b/src/Orc.Game/GameHooks.cs
+@@ -133,6 +133,7 @@ public static class GameHooks
+ 
+     /// <summary>游戏层死亡（<c>card.died</c>）。</summary>
+     public const string CardDied = GameUpdates.CardDied;
++    public const string CardDying = GameUpdates.CardDying;
+ 
+     /// <summary>单位加入（<c>unit.joined</c>）。</summary>
+     public const string UnitJoined = GameUpdates.UnitJoined;
+@@ -194,7 +195,7 @@ public static class GameHooks
+         TurnStartBefore, TurnStart, TurnStartAfter, TurnEndBefore, TurnEnd,
+         CardPlayed, CardDrawn, CardStatChanged,
+         CardLoad, CardHandAdd, CardDiscarded, CardBurned,
+-        CardDied, UnitJoined, UnitDeployed, UnitPositionChanged, UnitUpgraded, UnitRevealed,
++        CardDied, CardDying, UnitJoined, UnitDeployed, UnitPositionChanged, UnitUpgraded, UnitRevealed,
+         DeckShuffled, UnitTypesChanged,
+         SlotGained, SlotLost, SlotChanged,
+         PointGained, PointLost, PointChanged,
+diff --git a/src/Orc.Game/GameUpdates.cs b/src/Orc.Game/GameUpdates.cs
+index 7452c34..0cf2a5c 100644
+--- a/src/Orc.Game/GameUpdates.cs
++++ b/src/Orc.Game/GameUpdates.cs
+@@ -103,6 +103,9 @@ public static class GameUpdates
+     /// </summary>
+     public const string CardDied = "card.died";
+ 
++    /// <summary>死亡已确认、效果卸载前的宿主结算阶段；载荷同 CardDied。</summary>
++    public const string CardDying = "card.dying";
++
+     // ---------- 第二批 hooks：单位系列 ----------
+ 
+     /// <summary>单位加入（"unit.joined"；载荷＝{ Unit, Position }——Unit＝单位卡牌实例、Position＝槽位引用）：加入途径（非部署）入场。2B 加入路径调用点已接线（单位化完成后发射、恰一次）。</summary>
+@@ -472,6 +475,18 @@ public static class GameUpdates
+             ct);
+     }
+ 
++    /// <summary>死亡已确认、卸载前结算宿主效果；载荷同完成死亡事件。</summary>
++    public static Task EmitCardDying(LogicEngine engine, Card card, Card? killer = null, CancellationToken ct = default)
++    {
++        ArgumentNullException.ThrowIfNull(engine);
++        ArgumentNullException.ThrowIfNull(card);
++        return engine.Emit(CardDying, new Dictionary<string, object?>
++        {
++            [PayloadCard] = card,
++            [PayloadKiller] = killer,
++        }, ct);
++    }
++
+     /// <summary>发射 card.died（载荷＝{ 卡牌实例, Killer? }；2C 起调用点＝战斗死亡流程——清理就绪后、恰一次）。</summary>
+     /// <param name="killer">击杀者（E1-47 加性；null＝非归属驱动来源，如修饰到期致防御归零）。</param>
+     public static Task EmitCardDied(LogicEngine engine, Card card, Card? killer = null, CancellationToken ct = default)
+diff --git a/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs b/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs
+index 0d922c9..fb24ef4 100644
+--- a/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs
++++ b/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs
+@@ -72,7 +72,18 @@ public sealed class EffectTargetResolveJudicator : Judicator<EffectTargetResolve
+         {
+             foreach (var slot in line)
+             {
+-                if (slot.Occupant is not UnitCard unit
++                if (slot.Occupant is Hq hq && selector.Zone == "hq"
++                    && (selector.Side is null or "both" or "any"
++                        || viewerOwner is null
++                        || (selector.Side == "friendly" && hq.Owner.Index == viewerOwner.Index)
++                        || (selector.Side == "enemy" && hq.Owner.Index != viewerOwner.Index))
++                    && selector.UnitType is null && selector.Threshold is null
++                    && (string.IsNullOrWhiteSpace(selector.Keyword) || hq.Keywords.Has(selector.Keyword)))
++                {
++                    candidates.Add(hq);
++                    continue;
++                }
++                if (selector.Zone == "hq" || slot.Occupant is not UnitCard unit
+                     || !MatchesSide(unit, selector.Side, viewerOwner)
+                     || !MatchesUnitType(unit, selector.UnitType)
+                     || !MatchesKeyword(unit, selector.Keyword)
+@@ -112,7 +123,7 @@ public sealed class EffectTargetResolveJudicator : Judicator<EffectTargetResolve
+ 
+     private static IEnumerable<BattleLine> SelectLines(Battlefield battlefield, string? zone)
+     {
+-        if (zone is null or "support")
++        if (zone is null or "support" or "hq")
+         {
+             yield return battlefield.PlayerASupportLine;
+             yield return battlefield.PlayerBSupportLine;
+diff --git a/src/Orc/Cards/Card.cs b/src/Orc/Cards/Card.cs
+index 55d4ffc..bfb7481 100644
+--- a/src/Orc/Cards/Card.cs
++++ b/src/Orc/Cards/Card.cs
+@@ -28,8 +28,8 @@ public class Card : Entity
+         engine.RegisterCard(this); // S5 卡牌登记：创建即注册（全量快照数据源；销毁清理响应时移除）
+     }
+ 
+-    /// <summary>所属引擎（构造期绑定；内部使用）。</summary>
+-    internal LogicEngine Engine { get; }
++    /// <summary>所属引擎（构造期绑定，只读；供扩展组件实例化原生效果）。</summary>
++    public LogicEngine Engine { get; }
+ 
+     /// <summary>
+     /// 放置初始化标记：经 card.placed 放置处理置位（先于该处理内效果装载步骤）。
+diff --git a/tests/Orc.Game.Tests/CommandCombatTests.cs b/tests/Orc.Game.Tests/CommandCombatTests.cs
+index 3b87c3a..15adb99 100644
+--- a/tests/Orc.Game.Tests/CommandCombatTests.cs
++++ b/tests/Orc.Game.Tests/CommandCombatTests.cs
+@@ -232,7 +232,7 @@ public class CommandCombatTests
+         Assert.Equal(
+             new[]
+             {
+-                GameUpdates.CardStatChanged, GameUpdates.CardDied, GameUpdates.CardDamaged,
++                GameUpdates.CardStatChanged, GameUpdates.CardDying, GameUpdates.CardDied, GameUpdates.CardDamaged,
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（攻击者造成）
+                 GameUpdates.CardStatChanged, GameUpdates.CardDamaged, // E1-33：受伤害（先数值、后伤害信号）
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（被攻击者反击造成）
+@@ -241,7 +241,7 @@ public class CommandCombatTests
+                 GameUpdates.UnitActed,    // E1-33：攻击者行动后（存活）
+             },
+             recorder.Types);
+-        var diedPayload = recorder.Updates[1].Payload!;
++        var diedPayload = recorder.Updates.Single(u => u.Type == GameUpdates.CardDied).Payload!;
+         Assert.Same(target, diedPayload[GameUpdates.PayloadCard]);
+         Assert.DoesNotContain(GameUpdates.UnitPositionChanged, recorder.Types);
+         // 攻击者收尾照常（未死）：扣费＋清位。
+@@ -326,7 +326,7 @@ public class CommandCombatTests
+         Assert.Equal(2, attacker.GetData<UnitStateData>().Defense); // 无 HP 扣减（直接死亡结果）
+         Assert.Equal(6, ambusher.GetData<UnitStateData>().Defense); // 目标不受伤
+         Assert.Equal(
+-            new[] { GameUpdates.CardDied, GameUpdates.UnitCombatSurvived, GameUpdates.PointChanged }, // E1-39：被攻击者存活；末条＝收尾扣行动费
++            new[] { GameUpdates.CardDying, GameUpdates.CardDied, GameUpdates.UnitCombatSurvived, GameUpdates.PointChanged }, // E1-39：被攻击者存活；末条＝收尾扣行动费
+             recorder.Types);
+         Assert.Equal(0, playerA.Points); // 攻击者死亡不豁免收尾
+     }
+diff --git a/tests/Orc.Game.Tests/CommandUpdateTests.cs b/tests/Orc.Game.Tests/CommandUpdateTests.cs
+index 236be50..be77a6e 100644
+--- a/tests/Orc.Game.Tests/CommandUpdateTests.cs
++++ b/tests/Orc.Game.Tests/CommandUpdateTests.cs
+@@ -116,7 +116,7 @@ public class CommandUpdateTests
+         Assert.Equal(
+             new[]
+             {
+-                GameUpdates.CardStatChanged, GameUpdates.CardDied, GameUpdates.CardDamaged,
++                GameUpdates.CardStatChanged, GameUpdates.CardDying, GameUpdates.CardDied, GameUpdates.CardDamaged,
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（攻击者造成）
+                 GameUpdates.CardStatChanged, GameUpdates.CardDamaged, // E1-33：受伤害（先数值、后伤害信号）
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（被攻击者反击造成）
+diff --git a/tests/Orc.Game.Tests/GameHooksTests.cs b/tests/Orc.Game.Tests/GameHooksTests.cs
+index 9ba8844..1881ae6 100644
+--- a/tests/Orc.Game.Tests/GameHooksTests.cs
++++ b/tests/Orc.Game.Tests/GameHooksTests.cs
+@@ -191,7 +191,7 @@ public class GameHooksTests
+         var payloadKeys = constants.Where(c => c.Name.StartsWith("Payload", StringComparison.Ordinal))
+             .Select(c => c.Value).ToList();
+ 
+-        Assert.Equal(31, signals.Count); // S1 受控适配（29 → 30）：新增 unit.upgraded（老兵升级）；S2 受控适配（30 → 31）：新增 unit.revealed（揭示）
++        Assert.Equal(32, signals.Count); // Includes the pre-unmount host death settlement phase.
+         Assert.Equal(16, payloadKeys.Count);
+         Assert.Equal(signals.OrderBy(v => v, StringComparer.Ordinal),
+             GameHooks.Signals.OrderBy(v => v, StringComparer.Ordinal));
+@@ -237,6 +237,7 @@ public class GameHooksTests
+             [GameHooks.CardDiscarded] = "EmitCardDiscarded",
+             [GameHooks.CardBurned] = "EmitCardBurned",
+             [GameHooks.CardDied] = "EmitCardDied",
++            [GameHooks.CardDying] = "EmitCardDying",
+             [GameHooks.UnitJoined] = "EmitUnitJoined",
+             [GameHooks.UnitDeployed] = "EmitUnitDeployed",
+             [GameHooks.UnitPositionChanged] = "EmitUnitPositionChanged",
+@@ -262,7 +263,7 @@ public class GameHooksTests
+             GameHooks.TurnEndBefore, GameHooks.TurnEnd,
+         };
+ 
+-        Assert.Equal(26, helpers.Count); // S1 受控适配（24 → 25）：新增 unit.upgraded（EmitUnitUpgraded）；S2 受控适配（25 → 26）：新增 unit.revealed（EmitUnitRevealed）
++        Assert.Equal(27, helpers.Count);
+         foreach (var (signal, method) in helpers)
+         {
+             Assert.Contains(signal, GameHooks.Signals);
+diff --git a/src/Orc.Game/Cards/DeclarativeKeywordComponent.cs b/src/Orc.Game/Cards/DeclarativeKeywordComponent.cs
+new file mode 100644
+index 0000000..0d5ac21
+--- /dev/null
++++ b/src/Orc.Game/Cards/DeclarativeKeywordComponent.cs
+@@ -0,0 +1,23 @@
++using Orc.Cards;
++
++namespace Orc.Game.Cards;
++
++/// <summary>Content-authored keyword behavior uses the same embedded effect lifecycle as built-ins.</summary>
++public sealed class DeclarativeKeywordComponent : KeywordComponent
++{
++    private DeclarativeKeywordComponent(string id,Card card,int? value,IReadOnlyList<EffectSnapshot> snapshots):base(id,value)
++    {
++        foreach(var snapshot in snapshots)
++        {
++            var result=DynamicEffectFactory.Instantiate(card.Engine,snapshot);
++            if(!result.Success)throw new InvalidDataException("Keyword behavior could not be instantiated: "+result.Error);
++            EmbedEffect(result.Effect!);
++        }
++    }
++    /// <summary>Use content-versioned ids so edits cannot change keywords in an existing match.</summary>
++    public static void Register(string id,IReadOnlyList<EffectSnapshot> snapshots,bool battle=false)
++    {
++        if(snapshots.Count==0)throw new ArgumentException("Keyword behavior cannot be empty.",nameof(snapshots));
++        var frozen=snapshots.ToArray();KeywordRegistry.RegisterOrReplace(id,(card,value)=>new DeclarativeKeywordComponent(id,card,value,frozen),battle);
++    }
++}

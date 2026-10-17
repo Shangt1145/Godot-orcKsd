@@ -12,6 +12,8 @@ public partial class Main
     }
     private async Task DeckClickAsync(Control control)
     {
+        if (_deckPackPicker is not null && _deckPackPicker.Scroll.IsAncestorOf(control))
+            _deckPackPicker.Scroll.EnsureControlVisible(control);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         var at = control.GetGlobalTransformWithCanvas() * (control.Size / 2);
         if (control.GetWindow() != GetWindow()) at += control.GetWindow().Position;
@@ -29,6 +31,7 @@ public partial class Main
     }
     private async Task VerifyDecksAsync()
     {
+        await VerifyPackSelectionAsync();
         StopRealMatch(); Show("deck");
         _deckEditor.Load(_decks.ActiveDeck!);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);

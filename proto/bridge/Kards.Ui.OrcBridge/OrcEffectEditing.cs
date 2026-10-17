@@ -190,6 +190,7 @@ public static class OrcEffectEditing
     /// <summary>编辑面 DTO → 解析产物（编译入口）。取值不合法抛 InvalidDataException（可读诊断）。</summary>
     public static OrcParsedEffect ToParsed(OrcEffectDraft draft)
     {
+        if(draft.DesktopJson is {Length:>0} graph) return DesktopNativeLowering.Lower(graph);
         var entry = Template(draft.Template, ParseGuard(draft.Guard))
             ?? throw new InvalidDataException($"触发组合不合法：{draft.Template}（{draft.Guard}）——请重新选择触发时机");
         if (draft.Ops.Length == 0) throw new InvalidDataException($"{entry.Label}：至少需要一个动作");
@@ -205,6 +206,7 @@ public static class OrcEffectEditing
     /// <summary>解析产物 → 编辑面 DTO（解析替换/追加用；未知模板拒绝——编辑器不伪装能编辑一切）。</summary>
     public static OrcEffectDraft ToDraft(OrcParsedEffect effect)
     {
+        if(effect.DesktopJson is {Length:>0} graph) return new() {Template=effect.TemplateId,DesktopJson=graph};
         var entry = Templates.FirstOrDefault(t => t.Id == effect.TemplateId && t.Guard == effect.Guard)
             ?? throw new InvalidDataException($"触发「{OrcInspector.TriggerLabel(effect.TemplateId)}」不在编辑面内，无法转为结构编辑");
         return new OrcEffectDraft

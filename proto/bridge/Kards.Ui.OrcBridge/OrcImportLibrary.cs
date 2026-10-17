@@ -12,7 +12,7 @@ namespace Kards.Ui.OrcBridge;
 public sealed class OrcImportLibrary
 {
     private sealed record StoredRow(string Id, string Name, string Type,
-        int Cost, int OpCost, int Attack, int Defense, string Text);
+        int Cost, int OpCost, int Attack, int Defense, string Text,string? DesktopJson=null);
     private sealed record FileData(int Schema, StoredRow[] Rows);
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -39,7 +39,7 @@ public sealed class OrcImportLibrary
             if (data is null || data.Schema != 1 || data.Rows is null || data.Rows.Length > MaxRows)
                 throw new InvalidDataException("OrC 导入库版本或内容无效");
             var rows = data.Rows.Select(r => new OrcImportRow(r.Id, r.Name, r.Type,
-                r.Cost, r.OpCost, r.Attack, r.Defense, r.Text)).ToList();
+                r.Cost, r.OpCost, r.Attack, r.Defense, r.Text,r.DesktopJson)).ToList();
             if (rows.Select(r => r.Id).Distinct(StringComparer.Ordinal).Count() != rows.Count)
                 throw new InvalidDataException("OrC 导入行编号重复");
             _rows = rows;
@@ -73,7 +73,7 @@ public sealed class OrcImportLibrary
     private void Write()
     {
         var data = new FileData(1, _rows.Select(r => new StoredRow(r.Id, r.Name, r.Type,
-            r.Cost, r.OpCost, r.Attack, r.Defense, r.Text)).ToArray());
+            r.Cost, r.OpCost, r.Attack, r.Defense, r.Text,r.DesktopJson)).ToArray());
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         var temp = _path + ".tmp";

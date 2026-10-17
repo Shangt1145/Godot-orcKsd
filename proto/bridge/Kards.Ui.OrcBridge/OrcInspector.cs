@@ -5,14 +5,9 @@ using Orc.Game.EffectParsing.Dsl;
 
 namespace Kards.Ui.OrcBridge;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DIY 文本模式（自然文本→DSL）＋ Inspector 描述层（对齐 Kards-Desktop 检查器能力面）：
-//   · 编译链与 OrC 导入同一通道（OrcParser → CompileOrcEffect → EffectCompilationDriver），
-//     不另立口径——"新建卡牌时用自然文本解析出 DSL"复用导入解析器。
-//   · Inspector＝只读结构化视图：DslOp/选择器/过滤/条件 → 中文标签树（词表对齐
-//     引擎 DslOpRegistry 21 op 与解析器触发头表）。编辑面＝真源文本（改文字重编译），
-//     不做 DSL 乱改——引擎 DSL 是强类型面，摆松散 JSON 树编辑器是伪装能力。
-// ─────────────────────────────────────────────────────────────────────────────
+// Text compiles through the complete Desktop syntax chain; declarations remain lossless.
+// Authoring supports the full source vocabulary. Admission and execution still compile through
+// OrC-KSD; unsupported mechanisms produce diagnostics without discarding their declarations.
 
 /// <summary>单条效果的编译产物：Snapshots/JsonText 供效果组件内联（JsonText＝快照 JSON 数组）；
 /// Error 非空＝该条编译失败（Snapshots 为空）。</summary>
@@ -23,10 +18,11 @@ public sealed record OrcCompiledEffect(
 public sealed record OrcTextCompile(OrcCompileResult Parse, IReadOnlyList<OrcCompiledEffect> Effects)
 {
     public bool ParseComplete => Parse.Complete;
-    public bool AllCompiled => Effects.All(e => e.Error is null);
+    public IReadOnlyList<string> NativeProblems {get;init;}=[];
+    public bool AllCompiled => NativeProblems.Count==0 && Effects.All(e => e.Error is null);
     /// <summary>用户可读的全部问题（解析诊断 + 逐条编译错误；空＝全绿）。</summary>
     public IReadOnlyList<string> Problems => Parse.Diagnostics.Select(d => d.ToString())
-        .Concat(Effects.Where(e => e.Error is not null)
+        .Concat(NativeProblems).Concat(Effects.Where(e => e.Error is not null)
             .Select(e => $"{OrcInspector.TriggerLabel(e.Effect.TemplateId)}：{e.Error}")).ToArray();
 }
 
@@ -40,16 +36,16 @@ public static class OrcInspector
 {
     /// <summary>规则文本 → 解析 + 逐 op 编译（每 op 独立实例，绕开同 handler 多 op 的
     /// var runtime 重复声明——与导入同一已验证语义）。解析有诊断时仍返回解析面供 Inspector 展示。</summary>
-    public static OrcTextCompile CompileText(string cardId, string text, string cardType)
+    public static OrcTextCompile CompileText(string cardId, string text, string cardType,IReadOnlyList<UiCardDefinition>? catalog=null)
     {
         OrcCompileResult parse;
-        try { parse = OrcParser.Compile(text, cardType, Wordbook.Create(null)); }
-        catch (Exception e) when (e is OrcReject or ArgumentException or FormatException or InvalidOperationException)
+        try { parse = DesktopOrc.Compile(text, cardType,catalog); }
+        catch (Exception e) when (e is OrcReject or ArgumentException or FormatException or InvalidOperationException or InvalidDataException)
         { parse = new OrcCompileResult(text, [], [], [new OrcDiagnostic("parse", e.Message)]); }
         var effects = new List<OrcCompiledEffect>();
         if (parse.Complete)
         {
-            foreach (var effect in parse.Effects)
+                foreach (var effect in parse.Effects)
             {
                 string? error = null;
                 var snapshots = new List<EffectSnapshot>();
@@ -58,9 +54,10 @@ public static class OrcInspector
                 {
                     // 与 ImportOne 相同：每 op 一个触发实例（独立 snapshot）后并入同一 effects 组件。
                     var jsons = new List<JsonElement>();
-                    foreach (var op in effect.Ops)
+                    var native = effect.DesktopJson is {Length:>0} graph ? DesktopNativeLowering.Lower(graph) : effect;
+                    foreach (var op in native.Ops)
                     {
-                        var (one, oneJson) = OrcImportService.CompileOrcEffect(cardId, effect with { Ops = [op] });
+                        var (one, oneJson) = OrcImportService.CompileOrcEffect(cardId, native with { Ops = [op] });
                         snapshots.Add(one);
                         using var doc = JsonDocument.Parse(oneJson);
                         jsons.Add(doc.RootElement.Clone());
@@ -75,7 +72,13 @@ public static class OrcInspector
                 effects.Add(new(effect, snapshots, error is null ? json : null, error));
             }
         }
-        return new(parse, effects);
+        var nativeProblems=new List<string>();
+        if(parse.DesktopResultJson is { } full)
+        {
+            using var result=JsonDocument.Parse(full);
+            if(result.RootElement.GetProperty("cardFields").EnumerateObject().Any())nativeProblems.Add("OrC-KSD 卡面机制字段尚无无损适配："+result.RootElement.GetProperty("cardFields").GetRawText());
+        }
+        return new(parse, effects) {NativeProblems=nativeProblems};
     }
 
     // ───────────────────────── Inspector：解析面 → 中文标签树 ─────────────────────────
@@ -86,6 +89,20 @@ public static class OrcInspector
         var nodes = new List<OrcInspectNode>();
         foreach (var effect in parse.Effects)
         {
+            if(effect.DesktopJson is { } graph)
+            {
+                try
+                {
+                    var native=DesktopNativeLowering.Lower(graph);
+                    // Show the complete original graph alongside the native status; it may contain arbitrary nested data.
+                    using var raw=JsonDocument.Parse(graph);
+                    var childrenRaw=raw.RootElement.GetProperty("actions").EnumerateArray().Select(a=>
+                        a.GetProperty("op").GetString()=="drawOne"?OrcInspectNode.Leaf("抽牌","1 张"):OrcInspectNode.Leaf(a.GetProperty("op").GetString()!,a.GetRawText())).ToArray();
+                    nodes.Add(new(TriggerLabel(native.TemplateId),null,childrenRaw));
+                }
+                catch(InvalidDataException){nodes.Add(new(effect.TemplateId,null,[OrcInspectNode.Leaf("完整声明",graph)]));}
+                continue;
+            }
             var children = new List<OrcInspectNode>();
             if (effect.Guard != OrcTriggerGuard.None)
                 children.Add(OrcInspectNode.Leaf("触发守卫", GuardLabel(effect.Guard)));

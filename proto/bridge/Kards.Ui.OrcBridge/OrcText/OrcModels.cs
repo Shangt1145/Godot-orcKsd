@@ -94,7 +94,7 @@ public sealed record OrcDiagnostic(string Code, string Message)
 /// effectHost 骨架 + op 级守卫。Guard＝null 的效果（attack_basic 特化视图）走引擎原模板。
 /// </summary>
 public sealed record OrcParsedEffect(string TemplateId, string Slot, IReadOnlyList<Orc.Game.EffectParsing.Dsl.DslOp> Ops,
-    string? Hook = null, OrcTriggerGuard Guard = OrcTriggerGuard.None);
+    string? Hook = null, OrcTriggerGuard Guard = OrcTriggerGuard.None, string? DesktopJson = null, bool NativeGenerated = false);
 
 /// <summary>触发守卫口径（与引擎 DslCondition 常量一一对应）。</summary>
 public enum OrcTriggerGuard
@@ -120,6 +120,7 @@ public sealed record OrcCompileResult(
     IReadOnlyList<OrcKeywordDecl> Keywords,
     IReadOnlyList<OrcDiagnostic> Diagnostics)
 {
+    public string? DesktopResultJson {get;init;}
     /// <summary>文本与效果结构全部通过检查（不代表对战行为已验证——与 js 版口径相同）。</summary>
     public bool Complete => Diagnostics.Count == 0;
 }
