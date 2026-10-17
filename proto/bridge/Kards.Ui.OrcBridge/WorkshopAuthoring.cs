@@ -79,7 +79,10 @@ public static class WorkshopAuthoring
     }
     public static IReadOnlyList<UiDiyChoice> NationsFor(string packId)=>DiyCardCompiler.BuiltInNations.Concat(_packs.Where(p=>p.Id==packId||_packs.Any(e=>e.Id==packId&&e.BasePackId==p.Id)).SelectMany(p=>p.Nations).Select(n=>new UiDiyChoice(n.Id,n.Name))).ToArray();
     public static IReadOnlyList<UiDiyChoice> KeywordsFor(string packId)=>_packs.Where(p=>p.Id==packId||_packs.Any(e=>e.Id==packId&&e.BasePackId==p.Id)).SelectMany(p=>p.Keywords).Select(k=>new UiDiyChoice(k.Id,k.Name)).ToArray();
-    public static string[] KeywordGraphs(DiyCardDraft draft)=>_packs.SelectMany(p=>p.Keywords).Where(k=>draft.Keywords.Contains(k.Id)).SelectMany(k=>k.Effects.Length>0
+    public static string[] KeywordGraphs(DiyCardDraft draft)=>_packs.SelectMany(p=>p.Keywords)
+        // A native program is authoritative. Its description and retained legacy editor fields
+        // must never register another pre-play selector alongside that program.
+        .Where(k=>draft.Keywords.Contains(k.Id)&&k.ProgramJson is null).SelectMany(k=>k.Effects.Length>0
         ?k.Effects.Where(e=>e.DesktopJson is not null).Select(e=>e.DesktopJson!)
         :OrcInspector.CompileText(k.Id,k.EffectText,"unit").Parse.Effects.Where(e=>e.DesktopJson is not null).Select(e=>e.DesktopJson!)).ToArray();
 }

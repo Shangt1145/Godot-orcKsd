@@ -42,7 +42,7 @@ public sealed class OrcActionReader
             if (availability.Move.CanUse)
                 foreach (var candidate in availability.Move.Candidates)
                     if (candidate.IsAlive && candidate.Value is Slot slot)
-                        moves.Add(new UiMoveOption(uid, "frontline", slot.Index));
+                        moves.Add(new UiMoveOption(uid, match.Battlefield.FrontLine.Contains(slot) ? "frontline" : "support", slot.Index));
             foreach (var candidate in availability.Attack.Candidates)
             {
                 if (!candidate.IsAlive) continue;

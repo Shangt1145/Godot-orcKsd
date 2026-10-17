@@ -95,6 +95,8 @@ public partial class Main : Control
             ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
         _diy = new DiyCardLibrary(_diyPath);
         _workshopLibrary=new DiyWorkshopLibrary(ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/diy/packs-{Guid.NewGuid():N}.json":"user://diy-packs.json"));
+        if (!_verificationRun)
+            DemoMechanicsUpgrade.Apply(_workshopLibrary, ProjectSettings.GlobalizePath("user://diy-packs.json"));
         if(_diy.LoadError is null&&_workshopLibrary.LoadError is null&&_diy.Cards.Any(c=>c.PackId.Length==0))
         {
             const string legacy="pack/diy-legacy";
@@ -134,7 +136,6 @@ public partial class Main : Control
         _battle = new BattleScreen();
         _battle.Theme = UiStyles.CreateTheme();
         _battle.Initialize(_catalog, _textures, _clock, sfx);
-        _battle.KeywordSkillProvider=uid=>_runner?.KeywordSkills(uid)??[];
         _battle.CommandRequested += command =>
         {
             if (_runner is { IsRunning: true } runner)
@@ -288,6 +289,14 @@ public partial class Main : Control
             CallDeferred(MethodName.CapturePlacement);
         else if (args.Contains("--verify-orders"))
             CallDeferred(MethodName.VerifyOrders);
+        else if (args.Contains("--verify-target-drag"))
+            CallDeferred(MethodName.VerifyTargetDrag);
+        else if (args.Contains("--verify-keyword-movement"))
+            VerifyKeywordMovement();
+        else if (args.Contains("--verify-demo-pack-targeting"))
+            CallDeferred(MethodName.VerifyDemoPackTargeting);
+        else if (args.Contains("--verify-discard"))
+            CallDeferred(MethodName.VerifyDiscardAnimation);
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>

@@ -69,9 +69,7 @@ public sealed class DesktopTargetContext : IDisposable
     private async Task<Card[]> SelectCore(CardBase source,string declaration,CancellationToken ct)
     {
         using var doc=JsonDocument.Parse(declaration);var target=doc.RootElement;ValidateTarget(target);
-        var runtime=EffectRuntime.ResolveFor(source)??throw new InvalidOperationException("原生效果服务未装配");
-        var zone=Text(target,"zone");var side=Text(target,"side");
-        var candidates=(await runtime.SelectAsync(source,new("all",side is "any" or ""?"both":side,zone is "frontline" or "support"?zone:null),ct)).OfType<UnitCard>().ToArray();
+        var candidates=(await ResolveCandidates(source,target,ct)).OfType<UnitCard>().ToArray();
         if(candidates.Length==0)return [];
         Card? selected=null;
         var result=await _match.TargeterManager.RunAsync(async flow=>
@@ -87,6 +85,12 @@ public sealed class DesktopTargetContext : IDisposable
         });
         ct.ThrowIfCancellationRequested();return result.IsOk&&selected is not null?[selected]:[];
     }
+    private static Task<IReadOnlyList<Card>> ResolveCandidates(CardBase source,JsonElement target,CancellationToken ct=default)
+    {
+        var runtime=EffectRuntime.ResolveFor(source)??throw new InvalidOperationException("原生效果服务未装配");
+        var zone=Text(target,"zone");var side=Text(target,"side");
+        return runtime.SelectAsync(source,new("all",side is "any" or ""?"both":side,zone is "frontline" or "support"?zone:null),ct);
+    }
     public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
     {
         var result=new List<UiOrderTargeting>();
@@ -94,10 +98,8 @@ public sealed class DesktopTargetContext : IDisposable
         {
             if(!_match.CardLibrary.TryGetRegisteredId(card.Definition,out var id)||!_plans.TryGetValue(id,out var graphs))continue;
             var targets=new List<JsonElement>();foreach(var g in graphs){using var d=JsonDocument.Parse(g);if(Text(d.RootElement,"trigger") is "play" or "order"&&d.RootElement.TryGetProperty("targets",out var ts))targets.AddRange(ts.EnumerateArray().Select(t=>t.Clone()));}
-            if(targets.Count!=1)continue;var t=targets[0];var side=Text(t,"side");var zone=Text(t,"zone");
-            var units=new[]{_match.Battlefield.PlayerASupportLine,_match.Battlefield.FrontLine,_match.Battlefield.PlayerBSupportLine}.SelectMany(l=>l).Select(s=>s.Occupant).OfType<UnitCard>()
-                .Where(u=>!CovertRules.IsCovert(u)&&(side is "any" or "both" or ""||ReferenceEquals(u.Owner,card.Owner)==(side=="friendly")));
-            if(zone is "frontline" or "support")continue; // general selector remains available; no inaccurate drag overlay.
+            if(targets.Count==0)continue;var t=targets[0];
+            var units=ResolveCandidates(card,t).GetAwaiter().GetResult().OfType<UnitCard>();
             result.Add(new(OrcRefs.KeyOf(card),units.Select(OrcRefs.KeyOf).ToArray()));
         }
         return result;

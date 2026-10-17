@@ -13,10 +13,14 @@ public partial class BattleScreen
     private DeploymentPose? _choiceReturnPose;
     private bool _choosing;
     private UiChoiceSlot? _arrowSlot; // 场上单位直接箭头指向：单选 Reference 且候选全部在场上时取代选择面板
+    private bool _arrowPressed;
+    private DeploymentPose? _choiceSourcePose;
+    private readonly Dictionary<string, DeploymentPose> _choiceFormationPoses = new();
+    private readonly Dictionary<string, Vector2> _deploymentChoiceCenters = new();
     private readonly Dictionary<string, IReadOnlyList<string>> _choiceSelections = new();
     private readonly Dictionary<string, string> _orderChoiceCaptions = new();
     private readonly Dictionary<string, UiCardView> _orderChoiceFaces = new();
-    public bool TargetChoiceVisible => _choicePanel.Visible;
+    public bool TargetChoiceVisible => _choiceRequest is not null;
     private void InitializeTargetChoices()
     {
         _choicePanel = new BattleChoices { ZIndex = 270 };
@@ -34,21 +38,32 @@ public partial class BattleScreen
         if (request.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand))
         {
             StopHandMotion(source.Uid);
+            _choiceSourcePose = DeploymentPose.From(hand);
             _choiceReturnPose = new(hand.RestPosition, hand.Size, Vector2.One, hand.RestRotation);
             hand.Visible = false;
         }
         OpenChoiceSlot();
+        UpdateEndTurnButton();
     }
     private void OpenChoiceSlot(IReadOnlyList<string>? selected = null)
     {
         if (_choiceRequest is not { } request) return;
         _choiceSlot = request.Slots.FirstOrDefault(s => !_choiceSelections.ContainsKey(s.Name));
         if (_choiceSlot is not { } slot) return;
-        // 场上单位的单选直接箭头指向：不开面板，鼠标悬停出箭头、点击确认、右键取消。
+        _arrowPressed = false;
+        // Placement has already armed targeting. A fresh press/release on the target confirms it;
+        // the release that placed the unit must never be reused for this request.
         _arrowSlot = slot.Kind == ChoiceKind.Reference && slot.Min == 1 && slot.Max == 1 && slot.Allowed.Count > 0
-            && slot.Allowed.All(c => _cards.TryGetValue(c.Id, out var card) && card.View?.Visibility == Visibility.Full)
+            && slot.Allowed.All(c => _cards.TryGetValue(c.Id, out var card) && card.View?.Visibility == Visibility.Full
+                && card.View.Zone != "hand")
             ? slot : null;
-        if (_arrowSlot is not null) { Hint("点击场上单位确认选择，右键取消"); return; }
+        if (_arrowSlot is not null)
+        {
+            _choicePanel.Reset(); RestoreChoiceSource();
+            UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * GetViewport().GetMousePosition());
+            Hint("将箭头指向目标，按下并松手确认；也可拖动选靶；右键取消"); return;
+        }
+        _aim.Visible = false;
         var origin = request.SourceCard is { } card && _orderOrigins.TryGetValue(card.Uid, out var pose) ? pose : (DeploymentPose?)null;
         _choicePanel.Open(slot, request.SourceCard, origin, selected);
         if (request.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand)) hand.Visible = false;
@@ -115,7 +130,7 @@ public partial class BattleScreen
         _aim.From = ArrowSourceCenter();
         _aim.To = hovered is not null && _cards.TryGetValue(hovered, out var target)
             ? target.Position + target.Size / 2 : at;
-        _aim.Moving = false; _aim.InvalidTarget = false; _aim.Preview = null;
+        _aim.Moving = false; _aim.InvalidTarget = hovered is null; _aim.Preview = null;
         _aim.Visible = true; _aim.QueueRedraw();
     }
     private Vector2 ArrowSourceCenter()
@@ -124,7 +139,30 @@ public partial class BattleScreen
             return card.Position + card.Size / 2;
         return _choiceReturnPose?.Center ?? new Vector2(640, 700);
     }
-    /// <summary>箭头模式下点击确认：命中候选才提交；不经过面板动画，直接走响应器。</summary>
+    private void RestoreChoiceSource()
+    {
+        if (_choiceRequest?.SourceCard is not { } source || !_cards.TryGetValue(source.Uid, out var card)) return;
+        card.Visible = _arrowSlot is not null;
+        if (_arrowSlot is null || source.Definition.CardType != "unit"
+            || !_deploymentChoiceCenters.TryGetValue(source.Uid, out var center)) return;
+        // This is only a placement preview. The engine still owns payment and deployment.
+        var row = _cards.Values.Where(c => c.Uid != source.Uid && c.View?.OwnerSide == "self"
+            && (c.View.Zone == "support" || c.View.IsHq)).OrderBy(c => c.RestPosition.X).ToArray();
+        var ordinal = row.Count(c => c.RestPosition.X + c.Size.X / 2 < center.X);
+        var firstCenter = BoardSize.X / 2 - row.Length * SlotPitch / 2;
+        for (var i = 0; i < row.Length; i++)
+        {
+            var neighbour = row[i];
+            _choiceFormationPoses.TryAdd(neighbour.Uid, DeploymentPose.From(neighbour));
+            neighbour.Position = new(firstCenter + (i < ordinal ? i : i + 1) * SlotPitch - neighbour.Size.X / 2, SelfArea.Position.Y);
+        }
+        center = new(firstCenter + ordinal * SlotPitch, center.Y);
+        card.Bind(source, BattleCardMode.Field, _textures);
+        card.Size = FieldCardSize; card.PivotOffset = FieldCardSize / 2;
+        card.Position = center - FieldCardSize / 2; card.Scale = Vector2.One; card.Rotation = 0;
+        card.MouseFilter = MouseFilterEnum.Ignore;
+    }
+    /// <summary>Called after a fresh press releases on a candidate supplied by the engine.</summary>
     private void CommitArrowChoice(Vector2 at)
     {
         if (_arrowSlot is not { } slot || _choosing) return;
@@ -147,16 +185,34 @@ public partial class BattleScreen
     {
         if (_choicePanel is null) return;
         _arrowSlot = null;
+        _arrowPressed = false; _aim.Visible = false;
+        foreach (var (uid, pose) in _choiceFormationPoses)
+            if (_cards.TryGetValue(uid, out var neighbour)) neighbour.Position = pose.Position;
+        _choiceFormationPoses.Clear();
         foreach (var pair in _cards)
             if (pair.Value.Targeted) { pair.Value.Targeted = false; pair.Value.QueueRedraw(); }
         if (_choiceRequest?.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand))
         {
+            if (_choiceSourcePose is { } original)
+            {
+                hand.Bind(source, source.Zone == "hand" ? BattleCardMode.Hand : BattleCardMode.Field, _textures);
+                hand.Size = original.Size; hand.PivotOffset = original.Size / 2;
+                hand.Position = original.Position; hand.Scale = original.Scale; hand.Rotation = original.Rotation;
+                if (source.Zone == "hand" && !HasPendingHandPlay(source.Uid))
+                {
+                    hand.Position = hand.RestPosition; hand.Rotation = hand.RestRotation;
+                    hand.MouseFilter = MouseFilterEnum.Stop;
+                    hand.ZIndex = 20 + source.SlotIndex;
+                }
+            }
             if (_orderChoiceFaces.TryGetValue(source.Uid, out var chosen)) hand.Bind(chosen, BattleCardMode.Hand, _textures);
             hand.ChoiceCaption = _orderChoiceCaptions.GetValueOrDefault(source.Uid);
             hand.Visible = true;
         }
         _choicePanel.Reset(); _choiceRequest = null; _choiceResponder = null; _choiceSlot = null;
         _choiceReturnPose = null; _choiceSelections.Clear(); _choosing = false;
+        _choiceSourcePose = null;
+        if (_state is not null) UpdateEndTurnButton();
     }
     public async Task ClickTargetChoiceAsync(int index)
     {

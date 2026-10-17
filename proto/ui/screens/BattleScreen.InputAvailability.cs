@@ -23,7 +23,7 @@ public partial class BattleScreen
     private static readonly UiBattleActions NoTurnActions = new();
     private bool IsFriendlyTurn => _turnInput.AllowsInput(InteractionView);
     private UiBattleActions InteractionActions => IsFriendlyTurn ? _liveInputActions ?? _actions : NoTurnActions;
-    private bool CanEndTurnNow => IsFriendlyTurn && InteractionActions.CanEndTurn;
+    private bool CanEndTurnNow => IsFriendlyTurn && !TargetChoiceVisible && InteractionActions.CanEndTurn;
     private bool CanConcedeNow => !_usingDemo && CanEndTurnNow && !TargetChoiceVisible;
     private bool? _endTurnFriendlyStyle;
 
@@ -174,6 +174,7 @@ public partial class BattleScreen
             _orderChoiceCaptions.Remove(play.Uid);
             _orderChoiceFaces.Remove(play.Uid);
             var hadDeployment = _deploymentOrigins.Remove(play.Uid);
+            _deploymentChoiceCenters.Remove(play.Uid);
             var hadOrder = _orderOrigins.Remove(play.Uid);
             if ((hadDeployment || hadOrder) && _cards.TryGetValue(play.Uid, out var card) && card.Mode == BattleCardMode.Hand)
             {

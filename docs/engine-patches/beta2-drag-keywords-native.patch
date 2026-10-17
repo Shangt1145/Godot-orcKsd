@@ -1,0 +1,219 @@
+diff --git a/src/Orc.Game/Cards/KeywordProgram.cs b/src/Orc.Game/Cards/KeywordProgram.cs
+index e127950..0d638da 100644
+--- a/src/Orc.Game/Cards/KeywordProgram.cs
++++ b/src/Orc.Game/Cards/KeywordProgram.cs
+@@ -31,7 +31,7 @@ public sealed record KeywordProgram
+         if(Skills.Select(s=>s.Id).Distinct().Count()!=Skills.Length)throw new InvalidDataException("主动技能编号重复");
+         foreach(var s in Skills){if(s is null||!ValidName(s.Id)||string.IsNullOrWhiteSpace(s.Name)||s.Name.Length>40||s.When is null||s.Actions is null)throw new InvalidDataException("主动技能字段无效");Number(s.Cost);Conditions(s.When);Actions(s.Actions,0);}
+     }
+-    public static readonly string[] RuleNames=["move.allowed","attack.allowed","combat.range","combat.counter.eligibility","combat.guard.eligibility","combat.interception","combat.ambush.condition","deploy.frontline","attack.limit"];
++    public static readonly string[] RuleNames=["move.allowed","move.retreat","attack.allowed","combat.range","combat.counter.eligibility","combat.guard.eligibility","combat.interception","combat.ambush.condition","deploy.frontline","attack.limit"];
+     public static readonly string[] EventNames=["unit.acted","turn.start.before","turn.end.before","card.played","unit.deployed","unit.joined","card.placed","turn.start","turn.end","card.damaged","card.dying","card.leaving","unit.attack.before","unit.attack.after","unit.destroy.before","keyword.ready","keyword.consumed"];
+     public static readonly string[] Subjects=["self","friendly","enemy","any","owner","opponent"];
+     public static readonly string[] Operations=["state.set","state.add","capture","link","unlink","move.set","attack.set","attack","replace","retreat","damage","buff","stat.add","stat.set","heal","kill","keyword.grant","keyword.remove","emit","death.cancel","health.set","copy.hand","return.hand","create.hand","develop","move","draw","points","attach.prefab","if"];
+diff --git a/src/Orc.Game/Cards/ProgramKeywordComponent.cs b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
+index 2265e24..a71478b 100644
+--- a/src/Orc.Game/Cards/ProgramKeywordComponent.cs
++++ b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
+@@ -246,9 +246,38 @@ public sealed class ProgramKeywordComponent : KeywordComponent
+         }
+         finally{_entries=entries;_selection.Value=previous;}
+     }
++    private IEnumerable<KeywordProgramAction> SelectionSteps(KeywordProgramAction[] actions, Card? actor)
++    {
++        foreach (var action in actions)
++        {
++            if (action.Op == "develop") yield return action;
++            else if (action.Op == "if")
++                foreach (var step in SelectionSteps(Matches(action.When, actor) ? action.Then : action.Else, actor)) yield return step;
++            else if (action.Target.StartsWith("choose.", StringComparison.Ordinal) && Matches(action.When, actor)) yield return action;
++        }
++    }
++    private Task<IReadOnlyList<Card>> SelectionCandidates(string target, CancellationToken ct = default)
++    {
++        var side = target == "choose.unit" ? "both" : target.Contains("enemy", StringComparison.Ordinal) ? "enemy" : "friendly";
++        return Runtime.SelectAsync(_host, new EffectSelector("all", side), ct);
++    }
++    /// <summary>Pure preview of the first native pre-play input. Null targets indicate a card picker,
++    /// not a battlefield arrow. No selections, random draws, state changes or payments occur here.</summary>
++    public (bool Required, IReadOnlyList<Card>? Targets) ReadFirstPlayInput()
++    {
++        if (_host is not CommandCard || _context is null) return (false, null);
++        foreach (var handler in _program.Handlers.Where(h => h.Event is "card.played" or "unit.deployed" or "card.placed"
++            && h.Subject is "self" or "friendly" or "any"))
++        {
++            if (!Matches(handler.When, _host)) continue;
++            var first = SelectionSteps(handler.Actions, _host).FirstOrDefault();
++            if (first is not null) return (true, first.Op == "develop" ? null : SelectionCandidates(first.Target).GetAwaiter().GetResult());
++        }
++        return (false, null);
++    }
+     private async Task<bool> PrepareSelections(KeywordProgramAction[] actions,CancellationToken ct,Card? actor=null)
+     {
+-        foreach(var action in actions)
++        foreach(var action in SelectionSteps(actions, actor))
+         {
+             if(action.Op=="develop"&&Matches(action.When,actor))
+             {
+@@ -268,11 +297,8 @@ public sealed class ProgramKeywordComponent : KeywordComponent
+                 });
+                 if(!developResult.IsOk||selectedDefinition is null)return false;state.Cards[action]=selectedDefinition;continue;
+             }
+-            if(action.Op=="if")
+-            {if(!await PrepareSelections(Matches(action.When,actor)?action.Then:action.Else,ct,actor))return false;continue;}
+-            var target=action.Target;if(!target.StartsWith("choose.",StringComparison.Ordinal)||!Matches(action.When,actor))continue;
+-            var side=target=="choose.unit"?"both":target.Contains("enemy",StringComparison.Ordinal)?"enemy":"friendly";
+-            var candidates=(await Runtime.SelectAsync(_host,new EffectSelector("all",side),ct)).ToArray();
++            var target=action.Target;
++            var candidates=(await SelectionCandidates(target,ct)).ToArray();
+             if(_selection.Value!.Targets.TryGetValue(target,out var existing)&&candidates.Any(c=>ReferenceEquals(c,existing)))continue;
+             if(candidates.Length==0||_context?.TargeterManager is not { } targeter)return false;
+             Card? selected=null;
+diff --git a/src/Orc.Game/Commanding/CommandManager.cs b/src/Orc.Game/Commanding/CommandManager.cs
+index c860481..d2ff18a 100644
+--- a/src/Orc.Game/Commanding/CommandManager.cs
++++ b/src/Orc.Game/Commanding/CommandManager.cs
+@@ -654,14 +654,14 @@ public sealed class CommandManager
+ 
+         // 推进前置（后置项 C；K3：经 move.frontline-enemy 条目——与复验同源）：前线不存在存活敌方单位方可推进
+         //（空前线或己方已占；敌方清空后实时恢复）
+-        if (_moveFrontlineEnemy(owner))
++        if (!CommandMovementRules.IsRetreat(_battlefield, unit, unit.GetData<UnitStateData>().Position) && _moveFrontlineEnemy(owner))
+         {
+             return CommandActionAvailability.Blocked(CommandBlockReason.NoCandidates);
+         }
+ 
+         // 移动候选＝前线任意空槽（不被邻位动态规则约束；无后撤/横移候选）
+         var candidates = new List<Ref<Entity>>();
+-        foreach (var slot in _battlefield.FrontLine)
++        foreach (var slot in CommandMovementRules.Destinations(_battlefield, unit, unit.GetData<UnitStateData>().Position))
+         {
+             if (slot.IsEmpty)
+             {
+diff --git a/src/Orc.Game/Judicators/LegEligibilityJudicator.cs b/src/Orc.Game/Judicators/LegEligibilityJudicator.cs
+index 5ccf5d4..2960a04 100644
+--- a/src/Orc.Game/Judicators/LegEligibilityJudicator.cs
++++ b/src/Orc.Game/Judicators/LegEligibilityJudicator.cs
+@@ -2,6 +2,7 @@ using Orc.Core;
+ using Orc.Game.Board;
+ using Orc.Game.Cards;
+ using Orc.Game.Players;
++using Orc.Game.Commanding;
+ 
+ namespace Orc.Game.Judicators;
+ 
+@@ -131,7 +132,7 @@ internal sealed class LegEligibilityJudicator : Judicator<LegEligibilityJudicato
+             return LegEligibilityFailure.PointShortage; // W2b：行动费读「有效值」（K4：经 OperateCosts 统一取值入口——判定/扣费同源、防旁路直读）
+         }
+ 
+-        if (_isMove && (position is null || !_battlefield!.GetSupportLine(owner).Contains(position)))
++        if (_isMove && !CommandMovementRules.CanStart(_battlefield!, unit, position))
+         {
+             return LegEligibilityFailure.PositionNotInSupportLine; // 仅推进：源位置须为支援线
+         }
+diff --git a/src/Orc.Game/Judicators/MoveRevalidationJudicator.cs b/src/Orc.Game/Judicators/MoveRevalidationJudicator.cs
+index 154fe27..ef35b9e 100644
+--- a/src/Orc.Game/Judicators/MoveRevalidationJudicator.cs
++++ b/src/Orc.Game/Judicators/MoveRevalidationJudicator.cs
+@@ -91,13 +91,13 @@ internal sealed class MoveRevalidationJudicator : ValidationJudicator
+         }
+ 
+         // 仅推进：目标须为前线空槽（move 上下文——调用点单源保留）。
+-        if (!_battlefield.FrontLine.Contains(newSlot) || !newSlot.IsEmpty)
++        if (!CommandMovementRules.Destinations(_battlefield, unit, oldSlot).Contains(newSlot) || !newSlot.IsEmpty)
+         {
+             return ValidationVerdict.Invalid(); // 目标须为前线空槽
+         }
+ 
+         // K3：推进前置（经 move.frontline-enemy 条目——与可用性侧单源；owner 非 null 由 leg 资格保证）。
+-        if (_moveFrontlineEnemy(unit.Owner!))
++        if (!CommandMovementRules.IsRetreat(_battlefield, unit, oldSlot) && _moveFrontlineEnemy(unit.Owner!))
+         {
+             return ValidationVerdict.Invalid(); // 推进前置复验（后置项 C；防御性双保险）：前线存在存活敌方单位＝拒绝
+         }
+diff --git a/tests/Orc.Game.Tests/KeywordProgramTests.cs b/tests/Orc.Game.Tests/KeywordProgramTests.cs
+index e91e21b..8e7b70c 100644
+--- a/tests/Orc.Game.Tests/KeywordProgramTests.cs
++++ b/tests/Orc.Game.Tests/KeywordProgramTests.cs
+@@ -18,6 +18,56 @@ public sealed class KeywordProgramTests
+     }
+     private static KeywordProgramAction A(string op,string value="0",string key="",string target="self")=>new(){Op=op,Value=value,Key=key,Target=target};
+     [Fact]
++    public async Task RetreatUsesNormalDragCostsAndMovementOpportunity()
++    {
++        var bridge = new MockTargeterBridge();
++        var (m,u,k) = await Create(new() { Rules = [new() { Rule="move.retreat", Value="1" }] }, bridge:bridge);
++        await m.PlayManager.JoinUnitAsync(u,m.Battlefield.FrontLine[0]);
++        CommandTestKit.Activate(u); bridge.CollectScript=CommandTestKit.AllRefsScript(m);
++        var support=m.Battlefield.PlayerASupportLine.First(s=>s.IsEmpty);
++        var points=m.Players[0].Points;
++        Assert.Contains(support.Ref,m.CommandManager.GetCommandAvailability(u).Move.Candidates);
++        await CommandTestKit.CancelCommandAsync(m,bridge,u);
++        Assert.Equal(points,m.Players[0].Points); Assert.True(u.GetData<CommandData>().CanMove);
++        Assert.True((await CommandTestKit.RunCommandAsync(m,bridge,u,support.Ref)).IsSuccess);
++        Assert.Same(support,u.GetData<UnitStateData>().Position);
++        Assert.Equal(points-u.Modifiers.GetEffectiveValue(CardStatFields.OperateCost),m.Players[0].Points);
++        Assert.False(u.GetData<CommandData>().CanMove); Assert.False(u.GetData<CommandData>().CanAttack);
++        Assert.True(u.Keywords.Has(k));
++    }
++    [Fact]
++    public async Task RetreatPermissionIsRecheckedAfterSelectionAndOrdinaryUnitsCannotRetreat()
++    {
++        var bridge=new MockTargeterBridge();
++        var (m,u,k)=await Create(new(){Rules=[new(){Rule="move.retreat",Value="1"}]},bridge:bridge);
++        await m.PlayManager.JoinUnitAsync(u,m.Battlefield.FrontLine[0]);
++        CommandTestKit.Activate(u); bridge.CollectScript=CommandTestKit.AllRefsScript(m);
++        var support=m.Battlefield.PlayerASupportLine.First(s=>s.IsEmpty);var points=m.Players[0].Points;
++        var task=m.CommandManager.BeginMoveAsync(u);var request=await bridge.WaitForNextBeginAsync();
++        await u.Keywords.RevokeAsync(k);
++        request.Responder.Complete(request.Description.RequestId,TargeterTestKit.Selection(TargetSlot.DefaultName,support.Ref));
++        Assert.False((await task).IsSuccess);Assert.Same(m.Battlefield.FrontLine[0],u.GetData<UnitStateData>().Position);
++        Assert.Equal(points,m.Players[0].Points);Assert.False(m.CommandManager.GetCommandAvailability(u).Move.CanUse);
++    }
++    [Fact]
++    public async Task SecondNormalAttackConsumesKeywordAndCannotAttackAThirdTime()
++    {
++        var bridge=new MockTargeterBridge();
++        var (m,u,k)=await Create(new(){Rules=[new(){Rule="attack.limit",Value="2"}],Handlers=[new(){Event="unit.attack.after",Subject="self",
++            When=[new("attacks","gte","2")],Actions=[new(){Op="keyword.remove",Target="self"}]}]},bridge:bridge);
++        await m.PlayManager.JoinUnitAsync(u,m.Battlefield.FrontLine[0]);
++        CommandTestKit.Activate(u);bridge.CollectScript=CommandTestKit.AllRefsScript(m);
++        var hq=m.Players[1].Hq;var points=m.Players[0].Points;
++        await CommandTestKit.CancelCommandAsync(m,bridge,u);
++        Assert.Equal(0,Assert.Single(KeywordProgramRuntime.Components(u)).Attacks);
++        Assert.True((await CommandTestKit.RunCommandAsync(m,bridge,u,hq.Ref)).IsSuccess);
++        Assert.True(u.Keywords.Has(k));Assert.True(m.CommandManager.GetCommandAvailability(u).Attack.CanUse);
++        Assert.True((await CommandTestKit.RunCommandAsync(m,bridge,u,hq.Ref)).IsSuccess);
++        Assert.False(u.Keywords.Has(k));Assert.False(m.CommandManager.GetCommandAvailability(u).Attack.CanUse);
++        Assert.Equal(points-2*u.Modifiers.GetEffectiveValue(CardStatFields.OperateCost),m.Players[0].Points);
++        Assert.False((await m.CommandManager.BeginAttackAsync(u)).IsSuccess);
++    }
++    [Fact]
+     public async Task IndependentBlitzAndMoveOnlyProgramsChangeActualDeploymentFlags()
+     {
+         foreach(var attack in new[]{false,true})
+diff --git a/src/Orc.Game/Commanding/CommandMovementRules.cs b/src/Orc.Game/Commanding/CommandMovementRules.cs
+new file mode 100644
+index 0000000..90a1f9e
+--- /dev/null
++++ b/src/Orc.Game/Commanding/CommandMovementRules.cs
+@@ -0,0 +1,19 @@
++using Orc.Game.Board;
++using Orc.Game.Cards;
++
++namespace Orc.Game.Commanding;
++
++/// <summary>Normal movement destinations, shared by availability and execution revalidation.</summary>
++internal static class CommandMovementRules
++{
++    public static bool IsRetreat(Battlefield board, UnitCard unit, Slot? source)
++        => source is not null && board.FrontLine.Contains(source)
++            && KeywordProgramRuntime.Resolve(unit, "move.retreat", 0) != 0;
++
++    public static bool CanStart(Battlefield board, UnitCard unit, Slot? source)
++        => unit.Owner is { } owner && source is not null
++            && (board.GetSupportLine(owner).Contains(source) || IsRetreat(board, unit, source));
++
++    public static IEnumerable<Slot> Destinations(Battlefield board, UnitCard unit, Slot? source)
++        => IsRetreat(board, unit, source) ? board.GetSupportLine(unit.Owner!) : board.FrontLine;
++}

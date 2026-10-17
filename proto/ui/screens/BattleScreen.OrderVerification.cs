@@ -62,9 +62,9 @@ public partial class BattleScreen
     {
         if (_pressed?.Uid != uid || !_dragging || !_aim.Visible || !IsTargetedOrder(uid)
             || _aim.Preview is not null || _aim.InvalidTarget != (targetUid is null)
-            || _pressed.Position.DistanceTo(_pressed.RestPosition + new Vector2(0, -90)) > 1
+            || _pressed.Position.DistanceTo(_pressAt - _grabOffset) > 1
             || _aim.From.DistanceTo(_pressed.Position + _pressed.Size / 2) > 1)
-            throw new Exception("Targeted order moved its card instead of pulling an arrow from the hand.");
+            throw new Exception($"Targeted order did not stay in hand with a direct arrow: pressed={_pressed?.Uid == uid} dragging={_dragging} aim={_aim.Visible} targeted={IsTargetedOrder(uid)} invalid={_aim.InvalidTarget} source={_pressed?.Position} rest={_pressed?.RestPosition} from={_aim.From}.");
         if (targetUid is not null && (!_cards[targetUid].Targeted
             || _aim.To.DistanceTo(_cards[targetUid].Position + _cards[targetUid].Size / 2) > 1))
             throw new Exception("Order arrow did not mark the pointed legal unit.");

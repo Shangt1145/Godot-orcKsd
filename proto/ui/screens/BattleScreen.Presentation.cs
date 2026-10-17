@@ -58,7 +58,7 @@ public partial class BattleScreen
             card.Position = pose.Position; card.Rotation = pose.Rotation; card.Scale = pose.Scale;
             card.ZIndex = 140; card.MouseFilter = MouseFilterEnum.Ignore;
         }
-        if (_choiceRequest?.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var choiceSource)) choiceSource.Visible = false;
+        RestoreChoiceSource();
     }
     private void InitializePresentation()
     {
@@ -155,6 +155,7 @@ public partial class BattleScreen
                         await PlayBoardImpactsAsync(VisibleImpacts(hits.Impacts, resolution.After));
                         break;
                     case UiDeploymentPresentation deployment when deployment.Deployed.MatchId == resolution.MatchId:
+                        _deploymentChoiceCenters.Remove(deployment.Card.Uid);
                         await WaitForGestureReleaseAsync();
                         if (!IsInsideTree() || generation != _generation || _pendingPresentation != resolution) return;
                         var deployPose = new DeploymentPose(deployment.Card.OwnerSide == "enemy" ? new Vector2(585, -60) : new Vector2(568, 628),
@@ -251,7 +252,10 @@ public partial class BattleScreen
                         // Discarded and hand-limit-burned cards leave the table. The bridge has always
                         // emitted this step; the switch used to drop it, so the burn cue never played.
                         _cards.TryGetValue(discard.Card?.Uid ?? "", out var discardedSource);
-                        await _sequence.DiscardAsync(discard.Card, discardedSource, discard.Kind);
+                        if (discard.Side == "enemy" && discardedSource is null)
+                            discardedSource = _cardLayer.GetChildren().OfType<BattleCard>()
+                                .LastOrDefault(c => c.Mode == BattleCardMode.Hidden && c.Visible);
+                        await _sequence.DiscardAsync(discard.Card, discardedSource, discard.Kind, discard.Side);
                         break;
                     case UiShufflePresentation shuffle:
                         await _sequence.ShuffleAsync(shuffle.Side);

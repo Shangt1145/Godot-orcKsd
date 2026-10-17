@@ -79,7 +79,7 @@ internal sealed class SourceEffectAssembly : IDisposable
         {
             if (!_match.CardLibrary.TryGetRegisteredId(card.Definition, out var id) || !_plans.TryGetValue(id, out var declarations)) continue;
             var plan = declarations.EnumerateArray().Single();
-            if (!plan.TryGetProperty("targets", out var targets) || targets.GetArrayLength() != 1) continue;
+            if (!plan.TryGetProperty("targets", out var targets) || targets.GetArrayLength() == 0) continue;
             var side = Text(targets[0], "side", "any");
             options.Add(new(OrcRefs.KeyOf(card), units.Where(unit => IsOrderTarget(card, unit, side))
                 .Select(OrcRefs.KeyOf).ToArray()));

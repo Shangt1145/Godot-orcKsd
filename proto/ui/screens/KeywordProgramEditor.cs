@@ -24,7 +24,7 @@ internal partial class KeywordProgramEditor : VBoxContainer
     private static readonly Dictionary<string,string> Words=new()
     {
         ["unit.deployed"]="本单位部署完成",["unit.joined"]="单位加入战场",["card.placed"]="每次进入战场",["card.played"]="卡牌被使用",["turn.start"]="回合开始",["turn.end"]="回合结束",["card.damaged"]="受到伤害",["card.dying"]="实际消灭，清理之前",["card.leaving"]="非消灭离场之前",["unit.attack.before"]="攻击结算之前",["unit.attack.after"]="攻击结算之后",["unit.destroy.before"]="即将被消灭，可介入",["keyword.ready"]="本词条就绪",["keyword.consumed"]="本词条被消耗",
-        ["move.allowed"]="是否允许移动",["attack.allowed"]="是否允许攻击",["combat.range"]="目标是否在攻击范围",["combat.counter.eligibility"]="对方是否可以反击",["combat.guard.eligibility"]="是否可以攻击被守护者",["combat.interception"]="是否被战斗机拦截",["combat.ambush.condition"]="是否满足伏击条件",["deploy.frontline"]="允许部署前线",["attack.limit"]="每回合攻击次数上限",
+        ["move.allowed"]="是否允许移动",["move.retreat"]="允许从前线移动回支援线",["attack.allowed"]="是否允许攻击",["combat.range"]="目标是否在攻击范围",["combat.counter.eligibility"]="对方是否可以反击",["combat.guard.eligibility"]="是否可以攻击被守护者",["combat.interception"]="是否被战斗机拦截",["combat.ambush.condition"]="是否满足伏击条件",["deploy.frontline"]="允许部署前线",["attack.limit"]="每回合攻击次数上限",
         ["self"]="自身",["friendly"]="友方",["enemy"]="敌方",["any"]="双方",["owner"]="己方回合",["opponent"]="敌方回合",["event"]="事件中的单位",["enemy.hq"]="敌方总部",["friendly.hq"]="友方总部",["enemy.units"]="所有敌方单位",["friendly.units"]="所有友方单位",["enemy.frontline"]="前线所有敌军",["friendly.frontline"]="前线所有友军",["random.enemy.frontline"]="前线随机一个敌军",
         ["state.set"]="设置本词条记忆",["state.add"]="增加 / 减少计数",["capture"]="读取并记录单位数值",["move.set"]="设置移动机会",["attack.set"]="设置攻击机会",["attack"]="发动一次真实攻击",["replace"]="转换为指定单位",["retreat"]="撤退到支援线",["damage"]="造成伤害",["buff"]="增加攻击 / 防御",["heal"]="恢复防御",["kill"]="消灭",["keyword.grant"]="授予词条",["keyword.remove"]="移除词条（空编号为自身）",["emit"]="宣布就绪 / 消耗",["death.cancel"]="取消本次消灭",["health.set"]="保留指定防御",["copy.hand"]="复制到手牌并移除本词条",["create.hand"]="将指定卡加入手牌",["move"]="按正常移动规则行动",["draw"]="抽牌",["points"]="增加 / 减少指挥点",["attach.prefab"]="挂载原生效果预制体",["if"]="按条件分支",
         ["linked"]="绑定的单位",["pair"]="自身与绑定单位",["all"]="全部单位",["choose.unit"]="选择一个单位",["choose.enemy.unit"]="选择一个敌军",["choose.friendly.unit"]="选择一个友军",["attack.target"]="本次攻击的敌方目标",["link"]="绑定一个单位",["unlink"]="解除绑定",["return.hand"]="将单位返回手牌",
@@ -47,7 +47,9 @@ internal partial class KeywordProgramEditor : VBoxContainer
     private void Render()
     {
         UiStyles.Clear(_body);
-        foreach(var key in new[]{"defaultValue","state","rules","handlers","skills"})Field(_body,key,_root[key],v=>_root[key]=v,0);
+        if (_root["skills"] is JsonArray { Count: > 0 })
+            _body.AddChild(UiStyles.Label("旧主动技能数据保留在高级原始数据中。对战没有技能按钮，请改用持续规则或事件行为。",13,UiStyles.Gold));
+        foreach(var key in new[]{"defaultValue","state","rules","handlers"})Field(_body,key,_root[key],v=>_root[key]=v,0);
     }
     private void Apply()
     {

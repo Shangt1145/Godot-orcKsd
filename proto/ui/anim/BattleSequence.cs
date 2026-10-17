@@ -612,16 +612,27 @@ public partial class BattleSequence : Control
         foreach (var (paper, _) in incoming) if (GodotObject.IsInstanceValid(paper)) { RemoveChild(paper); paper.QueueFree(); }
     }
     /// <summary>Discarded and burned cards leave the table; a burn shows why the card never reached the hand.</summary>
-    public async Task DiscardAsync(UiCardView? card, BattleCard? source, UiDiscardKind kind)
+    public async Task DiscardAsync(UiCardView? card, BattleCard? source, UiDiscardKind kind, string side)
     {
         var epoch = _epoch;
-        var own = source?.View?.OwnerSide ?? card?.OwnerSide ?? "self";
+        var own = side;
         var burn = kind == UiDiscardKind.Burn;
         if (source is not null) source.Visible = false;
         var visible = card is not null && card.Visibility == Visibility.Full ? card : null;
         var size = source?.Size ?? new Vector2(144, 202);
         var paper = Paper(visible, source?.Position ?? new Vector2(640 - size.X / 2, 250), size, source?.Rotation ?? 0f);
         _sfx.Play(burn ? "burn" : "shuffle");
+        PhaseChanged?.Invoke(burn ? "burn-start" : "discard-start");
+        // Hand cards sit mostly below the viewport. Bring the discarded card into view before
+        // stamping and retiring it, so the player can actually see what was discarded.
+        if (!_clock.ReducedMotion)
+        {
+            var lift = Motion();
+            lift.TweenProperty(paper, "position", new Vector2(Mathf.Clamp(paper.Position.X, 160, 980), own == "self" ? 390 : 150), Time(.22));
+            lift.TweenProperty(paper, "rotation", 0f, Time(.22));
+            await Wait(.22, epoch);
+        }
+        else paper.Position = new(568, own == "self" ? 390 : 150);
         var cue = new BattleStatusCue { Size = Size, Center = paper.Position + size / 2, Caption = burn ? "手牌已满" : "弃置",
             Ink = new("d66142"), Duration = Time(1.2), Quiet = _clock.ReducedMotion, Stamp = true };
         AddChild(cue);

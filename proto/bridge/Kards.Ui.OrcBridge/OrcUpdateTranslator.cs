@@ -124,11 +124,11 @@ public sealed class OrcUpdateTranslator
                     if (lost is not null) died.Add(OrcRefs.KeyOf(lost));
                     break;
                 case GameUpdates.CardDiscarded:
-                    AddDiscard(steps, payload, viewer, UiDiscardKind.Discard);
+                    AddDiscard(steps, payload, viewer, previous, UiDiscardKind.Discard);
                     break;
                 case GameUpdates.CardBurned:
                     // Burned is its own signal now (Kb): a hand-limit burn never walks the discard path.
-                    AddDiscard(steps, payload, viewer, UiDiscardKind.Burn);
+                    AddDiscard(steps, payload, viewer, previous, UiDiscardKind.Burn);
                     break;
                 case GameUpdates.TurnStartAfter:
                 case GameUpdates.TurnStart:
@@ -352,13 +352,16 @@ public sealed class OrcUpdateTranslator
     }
 
     private void AddDiscard(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,
-        Player viewer, UiDiscardKind kind)
+        Player viewer, UiMatchView previous, UiDiscardKind kind)
     {
-        var card = PayloadCard(payload);
+        // Discard is emitted after destruction. Only read the dead entity's stable identity;
+        // the normal live-card resolver intentionally rejects it.
+        var card = payload.GetValueOrDefault(GameUpdates.PayloadCard) as Card ?? PayloadCard(payload);
         if (card is null) return;
-        var owner = ((CardBase)card).Owner;
+        var owner = payload.GetValueOrDefault(GameUpdates.PayloadPlayer) as Player ?? ((CardBase)card).Owner;
         var mine = owner is not null && ReferenceEquals(owner, viewer);
-        steps.Add(new UiDiscardPresentation(mine ? "self" : "enemy", mine ? ReadFor(viewer, card) : null, kind));
+        var before = previous.SelfHand.FirstOrDefault(c => c.Uid == OrcRefs.KeyOf(card));
+        steps.Add(new UiDiscardPresentation(mine ? "self" : "enemy", mine ? before ?? ReadFor(viewer, card) : null, kind));
     }
 
     private void AddTurn(List<UiPresentationStep> steps, IReadOnlyDictionary<string, object?> payload,

@@ -181,6 +181,117 @@ public sealed class WorkshopTests : IDisposable
         Assert.Equal(body.Defense,morphed.EffectiveDefense);
     }
     [Fact]
+    public async Task TargetedDeploymentUsesChosenGapBeforeAskingForEffectTargetAndCanRetry()
+    {
+        var keyword = new DiyKeywordDraft { Name = "支援部署", ProgramJson = new KeywordProgram
+        { Handlers = [new() { Actions = [new() { Op = "buff", Target = "choose.friendly.unit", Value = "2" }] }] }.ToJson() };
+        var pack = new DiyPackDraft { Keywords = [keyword] }; store.Save(pack);
+        var target = new DiyCardDraft { PackId = pack.Id, Cost = 0 };
+        var source = new DiyCardDraft { PackId = pack.Id, Cost = 1, Keywords = [keyword.Id] };
+        cards.Save(target); cards.Save(source); WorkshopAuthoring.Configure(store, cards.Cards);
+        using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 31, "target-deployment", "unused",
+            sourceDirectory: Source, openingHand: [target.Id, source.Id], customCards: [target, source]);
+        session.DriveOpponent = false; await session.SettleMulliganAsync(false);
+        var victim = session.View.SelfHand.Single(c => c.CardId == target.Id);
+        await session.SubmitAsync(new PlayCard(victim.Uid)); session.SettleProjection();
+        var actor = session.View.SelfHand.Single(c => c.CardId == source.Id);
+        var gap = session.Actions.DeploymentGaps.Last(); var credits = session.View.SelfKredits;
+        var cancel = true; var prompts = 0;
+        session.TargetRequested += (request, responder) =>
+        {
+            prompts++; Assert.Equal(actor.Uid, request.SourceCard?.Uid);
+            Assert.Contains(request.Slots.Single().Allowed, c => c.Id == victim.Uid);
+            if (cancel) Assert.True(responder.Cancel(request.RequestId));
+            else Assert.True(responder.Complete(request.RequestId,
+                new Dictionary<string, IReadOnlyList<string>> { [request.Slots.Single().Name] = [victim.Uid] }));
+        };
+        Assert.Equal(UiSubmitOutcome.Rejected, await session.SubmitAsync(new PlayCard(actor.Uid, GapId: gap.GapId)).WaitAsync(TimeSpan.FromSeconds(5)));
+        session.SettleProjection(); Assert.Equal(credits, session.View.SelfKredits);
+        Assert.Contains(session.View.SelfHand, c => c.Uid == actor.Uid);
+        cancel = false;
+        Assert.Equal(UiSubmitOutcome.Applied, await session.SubmitAsync(new PlayCard(actor.Uid, GapId: gap.GapId)).WaitAsync(TimeSpan.FromSeconds(5)));
+        session.SettleProjection(); Assert.Equal(2, prompts);
+        Assert.Equal(credits - 1, session.View.SelfKredits);
+        Assert.Contains(session.View.SelfLine, c => c.Uid == actor.Uid);
+        Assert.Equal(target.Attack + 2, session.View.SelfLine.Single(c => c.Uid == victim.Uid).EffectiveAttack);
+    }
+    [Fact]
+    public async Task TargetedKeywordSkillExposesItsBattlefieldSourceAndUsesTheNativeSelector()
+    {
+        var keyword = new DiyKeywordDraft { Name = "支援技能", ProgramJson = new KeywordProgram
+        { Skills = [new() { Id = "support", Name = "支援", Cost = "0", SpendAttack = false, SpendMove = false,
+            Actions = [new() { Op = "buff", Target = "choose.friendly.unit", Value = "2" }] }] }.ToJson() };
+        var pack = new DiyPackDraft { Keywords = [keyword] }; store.Save(pack);
+        var source = new DiyCardDraft { PackId = pack.Id, Cost = 0, Keywords = [keyword.Id] };
+        cards.Save(source); WorkshopAuthoring.Configure(store, cards.Cards);
+        using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 31, "skill-target-source", "unused",
+            sourceDirectory: Source, openingHand: [source.Id], customCards: [source]);
+        session.DriveOpponent = false; await session.SettleMulliganAsync(false);
+        var actor = session.View.SelfHand.Single(c => c.CardId == source.Id);
+        await session.SubmitAsync(new PlayCard(actor.Uid)); session.SettleProjection();
+        var calls = 0;
+        session.TargetRequested += (request, responder) =>
+        {
+            calls++; Assert.Equal(actor.Uid, request.SourceCard?.Uid);
+            Assert.Equal("support", request.SourceCard?.Zone);
+            Assert.True(responder.Complete(request.RequestId,
+                new Dictionary<string, IReadOnlyList<string>> { [request.Slots.Single().Name] = [actor.Uid] }));
+        };
+        var skill = Assert.Single(session.KeywordSkills(actor.Uid));
+        Assert.Equal(UiSubmitOutcome.Applied, await session.SubmitAsync(new UseKeywordSkill(actor.Uid, skill.KeywordId, skill.SkillId)).WaitAsync(TimeSpan.FromSeconds(5)));
+        session.SettleProjection(); Assert.Equal(1, calls);
+        Assert.Equal(source.Attack + 2, session.View.SelfLine.Single(c => c.Uid == actor.Uid).EffectiveAttack);
+    }
+    [Fact]
+    public async Task KeywordOrderPublishesItsFirstTargetBeforePlayAndConsumesTheDirectDropWithoutAnotherPrompt()
+    {
+        var keyword = new DiyKeywordDraft { Name = "指向指令", ProgramJson = new KeywordProgram
+        {
+            State = new() { ["enabled"] = 1 },
+            Handlers = [new() { Event = "card.played", Actions = [new() { Op = "if",
+                When = [new() { Left = "state.enabled", Op = "eq", Right = "1" }],
+                Then = [new() { Op = "damage", Target = "choose.friendly.unit", Value = "1" }],
+                Else = [new() { Op = "draw", Value = "1" }] }] }]
+        }.ToJson() };
+        var pack = new DiyPackDraft { Keywords = [keyword] }; store.Save(pack);
+        var target = new DiyCardDraft { PackId = pack.Id, Cost = 0 };
+        var order = new DiyCardDraft { PackId = pack.Id, CardType = "order", Cost = 0, Keywords = [keyword.Id] };
+        cards.Save(target); cards.Save(order); WorkshopAuthoring.Configure(store, cards.Cards);
+        using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 31, "direct-keyword-order", "unused",
+            sourceDirectory: Source, openingHand: [target.Id, order.Id], customCards: [target, order]);
+        session.DriveOpponent = false; await session.SettleMulliganAsync(false);
+        var victim = session.View.SelfHand.Single(c => c.CardId == target.Id);
+        var source = session.View.SelfHand.Single(c => c.CardId == order.Id);
+        Assert.Empty(session.Actions.OrderTargets.Single(t => t.Uid == source.Uid).TargetUids);
+        await session.SubmitAsync(new PlayCard(victim.Uid)); session.SettleProjection();
+        var before = session.View.SelfLine.Single(c => c.Uid == victim.Uid).EffectiveDefense;
+        var published = session.Actions.OrderTargets.Single(t => t.Uid == source.Uid);
+        Assert.Equal(new[] { victim.Uid }, published.TargetUids);
+        Assert.Contains(session.View.SelfHand, c => c.Uid == source.Uid);
+        var prompts = 0; session.TargetRequested += (_, _) => prompts++;
+        Assert.Equal(UiSubmitOutcome.Applied, await session.SubmitAsync(new PlayCard(source.Uid, TargetUid: victim.Uid)).WaitAsync(TimeSpan.FromSeconds(5)));
+        session.SettleProjection(); Assert.Equal(0, prompts);
+        Assert.DoesNotContain(session.View.SelfHand, c => c.Uid == source.Uid);
+        Assert.Equal(before - 1, session.View.SelfLine.Single(c => c.Uid == victim.Uid).EffectiveDefense);
+    }
+    [Fact]
+    public void ProgramKeywordMustNotCompileItsDescriptionOrOldEffectsIntoExtraSelectionGraphs()
+    {
+        var legacy = OrcInspector.CompileText("legacy-selector", "溃军可撤退到支援线。", "unit");
+        var effects = legacy.Parse.Effects.Select(OrcEffectEditing.ToDraft).ToArray();
+        Assert.NotEmpty(effects);
+        var keyword = new DiyKeywordDraft { Name = "溃退", EffectText = "溃军可撤退到支援线。", Effects = effects,
+            ProgramJson = new KeywordProgram { Skills = [new() { Id = "fallback", Name = "撤退", SpendMove = false,
+                SpendAttack = false, Actions = [new() { Op = "retreat", Target = "self" }] }] }.ToJson() };
+        var pack = new DiyPackDraft { Keywords = [keyword] }; store.Save(pack);
+        var draft = new DiyCardDraft { PackId = pack.Id, Keywords = [keyword.Id] };
+        WorkshopAuthoring.Configure(store, [draft]);
+        Assert.Empty(WorkshopAuthoring.KeywordGraphs(draft));
+        store.Save(pack with { Keywords = [keyword with { Effects = [] }] });
+        WorkshopAuthoring.Configure(store, [draft]);
+        Assert.Empty(WorkshopAuthoring.KeywordGraphs(draft));
+    }
+    [Fact]
     public void LegacyDeckAndCodeSelectionStillAllowsMigratedCardsOnly()
     {
         var legacy=new DiyPackDraft{Id="pack/diy-legacy"};var other=new DiyPackDraft();store.Save(legacy);store.Save(other);

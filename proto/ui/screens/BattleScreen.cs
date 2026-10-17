@@ -75,19 +75,6 @@ public partial class BattleScreen : Control
     private bool _dragging, _busy, _usingDemo = true;
     private int _generation;
     public event Action<UiCommand>? CommandRequested;
-    public Func<string,IReadOnlyList<UiKeywordSkill>>? KeywordSkillProvider;
-    private VBoxContainer? _keywordSkills;
-    private void ShowKeywordSkills(string uid)
-    {
-        if(_keywordSkills is null){_keywordSkills=new VBoxContainer{Position=new(1027,410),CustomMinimumSize=new(215,0),ZIndex=170};_canvas.AddChild(_keywordSkills);}
-        UiStyles.Clear(_keywordSkills);
-        foreach(var skill in KeywordSkillProvider?.Invoke(uid)??[])
-        {
-            var button=UiStyles.Button($"{skill.Name} · {skill.Cost} K",()=>{foreach(var child in _keywordSkills.GetChildren().OfType<Button>())child.Disabled=true;CommandRequested?.Invoke(new UseKeywordSkill(uid,skill.KeywordId,skill.SkillId));});
-            button.Disabled=!skill.CanUse||!IsFriendlyTurn;button.TooltipText=skill.State;_keywordSkills.AddChild(button);
-        }
-    }
-
     public event Action<string>? NavigationRequested;
 
     /// <summary>Raised by the gear menu: run the screen from a real engine match instead of the demo fixture.</summary>
@@ -217,6 +204,7 @@ public partial class BattleScreen : Control
         StopDemoPlayback();
         ClearRemovalActors();
         _deploymentOrigins.Clear();
+        _deploymentChoiceCenters.Clear();
         _orderOrigins.Clear();
         _orderChoiceCaptions.Clear(); _orderChoiceFaces.Clear(); CloseTargetChoice();
         _liveInputView = null; _liveInputActions = null;
@@ -235,6 +223,7 @@ public partial class BattleScreen : Control
         StopDemoPlayback();
         ClearRemovalActors();
         _deploymentOrigins.Clear();
+        _deploymentChoiceCenters.Clear();
         _orderOrigins.Clear();
         _orderChoiceCaptions.Clear(); _orderChoiceFaces.Clear(); CloseTargetChoice();
         _liveInputView = null; _liveInputActions = null;
@@ -266,7 +255,6 @@ public partial class BattleScreen : Control
         SyncRemovalActors(state);
         _selected = null; _pressed = null; _hovered = null; _dragging = false; _aim.Visible = false;
         _detail.Visible = _inspectStats.Visible = false;
-        if(_keywordSkills is not null)UiStyles.Clear(_keywordSkills);
         _hint.Visible = false;
         UiStyles.Clear(_cardLayer); _cards.Clear();
         _state = state; _actions = actions;
@@ -471,6 +459,7 @@ public partial class BattleScreen : Control
     private void CardPressed(BattleCard card, Vector2 viewportPosition)
     {
         if (!IsFriendlyTurn) return;
+        if (TargetChoiceVisible) return;
         // Actions are drag-only. A click never deploys, moves or attacks; it only selects and previews.
         if (card.View?.OwnerSide == "enemy")
         {
@@ -490,10 +479,12 @@ public partial class BattleScreen : Control
         if (card.Mode == BattleCardMode.Hand) { card.Position = position; card.Rotation = rotation; card.ZIndex = 100; }
         _pressed = card; _pressAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * viewportPosition;
         _grabOffset = _pressAt - card.Position; _dragging = false;
+        if (card.Mode == BattleCardMode.Hand && IsTargetedOrder(card.Uid)) UpdateOrderAim(card, _pressAt);
     }
     private void CardHovered(BattleCard card, bool on)
     {
         if (!IsFriendlyTurn) return;
+        if (TargetChoiceVisible) return;
         if (HasPendingHandPlay(card.Uid)) return;
         if (_interaction.IsPending(card.Uid)) return;
         if (_sequence.IsDrawing(card.Uid)) return;
@@ -520,7 +511,6 @@ public partial class BattleScreen : Control
     private void ShowDetail(BattleCard card)
     {
         if (card.View?.Visibility != Visibility.Full) return;
-        ShowKeywordSkills(card.Uid);
         UiStyles.Clear(_detail);
         var inspect = new BattleCard { Size = new(180, 252), MouseFilter = MouseFilterEnum.Ignore };
         inspect.Bind(card.View, card.View.IsHq ? BattleCardMode.Hq : BattleCardMode.Inspect, _textures);
@@ -557,7 +547,8 @@ public partial class BattleScreen : Control
         }
         _paper.DeployHint = _selected is not null && InteractionCard(_selected)?.Definition.CardType == "unit"
             && InteractionActions.PlayableUids.Contains(_selected);
-        _paper.MoveHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"); _paper.QueueRedraw();
+        _paper.MoveHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline");
+        _paper.RetreatHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "support"); _paper.QueueRedraw();
     }
     public void CancelSelection()
     {
@@ -601,7 +592,7 @@ public partial class BattleScreen : Control
                 Submit(new PlayCard(_selected, TargetUid: target.Uid));
                 return;
             }
-            if (at.Y is >= 120 and <= 600 && InteractionActions.PlayableUids.Contains(_selected))
+            if (new Rect2(0, 120, BoardSize.X, 480).HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected))
             {
                 RememberOrderPose(_selected, releasedPose);
                 Submit(new PlayCard(_selected));
@@ -628,10 +619,19 @@ public partial class BattleScreen : Control
             {
                 if (DeploymentGapAt(at.X) is not { } gap)
                 { RefuseCommand(new PlayCard(_selected)); CancelGesture(); return; }
+                _deploymentChoiceCenters[_selected] = new(GapX(gap), SelfArea.Position.Y + FieldCardSize.Y / 2);
                 Submit(new PlayCard(_selected, GapId: gap.GapId));
             }
             else Submit(new PlayCard(_selected, DropSlot(at.X, InteractionView.SupportLineSlotCount,
                 _cards.Values.Where(c => c.View?.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support")), SupportOccupancy())));
+        }
+        else if (SelfBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "support"))
+        {
+            var options = InteractionActions.Moves.Where(m => m.Uid == _selected && m.ToZone == "support" && m.SlotIndex is not null).ToArray();
+            var preferred = DropSlot(at.X, InteractionView.SupportLineSlotCount,
+                _cards.Values.Where(c => c.View?.OwnerSide == "self" && (c.View.IsHq || c.View.Zone == "support")), SupportOccupancy());
+            var slot = options.OrderBy(m => Math.Abs(m.SlotIndex!.Value - preferred)).First().SlotIndex;
+            Submit(new MoveUnit(_selected, "support", slot));
         }
         else if (FrontBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline"))
         {
@@ -757,6 +757,8 @@ public partial class BattleScreen : Control
         _attackHints.Clear();
         var moving = _selected is not null && FrontBand.HasPoint(at)
             && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline");
+        var retreating = _selected is not null && SelfBand.HasPoint(at)
+            && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "support");
         var deploying = _selected is not null && InteractionCard(_selected)?.Definition.CardType == "unit"
             && SelfBand.HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected);
         // The union the engine will actually offer: where a unit can be put, and what it can be put on.
@@ -770,7 +772,7 @@ public partial class BattleScreen : Control
             if (OrderTargeting(_selected) is { } orderTargets)
                 _attackHints.AddRange(orderTargets.TargetUids.Where(_cards.ContainsKey));
         }
-        if (!moving && !deploying) { _slotLayer.QueueRedraw(); return; }
+        if (!moving && !deploying && !retreating) { _slotLayer.QueueRedraw(); return; }
 
         if (deploying && !_usingDemo)
         {
@@ -799,7 +801,8 @@ public partial class BattleScreen : Control
         }
         var taken = SupportOccupancy().ToHashSet();
         for (var slot = 0; slot < capacity; slot++)
-            if (!taken.Contains(slot)) _slotHints.Add((slot, SlotX(slot, cards, capacity)));
+            if (!taken.Contains(slot) && (!retreating || InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "support" && m.SlotIndex == slot)))
+                _slotHints.Add((slot, SlotX(slot, cards, capacity)));
         _slotHintAim = DropSlot(at.X, capacity, row, SupportOccupancy());
         _slotLayer.QueueRedraw();
     }
@@ -872,12 +875,22 @@ public partial class BattleScreen : Control
                     CancelTargetChoice(); return;
                 case InputEventKey: GetViewport().SetInputAsHandled(); return;
                 case InputEventMouseMotion aimMotion:
-                    UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * aimMotion.Position);
+                    var aimAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * aimMotion.Position;
+                    UpdateArrowAim(aimAt);
+                    GetViewport().SetInputAsHandled();
                     return;
                 case InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }:
                     CancelTargetChoice(); return;
-                case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } click:
-                    CommitArrowChoice(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * click.Position);
+                case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } press:
+                    _arrowPressed = true;
+                    UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * press.Position);
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false } drop:
+                    var commit = _arrowPressed;
+                    _arrowPressed = false;
+                    GetViewport().SetInputAsHandled();
+                    if (commit) CommitArrowChoice(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * drop.Position);
                     return;
             }
             return;
@@ -914,7 +927,8 @@ public partial class BattleScreen : Control
                 {
                     _aim.Preview = null; _aim.To = at; _aim.Visible = true;
                     _aim.InvalidTarget = false;
-                    _aim.Moving = FrontBand.HasPoint(at) && InteractionActions.Moves.Any(m => m.Uid == _selected); _aim.QueueRedraw();
+                    _aim.Moving = InteractionActions.Moves.Any(m => m.Uid == _selected
+                        && (m.ToZone == "frontline" && FrontBand.HasPoint(at) || m.ToZone == "support" && SelfBand.HasPoint(at))); _aim.QueueRedraw();
                 }
             }
             // Pre-deploy: while the gesture is still in flight nothing has been committed, so every legal
@@ -925,11 +939,13 @@ public partial class BattleScreen : Control
         if (e is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false } release && _pressed is not null)
         {
             var wasDragging = _dragging;
+            var wasOrderAim = IsTargetedOrder(_pressed.Uid);
             var releasedPose = wasDragging && _pressed.Mode == BattleCardMode.Hand ? DeploymentPose.From(_pressed) : (DeploymentPose?)null;
             _pressed.Position = _pressed.RestPosition; _pressed.Rotation = _pressed.RestRotation;
             _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
             _pressed = null; _dragging = false;
             if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position, releasedPose);
+            else if (wasOrderAim) CancelGesture();
             else ClearSlotHints();
             ReleaseGestureWaiter();
         }
@@ -1479,6 +1495,7 @@ public partial class BattlePaper : Control
 {
     public bool DeployHint { get; set; }
     public bool MoveHint { get; set; }
+    public bool RetreatHint { get; set; }
     public bool FrontOwnedBySelf { get; set; }
     public bool FrontOccupied { get; set; }
     public override void _Draw()
@@ -1493,6 +1510,7 @@ public partial class BattlePaper : Control
         }
         if (DeployHint) Highlight(new(260, 442, 760, 150), "在这里部署");
         if (MoveHint) Highlight(new(260, 266, 760, 150), "进入前线");
+        if (RetreatHint) Highlight(new(260, 442, 760, 150), "退回支援线");
 
     }
     private void Highlight(Rect2 rect, string caption)

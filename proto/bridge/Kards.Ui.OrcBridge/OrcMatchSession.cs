@@ -173,7 +173,9 @@ public sealed partial class OrcMatchSession : IDisposable
             foreach(var card in importedCards.Where(c=>c.DesktopEffectsJson is not null))
             {using var graph=System.Text.Json.JsonDocument.Parse(card.DesktopEffectsJson!);desktopPlans[card.Entry!.Id]=graph.RootElement.EnumerateArray().Select(e=>e.GetRawText()).ToArray();}
             session._desktopTargets=new DesktopTargetContext(session.Match,desktopPlans);
-            session._host.SetOrderTargetReader(p=>session._effects.ReadOrderTargets(p).Concat(session._desktopTargets.ReadOrderTargets(p)).ToArray());
+            session._host.SetOrderTargetReader(p=>session._effects.ReadOrderTargets(p)
+                .Concat(session._desktopTargets.ReadOrderTargets(p)).Concat(KeywordOrderTargeting.Read(p))
+                .DistinctBy(t=>t.Uid).ToArray());
             session._host.SetSourceDefinitions(completeCards);
             session.CardPoolReport = report;
             return session;
@@ -626,6 +628,7 @@ public sealed partial class OrcMatchSession : IDisposable
                     if(Resolve(skill.Uid) is not UnitCard skillHost||!ReferenceEquals(skillHost.Owner,_host.Viewer))return UiSubmitOutcome.UnknownCard;
                     var component=KeywordProgramRuntime.Components(skillHost).FirstOrDefault(c=>c.Keyword==skill.KeywordId);
                     _choiceSourceUid=skill.Uid;
+                    _interactiveCommand = true;
                     if(component is null||!await component.UseAsync(skill.SkillId,ct))return UiSubmitOutcome.Rejected;
                     _host.CaptureCompletedActions();return UiSubmitOutcome.Applied;
                 case Concede:
@@ -635,6 +638,7 @@ public sealed partial class OrcMatchSession : IDisposable
                     return UiSubmitOutcome.Rejected;
                 case PlayCard play:
                     _choiceSourceUid = play.Uid;
+                    _interactiveCommand = true;
                     _pendingSelection = play.TargetUid is { } selected ? [selected] : null;
                     _pendingGapId = play.GapId;
                     return await PlayAsync(play.Uid, play.SupportIndex, ct);
@@ -642,7 +646,9 @@ public sealed partial class OrcMatchSession : IDisposable
                 {
                     if (Resolve(move.Uid) is not UnitCard mover) return UiSubmitOutcome.UnknownCard;
                     // The player chose a slot; replay it when the engine asks where to go.
-                    _pendingSlot = move.SlotIndex;
+                    if (move.ToZone == "support") _pendingSupportIndex = move.SlotIndex;
+                    else if (move.ToZone == "frontline") _pendingSlot = move.SlotIndex;
+                    else return UiSubmitOutcome.Rejected;
                     return Report(await Match.CommandManager.BeginMoveAsync(mover, ct));
                 }
                 case AttackUnit attack:
