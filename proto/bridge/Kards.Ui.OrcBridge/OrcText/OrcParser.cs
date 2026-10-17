@@ -160,6 +160,12 @@ internal static partial class OrcParser
         if (PassivePattern().IsMatch(line))
             throw new OrcReject($"被动句（{Truncate(line)}）需要持续态修饰或光环，引擎 DSL 触发面未覆盖");
 
+        // ④b 自事件指向：目标写成「被本单位攻击/伤害的单位」——那是**事件载荷**指向（自事件引用），
+        // 不是部署动作。落到 ⑤ 会被编成「部署：任意选一个单位」，凭空造出一次部署指向
+        // （H39 sWG 就这样把「打谁抑制谁」编成了「部署时选一个单位抑制」）。
+        if (SelfEventTargetPattern().IsMatch(line))
+            throw new OrcReject($"自事件指向（{Truncate(line)}）需要事件载荷作目标，DSL 无 ref 选择器");
+
         // ⑤ 无头 unit 行＝部署触发（KARDS 惯例：正文即部署效果）。
         return new("deploy_basic", "on_deploy", ActionsFor(line, wordbook, fx),
             "unit.deployed", OrcTriggerGuard.SelfUnit);
@@ -431,6 +437,9 @@ internal static partial class OrcParser
     private static partial Regex ListenerPattern();
     [GeneratedRegex(@"具有|无法|双倍伤害|每具有|每拥有")]
     private static partial Regex PassivePattern();
+    /// <summary>「被本单位攻击/伤害的单位」＝事件载荷指向，不是可选目标。</summary>
+    [GeneratedRegex(@"(被|受到)本单位(攻击|伤害)")]
+    private static partial Regex SelfEventTargetPattern();
     [GeneratedRegex(@"^(然后|并且|并|则)")]
     private static partial Regex ThenPrefix();
     [GeneratedRegex(@"[，,]?(?:直到(?:本|下个友方)?回合结束|本回合(?:内)?$)$")]

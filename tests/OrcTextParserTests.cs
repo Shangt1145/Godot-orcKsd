@@ -46,6 +46,22 @@ public class OrcTextParserTests
     public void unit_无头行落部署触发() =>
         Assert.Equal("deploy_basic", Compile("抽 1 张牌").Effects.Single().TemplateId);
 
+    /// <summary>
+    /// 「被本单位攻击/伤害的单位」是事件载荷指向，不是可选目标。旧口径把它当无头部署行，
+    /// 编成「部署：任意选一个单位」——H39 sWG 因此在部署时凭空弹出一次选靶（真实能力是
+    /// 「打谁抑制谁」，根本没有部署效果）。
+    /// </summary>
+    [Theory]
+    [InlineData("抑制被本单位攻击的单位")]
+    [InlineData("压制受到本单位伤害的单位")]
+    [InlineData("压制被本单位伤害的单位和其相邻单位")]
+    public void unit_自事件指向上不落部署(string text)
+    {
+        var r = Compile(text);
+        Assert.Contains(r.Diagnostics, d => d.Code == "unparsed-text");
+        Assert.DoesNotContain(r.Effects, e => e.Slot == "on_deploy" && e.Hook == "unit.deployed");
+    }
+
     [Fact]
     public void order_整行落使用触发() =>
         Assert.Equal("played_basic", Compile("抽 1 张牌", "order").Effects.Single().TemplateId);
