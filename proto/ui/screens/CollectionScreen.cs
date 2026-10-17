@@ -130,17 +130,25 @@ public partial class CollectionScreen : VBoxContainer
 
     private static IReadOnlyList<PackFamily> PackFamilies()
     {
-        var packs = OrcEngineHost.PackDescriptors;
-        return [.. packs.Where(p => p.BasePackId is null)
-            .Select(p => new PackFamily(p.Id, p.Name,
-                [.. packs.Where(e => e.BasePackId == p.Id).Select(e => e.Id)]))
+        // 引擎卡包与工坊包并集：工坊包的卡 id 是 diy/ 前缀，靠来源映射（RawOf）归到自己的包。
+        var all = OrcEngineHost.PackDescriptors.Select(p => (p.Id, p.Name, p.BasePackId))
+            .Concat(WorkshopAuthoring.AuthoredPacks.Select(p => (p.Id[5..], p.Name,
+                p.BasePackId is { } b && b.StartsWith("pack/", StringComparison.Ordinal) ? b[5..] : p.BasePackId)));
+        return [.. all.Where(p => p.Item3 is null)
+            .Select(p => new PackFamily(p.Item1, p.Item2,
+                [.. all.Where(e => e.Item3 == p.Item1).Select(e => e.Item1)]))
             .OrderBy(f => f.Name, StringComparer.Ordinal)];
     }
 
     /// <summary>Card count for one family: the base pack's cards plus every expansion's.</summary>
     private int ScopedCount(CardCatalog catalog, PackFamily family) =>
-        Cards.Count(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
-            || family.ExpansionIds.Any(e => c.CardId.StartsWith("pack/" + e + "/", StringComparison.Ordinal)));
+        Cards.Count(c => DeckCardPacks.RawOf(c.CardId) == "pack/" + family.Id
+            || family.ExpansionIds.Any(e => DeckCardPacks.RawOf(c.CardId) == "pack/" + e));
+
+    /// <summary>Pack display name across both sources (engine cardpacks + workshop packs).</summary>
+    private static string PackNameOf(string id) =>
+        OrcEngineHost.PackDescriptors.FirstOrDefault(p => p.Id == id)?.Name
+        ?? WorkshopAuthoring.AuthoredPacks.FirstOrDefault(p => p.Id == "pack/" + id)?.Name ?? id;
 
     private IReadOnlyList<PackTile> PackTiles(CardCatalog catalog)
     {
@@ -253,7 +261,7 @@ public partial class CollectionScreen : VBoxContainer
                 _expansionFilter.SetItemMetadata(_expansionFilter.ItemCount - 1, "pack/" + family.Id);
                 foreach (var expId in family.ExpansionIds)
                 {
-                    _expansionFilter.AddItem(OrcEngineHost.PackDescriptors.First(p => p.Id == expId).Name);
+                    _expansionFilter.AddItem(PackNameOf(expId));
                     _expansionFilter.SetItemMetadata(_expansionFilter.ItemCount - 1, "pack/" + expId);
                 }
             }
@@ -266,15 +274,15 @@ public partial class CollectionScreen : VBoxContainer
         query = _activePack switch
         {
             "builtin:taikong" => query.Where(c => DeckCardPacks.Of(c.CardId) == "source"),
-            _ when family is not null => query.Where(c => c.CardId.StartsWith("pack/" + family.Id + "/", StringComparison.Ordinal)
-                || family.ExpansionIds.Any(e => c.CardId.StartsWith("pack/" + e + "/", StringComparison.Ordinal))),
+            _ when family is not null => query.Where(c => DeckCardPacks.RawOf(c.CardId) == "pack/" + family.Id
+                || family.ExpansionIds.Any(e => DeckCardPacks.RawOf(c.CardId) == "pack/" + e)),
             var pack => query.Where(c => c.CardId.StartsWith(pack + "/", StringComparison.Ordinal))
         };
         if (_expansionFilter is { Visible: true } picker)
         {
             var source = picker.GetItemMetadata(picker.Selected).AsString();
             if (source.Length > 0)
-                query = query.Where(c => c.CardId.StartsWith(source + "/", StringComparison.Ordinal));
+                query = query.Where(c => DeckCardPacks.RawOf(c.CardId) == source);
         }
         _results = query.ToArray();
         ShowDetail(_results.FirstOrDefault(c => c.CardId == _selected?.CardId) ?? _results.FirstOrDefault());

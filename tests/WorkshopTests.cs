@@ -82,6 +82,16 @@ public sealed class WorkshopTests : IDisposable
         Assert.Equal(pack.Id,DeckCardPacks.Of(child.Id));Assert.Equal(card.Id,cards.Cards.First().Id);
     }
     [Fact]
+    public void CollectionTilesSurfaceWorkshopPacksBySourceMapping()
+    {
+        var (pack,_,_,card)=Authored();var expansion=new DiyPackDraft{BasePackId=pack.Id};store.Save(expansion);
+        var child=card with{Id="diy/"+Guid.NewGuid().ToString("N"),PackId=expansion.Id};cards.Save(child);WorkshopAuthoring.Configure(store,cards.Cards);
+        var authored=WorkshopAuthoring.AuthoredPacks;
+        Assert.Equal(pack.Name,authored.Single(p=>p.Id==pack.Id).Name);
+        Assert.Equal(1,authored.Single(p=>p.Id==pack.Id).CardCount);Assert.Equal(1,authored.Single(p=>p.Id==expansion.Id).CardCount);
+        Assert.Equal(expansion.Id,DeckCardPacks.RawOf(child.Id));Assert.Equal(pack.Id,DeckCardPacks.Family(DeckCardPacks.RawOf(child.Id)));
+    }
+    [Fact]
     public async Task AuthoredKeywordActuallyExecutesOnDeploymentWithTheCustomNation()
     {
         var (_,_,n,card)=Authored();using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"workshop-test","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);

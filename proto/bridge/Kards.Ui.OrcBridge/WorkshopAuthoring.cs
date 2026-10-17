@@ -16,6 +16,8 @@ public static class WorkshopAuthoring
     public static IReadOnlyList<DiyNationDraft> Nations=>_packs.SelectMany(p=>p.Nations).ToArray();
     public static IReadOnlyList<UiDiyChoice> KeywordChoices=>_packs.SelectMany(p=>p.Keywords).Select(k=>new UiDiyChoice(k.Id,k.Name)).ToArray();
     public static IReadOnlyDictionary<string,string> PackNames=>_packs.ToDictionary(p=>p.Id,p=>p.Name);
+    /// <summary>工坊包清单（收藏页磁贴/来源筛选消费；Id 保留 pack/ 前缀，CardCount 按当前 DIY 卡归属统计）。</summary>
+    public static IReadOnlyList<PackDescriptor> AuthoredPacks {get;private set;}=[];
     public static bool TryKeyword(string id,out string engine)=>_keywords.TryGetValue(id,out engine!);
     public static string KeywordLabel(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id||_keywords.GetValueOrDefault(k.Id)==id)?.Name??id;
     public static string NationLabel(string id)=>Nations.FirstOrDefault(n=>n.Id==id)?.Name??id;
@@ -62,6 +64,7 @@ public static class WorkshopAuthoring
             }catch(Exception e)when(e is InvalidDataException or InvalidOperationException or ArgumentException or JsonException){errors[k.Id]=e.Message;}
         }
         _packs=packs;_keywords=keywords;Errors=errors;
+        AuthoredPacks=packs.Select(p=>new PackDescriptor(p.Id,p.Name,p.IsExpansion?p.BasePackId:null,cards.Count(c=>c.PackId==p.Id))).ToArray();
         DeckCardPacks.ConfigureAuthored(cards.Where(c=>c.PackId.Length>0).ToDictionary(c=>c.Id,c=>c.PackId),packs.Where(p=>p.IsExpansion).ToDictionary(p=>p.Id,p=>p.BasePackId!));
         ConstructionRules.ConfigureCustomNations(Nations.Select(n=>n.Id));
     }
