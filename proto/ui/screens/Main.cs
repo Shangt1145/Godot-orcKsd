@@ -134,6 +134,7 @@ public partial class Main : Control
         _battle = new BattleScreen();
         _battle.Theme = UiStyles.CreateTheme();
         _battle.Initialize(_catalog, _textures, _clock, sfx);
+        _battle.KeywordSkillProvider=uid=>_runner?.KeywordSkills(uid)??[];
         _battle.CommandRequested += command =>
         {
             if (_runner is { IsRunning: true } runner)

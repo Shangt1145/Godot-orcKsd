@@ -46,7 +46,7 @@ public sealed class WorkshopTests : IDisposable
     public void CardCropAndOriginalSourceRoundTripWithPackMembership()
     {
         var pack=new DiyPackDraft();store.Save(pack);var draft=new DiyCardDraft{PackId=pack.Id,ArtSourceFile="sample-source.png",ArtImportMode="card",ArtRegion=new(.03f,.14f,.94f,.49f)};
-        cards.Save(draft);var reloaded=new DiyCardLibrary(Path.Combine(root,"cards.json")).Cards.Single();Assert.Equal(draft,reloaded);
+        cards.Save(draft);var reloaded=new DiyCardLibrary(Path.Combine(root,"cards.json")).Cards.Single();Assert.Equivalent(draft,reloaded);
         var imported=DiyCardLibrary.Import(DiyCardLibrary.Export(draft));Assert.Equal(draft.PackId,imported.PackId);Assert.Equal(draft.ArtRegion,imported.ArtRegion);Assert.NotEqual(draft.Id,imported.Id);
         Assert.Throws<InvalidDataException>(()=>cards.Save(draft with{ArtRegion=new(-1,0,1,1)}));
     }
@@ -96,6 +96,79 @@ public sealed class WorkshopTests : IDisposable
     {
         store.Save(new(){Keywords=[new(){EffectText="未定义效果 这不是可执行规则"}]});WorkshopAuthoring.Configure(store,[]);Assert.Single(WorkshopAuthoring.Errors);
         Assert.NotNull(WorkshopAuthoring.ValidateKeyword(new()));
+    }
+    [Fact]
+    public async Task NativeRuleProgramAndCardParameterSurviveDiskAndNativeJsonThenDeploy()
+    {
+        var program=new KeywordProgram{DefaultValue=3,Handlers=[new(){Actions=[new(){Op="move.set",Value="1"},new(){Op="attack.set",Value="0"}]}]};
+        var keyword=new DiyKeywordDraft{Name="突进",ProgramJson=program.ToJson()};var pack=new DiyPackDraft{Keywords=[keyword]};store.Save(pack);
+        var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id],KeywordValues=new(){{keyword.Id,7}}};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
+        var loaded=new DiyWorkshopLibrary(Path.Combine(root,"packs.json"));Assert.Equal(program.ToJson(),loaded.Packs.Single().Keywords.Single().ProgramJson);
+        var result=DiyCardCompiler.Validate(card,catalog.Cards);Assert.True(result.Success,string.Join(';',result.Errors));
+        Assert.Contains(":7",result.EngineCardJson);Assert.True(WorkshopAuthoring.TryKeyword(keyword.Id,out var engineId));
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"program-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
+        var unit=(CardBase)session.Host.Index[actor.Uid];Assert.Equal(7,unit.Keywords.GetValue(engineId));Assert.True(unit.GetData<CommandData>().CanMove);Assert.False(unit.GetData<CommandData>().CanAttack);
+    }
+    [Fact]
+    public async Task BridgeEnumeratesSkillsAndUseKeywordSkillAppliesThenRejectsSpentOpportunity()
+    {
+        var program=new KeywordProgram{Handlers=[new(){Actions=[new(){Op="attack.set",Value="1"}]}],Skills=[new(){Id="strike",Name="重击",Cost="0",SpendAttack=true,SpendMove=false,Actions=[new(){Op="buff",Value="2"}]}]};
+        var keyword=new DiyKeywordDraft{Name="突击",ProgramJson=program.ToJson()};var pack=new DiyPackDraft{Keywords=[keyword]};store.Save(pack);
+        var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id]};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"skill-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
+        var skill=Assert.Single(session.KeywordSkills(actor.Uid));
+        Assert.True(WorkshopAuthoring.TryKeyword(keyword.Id,out var engineId));Assert.Equal(engineId,skill.KeywordId);Assert.Equal("重击",skill.Name);Assert.True(skill.CanUse,$"技能应可用：{skill.State}");Assert.Equal(0,skill.Cost);
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new UseKeywordSkill(actor.Uid,engineId,"strike")));session.SettleProjection();
+        Assert.Equal(card.Attack+2,session.View.SelfLine.Single(c=>c.Uid==actor.Uid).EffectiveAttack);
+        Assert.Equal(UiSubmitOutcome.Rejected,await session.SubmitAsync(new UseKeywordSkill(actor.Uid,engineId,"strike")));
+        Assert.Equal(card.Attack+2,session.View.SelfLine.Single(c=>c.Uid==actor.Uid).EffectiveAttack);
+    }
+    [Fact]
+    public async Task UseKeywordSkillRejectsUnknownCardAndUnaffordableSkillWithoutSideEffects()
+    {
+        var program=new KeywordProgram{Skills=[new(){Id="grand",Name="大招",Cost="10000",SpendAttack=false,SpendMove=false,Actions=[new(){Op="buff",Value="2"}]}]};
+        var keyword=new DiyKeywordDraft{Name="豪掷",ProgramJson=program.ToJson()};var pack=new DiyPackDraft{Keywords=[keyword]};store.Save(pack);
+        var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id]};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"skill-guard","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
+        Assert.Equal(UiSubmitOutcome.UnknownCard,await session.SubmitAsync(new UseKeywordSkill("uid/nothing",keyword.Id,"grand")));
+        var listed=Assert.Single(session.KeywordSkills(actor.Uid));Assert.False(listed.CanUse);Assert.Equal(10000,listed.Cost);
+        var points=session.Host.Match.Players[0].Points;
+        Assert.True(WorkshopAuthoring.TryKeyword(keyword.Id,out var engineId));
+        Assert.Equal(UiSubmitOutcome.Rejected,await session.SubmitAsync(new UseKeywordSkill(actor.Uid,engineId,"grand")));
+        Assert.Equal(points,session.Host.Match.Players[0].Points);
+        Assert.Equal(card.Attack,session.View.SelfLine.Single(c=>c.Uid==actor.Uid).EffectiveAttack);
+    }
+    [Fact]
+    public async Task EffectAttackIsRealCombatWithTriggersAndProgramReplaceSwapsTheUnitInPlace()
+    {
+        var pack=new DiyPackDraft();store.Save(pack);
+        var body=new DiyCardDraft{PackId=pack.Id,Cost=0,Name="替换体",Attack=1,Defense=1};cards.Save(body);
+        var program=new KeywordProgram{State=new(){{"hits",0}},Handlers=[
+            new(){Actions=[new(){Op="attack.set",Value="1"}]},
+            new(){Event="unit.attack.after",Actions=[new(){Op="state.add",Value="1",Key="hits"}]}],Skills=[
+            new(){Id="strike-hq",Name="直击总部",Cost="0",SpendAttack=true,SpendMove=false,Actions=[new(){Op="attack",Target="enemy.hq",BypassRange=true}]},
+            new(){Id="morph",Name="变形",Cost="0",SpendAttack=false,SpendMove=false,Actions=[new(){Op="replace",Target="self",Key=body.Id}]}]};
+        var keyword=new DiyKeywordDraft{Name="突袭形态",ProgramJson=program.ToJson()};var pack2=pack with{Keywords=[keyword]};store.Save(pack2);
+        var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id]};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"combat-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card,body]);
+        session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
+        Assert.True(WorkshopAuthoring.TryKeyword(keyword.Id,out var engineId));
+        var before=session.Host.Match.Players[1].Hq.Health;
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new UseKeywordSkill(actor.Uid,engineId,"strike-hq")));session.SettleProjection();
+        Assert.Equal(before-card.Attack,session.Host.Match.Players[1].Hq.Health);
+        var state=session.KeywordSkills(actor.Uid).Single(s=>s.SkillId=="morph").State;
+        Assert.Contains("hits 1",state);
+        Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new UseKeywordSkill(actor.Uid,engineId,"morph")));session.SettleProjection();
+        Assert.DoesNotContain(session.View.SelfLine,c=>c.Uid==actor.Uid);
+        var morphed=session.View.SelfLine.Single(c=>c.CardId==body.Id);
+        Assert.Equal(body.Defense,morphed.EffectiveDefense);
     }
     [Fact]
     public void LegacyDeckAndCodeSelectionStillAllowsMigratedCardsOnly()

@@ -323,7 +323,8 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         Name = CardName.Text, CardType = Value(CardType), Nation = Value(Nation), Rarity = Value(Rarity), UnitType = Value(UnitType),
         Cost = (int)Cost.Value, OpCost = (int)OpCost.Value, Attack = (int)Attack.Value, Defense = (int)Defense.Value,
-        Keywords = _draft.DesktopCardJson is not null ? _draft.Keywords : Value(CardType) == "unit" ? _keywords.Where(k => k.Value.ButtonPressed).Select(k => k.Key).ToArray() : [],
+        Keywords = _draft.DesktopCardJson is not null ? _draft.Keywords : _keywords.Where(k => k.Value.ButtonPressed&&(Value(CardType)=="unit"||WorkshopAuthoring.Keyword(k.Key)?.ProgramJson is not null)).Select(k => k.Key).ToArray(),
+        KeywordValues = _keywordValues.Where(p=>_keywords[p.Key].ButtonPressed).ToDictionary(p=>p.Key,p=>(int)p.Value.Value),
         Armor = (int)Armor.Value, ArtFile = _importedArt,
         ArtScale = _importedArt.Length > 0 ? (int)ArtZoom.Value : 100,
         Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
@@ -369,7 +370,7 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         var draft = Read(); var isUnit = draft.CardType == "unit";
         UnitType.Disabled = !isUnit; OpCost.Editable = isUnit; Attack.Editable = isUnit; Defense.Editable = isUnit;
-        foreach (var keyword in _keywords.Values) keyword.Disabled = !isUnit || draft.DesktopCardJson is not null;
+        foreach (var keyword in _keywords) keyword.Value.Disabled = (!isUnit&&WorkshopAuthoring.Keyword(keyword.Key)?.ProgramJson is null) || draft.DesktopCardJson is not null;
         Armor.Editable = isUnit && _keywords["armor"].ButtonPressed && draft.DesktopCardJson is null;
         _identity.Text = draft.Id; _identity.ClipText = true; _identity.TooltipText = draft.Id;
         // 新卡图只能由本机文件导入；旧存档引用只读兼容，可移除或导入替换。

@@ -21,7 +21,7 @@ public sealed class BattleInteractionStateMachine
 
     public static string? Actor(UiCommand command) => command switch
     {
-        PlayCard play => play.Uid, MoveUnit move => move.Uid,
+        UseKeywordSkill skill=>skill.Uid, PlayCard play => play.Uid, MoveUnit move => move.Uid,
         AttackUnit attack => attack.AttackerUid, CommandUnit commandUnit => commandUnit.Uid, _ => null
     };
 

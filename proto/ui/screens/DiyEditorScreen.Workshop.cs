@@ -11,6 +11,7 @@ public partial class DiyEditorScreen
     private DiyWorkshopLibrary? _workshopLibrary;
     private Action? _workshopChanged;
     private GridContainer _keywordGrid=null!;
+    private readonly Dictionary<string,SpinBox> _keywordValues=[];
     internal Button CreateNationButton=null!;
     internal OptionButton ArtInputKind=null!;
     private SpinBox _cropX=null!,_cropY=null!,_cropW=null!,_cropH=null!;
@@ -35,10 +36,18 @@ public partial class DiyEditorScreen
     {
         Nation.Clear();foreach(var n in packId.Length>0?WorkshopAuthoring.NationsFor(packId):DiyCardCompiler.Nations)
         {Nation.AddItem(n.Label);Nation.SetItemMetadata(Nation.ItemCount-1,n.Id);}
+        foreach(var value in _keywordValues.Values){value.GetParent().RemoveChild(value);value.QueueFree();}_keywordValues.Clear();
         foreach(var key in _keywords.Keys.Where(k=>k.StartsWith("kw-",StringComparison.Ordinal)).ToArray())
         {var control=_keywords[key];_keywordGrid.RemoveChild(control);control.QueueFree();_keywords.Remove(key);}
         foreach(var keyword in WorkshopAuthoring.KeywordsFor(packId))
-        {var box=new CheckBox{Text=keyword.Label};_keywordGrid.AddChild(box);_keywords[keyword.Id]=box;box.Toggled+=_=>Changed();}
+        {
+            var box=new CheckBox{Text=keyword.Label};_keywordGrid.AddChild(box);_keywords[keyword.Id]=box;box.Toggled+=_=>Changed();
+            if(WorkshopAuthoring.Keyword(keyword.Id)?.ProgramJson is { } json)
+            {
+                var value=Number(0,10000);value.Value=_draft.KeywordValues.GetValueOrDefault(keyword.Id,WorkshopAuthoring.ParameterDefault(keyword.Id));
+                value.TooltipText="词条参数 X";_keywordGrid.AddChild(value);_keywordValues[keyword.Id]=value;value.ValueChanged+=_=>Changed();
+            }
+        }
         if(ArtInputKind is not null)
         {
             ArtInputKind.Select(_draft.ArtSourceFile.Length==0?0:_draft.ArtImportMode=="card"?2:1);

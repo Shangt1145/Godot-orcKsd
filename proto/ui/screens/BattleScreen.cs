@@ -75,6 +75,18 @@ public partial class BattleScreen : Control
     private bool _dragging, _busy, _usingDemo = true;
     private int _generation;
     public event Action<UiCommand>? CommandRequested;
+    public Func<string,IReadOnlyList<UiKeywordSkill>>? KeywordSkillProvider;
+    private VBoxContainer? _keywordSkills;
+    private void ShowKeywordSkills(string uid)
+    {
+        if(_keywordSkills is null){_keywordSkills=new VBoxContainer{Position=new(1027,410),CustomMinimumSize=new(215,0),ZIndex=170};_canvas.AddChild(_keywordSkills);}
+        UiStyles.Clear(_keywordSkills);
+        foreach(var skill in KeywordSkillProvider?.Invoke(uid)??[])
+        {
+            var button=UiStyles.Button($"{skill.Name} · {skill.Cost} K",()=>{foreach(var child in _keywordSkills.GetChildren().OfType<Button>())child.Disabled=true;CommandRequested?.Invoke(new UseKeywordSkill(uid,skill.KeywordId,skill.SkillId));});
+            button.Disabled=!skill.CanUse||!IsFriendlyTurn;button.TooltipText=skill.State;_keywordSkills.AddChild(button);
+        }
+    }
 
     public event Action<string>? NavigationRequested;
 
@@ -254,6 +266,7 @@ public partial class BattleScreen : Control
         SyncRemovalActors(state);
         _selected = null; _pressed = null; _hovered = null; _dragging = false; _aim.Visible = false;
         _detail.Visible = _inspectStats.Visible = false;
+        if(_keywordSkills is not null)UiStyles.Clear(_keywordSkills);
         _hint.Visible = false;
         UiStyles.Clear(_cardLayer); _cards.Clear();
         _state = state; _actions = actions;
@@ -507,6 +520,7 @@ public partial class BattleScreen : Control
     private void ShowDetail(BattleCard card)
     {
         if (card.View?.Visibility != Visibility.Full) return;
+        ShowKeywordSkills(card.Uid);
         UiStyles.Clear(_detail);
         var inspect = new BattleCard { Size = new(180, 252), MouseFilter = MouseFilterEnum.Ignore };
         inspect.Bind(card.View, card.View.IsHq ? BattleCardMode.Hq : BattleCardMode.Inspect, _textures);

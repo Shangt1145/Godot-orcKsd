@@ -19,9 +19,12 @@ public static class WorkshopAuthoring
     public static bool TryKeyword(string id,out string engine)=>_keywords.TryGetValue(id,out engine!);
     public static string KeywordLabel(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id||_keywords.GetValueOrDefault(k.Id)==id)?.Name??id;
     public static string NationLabel(string id)=>Nations.FirstOrDefault(n=>n.Id==id)?.Name??id;
+    public static DiyKeywordDraft? Keyword(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id);
+    public static int ParameterDefault(string id)
+    {try{return Keyword(id)?.ProgramJson is { } json?KeywordProgram.Parse(json).DefaultValue:1;}catch(InvalidDataException){return 1;}}
     public static string? ValidateKeyword(DiyKeywordDraft keyword)
     {
-        try{CompileKeyword(keyword);return null;}catch(Exception e)when(e is InvalidDataException or InvalidOperationException or ArgumentException){return e.Message;}
+        try{if(keyword.ProgramJson is { } program)KeywordProgram.Parse(program);else CompileKeyword(keyword);return null;}catch(Exception e)when(e is InvalidDataException or InvalidOperationException or ArgumentException or JsonException){return e.Message;}
     }
     private static EffectSnapshot[] CompileKeyword(DiyKeywordDraft keyword)
     {
@@ -39,13 +42,24 @@ public static class WorkshopAuthoring
     public static void Configure(DiyWorkshopLibrary library,IReadOnlyList<DiyCardDraft> cards)
     {
         var packs=library.Packs;var keywords=new Dictionary<string,string>();var errors=new Dictionary<string,string>();
+        var ids=packs.SelectMany(p=>p.Keywords).ToDictionary(k=>k.Id,k=>k.Id+"."+Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(k))))[..16].ToLowerInvariant());
         foreach(var n in packs.SelectMany(p=>p.Nations))Faction.RegisterCustom(n.Id);
         foreach(var k in packs.SelectMany(p=>p.Keywords))
         {
             try{
-            var snapshots=CompileKeyword(k);var hash=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(k))))[..16].ToLowerInvariant();
-            var engineId=k.Id+"."+hash;DeclarativeKeywordComponent.Register(engineId,snapshots,k.Battle);keywords[k.Id]=engineId;
-            }catch(Exception e)when(e is InvalidDataException or InvalidOperationException or ArgumentException){errors[k.Id]=e.Message;}
+            var hash=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(k))))[..16].ToLowerInvariant();
+            var engineId=k.Id+"."+hash;
+            if(k.ProgramJson is { } program)
+            {
+                var definition=KeywordProgram.Parse(program);
+                string BindKeyword(string key)=>key.Length==0?"":ids.TryGetValue(key,out var authored)?authored:KeywordRegistry.IsDefined(key)?key:DiyCardCompiler.EngineKeywordId(key);
+                KeywordProgramAction[] Bind(KeywordProgramAction[] actions)=>actions.Select(a=>a with{Key=a.Op is "keyword.grant" or "keyword.remove"?BindKeyword(a.Key):a.Key,Then=Bind(a.Then),Else=Bind(a.Else)}).ToArray();
+                definition=definition with{Handlers=definition.Handlers.Select(h=>h with{Actions=Bind(h.Actions)}).ToArray(),Skills=definition.Skills.Select(s=>s with{Actions=Bind(s.Actions)}).ToArray()};
+                ProgramKeywordComponent.Register(engineId,definition,k.Battle);
+            }
+            else DeclarativeKeywordComponent.Register(engineId,CompileKeyword(k),k.Battle);
+            keywords[k.Id]=engineId;
+            }catch(Exception e)when(e is InvalidDataException or InvalidOperationException or ArgumentException or JsonException){errors[k.Id]=e.Message;}
         }
         _packs=packs;_keywords=keywords;Errors=errors;
         DeckCardPacks.ConfigureAuthored(cards.Where(c=>c.PackId.Length>0).ToDictionary(c=>c.Id,c=>c.PackId),packs.Where(p=>p.IsExpansion).ToDictionary(p=>p.Id,p=>p.BasePackId!));

@@ -16,6 +16,7 @@ public sealed record DiyKeywordDraft
     public string EffectText {get;init;}="";
     public bool Battle {get;init;}
     public OrcEffectDraft[] Effects {get;init;}=[];
+    public string? ProgramJson {get;init;}
     public DiyKeywordDraft Snapshot()=>this with{Effects=Effects.Select(e=>e.Snapshot()).ToArray()};
 }
 public sealed record DiyPackDraft

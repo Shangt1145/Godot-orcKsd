@@ -6,6 +6,8 @@ namespace Kards.Ui.Contracts;
 // ─────────────────────────────────────────────────────────────────────────────
 
 public abstract record UiCommand;
+public sealed record UseKeywordSkill(string Uid,string KeywordId,string SkillId):UiCommand;
+public sealed record UiKeywordSkill(string KeywordId,string SkillId,string Name,bool CanUse,int Cost,string State);
 public sealed record PlayCard(string Uid, int? SupportIndex = null, string? TargetUid = null, string? GapId = null) : UiCommand;
 public sealed record MoveUnit(string Uid, string ToZone, int? SlotIndex = null) : UiCommand;
 /// <summary>

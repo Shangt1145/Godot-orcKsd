@@ -112,6 +112,8 @@ public sealed partial class OrcMatchSession : IDisposable
         IReadOnlyList<OrcImportOutcome>? imported = null)
     {
         if (sourceDirectory is null) throw new InvalidDataException("Catalog admission requires its source directory.");
+        // 目录编译会构造引擎 CardDefinition（词条注册面 fail-fast），必须先暖机——幂等，应用启动本就先于建局。
+        OrcEngineHost.WarmUp();
         var sourceCards = cards.Where(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal)
             && !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
             && !c.CardId.StartsWith("orc/", StringComparison.Ordinal)).ToArray();
@@ -582,6 +584,11 @@ public sealed partial class OrcMatchSession : IDisposable
     /// Submits one contract command. Nothing is validated here beyond phase and turn ownership: a
     /// refused play reports the engine's own status rather than a UI guess.
     /// </summary>
+    public IReadOnlyList<UiKeywordSkill> KeywordSkills(string uid)
+    {
+        if(Resolve(uid) is not UnitCard card||!ReferenceEquals(card.Owner,_host.Viewer))return [];
+        return KeywordProgramRuntime.Components(card).SelectMany(c=>c.Definition.Skills.Select(s=>new UiKeywordSkill(c.Keyword,s.Id,s.Name,c.CanUse(s.Id),Math.Max(0,c.Number(s.Cost)),string.Join(" · ",c.State.Select(p=>$"{p.Key} {p.Value}"))))).ToArray();
+    }
     public async Task<UiSubmitOutcome> SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
         var outcome = await SubmitCoreAsync(command, ct);
@@ -615,6 +622,12 @@ public sealed partial class OrcMatchSession : IDisposable
             _admittedCommand = command;
             switch (command)
             {
+                case UseKeywordSkill skill:
+                    if(Resolve(skill.Uid) is not UnitCard skillHost||!ReferenceEquals(skillHost.Owner,_host.Viewer))return UiSubmitOutcome.UnknownCard;
+                    var component=KeywordProgramRuntime.Components(skillHost).FirstOrDefault(c=>c.Keyword==skill.KeywordId);
+                    _choiceSourceUid=skill.Uid;
+                    if(component is null||!await component.UseAsync(skill.SkillId,ct))return UiSubmitOutcome.Rejected;
+                    _host.CaptureCompletedActions();return UiSubmitOutcome.Applied;
                 case Concede:
                     var conceded = Match.Concede(_host.Viewer, ct);
                     if (conceded.IsAccepted) return UiSubmitOutcome.Applied;

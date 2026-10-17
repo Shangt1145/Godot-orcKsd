@@ -52,6 +52,7 @@ public sealed class DiyCardLibrary
             || card.ArtScale is < 50 or > 300 || card.Flavor is null || card.Flavor.Length > 300
             || card.EffectText is null || card.EffectText.Length > 2000
             || card.Keywords is null || card.Keywords.Length > 128 || card.Keywords.Any(string.IsNullOrWhiteSpace)
+            || card.KeywordValues is null || card.KeywordValues.Count>128 || card.KeywordValues.Any(p=>!card.Keywords.Contains(p.Key)||p.Value is <0 or >10000)
             || card.Keywords.Distinct(StringComparer.Ordinal).Count() != card.Keywords.Length
             || card.Effects is null || card.Effects.Length > 8
             || card.Effects.Any(e => e is null || e.Op is null || e.Target is null || e.Until is null)

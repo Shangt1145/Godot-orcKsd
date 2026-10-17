@@ -152,9 +152,11 @@ public static class DiyCardCompiler
             ArtPath = draft.ArtFile.Length > 0 ? "diyart://" + draft.ArtFile
                 : catalog.FirstOrDefault(c => c.CardId == draft.ArtCardId)?.ArtPath ?? "",
             Flavor = draft.Flavor, Text = Text(draft), Keywords = draft.Keywords.ToArray(),
-            KeywordValues = draft.Keywords.Contains("armor") ? new Dictionary<string, int> { ["armor"] = draft.Armor } : new()
+            KeywordValues = PreviewKeywordValues(draft)
         };
     }
+    private static Dictionary<string,int> PreviewKeywordValues(DiyCardDraft draft)
+    {var values=new Dictionary<string,int>(draft.KeywordValues);if(draft.Keywords.Contains("armor"))values["armor"]=draft.Armor;return values;}
     public static UiDiyValidation Validate(DiyCardDraft draft, IReadOnlyList<UiCardDefinition> catalog)
     {
         try
@@ -301,7 +303,7 @@ public static class DiyCardCompiler
             foreach (var keyword in parse.Keywords)
                 list.Add(new KeywordDeclaration(keyword.Id, keyword.Quantified ? keyword.Value : null));
         foreach (var token in draft.Keywords)
-            list.Add(new KeywordDeclaration(EngineKeywordId(token), token == "armor" ? draft.Armor : null));
+            list.Add(new KeywordDeclaration(EngineKeywordId(token), token == "armor" ? draft.Armor : draft.KeywordValues.TryGetValue(token,out var value)?value:null));
         return list.GroupBy(k => k.Id, StringComparer.Ordinal).Select(g => g.First()).ToArray();
     }
     /// <summary>
@@ -333,7 +335,7 @@ public static class DiyCardCompiler
         lock (KeywordGate)
             return KeywordMap.ContainsKey(token) || _packKeywords.ContainsKey(token) || KeywordIds.All.Contains(token,StringComparer.Ordinal)||WorkshopAuthoring.TryKeyword(token,out _);
     }
-    private static string EngineKeywordId(string token)
+    internal static string EngineKeywordId(string token)
     {
         lock (KeywordGate)
             return KeywordMap.TryGetValue(token, out var engine) ? engine

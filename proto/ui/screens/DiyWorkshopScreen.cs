@@ -154,6 +154,13 @@ public partial class DiyWorkshopScreen : VBoxContainer
         KeywordText=new TextEdit{CustomMinimumSize=new(0,110),PlaceholderText="例如：友方回合开始时，获得 +1+1。",WrapMode=TextEdit.LineWrappingMode.Boundary};DiyEditorScreen.Field(form,"实际效果",KeywordText);
         var battle=new CheckBox{Text="属于对战词条"};form.AddChild(battle);
         var status=UiStyles.Label("填写效果或打开结构编辑器，然后保存词条。",13,UiStyles.Dim);status.AutowrapMode=TextServer.AutowrapMode.WordSmart;form.AddChild(status);
+        form.AddChild(UiStyles.Button("编辑规则、计数与主动技能…",()=>
+        {
+            var editor=new KeywordProgramEditor{SizeFlagsVertical=SizeFlags.ExpandFill,Catalog=()=>_service.Cards};_keywordPane.AddChild(editor);row.Hide();
+            editor.Applied+=json=>{draft=draft with{ProgramJson=json};status.Text="规则程序已应用，保存词条后生效。";};
+            editor.Finished+=()=>{editor.QueueFree();row.Show();};editor.Open(draft.ProgramJson);
+        }));
+        form.AddChild(UiStyles.Button("移除规则程序，使用文本 / 结构效果",()=>{draft=draft with{ProgramJson=null};status.Text="已移除规则程序，保存后使用下方效果。";}));
         void Load(DiyKeywordDraft k){draft=k.Snapshot();KeywordName.Text=k.Name;description.Text=k.Description;KeywordText.Text=k.EffectText;battle.ButtonPressed=k.Battle;status.Text=WorkshopAuthoring.Errors.GetValueOrDefault(k.Id)??"效果可在下方重新校验。";}
         sidebar.AddChild(UiStyles.Button("新建词条",()=>Load(new())));list.ItemSelected+=i=>Load(pack.Keywords[(int)i]);
         var edit=UiStyles.Button("打开效果结构编辑器…",()=>

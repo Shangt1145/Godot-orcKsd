@@ -20,6 +20,7 @@ public sealed class OrcMatchRunner
     private bool _stopped;
 
     public bool IsRunning => _session is not null;
+    public IReadOnlyList<UiKeywordSkill> KeywordSkills(string uid)=>_session?.KeywordSkills(uid)??[];
     public bool IsSubmitting => _session?.IsSubmitting == true;
     public string? MulliganRequestId => _session?.MulliganRequestId;
     public bool MulliganPending => _session?.MulliganPending == true;

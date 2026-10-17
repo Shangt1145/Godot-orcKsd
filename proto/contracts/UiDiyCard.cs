@@ -25,6 +25,7 @@ public sealed record DiyCardDraft
     public int Attack { get; init; } = 2;
     public int Defense { get; init; } = 3;
     public string[] Keywords { get; init; } = [];
+    public Dictionary<string,int> KeywordValues {get;init;}=new();
     public int Armor { get; init; } = 1;
     /// <summary>旧存档兼容字段；Beta.1 不再提供现有卡图选择，新卡图只能导入。</summary>
     public string ArtCardId { get; init; } = "";
@@ -56,7 +57,7 @@ public sealed record DiyCardDraft
     public string? DesktopCardJson { get; init; }
     public DiyCardDraft Snapshot() => this with
     {
-        Keywords = Keywords.ToArray(), Effects = Effects.ToArray(),
+        Keywords = Keywords.ToArray(), KeywordValues=new(KeywordValues), Effects = Effects.ToArray(),
         OrcEffects = OrcEffects.Select(e => e.Snapshot()).ToArray()
     };
 }
