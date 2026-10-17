@@ -189,8 +189,16 @@ public static class DiyCardCompiler
         var effectText = draft.EffectText.Trim();
         var textMode = effectText.Length > 0 && draft.OrcEffects.Length == 0;
         var orcMode = draft.OrcEffects.Length > 0;
-        if (draft.CardType == "order" && (draft.Keywords.Length != 0 || (!textMode && !orcMode && draft.Effects.Length == 0)))
-            throw new InvalidDataException("指令必须有打出效果（规则文本或效果行），不能附带单位词条");
+        // 指令必须有打出效果；词条面只放行包内程序词条（kw-*，行为由词条程序自定义）——
+        // 内置词条是单位战斗语义（闪击/伏击…），对指令无意义，仍然禁止。
+        if (draft.CardType == "order")
+        {
+            if (!textMode && !orcMode && draft.Effects.Length == 0 && draft.Keywords.Length == 0)
+                throw new InvalidDataException("指令必须有打出效果（规则文本或效果行）");
+            var builtinOnOrder = draft.Keywords.Where(k => !k.StartsWith("kw-", StringComparison.Ordinal)).ToArray();
+            if (builtinOnOrder.Length > 0)
+                throw new InvalidDataException("指令不能附带单位战斗词条：" + string.Join("、", builtinOnOrder));
+        }
         if (!textMode && !orcMode)
             foreach (var effect in draft.Effects) CheckEffect(draft.CardType, effect);
         if (!UnitType.TryNormalize(draft.UnitType, out var unitType))
