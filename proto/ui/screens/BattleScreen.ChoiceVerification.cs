@@ -24,8 +24,9 @@ public partial class BattleScreen
     private async Task WaitChoiceClosedAsync()
     {
         var until = Time.GetTicksMsec() + 3000;
-        while (TargetChoiceVisible && Time.GetTicksMsec() < until) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-        if (TargetChoiceVisible) throw new Exception("Choice did not complete its exit.");
+        while ((TargetChoiceVisible || _choiceRequest is not null || _choosing) && Time.GetTicksMsec() < until)
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        if (TargetChoiceVisible || _choiceRequest is not null) throw new Exception("Choice did not complete its exit.");
     }
     public void CancelChoiceWithMouseForVerification(bool right)
     {
@@ -115,6 +116,57 @@ public partial class BattleScreen
             GD.Print($"CHOICE_MOTION_VERIFY_OK samples={samples} two-three-paper-options candidate-flips source-hidden chosen-face-handoff mouse-select blank-right-cancel rejected-retry consecutive-three-choices reset-cleanup");
         }
         finally { ResetDemo(); _clock.SetSpeed(speed); _clock.SetReducedMotion(reduced); }
+    }
+
+    /// <summary>场上单位的单选 Reference 选择走箭头指向：无面板、悬停出箭头并高亮、空点不提交、点击确认、右键取消。</summary>
+    public async Task VerifyArrowChoicesAsync()
+    {
+        try
+        {
+            ResetDemo();
+            var source = new UiCardView { Uid = "arrow-source", Definition = _demo.Cards.First(c => c.CardType == "order"),
+                EffectiveCost = 2 };
+            ApplyProjection(_state with { SelfHand = [source], SelfHandCount = 1 }, new() { CanEndTurn = true });
+            var units = _state.SelfLine.Concat(_state.EnemyLine)
+                .Where(c => c.Visibility == Visibility.Full && _cards.ContainsKey(c.Uid)).Take(2).ToArray();
+            if (units.Length == 0) throw new Exception("Arrow-choice fixture lacks a visible board unit.");
+            var request = new UiTargetRequest("arrow-choice", [new("pick", ChoiceKind.Reference, 1, 1,
+                units.Select(u => new UiChoice(u.Uid, u.Definition.Name, ChoiceKind.Reference)).ToArray())])
+            { SourceCard = source };
+            var responder = new MockTargetResponder(request);
+            ShowTargetChoice(request, responder);
+            if (TargetChoiceVisible || _choicePanel.GetChildCount() != 0 || _cards[source.Uid].Visible)
+                throw new Exception("Arrow choice opened the paper panel or mishandled the source card.");
+            async Task Aim(Vector2 local)
+            {
+                var point = _canvas.GetGlobalTransformWithCanvas() * local;
+                GetViewport().PushInput(new InputEventMouseMotion { Position = point, GlobalPosition = point }, true);
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            }
+            var target = _cards[units[0].Uid];
+            await Aim(target.Position + target.Size / 2);
+            if (!_aim.Visible || !_cards[units[0].Uid].Targeted
+                || _aim.From.DistanceTo(ArrowSourceCenter()) > 1 || _aim.To.DistanceTo(target.Position + target.Size / 2) > 1)
+                throw new Exception($"Hovering a unit did not draw a confirming arrow: aim={_aim.Visible} targeted={target.Targeted}.");
+            await Aim(new(60, 690));
+            if (_cards[units[0].Uid].Targeted || !_aim.Visible) throw new Exception("Empty hover kept a unit highlighted.");
+            await ClickFixtureAsync(new(60, 690));
+            if (responder.Calls != 0 || _arrowSlot is null) throw new Exception("An empty click committed or dismissed the arrow choice.");
+            await ClickFixtureAsync(target.Position + target.Size / 2);
+            await WaitChoiceClosedAsync();
+            if (responder.Calls != 1 || !_cards[source.Uid].Visible || _arrowSlot is not null
+                || _cards.Values.Any(c => c.Targeted) || _aim.Visible)
+                throw new Exception($"Arrow choice click did not complete cleanly: calls={responder.Calls} visible={_cards[source.Uid].Visible}.");
+            var retry = request with { RequestId = "arrow-cancel" };
+            var cancelResponder = new MockTargetResponder(retry);
+            ShowTargetChoice(retry, cancelResponder);
+            CancelChoiceWithMouseForVerification(right: true);
+            await WaitChoiceClosedAsync();
+            if (cancelResponder.Calls != 0 || !_cards[source.Uid].Visible || _arrowSlot is not null)
+                throw new Exception("Right-click did not cancel the arrow choice and restore the hand.");
+            GD.Print("ARROW_CHOICE_VERIFY_OK no-panel hover-arrow highlight empty-hold click-commit right-cancel");
+        }
+        finally { ResetDemo(); }
     }
 
     public async Task VerifyCounterReturnsAsync()

@@ -19,7 +19,7 @@ public partial class Main
     private async void VerifyOrders()
     {
         try { Show("battle"); await _battle.VerifyOrderVisualsAsync(); await _battle.VerifyChoiceVisualsAsync();
-            await _battle.VerifyCounterReturnsAsync(); await VerifyOrdersStageAsync(); GetTree().Quit(); }
+            await _battle.VerifyArrowChoicesAsync(); await _battle.VerifyCounterReturnsAsync(); await VerifyOrdersStageAsync(); GetTree().Quit(); }
         catch (Exception error) { GD.PushError(error.ToString()); GetTree().Quit(1); }
     }
     private async Task VerifyOrdersStageAsync()

@@ -12,6 +12,7 @@ public partial class BattleScreen
     private UiChoiceSlot? _choiceSlot;
     private DeploymentPose? _choiceReturnPose;
     private bool _choosing;
+    private UiChoiceSlot? _arrowSlot; // 场上单位直接箭头指向：单选 Reference 且候选全部在场上时取代选择面板
     private readonly Dictionary<string, IReadOnlyList<string>> _choiceSelections = new();
     private readonly Dictionary<string, string> _orderChoiceCaptions = new();
     private readonly Dictionary<string, UiCardView> _orderChoiceFaces = new();
@@ -43,6 +44,11 @@ public partial class BattleScreen
         if (_choiceRequest is not { } request) return;
         _choiceSlot = request.Slots.FirstOrDefault(s => !_choiceSelections.ContainsKey(s.Name));
         if (_choiceSlot is not { } slot) return;
+        // 场上单位的单选直接箭头指向：不开面板，鼠标悬停出箭头、点击确认、右键取消。
+        _arrowSlot = slot.Kind == ChoiceKind.Reference && slot.Min == 1 && slot.Max == 1 && slot.Allowed.Count > 0
+            && slot.Allowed.All(c => _cards.TryGetValue(c.Id, out var card) && card.View?.Visibility == Visibility.Full)
+            ? slot : null;
+        if (_arrowSlot is not null) { Hint("点击场上单位确认选择，右键取消"); return; }
         var origin = request.SourceCard is { } card && _orderOrigins.TryGetValue(card.Uid, out var pose) ? pose : (DeploymentPose?)null;
         _choicePanel.Open(slot, request.SourceCard, origin, selected);
         if (request.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand)) hand.Visible = false;
@@ -93,9 +99,56 @@ public partial class BattleScreen
         }
         else { _choosing = false; OpenChoiceSlot(); }
     }
+    /// <summary>箭头指向：悬停时从来源卡画箭头到候选单位并高亮；空点保持等待，右键取消。</summary>
+    private void UpdateArrowAim(Vector2 at)
+    {
+        if (_arrowSlot is not { } slot) return;
+        string? hovered = null;
+        foreach (var candidate in slot.Allowed)
+            if (_cards.TryGetValue(candidate.Id, out var card)
+                && new Rect2(card.Position, card.Size).HasPoint(at)) { hovered = candidate.Id; break; }
+        foreach (var pair in _cards)
+        {
+            var on = pair.Key == hovered;
+            if (pair.Value.Targeted != on) { pair.Value.Targeted = on; pair.Value.QueueRedraw(); }
+        }
+        _aim.From = ArrowSourceCenter();
+        _aim.To = hovered is not null && _cards.TryGetValue(hovered, out var target)
+            ? target.Position + target.Size / 2 : at;
+        _aim.Moving = false; _aim.InvalidTarget = false; _aim.Preview = null;
+        _aim.Visible = true; _aim.QueueRedraw();
+    }
+    private Vector2 ArrowSourceCenter()
+    {
+        if (_choiceRequest?.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var card))
+            return card.Position + card.Size / 2;
+        return _choiceReturnPose?.Center ?? new Vector2(640, 700);
+    }
+    /// <summary>箭头模式下点击确认：命中候选才提交；不经过面板动画，直接走响应器。</summary>
+    private void CommitArrowChoice(Vector2 at)
+    {
+        if (_arrowSlot is not { } slot || _choosing) return;
+        var hit = slot.Allowed.FirstOrDefault(a => _cards.TryGetValue(a.Id, out var card)
+            && new Rect2(card.Position, card.Size).HasPoint(at));
+        if (hit is null) return;
+        if (_choiceRequest is not { } request || _choiceResponder is not { } responder) return;
+        _choiceSelections[slot.Name] = [hit.Id];
+        if (!request.Slots.All(s => _choiceSelections.ContainsKey(s.Name))) { OpenChoiceSlot(); return; }
+        _choosing = true; _aim.Visible = false;
+        if (responder.Complete(request.RequestId, _choiceSelections))
+        { if (_choiceRequest == request) CloseTargetChoice(); }
+        else
+        {
+            _choosing = false; _choiceSelections.Remove(slot.Name);
+            ShowHint("选择未被接受，请重新确认"); OpenChoiceSlot();
+        }
+    }
     public void CloseTargetChoice()
     {
         if (_choicePanel is null) return;
+        _arrowSlot = null;
+        foreach (var pair in _cards)
+            if (pair.Value.Targeted) { pair.Value.Targeted = false; pair.Value.QueueRedraw(); }
         if (_choiceRequest?.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand))
         {
             if (_orderChoiceFaces.TryGetValue(source.Uid, out var chosen)) hand.Bind(chosen, BattleCardMode.Hand, _textures);

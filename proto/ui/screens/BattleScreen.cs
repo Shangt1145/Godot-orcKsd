@@ -864,6 +864,24 @@ public partial class BattleScreen : Control
     {
         if (!IsVisibleInTree() || _canvas is null) return;
         if (!IsFriendlyTurn) return;
+        if (_arrowSlot is not null)
+        {
+            switch (e)
+            {
+                case InputEventKey { Keycode: Key.Escape, Pressed: true }:
+                    CancelTargetChoice(); return;
+                case InputEventKey: GetViewport().SetInputAsHandled(); return;
+                case InputEventMouseMotion aimMotion:
+                    UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * aimMotion.Position);
+                    return;
+                case InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }:
+                    CancelTargetChoice(); return;
+                case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } click:
+                    CommitArrowChoice(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * click.Position);
+                    return;
+            }
+            return;
+        }
         if (_choicePanel?.Visible == true)
         {
             if (e is InputEventKey) { GetViewport().SetInputAsHandled(); return; }
