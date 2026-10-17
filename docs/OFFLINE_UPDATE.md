@@ -60,3 +60,6 @@ dotnet test tests/Kards.Ui.Tests.csproj --filter FullyQualifiedName~OfflineUpdat
 首个更新器交付（2026-10-17）：来源构建 639C08B0B49D，目标构建 953CA6DF4CC7。完整包 289052359 字节，首次更新器 76670471 字节，增量补丁 1194922 字节，补丁减少 99.59%；首次下载合计 77865393 字节。原生界面验收输出包含 choose-patch、update-button、start-ready、rollback-ready，更新后 EXE 得到 EXPORT_VERIFY_OK playable=240 pack-cards=216。
 
 DIY 工坊更新：来源构建 953CA6DF4CC7，目标构建 3649400D4B11。完整包 289082245 字节，补丁 1690269 字节（减少 99.42%）。实际旧版升级、逐文件比较、升级后 EXE 和新工坊导出 EXE 验证均通过；162 项发布相关测试通过。已有更新器的玩家只需下载此补丁。具体文件名、更新器体积和校验和以 dist 中报告及 SHA256.txt 为准。
+
+
+Beta.2 拖拽词条更新（2026-10-17）：目标构建 `6AC795352BE0`，提供从 `3649400D4B11`、`953CA6DF4CC7`、`639C08B0B49D` 直接升级的补丁，均通过实际应用、文件一致性及升级后 EXE 验证。完整包 289154768 字节，主补丁 1689802 字节（减少 99.42%）；更新器单独 76670471 字节。详见 [本次发布说明](RELEASE_BETA2_20261017.md)。

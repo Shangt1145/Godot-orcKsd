@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64_console.exe',
     [switch]$Editor,
@@ -35,9 +35,9 @@ try {
     }
     & $Godot --headless --editor --path $BuildRoot --quit
     if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
-    if ($VerifyEffects) { & $Godot --headless --path $BuildRoot -- --verify-ui --verify-effects }
-    elseif ($Verify) { & $Godot --headless --path $BuildRoot -- --verify-ui }
-    elseif ($Capture) { & $Godot --path $BuildRoot -- --capture-ui }
+    if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
+    elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
+    elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }
     elseif ($Editor) { & $Godot --editor --path $BuildRoot }
     else { & $Godot --path $BuildRoot }
     if ($LASTEXITCODE -ne 0) { throw "Godot exited with code $LASTEXITCODE" }

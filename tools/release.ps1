@@ -1,6 +1,6 @@
 ﻿param(
     [string]$BuildRoot = 'H:\g\kards',
-    [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64_console.exe',
+    [string]$Godot = (Join-Path $PSScriptRoot 'godot-wait.ps1'),
     [string]$Preset = 'Windows Desktop',
     [string]$OutDir = 'dist\windows',
     [switch]$SkipGate,

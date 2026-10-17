@@ -1,24 +1,466 @@
-diff --git a/src/Orc.Game/Cards/KeywordProgram.cs b/src/Orc.Game/Cards/KeywordProgram.cs
-index e127950..0d638da 100644
---- a/src/Orc.Game/Cards/KeywordProgram.cs
-+++ b/src/Orc.Game/Cards/KeywordProgram.cs
-@@ -31,7 +31,7 @@ public sealed record KeywordProgram
-         if(Skills.Select(s=>s.Id).Distinct().Count()!=Skills.Length)throw new InvalidDataException("主动技能编号重复");
-         foreach(var s in Skills){if(s is null||!ValidName(s.Id)||string.IsNullOrWhiteSpace(s.Name)||s.Name.Length>40||s.When is null||s.Actions is null)throw new InvalidDataException("主动技能字段无效");Number(s.Cost);Conditions(s.When);Actions(s.Actions,0);}
-     }
--    public static readonly string[] RuleNames=["move.allowed","attack.allowed","combat.range","combat.counter.eligibility","combat.guard.eligibility","combat.interception","combat.ambush.condition","deploy.frontline","attack.limit"];
-+    public static readonly string[] RuleNames=["move.allowed","move.retreat","attack.allowed","combat.range","combat.counter.eligibility","combat.guard.eligibility","combat.interception","combat.ambush.condition","deploy.frontline","attack.limit"];
-     public static readonly string[] EventNames=["unit.acted","turn.start.before","turn.end.before","card.played","unit.deployed","unit.joined","card.placed","turn.start","turn.end","card.damaged","card.dying","card.leaving","unit.attack.before","unit.attack.after","unit.destroy.before","keyword.ready","keyword.consumed"];
-     public static readonly string[] Subjects=["self","friendly","enemy","any","owner","opponent"];
-     public static readonly string[] Operations=["state.set","state.add","capture","link","unlink","move.set","attack.set","attack","replace","retreat","damage","buff","stat.add","stat.set","heal","kill","keyword.grant","keyword.remove","emit","death.cancel","health.set","copy.hand","return.hand","create.hand","develop","move","draw","points","attach.prefab","if"];
-diff --git a/src/Orc.Game/Cards/ProgramKeywordComponent.cs b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
-index 2265e24..a71478b 100644
---- a/src/Orc.Game/Cards/ProgramKeywordComponent.cs
-+++ b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
-@@ -246,9 +246,38 @@ public sealed class ProgramKeywordComponent : KeywordComponent
+diff --git "a/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md" "b/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md"
+index be50ac2..9e82eb5 100644
+--- "a/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md"
++++ "b/docs/kards-diy-\345\217\257hook\347\202\271\346\270\205\345\215\225\346\212\245\345\221\212.md"
+@@ -260,3 +260,6 @@
+ | 文本编译管线 | 无（OrC 卡牌为代码定义，无 JSON 载入） | 需新增（见报告 3 缺口） |
+ | `chooser` / `KG.ask` | `TargeterManager.RunAsync` + `ITargeterBridge`（会话 / 选择器 / 语义事件） | 语义接近，结构不同 |
+ | `Net.hooks` / `fxPops` | `Orc/Output/*`（段轮询 `TakeSegments`） | 观察模型不同（推 vs 拉） |
++
++2026-10-17 本地集成补充：新增 `card.dying`（GameUpdates/GameHooks 导出名为 CardDying），在死亡确认、槽位清空后以及效果卸载前发射，载荷为 Card/Killer。宿主自己的亡计在此阶段结算；旁观者的“单位被消灭”继续使用清理完成后的 card.died。重复死亡入口不重复结算。原生效果选靶增加显式 hq 区域，按 friendly/enemy/both 枚举总部；单位区域仍只返回单位。EffectRuntime.BuffAsync 对总部的 defense 增量写入 HqHealth 修饰面。
++
+diff --git a/src/Orc.Game/Cards/Data/CardAttributeMap.cs b/src/Orc.Game/Cards/Data/CardAttributeMap.cs
+index 0a6c2fc..740d5ff 100644
+--- a/src/Orc.Game/Cards/Data/CardAttributeMap.cs
++++ b/src/Orc.Game/Cards/Data/CardAttributeMap.cs
+@@ -79,6 +79,12 @@ internal static class CardAttributeMap
+             declaration = new KeywordDeclaration(keywordId);
+             return true;
          }
-         finally{_entries=entries;_selection.Value=previous;}
++        const string customPrefix="Keyword:";
++        if(attribute.StartsWith(customPrefix,StringComparison.Ordinal)&&KeywordRegistry.IsDefined(attribute[customPrefix.Length..]))
++        {declaration=new KeywordDeclaration(attribute[customPrefix.Length..]);return true;}
++        if(attribute.StartsWith(customPrefix,StringComparison.Ordinal)&&attribute.LastIndexOf(':') is var split&&split>customPrefix.Length
++            &&KeywordRegistry.IsDefined(attribute[customPrefix.Length..split])&&int.TryParse(attribute[(split+1)..],out var customValue))
++        {declaration=new KeywordDeclaration(attribute[customPrefix.Length..split],customValue);return true;}
+ 
+         foreach (var (prefix, keyword) in Valued)
+         {
+@@ -151,6 +157,8 @@ internal static class CardAttributeMap
+             attribute = found;
+             return true;
+         }
++        if(KeywordRegistry.IsDefined(keywordId)&&!KeywordIds.All.Contains(keywordId,StringComparer.Ordinal))
++        {attribute="Keyword:"+keywordId;return true;}
+ 
+         return false;
      }
+@@ -169,6 +177,8 @@ internal static class CardAttributeMap
+     public static bool TryGetValuedAttribute(string keywordId, int value, out string attribute)
+     {
+         attribute = string.Empty;
++        if(KeywordRegistry.IsDefined(keywordId)&&!KeywordIds.All.Contains(keywordId,StringComparer.Ordinal))
++        {attribute="Keyword:"+keywordId+":"+value.ToString(System.Globalization.CultureInfo.InvariantCulture);return true;}
+         if (value <= 0 || string.IsNullOrWhiteSpace(keywordId))
+         {
+             return false;
+diff --git a/src/Orc.Game/Cards/Data/Components/BuiltInCardComponents.cs b/src/Orc.Game/Cards/Data/Components/BuiltInCardComponents.cs
+index 28bee06..9885857 100644
+--- a/src/Orc.Game/Cards/Data/Components/BuiltInCardComponents.cs
++++ b/src/Orc.Game/Cards/Data/Components/BuiltInCardComponents.cs
+@@ -496,7 +496,7 @@ public sealed class KeywordsDefinition : ICardDataComponentDefinition
+             }
+ 
+             var value = keyword.Value.Value;
+-            if (CardAttributeMap.IsValuedKeyword(keyword.Id))
++            if (CardAttributeMap.IsValuedKeyword(keyword.Id)||KeywordRegistry.IsDefined(keyword.Id)&&!KeywordIds.All.Contains(keyword.Id,StringComparer.Ordinal))
+             {
+                 if (CardAttributeMap.TryGetValuedAttribute(keyword.Id, value, out var valued))
+                 {
+diff --git a/src/Orc.Game/Cards/DeclarativeKeywordComponent.cs b/src/Orc.Game/Cards/DeclarativeKeywordComponent.cs
+new file mode 100644
+index 0000000..0d5ac21
+--- /dev/null
++++ b/src/Orc.Game/Cards/DeclarativeKeywordComponent.cs
+@@ -0,0 +1,23 @@
++using Orc.Cards;
++
++namespace Orc.Game.Cards;
++
++/// <summary>Content-authored keyword behavior uses the same embedded effect lifecycle as built-ins.</summary>
++public sealed class DeclarativeKeywordComponent : KeywordComponent
++{
++    private DeclarativeKeywordComponent(string id,Card card,int? value,IReadOnlyList<EffectSnapshot> snapshots):base(id,value)
++    {
++        foreach(var snapshot in snapshots)
++        {
++            var result=DynamicEffectFactory.Instantiate(card.Engine,snapshot);
++            if(!result.Success)throw new InvalidDataException("Keyword behavior could not be instantiated: "+result.Error);
++            EmbedEffect(result.Effect!);
++        }
++    }
++    /// <summary>Use content-versioned ids so edits cannot change keywords in an existing match.</summary>
++    public static void Register(string id,IReadOnlyList<EffectSnapshot> snapshots,bool battle=false)
++    {
++        if(snapshots.Count==0)throw new ArgumentException("Keyword behavior cannot be empty.",nameof(snapshots));
++        var frozen=snapshots.ToArray();KeywordRegistry.RegisterOrReplace(id,(card,value)=>new DeclarativeKeywordComponent(id,card,value,frozen),battle);
++    }
++}
+diff --git a/src/Orc.Game/Cards/FactionRules.cs b/src/Orc.Game/Cards/FactionRules.cs
+index cd0f108..094a823 100644
+--- a/src/Orc.Game/Cards/FactionRules.cs
++++ b/src/Orc.Game/Cards/FactionRules.cs
+@@ -22,7 +22,7 @@ public static class FactionRules
+ 
+     /// <summary>是否五大主国（主国值域判定——对局创建期校验消费）。</summary>
+     public static bool IsMajorFaction(string faction)
+-        => faction is not null && MajorFactions.Contains(faction, StringComparer.Ordinal);
++        => faction is not null && (MajorFactions.Contains(faction, StringComparer.Ordinal)||Faction.IsCustomMajor(faction));
+ 
+     /// <summary>
+     /// 盟国值域判定：已定义标识 ∧ 非 Neutral（Neutral 不得作为盟国）∧ 非主国自身
+diff --git a/src/Orc.Game/Cards/KeywordProgram.cs b/src/Orc.Game/Cards/KeywordProgram.cs
+new file mode 100644
+index 0000000..0d638da
+--- /dev/null
++++ b/src/Orc.Game/Cards/KeywordProgram.cs
+@@ -0,0 +1,102 @@
++using System.Text.Json;
++using System.Text.Json.Serialization;
++
++namespace Orc.Game.Cards;
++
++/// <summary>Serializable, name-independent vocabulary for authored native keyword behavior.</summary>
++public sealed record KeywordProgram
++{
++    public int Schema { get; init; } = 1;
++    public int DefaultValue { get; init; } = 1;
++    public Dictionary<string,int> State { get; init; } = new();
++    public KeywordRulePatch[] Rules { get; init; } = [];
++    public KeywordEventHandler[] Handlers { get; init; } = [];
++    public KeywordActiveSkill[] Skills { get; init; } = [];
++    public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy=JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive=true, UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow, WriteIndented=true };
++    public static KeywordProgram Parse(string json)
++    {
++        if(json.Length>250_000)throw new InvalidDataException("词条程序超过 250 KB");
++        KeywordProgram p;
++        try{p=JsonSerializer.Deserialize<KeywordProgram>(json,Json)??throw new InvalidDataException("词条程序为空");}
++        catch(JsonException e){throw new InvalidDataException("词条程序格式无效："+e.Message,e);}
++        p.Validate();return p;
++    }
++    public string ToJson()=>JsonSerializer.Serialize(this,Json);
++    public void Validate()
++    {
++        if(Schema!=1||DefaultValue is <0 or >10000||State is null||State.Count>64||Rules is null||Rules.Length>64||Handlers is null||Handlers.Length>64||Skills is null||Skills.Length>16)throw new InvalidDataException("词条程序结构或数量无效");
++        foreach(var name in State.Keys)if(!ValidName(name))throw new InvalidDataException("状态名须使用字母、数字、下划线或点");
++        foreach(var r in Rules){if(r is null||!RuleNames.Contains(r.Rule)||r.When is null||!new[]{"self","linked","pair","friendly","enemy","all"}.Contains(r.Scope))throw new InvalidDataException("未知规则点或作用范围");Conditions(r.When);Number(r.Value);}
++        foreach(var h in Handlers){if(h is null||!EventNames.Contains(h.Event)||!Subjects.Contains(h.Subject)||h.When is null||h.Actions is null)throw new InvalidDataException("未知事件或监听对象");Conditions(h.When);Actions(h.Actions,0);}
++        if(Skills.Select(s=>s.Id).Distinct().Count()!=Skills.Length)throw new InvalidDataException("主动技能编号重复");
++        foreach(var s in Skills){if(s is null||!ValidName(s.Id)||string.IsNullOrWhiteSpace(s.Name)||s.Name.Length>40||s.When is null||s.Actions is null)throw new InvalidDataException("主动技能字段无效");Number(s.Cost);Conditions(s.When);Actions(s.Actions,0);}
++    }
++    public static readonly string[] RuleNames=["move.allowed","move.retreat","attack.allowed","combat.range","combat.counter.eligibility","combat.guard.eligibility","combat.interception","combat.ambush.condition","deploy.frontline","attack.limit"];
++    public static readonly string[] EventNames=["unit.acted","turn.start.before","turn.end.before","card.played","unit.deployed","unit.joined","card.placed","turn.start","turn.end","card.damaged","card.dying","card.leaving","unit.attack.before","unit.attack.after","unit.destroy.before","keyword.ready","keyword.consumed"];
++    public static readonly string[] Subjects=["self","friendly","enemy","any","owner","opponent"];
++    public static readonly string[] Operations=["state.set","state.add","capture","link","unlink","move.set","attack.set","attack","replace","retreat","damage","buff","stat.add","stat.set","heal","kill","keyword.grant","keyword.remove","emit","death.cancel","health.set","copy.hand","return.hand","create.hand","develop","move","draw","points","attach.prefab","if"];
++    public static readonly string[] Targets=["self","event","linked","attack.target","enemy.hq","friendly.hq","enemy.units","friendly.units","enemy.frontline","friendly.frontline","random.enemy.frontline","choose.unit","choose.enemy.unit","choose.friendly.unit"];
++    private static bool ValidName(string? s)=>!string.IsNullOrEmpty(s)&&s.Length<=64&&s.All(c=>char.IsLetterOrDigit(c)||c is '_' or '.' or '-');
++    private void Number(string s)
++    {if(s is null||!(int.TryParse(s,out var v)&&v is >=-10000 and <=10000||s is "value" or "entries" or "attacks" or "linked.alive" or "target.attack" or "target.defense" or "target.cost" or "target.opCost" or "event.attack" or "event.defense" or "event.cost" or "event.opCost"||s.StartsWith("state.",StringComparison.Ordinal)&&State.ContainsKey(s[6..])||s.StartsWith("data.",StringComparison.Ordinal)&&ValidName(s[5..])))throw new InvalidDataException("无效数值表达式："+s);}
++    private void Conditions(KeywordCondition[] conditions)
++    {if(conditions.Length>16)throw new InvalidDataException("条件过多");foreach(var c in conditions){if(c is null||c.Op is not("eq" or "ne" or "gt" or "gte" or "lt" or "lte"))throw new InvalidDataException("未知比较操作");Number(c.Left);Number(c.Right);}}
++    private void Actions(KeywordProgramAction[] actions,int depth)
++    {
++        if(depth>8||actions.Length>64)throw new InvalidDataException("动作嵌套或数量过多");
++        foreach(var a in actions)
++        {
++            if(a is null||!Operations.Contains(a.Op)||!Targets.Contains(a.Target)||a.When is null||a.Then is null||a.Else is null)throw new InvalidDataException("未知动作或对象");
++            Number(a.Value);Number(a.Second);Conditions(a.When);Actions(a.Then,depth+1);Actions(a.Else,depth+1);
++            if(a.Cards is null||a.Cards.Length>64||a.Cards.Any(string.IsNullOrWhiteSpace)||a.Cards.Distinct().Count()!=a.Cards.Length||a.Op=="develop"&&a.Cards.Length==0)throw new InvalidDataException("请为开发选择有效的关联卡池");
++            if(a.Op is "stat.add" or "stat.set"&&!new[]{"attack","defense","opCost","deployCost","hqHealth"}.Contains(a.Key))throw new InvalidDataException("请选择有效属性");
++            if(a.Bindings is null||a.Bindings.Count>32)throw new InvalidDataException("生成卡携带的数据过多");foreach(var pair in a.Bindings){if(!ValidName(pair.Key))throw new InvalidDataException("记录字段名无效");Number(pair.Value);}
++            if(a.Op.StartsWith("state.",StringComparison.Ordinal)&&!State.ContainsKey(a.Key))throw new InvalidDataException("未声明状态："+a.Key);
++            if(a.Op=="emit"&&a.Key is not("keyword.ready" or "keyword.consumed"))throw new InvalidDataException("不允许伪造引擎事件");
++            if(a.Op is "keyword.grant" or "create.hand" or "attach.prefab"&&string.IsNullOrWhiteSpace(a.Key))throw new InvalidDataException("请填写引用编号");
++        }
++    }
++}
++public sealed record KeywordCondition(string Left="0",string Op="eq",string Right="0");
++public sealed record KeywordRulePatch
++{
++    public string Scope {get;init;}="self";
++    public string Rule {get;init;}="move.allowed";
++    public string Value {get;init;}="0";
++    public int Priority {get;init;}
++    public KeywordCondition[] When {get;init;}=[];
++}
++public sealed record KeywordEventHandler
++{
++    public bool DeploymentEffect {get;init;}
++    public string Event {get;init;}="unit.deployed";
++    public string Subject {get;init;}="self";
++    public KeywordCondition[] When {get;init;}=[];
++    public KeywordProgramAction[] Actions {get;init;}=[];
++}
++public sealed record KeywordProgramAction
++{
++    public string Op {get;init;}="state.set";
++    public string Target {get;init;}="self";
++    public string Key {get;init;}="";
++    public string Value {get;init;}="0";
++    public string Second {get;init;}="0";
++    public bool Temporary {get;init;}
++    public bool KeepHistory {get;init;}
++    public bool BypassRange {get;init;}
++    public Dictionary<string,string> Bindings {get;init;}=new();
++    public string[] Cards {get;init;}=[];
++    public KeywordCondition[] When {get;init;}=[];
++    public KeywordProgramAction[] Then {get;init;}=[];
++    public KeywordProgramAction[] Else {get;init;}=[];
++}
++public sealed record KeywordActiveSkill
++{
++    public string Id {get;init;}="skill-"+Guid.NewGuid().ToString("N");
++    public string Name {get;init;}="技能";
++    public string Cost {get;init;}="0";
++    public bool SpendMove {get;init;}
++    public bool SpendAttack {get;init;}=true;
++    public KeywordCondition[] When {get;init;}=[];
++    public KeywordProgramAction[] Actions {get;init;}=[];
++}
+diff --git a/src/Orc.Game/Cards/ProgramKeywordComponent.cs b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
+new file mode 100644
+index 0000000..a71478b
+--- /dev/null
++++ b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
+@@ -0,0 +1,383 @@
++using System.Runtime.CompilerServices;
++using Orc.Cards;
++using Orc.Core;
++using Orc.Game.Board;
++using Orc.Game.Commanding;
++using Orc.Game.Effects;
++using Orc.Game.Players;
++using Orc.Game.Targeting;
++
++namespace Orc.Game.Cards;
++
++/// <summary>Per-instance native keyword state; no rules or mutable match state live in the UI.</summary>
++public sealed class ProgramKeywordComponent : KeywordComponent
++{
++    private readonly KeywordProgram _program;
++    private Card _host=null!;
++    private KeywordLoadContext? _context;
++    private IDisposable? _subscription;
++    private readonly Dictionary<string,int> _state;
++    private readonly HashSet<string> _skillsRunning=[];
++    private sealed class SelectionState
++    {
++        public readonly Dictionary<string,Card> Targets=[];
++        public readonly Dictionary<KeywordProgramAction,string> Cards=new(ReferenceEqualityComparer.Instance);
++    }
++    private readonly AsyncLocal<SelectionState?> _selection=new();
++    private readonly Dictionary<KeywordEventHandler,SelectionState> _preparedPlay=new(ReferenceEqualityComparer.Instance);
++    private readonly Dictionary<KeywordProgramAction,string[]> _offers=new(ReferenceEqualityComparer.Instance);
++    private UnitCard? _linked;
++    private int _entries,_attacks;
++    private readonly object _temporarySource=new();
++    private ProgramKeywordComponent(string id,int? value,KeywordProgram program):base(id,value)
++    {_program=program;_state=new(program.State);}
++    public static void Register(string id,KeywordProgram program,bool battle=false)
++    {
++        var frozen=KeywordProgram.Parse(program.ToJson());
++        KeywordRegistry.RegisterOrReplace(id,(_,value)=>new ProgramKeywordComponent(id,value,frozen),battle);
++    }
++    public IReadOnlyDictionary<string,int> State=>new Dictionary<string,int>(_state);
++    public int Entries=>_entries;
++    public int Attacks=>_attacks;
++    internal void RestoreEntries(int entries)=>_entries=entries;
++    public KeywordProgram Definition=>KeywordProgram.Parse(_program.ToJson());
++    public int Number(string expression)=>NumberFor(expression,_host);
++    private int NumberFor(string expression,Card target,Card? actor=null)=>expression switch
++    {"value"=>Value??_program.DefaultValue,"entries"=>_entries,"attacks"=>_attacks,"linked.alive"=>LinkedAlive?1:0,
++        "target.attack"=>target is CardBase attack?attack.Modifiers.GetEffectiveValue(CardStatFields.Attack):0,
++        "target.defense"=>target is CardBase defense?defense.Modifiers.GetEffectiveValue(CardStatFields.Defense):0,
++        "target.cost"=>target is CardBase cost?cost.Modifiers.GetEffectiveValue(CardStatFields.DeployCost):0,
++        "target.opCost"=>target is UnitCard operation?OperateCosts.Effective(operation):0,
++        _ when expression.StartsWith("event.",StringComparison.Ordinal)=>actor is null?throw new InvalidOperationException("当前没有事件单位"):NumberFor("target."+expression[6..],actor),
++        _ when expression.StartsWith("data.",StringComparison.Ordinal)=>_host.TryGetData<KeywordProgramData>(out var data)&&data.Values.TryGetValue(expression[5..],out var recorded)?recorded:throw new InvalidOperationException("卡牌缺少实例记录："+expression[5..]),
++        _ when expression.StartsWith("state.",StringComparison.Ordinal)=>_state[expression[6..]],_=>int.Parse(expression,System.Globalization.CultureInfo.InvariantCulture)};
++    private bool Matches(KeywordCondition[] conditions,Card? actor=null,Card? target=null)=>conditions.All(c=>c.Op switch
++    {"eq"=>NumberFor(c.Left,target??_host,actor)==NumberFor(c.Right,target??_host,actor),"ne"=>NumberFor(c.Left,target??_host,actor)!=NumberFor(c.Right,target??_host,actor),"gt"=>NumberFor(c.Left,target??_host,actor)>NumberFor(c.Right,target??_host,actor),"gte"=>NumberFor(c.Left,target??_host,actor)>=NumberFor(c.Right,target??_host,actor),"lt"=>NumberFor(c.Left,target??_host,actor)<NumberFor(c.Right,target??_host,actor),"lte"=>NumberFor(c.Left,target??_host,actor)<=NumberFor(c.Right,target??_host,actor),_=>false});
++    private bool LinkedAlive=>OnBoard&&_linked is not null&&_linked.TryGetData<UnitStateData>(out var state)&&!state.IsDestroyed&&state.Position is not null;
++    internal IEnumerable<(KeywordRulePatch Rule,int Value)> Contributions(string rule,Card subject)=>_subscription is null?[]:_program.Rules.Where(r=>r.Rule==rule&&Matches(r.When,target:subject)&&Applies(r.Scope,subject)).Select(r=>(r,NumberFor(r.Value,subject)));
++    private bool Applies(string scope,Card subject)=>scope switch
++    {
++        "self"=>ReferenceEquals(subject,_host),"linked"=>LinkedAlive&&ReferenceEquals(subject,_linked),"pair"=>LinkedAlive&&(ReferenceEquals(subject,_host)||ReferenceEquals(subject,_linked)),
++        "friendly"=>OnBoard&&subject is CardBase friendly&&ReferenceEquals(friendly.Owner,Owner),"enemy"=>OnBoard&&subject is CardBase enemy&&!ReferenceEquals(enemy.Owner,Owner),"all"=>OnBoard,_=>false
++    };
++    internal override void Mount(Card card,KeywordLoadContext? context)
++    {
++        _host=card;_context=context;
++        if(context is not null){_subscription=context.Engine.Subscribe(OnUpdate);KeywordProgramRuntime.Attach(card.Engine,this);}
++    }
++    internal override void Unmount(){_subscription?.Dispose();_subscription=null;_context=null;_linked=null;if(_host is not null)KeywordProgramRuntime.Detach(_host.Engine,this);}
++    private async Task OnUpdate(string kind,IReadOnlyDictionary<string,object?>? payload,CancellationToken ct)
++    {
++        var actor=payload?.GetValueOrDefault(GameUpdates.PayloadUnit) as Card??payload?.GetValueOrDefault(GameUpdates.PayloadCard) as Card;
++        var player=payload?.GetValueOrDefault(GameUpdates.PayloadPlayer) as Player;
++        if(kind=="card.placed"&&ReferenceEquals(actor,_host))_entries++;
++        if(kind=="turn.start"&&ReferenceEquals(player,Owner))_attacks=0;
++        if(!OnBoard&&(!ReferenceEquals(actor,_host)||kind is not("card.played" or "card.placed" or "unit.deployed" or "unit.joined" or "card.dying" or "card.leaving")))return;
++        if(kind.StartsWith("keyword.",StringComparison.Ordinal)&&payload?.GetValueOrDefault("Keyword") as string!=Keyword)return;
++        await Dispatch(kind,actor,player,null,ct);
++        if(kind is "card.dying" or "card.leaving"&&(ReferenceEquals(actor,_host)||ReferenceEquals(actor,_linked)))_linked=null;
++    }
++    internal async Task Dispatch(string kind,Card? actor,Player? player,KeywordProgramFrame? frame,CancellationToken ct)
++    {
++        if(_context is null)return;
++        using var depth=KeywordProgramRuntime.Enter(_host.Engine);
++        if(kind=="unit.attack.after"&&ReferenceEquals(actor,_host))_attacks++;
++        foreach(var h in _program.Handlers)
++        {
++            if(h.Event!=kind||!Matches(h.When,actor))continue;
++            var who=actor is CardBase card?card.Owner:player;
++            var match=h.Subject switch
++            {"self"=>ReferenceEquals(actor,_host),"owner"=>ReferenceEquals(player,Owner),"opponent"=>player is not null&&!ReferenceEquals(player,Owner),"friendly"=>ReferenceEquals(who,Owner),"enemy"=>who is not null&&!ReferenceEquals(who,Owner),"any"=>true,_=>false};
++            if(match)await RunHandler(h,actor,frame,ct);
++        }
++    }
++    private async Task RunHandler(KeywordEventHandler handler,Card? actor,KeywordProgramFrame? frame,CancellationToken ct)
++    {
++        var previous=_selection.Value;
++        _selection.Value=_preparedPlay.Remove(handler,out var prepared)?prepared:new();
++        try{if(await PrepareSelections(handler.Actions,ct,actor))await Execute(handler.Actions,actor,frame,ct);}
++        finally{_selection.Value=previous;}
++    }
++    private Player? Owner=>(_host as CardBase)?.Owner;
++    private bool OnBoard=>_host.TryGetData<UnitStateData>(out var s)&&!s.IsDestroyed&&s.Position is not null;
++    private EffectRuntime Runtime=>EffectRuntime.ResolveFor(_host)??throw new InvalidOperationException("词条缺少原生效果服务");
++    private async Task<IReadOnlyList<Card>> Targets(string name,Card? actor,CancellationToken ct)
++    {
++        if(name.StartsWith("choose.",StringComparison.Ordinal))return (_selection.Value?.Targets??new Dictionary<string,Card>()).TryGetValue(name,out var selected)?[selected]:[];
++        if(name=="self")return [_host];if(name=="event")return actor is null?[]:[actor];
++        if(name=="linked")return LinkedAlive?[_linked!]:[];
++        var match=KeywordProgramRuntime.MatchFor(_host.Engine);
++        if(name.EndsWith(".hq",StringComparison.Ordinal))return match.Players.Where(p=>name=="friendly.hq"?ReferenceEquals(p,Owner):!ReferenceEquals(p,Owner)).Select(p=>(Card)p.Hq).ToArray();
++        var enemy=name.Contains("enemy",StringComparison.Ordinal);var zone=name.Contains("frontline",StringComparison.Ordinal)?"frontline":null;
++        var all=await Runtime.SelectAsync(_host,new EffectSelector("all",enemy?"enemy":"friendly",zone),ct);
++        return name.StartsWith("random.",StringComparison.Ordinal)&&all.Count>0?[match.RandomService.PickOne(all)]:all;
++    }
++    private async Task Execute(KeywordProgramAction[] actions,Card? actor,KeywordProgramFrame? frame,CancellationToken ct)
++    {
++        foreach(var a in actions)
++        {
++            ct.ThrowIfCancellationRequested();
++            if(a.Op=="if"){await Execute(Matches(a.When,actor)?a.Then:a.Else,actor,frame,ct);continue;}
++            if(!Matches(a.When,actor))continue;
++            // target./event. 相对表达式须等目标确定后再求值（循环内逐目标重算）；此处只求宿主相对部分，
++            // 否则宿主缺该字段基准（如指令卡读 Attack、手牌单位读行动花费）会误伤无辜动作。
++            var n=a.Value.StartsWith("target.",StringComparison.Ordinal)?0:NumberFor(a.Value,_host,actor);
++            var second=a.Second.StartsWith("target.",StringComparison.Ordinal)?0:NumberFor(a.Second,_host,actor);
++            if(a.Op=="state.set"){_state[a.Key]=n;continue;}
++            if(a.Op=="state.add"){_state[a.Key]=Math.Clamp(checked(_state[a.Key]+n),-1_000_000,1_000_000);continue;}
++            if(a.Op=="death.cancel"){if(frame is null)throw new InvalidOperationException("取消消灭只能用于消灭前事件");frame.Cancelled=true;continue;}
++            if(a.Op=="emit"){await _host.Engine.Emit(a.Key,new Dictionary<string,object?>{{GameUpdates.PayloadCard,_host},{"Keyword",Keyword}},ct);continue;}
++            foreach(var target in a.Target=="attack.target"?(frame?.AttackTarget is { } attackTarget?new[]{attackTarget}:Array.Empty<Card>()):await Targets(a.Target,actor,ct))
++            {
++                n=NumberFor(a.Value,target,actor);second=NumberFor(a.Second,target,actor);
++                switch(a.Op)
++                {
++                    case "develop":
++                        var developedMatch=KeywordProgramRuntime.MatchFor(_host.Engine);
++                        if(_selection.Value?.Cards.TryGetValue(a,out var selectedDefinition)!=true)throw new InvalidOperationException("开发尚未完成选择");
++                        var developedOwner=Owner??throw new InvalidOperationException("无归属");
++                        var developed=await developedMatch.CardService.CreateAsync(selectedDefinition!,developedOwner,ct);
++                        await developedMatch.CardService.PlaceToHandAsync(developed,developedOwner,ct);_offers.Remove(a);break;
++                    case "stat.add":case "stat.set":
++                        var field=a.Key switch{"attack"=>CardStatFields.Attack,"defense"=>CardStatFields.Defense,"opCost"=>CardStatFields.OperateCost,"deployCost"=>CardStatFields.DeployCost,"hqHealth"=>CardStatFields.HqHealth,_=>throw new InvalidOperationException("未知属性")};
++                        if(target is CardBase statCard)await statCard.Modifiers.AddModifierAsync(a.Op=="stat.add"?new AddModifier(field,n,this):new SetModifier(field,n,this),ct);break;
++                    case "link":if(target is UnitCard linked&&!ReferenceEquals(linked,_host))_linked=linked;break;
++                    case "unlink":_linked=null;break;
++                    case "attack":if(_host is UnitCard attacker)await KeywordProgramRuntime.MatchFor(_host.Engine).CommandManager.AttackByEffectAsync(attacker,target,ct,a.BypassRange);break;
++                    case "retreat":
++                        if(target is UnitCard retreat&&retreat.Owner is { } retreatOwner&&retreat.GetData<UnitStateData>().Position is { } oldPosition)
++                        {
++                            var retreatMatch=KeywordProgramRuntime.MatchFor(_host.Engine);var support=retreatMatch.Battlefield.GetSupportLine(retreatOwner);
++                            if(!support.Contains(oldPosition)&&support.FirstOrDefault(s=>s.IsEmpty) is { } destination){oldPosition.Clear();destination.Place(retreat);retreat.GetData<UnitStateData>().Position=destination;await GameUpdates.EmitUnitPositionChanged(_host.Engine,retreat,oldPosition,destination,ct);}
++                        }break;
++                    case "replace":
++                        if(target is UnitCard original&&original.Owner is { } originalOwner&&original.GetData<UnitStateData>().Position is { } oldSlot)
++                        {
++                            var replacementMatch=KeywordProgramRuntime.MatchFor(_host.Engine);
++                            var replacement=await replacementMatch.CardService.CreateAsync(a.Key,originalOwner,ct);
++                            if(replacement is not UnitCard replacementUnit)throw new InvalidOperationException("替换目标必须是单位定义");
++                            if(!original.GetData<UnitStateData>().IsDestroyed)await replacementMatch.CommandManager.LeaveBattlefieldAsync(original,ct);
++                            var joined=await replacementMatch.PlayManager.JoinUnitAsync(replacementUnit,oldSlot,ct);
++                            if(joined.Status!=PlayResultStatus.Success)throw new InvalidOperationException("替换入场失败");
++                            if(!original.GetData<UnitStateData>().IsDestroyed)await _host.Engine.DestroyCard(original);
++                        }break;
++                    case "capture":
++                        if(!_host.TryGetData<KeywordProgramData>(out var recorded)){recorded=new();_host.AddData(recorded);}recorded.Values[a.Key]=n;break;
++                    case "move.set":if(target.TryGetData<CommandData>(out var move))move.CanMove=n!=0;break;
++                    case "attack.set":if(target.TryGetData<CommandData>(out var attack))attack.CanAttack=n!=0;break;
++                    case "damage":await Runtime.DamageAsync(target,Math.Max(0,n),_host,ct);break;
++                    case "kill":await Runtime.KillAsync(target,_host,ct);break;
++                    case "health.set":
++                        if(target is UnitCard healthCard)await healthCard.SetRemainingDefenseAsync(Math.Max(1,n),ct);break;
++                    case "heal":
++                        if(target.TryGetData<UnitStateData>(out var healed)&&target is CardBase healedCard){healed.DefenseLoss=Math.Max(0,healed.DefenseLoss-Math.Max(0,n));await healedCard.Modifiers.RequestRerunAsync(ct);}break;
++                    case "buff":
++                        if(a.Temporary&&target is CardBase buffCard)
++                        {
++                            var expiry=new ModifierExpiry("keyword.attack.finished",p=>ReferenceEquals(p?.GetValueOrDefault("Card"),_host));
++                            await buffCard.Modifiers.AddModifiersAsync([new AddModifier(CardStatFields.Attack,n,_temporarySource,expiry),new AddModifier(CardStatFields.Defense,second,_temporarySource,expiry)],ct);
++                            KeywordProgramRuntime.TrackTemporary(_host);
++                        }
++                        else await Runtime.BuffAsync(target,n,second,ct:ct);break;
++                    case "keyword.grant":await Runtime.GrantAsync(target,a.Key,n,ct);break;
++                    case "keyword.remove":await Runtime.RevokeAsync(target,a.Key.Length>0?a.Key:Keyword,ct);break;
++                    case "move":await Runtime.MoveAsync(target,a.Key,ct);break;
++                    case "draw":await Runtime.DrawAsync(target,Math.Max(0,n),ct);break;
++                    case "points":if(n>=0)await Runtime.GainPointsAsync(target,n,ct);else await Runtime.LosePointsAsync(target,-n,ct);break;
++                    case "attach.prefab":await Runtime.AttachPrefabAsync(target,a.Key,ct:ct);break;
++                    case "copy.hand":case "create.hand":
++                        var match=KeywordProgramRuntime.MatchFor(_host.Engine);var owner=(target as CardBase)?.Owner??Owner??throw new InvalidOperationException("无归属");
++                        string? id=a.Key;
++                        if(a.Op=="copy.hand"&&!match.CardService.TryResolveDefinitionId((CardBase)target,out id))throw new InvalidOperationException("复制源定义不存在");
++                        var copy=await match.CardService.CreateAsync(id!,owner,ct);
++                        var values=new KeywordProgramData();foreach(var pair in a.Bindings)values.Values[pair.Key]=NumberFor(pair.Value,target,actor);if(values.Values.Count>0)copy.AddData(values);
++                        if(a.Op=="copy.hand")await copy.Keywords.RevokeAsync(Keyword);
++                        if(n!=0)await Runtime.DeployCostModAsync(copy,n,ct);
++                        await match.CardService.PlaceToHandAsync(copy,owner,ct);
++                        if(a.Temporary)ExpireFromHand(copy,owner);break;
++                    case "return.hand":
++                        if(target is UnitCard returning&&returning.Owner is { } returningOwner)
++                        {
++                            var returningMatch=KeywordProgramRuntime.MatchFor(_host.Engine);
++                            if(!returningMatch.CardService.TryResolveDefinitionId(returning,out var returningId))throw new InvalidOperationException("回手单位的定义不存在");
++                            var history=KeywordProgramRuntime.Components(returning).ToDictionary(c=>c.Keyword,c=>c.Entries);
++                            await returningMatch.CommandManager.LeaveBattlefieldAsync(returning,ct);
++                            var returned=await returningMatch.CardService.CreateAsync(returningId,returningOwner,ct);
++                            if(a.KeepHistory)foreach(var component in KeywordProgramRuntime.Components(returned))component.RestoreEntries(history.GetValueOrDefault(component.Keyword));
++                            await _host.Engine.DestroyCard(returning);
++                            await returningMatch.CardService.PlaceToHandAsync(returned,returningOwner,ct);
++                        }break;
++                }
++            }
++        }
++    }
++    internal async Task ClearTemporary(CancellationToken ct)
++    {if(_host is CardBase c)await c.Modifiers.RemoveBySourceAsync(_temporarySource,ct);}
++    internal async Task ReplayDeployment(CancellationToken ct)
++    {
++        if(!OnBoard)return;
++        foreach(var handler in _program.Handlers.Where(h=>h.DeploymentEffect&&Matches(h.When,_host)))
++            await RunHandler(handler,_host,null,ct);
++    }
++    private void ExpireFromHand(CardBase copy,Player owner)
++    {
++        IDisposable? lease=null;var engine=_host.Engine;
++        lease=engine.Subscribe(async(kind,payload,ct)=>
++        {
++            if(kind=="card.destroyed"&&ReferenceEquals(payload?.GetValueOrDefault("Card"),copy)){lease?.Dispose();return;}
++            if(kind!="turn.end")return;lease?.Dispose();
++            if(owner.Hand.Contains(copy)){owner.Hand.Remove(copy);await engine.DestroyCard(copy);}
++        });
++    }
++    public async Task<bool> PreparePlayAsync(CancellationToken ct=default)
++    {
++        _preparedPlay.Clear();var previous=_selection.Value;var entries=_entries;
++        try
++        {
++            if(_host is UnitCard)_entries++;
++            foreach(var h in _program.Handlers.Where(h=>h.Event is "card.played" or "unit.deployed" or "card.placed"&&h.Subject is "self" or "friendly" or "any"))
++            {
++                if(!Matches(h.When,_host))continue;
++                _selection.Value=new();
++                if(!await PrepareSelections(h.Actions,ct,_host))return false;
++                _preparedPlay[h]=_selection.Value;
++            }
++            return true;
++        }
++        finally{_entries=entries;_selection.Value=previous;}
++    }
 +    private IEnumerable<KeywordProgramAction> SelectionSteps(KeywordProgramAction[] actions, Card? actor)
 +    {
 +        foreach (var action in actions)
@@ -48,32 +490,204 @@ index 2265e24..a71478b 100644
 +        }
 +        return (false, null);
 +    }
-     private async Task<bool> PrepareSelections(KeywordProgramAction[] actions,CancellationToken ct,Card? actor=null)
-     {
--        foreach(var action in actions)
++    private async Task<bool> PrepareSelections(KeywordProgramAction[] actions,CancellationToken ct,Card? actor=null)
++    {
 +        foreach(var action in SelectionSteps(actions, actor))
-         {
-             if(action.Op=="develop"&&Matches(action.When,actor))
-             {
-@@ -268,11 +297,8 @@ public sealed class ProgramKeywordComponent : KeywordComponent
-                 });
-                 if(!developResult.IsOk||selectedDefinition is null)return false;state.Cards[action]=selectedDefinition;continue;
-             }
--            if(action.Op=="if")
--            {if(!await PrepareSelections(Matches(action.When,actor)?action.Then:action.Else,ct,actor))return false;continue;}
--            var target=action.Target;if(!target.StartsWith("choose.",StringComparison.Ordinal)||!Matches(action.When,actor))continue;
--            var side=target=="choose.unit"?"both":target.Contains("enemy",StringComparison.Ordinal)?"enemy":"friendly";
--            var candidates=(await Runtime.SelectAsync(_host,new EffectSelector("all",side),ct)).ToArray();
++        {
++            if(action.Op=="develop"&&Matches(action.When,actor))
++            {
++                var state=_selection.Value??throw new InvalidOperationException("缺少选择上下文");
++                if(state.Cards.ContainsKey(action))continue;
++                var match=KeywordProgramRuntime.MatchFor(_host.Engine);
++                if(action.Cards.Any(id=>!match.CardService.RegisteredDefinitions.ContainsKey(id)))throw new InvalidOperationException("开发卡池含未装载定义");
++                if(!_offers.TryGetValue(action,out var offers)){offers=match.RandomService.PickN(action.Cards,Math.Clamp(Number(action.Value),1,Math.Min(10,action.Cards.Length))).ToArray();_offers[action]=offers;}
++                if(_context?.TargeterManager is not { } picker)return false;
++                string? selectedDefinition=null;
++                var developResult=await picker.RunAsync(async flow=>
++                {
++                    var step=await flow.Step(SelectorTemplates.CardPickerList,new IdentifierSetParameter(offers,1,1));
++                    while(step.IsFailed&&step.Failure==SelectorFailureReason.InvalidSelection)step=await flow.Retry<IReadOnlyList<string>>();
++                    if(step.IsCancelled)return TargeterResult.Cancelled();if(step.IsFailed)return TargeterResult.FromSelectorFailure(step.Failure);
++                    selectedDefinition=step.Value?.SingleOrDefault();return selectedDefinition is null?TargeterResult.Failed(TargeterFailureReason.InvalidSelection):TargeterResult.Ok();
++                });
++                if(!developResult.IsOk||selectedDefinition is null)return false;state.Cards[action]=selectedDefinition;continue;
++            }
 +            var target=action.Target;
 +            var candidates=(await SelectionCandidates(target,ct)).ToArray();
-             if(_selection.Value!.Targets.TryGetValue(target,out var existing)&&candidates.Any(c=>ReferenceEquals(c,existing)))continue;
-             if(candidates.Length==0||_context?.TargeterManager is not { } targeter)return false;
-             Card? selected=null;
++            if(_selection.Value!.Targets.TryGetValue(target,out var existing)&&candidates.Any(c=>ReferenceEquals(c,existing)))continue;
++            if(candidates.Length==0||_context?.TargeterManager is not { } targeter)return false;
++            Card? selected=null;
++            var result=await targeter.RunAsync(async flow=>
++            {
++                var step=await flow.Step(SelectorTemplates.FieldUnit,new ReferenceSetParameter(candidates.Select(c=>c.Ref),1,1));
++                while(step.IsFailed&&step.Failure==SelectorFailureReason.InvalidSelection)step=await flow.Retry<Ref<Entity>>();
++                if(step.IsCancelled)return TargeterResult.Cancelled();if(step.IsFailed)return TargeterResult.FromSelectorFailure(step.Failure);
++                selected=step.Value?.Value as Card;return selected is null?TargeterResult.Failed(TargeterFailureReason.InvalidSelection):TargeterResult.Ok();
++            });
++            if(!result.IsOk||selected is null)return false;_selection.Value!.Targets[target]=selected;
++        }
++        return true;
++    }
++    public bool CanUse(string id)=>CanUseCore(id,false);
++    private bool CanUseCore(string id,bool active)
++    {
++        var skill=_program.Skills.FirstOrDefault(s=>s.Id==id);
++        return skill is not null&&OnBoard&&_context is not null&&KeywordProgramRuntime.MatchFor(_host.Engine).State==MatchState.InProgress&&ReferenceEquals(_context.CurrentPlayerProvider?.Invoke(),Owner)&&(active||!_skillsRunning.Contains(id))
++            &&Matches(skill.When)&&Owner!.Points>=Math.Max(0,Number(skill.Cost))&&!KeywordRules.HasKeyword(_host,KeywordIds.Suppressed)
++            &&_host.TryGetData<CommandData>(out var command)&&(!skill.SpendMove||command.CanMove)&&(!skill.SpendAttack||command.CanAttack);
++    }
++    public async Task<bool> UseAsync(string id,CancellationToken ct=default)
++    {
++        if(!CanUse(id))return false;var skill=_program.Skills.Single(s=>s.Id==id);_skillsRunning.Add(id);
++        var previous=_selection.Value;_selection.Value=new();
++        try
++        {
++            if(!await PrepareSelections(skill.Actions,ct,_host)||!CanUseCore(id,true))return false;
++            var cost=Math.Max(0,Number(skill.Cost));
++            if(cost>0)await Runtime.LosePointsAsync(_host,cost,ct);
++            var command=_host.GetData<CommandData>();if(skill.SpendMove)command.CanMove=false;if(skill.SpendAttack)command.CanAttack=false;
++            await Execute(skill.Actions,_host,null,ct);return true;
++        }
++        finally{_skillsRunning.Remove(id);_selection.Value=previous;}
++    }
++}
++
++public sealed class KeywordProgramFrame {public bool Cancelled {get;set;}public Card? AttackTarget {get;init;}}
++public sealed class KeywordProgramData {public Dictionary<string,int> Values {get;}=new();}
++
++/// <summary>Match-local composition; priority is explicit and denies win ties. Core moding is unchanged.</summary>
++public static class KeywordProgramRuntime
++{
++    private sealed record AttackOrigin(UnitCard Actor,bool BypassRange);
++    private static readonly AsyncLocal<AttackOrigin?> EffectAttacker=new();
++    private sealed class EffectScope(AttackOrigin? previous):IDisposable{public void Dispose()=>EffectAttacker.Value=previous;}
++    internal static IDisposable BeginEffectAttack(UnitCard card,bool bypassRange=false){var previous=EffectAttacker.Value;EffectAttacker.Value=new(card,bypassRange);return new EffectScope(previous);}
++    internal static bool IsEffectAttack(UnitCard card)=>ReferenceEquals(EffectAttacker.Value?.Actor,card);
++    internal static bool BypassesRange(UnitCard card)=>ReferenceEquals(EffectAttacker.Value?.Actor,card)&&EffectAttacker.Value!.BypassRange;
++    private sealed class Session {public Match? Match;public readonly AsyncLocal<int> Depth=new();public readonly List<ProgramKeywordComponent> Live=[];public readonly HashSet<Card> Temporary=[];}
++    private static readonly ConditionalWeakTable<LogicEngine,Session> Sessions=new();
++    public static void Configure(Match match)=>Sessions.GetOrCreateValue(match.Engine).Match=match;
++    internal static void Attach(LogicEngine engine,ProgramKeywordComponent component){var session=Sessions.GetOrCreateValue(engine);lock(session.Live){if(!session.Live.Contains(component))session.Live.Add(component);}}
++    internal static void Detach(LogicEngine engine,ProgramKeywordComponent component){var session=Sessions.GetOrCreateValue(engine);lock(session.Live)session.Live.Remove(component);}
++    internal static void TrackTemporary(Card card)=>Sessions.GetOrCreateValue(card.Engine).Temporary.Add(card);
++    internal static bool TakeTemporary(Card card)=>Sessions.GetOrCreateValue(card.Engine).Temporary.Remove(card);
++    internal static Match MatchFor(LogicEngine engine)=>Sessions.GetOrCreateValue(engine).Match??throw new InvalidOperationException("词条对局服务未装配");
++    private sealed class DepthScope(Session session):IDisposable{public void Dispose()=>session.Depth.Value--;}
++    internal static IDisposable Enter(LogicEngine engine)
++    {var s=Sessions.GetOrCreateValue(engine);if(s.Depth.Value>=32)throw new InvalidOperationException("词条触发超过 32 层，请检查循环");s.Depth.Value++;return new DepthScope(s);}
++    public static ProgramKeywordComponent[] Components(Card card)=>card is CardBase c?c.Keywords.Components.OfType<ProgramKeywordComponent>().ToArray():[];
++    public static async Task<bool> PreparePlayAsync(Card card,CancellationToken ct)
++    {foreach(var component in Components(card))if(!await component.PreparePlayAsync(ct))return false;return true;}
++    internal static async Task ReplayDeployment(UnitCard card,CancellationToken ct)
++    {foreach(var component in Components(card))await component.ReplayDeployment(ct);}
++    public static int Resolve(Card card,string rule,int fallback)
++    {
++        var session=Sessions.GetOrCreateValue(card.Engine);ProgramKeywordComponent[] live;lock(session.Live)live=session.Live.ToArray();
++        var items=live.SelectMany(c=>c.Contributions(rule,card)).ToArray();if(items.Length==0)return fallback;
++        var priority=items.Max(x=>x.Rule.Priority);var top=items.Where(x=>x.Rule.Priority==priority).Select(x=>x.Value);return rule=="combat.interception"?top.Max():top.Min();
++    }
++    internal static async Task<bool> BeforeDestroy(UnitCard unit,Card? killer,CancellationToken ct)
++    {
++        var frame=new KeywordProgramFrame();foreach(var c in Components(unit))await c.Dispatch("unit.destroy.before",unit,unit.Owner,frame,ct);return frame.Cancelled;
++    }
++    internal static async Task AttackEvent(UnitCard unit,Card? target,bool before,CancellationToken ct)
++    {
++        foreach(var c in Components(unit))await c.Dispatch(before?"unit.attack.before":"unit.attack.after",unit,unit.Owner,new(){AttackTarget=target},ct);
++        if(!before)foreach(var c in Components(unit))await c.ClearTemporary(ct);
++    }
++}
+diff --git a/src/Orc.Game/Cards/TagData.cs b/src/Orc.Game/Cards/TagData.cs
+index 2ab8e32..3acfbe4 100644
+--- a/src/Orc.Game/Cards/TagData.cs
++++ b/src/Orc.Game/Cards/TagData.cs
+@@ -11,6 +11,15 @@ namespace Orc.Game.Cards;
+ /// </summary>
+ public static class Faction
+ {
++    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string,bool> Custom=new(StringComparer.Ordinal);
++    /// <summary>Registers a namespaced content faction without changing the built-in constants.</summary>
++    public static void RegisterCustom(string id,bool major=true)
++    {
++        if(string.IsNullOrWhiteSpace(id)||id!=id.ToLowerInvariant()||!id.All(c=>char.IsAsciiLetterOrDigit(c)||c is '.' or '_' or '-')||All.Contains(id))
++            throw new ArgumentException("Custom faction requires a distinct canonical id.",nameof(id));
++        Custom[id]=major;
++    }
++    public static bool IsCustomMajor(string id)=>Custom.TryGetValue(id,out var major)&&major;
+     /// <summary>德国。</summary>
+     public const string Germany = "germany";
+ 
+@@ -52,7 +61,7 @@ public static class Faction
+ 
+     /// <summary>是否为已定义阵营标识（null/空白＝false、不抛错）。</summary>
+     public static bool IsDefined(string? value)
+-        => value is not null && All.Contains(value, StringComparer.Ordinal);
++        => value is not null && (All.Contains(value, StringComparer.Ordinal)||Custom.ContainsKey(value));
+ 
+     /// <summary>
+     /// 归一到规范阵营标识（大小写不敏感——官方语料用 PascalCase 如 <c>Germany</c>，规范 id 为小写
+@@ -67,7 +76,7 @@ public static class Faction
+         }
+ 
+         var lowered = value.Trim().ToLowerInvariant();
+-        if (!All.Contains(lowered, StringComparer.Ordinal))
++        if (!IsDefined(lowered))
+         {
+             return false;
+         }
+diff --git a/src/Orc.Game/Cards/UnitCard.cs b/src/Orc.Game/Cards/UnitCard.cs
+index 64e3e64..df3b549 100644
+--- a/src/Orc.Game/Cards/UnitCard.cs
++++ b/src/Orc.Game/Cards/UnitCard.cs
+@@ -127,8 +127,12 @@ public class UnitCard : CardBase
+     /// <summary>
+     /// 触发部署词条效果（S6 单源入口）：部署链与「部署重放」共用；载荷＝{ Card, Player?, Position }。
+     /// </summary>
+-    internal Task<EventStream> InvokeDeployKeywordAsync(Player? player, Slot slot, CancellationToken ct)
+-        => DeployKeywordTrigger.InvokeAsync(_chainEngine, BuildUnitData(this, player, slot), ct);
++    internal async Task<EventStream> InvokeDeployKeywordAsync(Player? player, Slot slot, CancellationToken ct)
++    {
++        var result=await DeployKeywordTrigger.InvokeAsync(_chainEngine, BuildUnitData(this, player, slot), ct);
++        if(result.Outcome==ExecutionOutcome.Normal)await KeywordProgramRuntime.ReplayDeployment(this,ct);
++        return result;
++    }
+ 
+     /// <summary>
+     /// 手牌起始指向槽位声明（S2：由单位卡自行声明——基类不持 targeter）：单位＝手牌打出时指向空槽
+@@ -602,6 +606,16 @@ public class UnitCard : CardBase
+     /// （G17 完整语义后续批次；本单＝动作面＋模拟验证。）
+     /// </summary>
+     /// <exception cref="InvalidOperationException">未单位化；或已死亡/已毁（明确拒绝）。</exception>
++    /// <summary>Set remaining defense through the modifier pipeline, including lethal overkill recovery.</summary>
++    public async Task SetRemainingDefenseAsync(int amount,CancellationToken ct=default)
++    {
++        if(amount<1)throw new ArgumentOutOfRangeException(nameof(amount));
++        var state=RequireUnitState();if(state.IsDestroyed)throw new InvalidOperationException("单位已消灭");
++        var previous=state.DefenseLoss;
++        try{state.DefenseLoss=0;var maximum=Modifiers.ComputeEffectiveValue(CardStatFields.Defense);state.DefenseLoss=Math.Max(0,maximum-amount);}
++        catch{state.DefenseLoss=previous;throw;}
++        await Modifiers.RequestRerunAsync(ct);
++    }
+     public async Task RepairDefenseAsync(CancellationToken ct = default)
+     {
+         var state = RequireUnitState();
 diff --git a/src/Orc.Game/Commanding/CommandManager.cs b/src/Orc.Game/Commanding/CommandManager.cs
-index c860481..d2ff18a 100644
+index 8fa2bd2..d2ff18a 100644
 --- a/src/Orc.Game/Commanding/CommandManager.cs
 +++ b/src/Orc.Game/Commanding/CommandManager.cs
-@@ -654,14 +654,14 @@ public sealed class CommandManager
+@@ -1,3 +1,4 @@
++using Orc.Cards;
+ using Orc.Core;
+ using Orc.Game.Board;
+ using Orc.Game.Cards;
+@@ -347,6 +348,7 @@ public sealed class CommandManager
+                 $"单位 '{unit.Name}' 当前不在场（离场动作被拒绝——前置契约不符）。");
+         }
+ 
++        await _engine.Emit("card.leaving",new Dictionary<string,object?>{{GameUpdates.PayloadCard,unit},{"Reason","leave"}},ct);
+         // ① 槽位释放（变空槽）→ ② 不再在场（Position 置空——「有位置」判据失效）
+         slot.Clear();
+         state.Position = null;
+@@ -652,14 +654,14 @@ public sealed class CommandManager
  
          // 推进前置（后置项 C；K3：经 move.frontline-enemy 条目——与复验同源）：前线不存在存活敌方单位方可推进
          //（空前线或己方已占；敌方清空后实时恢复）
@@ -90,8 +704,255 @@ index c860481..d2ff18a 100644
          {
              if (slot.IsEmpty)
              {
+@@ -1121,7 +1123,8 @@ public sealed class CommandManager
+         var command = unit.GetData<CommandData>();
+ 
+         await OperateCosts.DeductAsync(unit, ct);
+-        command.CanAttack = KeywordRules.ResolveCanAttackAfterAttack(unit);
++        command.CanAttack = KeywordRules.ResolveCanAttackAfterAttack(unit)
++            || KeywordProgramRuntime.Components(unit).Any(c=>c.Attacks<KeywordProgramRuntime.Resolve(unit,"attack.limit",1));
+         if (!HasUnitType(unit, UnitType.Tank))
+         {
+             command.CanMove = false;
+@@ -1161,6 +1164,10 @@ public sealed class CommandManager
+         }
+ 
+         var targetEntity = targetRef.Value;
++        var combatCompleted=false;
++        try
++        {
++        await KeywordProgramRuntime.AttackEvent(attacker,targetEntity as Card,true,ct);
+ 
+         // S2（隐蔽机制·揭示触发点）：攻击执行段入口（复验后、伤害结算前——E2-Q3a 裁定）——
+         // 参与攻击的隐蔽单位各自揭示：先攻击者（动作发起方）、后被攻击者（受动作方——单位目标）；
+@@ -1209,6 +1216,17 @@ public sealed class CommandManager
+             return;
+         }
+ 
++        combatCompleted=true;
++        }
++        finally
++        {
++            try
++            {
++                if(combatCompleted)await KeywordProgramRuntime.AttackEvent(attacker,targetEntity as Card,false,ct);
++                else foreach(var component in KeywordProgramRuntime.Components(attacker))await component.ClearTemporary(ct);
++            }
++            finally { if(KeywordProgramRuntime.TakeTemporary(attacker))await _engine.Emit("keyword.attack.finished",new Dictionary<string,object?>{{"Card",attacker}},CancellationToken.None); }
++        }
+         // 执行段记账（词条侧）：奋战——本轮已攻次数 +1（先执行（含记账）→ 后更新）
+         KeywordRules.RecordAttack(attacker);
+ 
+@@ -1378,6 +1396,21 @@ public sealed class CommandManager
+         await ProcessDeathAsync(unit, ct, killer).ConfigureAwait(false);
+     }
+ 
++    /// <summary>Effect-origin combat: no turn/action/point payment, but normal target legality and combat resolution.</summary>
++    internal async Task<bool> AttackByEffectAsync(UnitCard unit,Orc.Cards.Card target,CancellationToken ct,bool bypassRange=false)
++    {
++        if(_lifecycle?.IsActionAllowed==false||!unit.TryGetData<UnitStateData>(out var state)||state.IsDestroyed||state.Position is null)return false;
++        if(KeywordRules.HasKeyword(unit,KeywordIds.Suppressed))return false;
++        using var origin=KeywordProgramRuntime.BeginEffectAttack(unit,bypassRange);
++        if(!IsAttackTargetLegal(unit,target.Ref))return false;
++        await using var scope=_engine.BeginAction();
++        var result=await UnitAttackTrigger.InvokeAsync(_engine,new Dictionary<string,object?>
++        {
++            [CommandDataKeys.Attacker]=unit.Ref,[CommandDataKeys.Target]=target.Ref,[CommandDataKeys.TriggerCard]=unit.Ref
++        },ct);
++        return result.Outcome==ExecutionOutcome.Normal;
++    }
++
+     /// <summary>
+     /// 无头伤害（效果运行期受控入口；经 <c>Orc.Game.Effects.EffectRuntime.DamageAsync</c> 在有**来源**时调用，E1-50）：
+     /// 在**伤害来源游标**作用下执行单位伤害门户（⇒ 致死时死亡衔接拿到击杀者）→ 发射 <c>unit.damage.dealt</c>。
+@@ -1458,10 +1491,16 @@ public sealed class CommandManager
+     private async Task ProcessDeathAsync(UnitCard unit, CancellationToken ct, UnitCard? killer = null)
+     {
+         var state = unit.GetData<UnitStateData>();
++        if (state.IsDestroyed) return;
+ 
++        if (await KeywordProgramRuntime.BeforeDestroy(unit,killer,ct)) return;
+         state.Position?.Clear();
+         state.IsDestroyed = true;
+ 
++        // Host-bound death effects must settle while their registrations still exist.
++        // The completed-death observation remains after cleanup in card.died.
++        await GameUpdates.EmitCardDying(_engine, unit, killer, ct);
++
+         // A4：亡计结算（新增步——置毁之后、词条死亡注销之前；清理前结算）。
+         // 经再触发服务统一执行面（单源＋重入防护）；独立构造（无服务）＝直调执行面降级（无重入防护）。
+         if (_retrigger is not null)
+diff --git a/src/Orc.Game/Effects/EffectRuntime.cs b/src/Orc.Game/Effects/EffectRuntime.cs
+index 3615127..1438e8d 100644
+--- a/src/Orc.Game/Effects/EffectRuntime.cs
++++ b/src/Orc.Game/Effects/EffectRuntime.cs
+@@ -176,6 +176,15 @@ public sealed partial class EffectRuntime
+         EffectDuration duration = EffectDuration.Permanent, CancellationToken ct = default)
+     {
+         ArgumentNullException.ThrowIfNull(target);
++        if (target is Hq hq && attack == 0)
++        {
++            if (defense == 0) return false;
++            await hq.Modifiers.AddModifiersAsync(new[]
++            {
++                new AddModifier(CardStatFields.HqHealth, defense, this, ExpiryFor(duration, target))
++            }, ct).ConfigureAwait(false);
++            return true;
++        }
+         if (target is not CardBase cardBase)
+         {
+             return false;
+@@ -378,6 +387,24 @@ public sealed partial class EffectRuntime
+         return true;
+     }
+ 
++    /// <summary>
++    /// 部署费用修饰（+N 花费）：手牌卡亦可——部署费基准＝定义值（装载即就绪，无需单位化）。
++    /// 供「复制入手且费用 +X」类效果（复员等）使用；行动花费走 <see cref="CostModAsync"/>。
++    /// </summary>
++    public async Task<bool> DeployCostModAsync(Card target, int delta, CancellationToken ct = default)
++    {
++        ArgumentNullException.ThrowIfNull(target);
++        if (target is not CardBase cardBase || delta == 0)
++        {
++            return false;
++        }
++
++        await cardBase.Modifiers
++            .AddModifierAsync(new AddModifier(CardStatFields.DeployCost, delta, this), ct)
++            .ConfigureAwait(false);
++        return true;
++    }
++
+     /// <summary>
+     /// 期限 → 修饰器期限声明（E1-41）：<see cref="EffectDuration.TurnEnd"/>＝本回合结束相位（无需过滤——
+     /// 挂载后遇到的第一个 <c>turn.end</c> 即"本回合结束"）；
+diff --git a/src/Orc.Game/GameHooks.cs b/src/Orc.Game/GameHooks.cs
+index 293399e..01f2d9c 100644
+--- a/src/Orc.Game/GameHooks.cs
++++ b/src/Orc.Game/GameHooks.cs
+@@ -133,6 +133,7 @@ public static class GameHooks
+ 
+     /// <summary>游戏层死亡（<c>card.died</c>）。</summary>
+     public const string CardDied = GameUpdates.CardDied;
++    public const string CardDying = GameUpdates.CardDying;
+ 
+     /// <summary>单位加入（<c>unit.joined</c>）。</summary>
+     public const string UnitJoined = GameUpdates.UnitJoined;
+@@ -194,7 +195,7 @@ public static class GameHooks
+         TurnStartBefore, TurnStart, TurnStartAfter, TurnEndBefore, TurnEnd,
+         CardPlayed, CardDrawn, CardStatChanged,
+         CardLoad, CardHandAdd, CardDiscarded, CardBurned,
+-        CardDied, UnitJoined, UnitDeployed, UnitPositionChanged, UnitUpgraded, UnitRevealed,
++        CardDied, CardDying, UnitJoined, UnitDeployed, UnitPositionChanged, UnitUpgraded, UnitRevealed,
+         DeckShuffled, UnitTypesChanged,
+         SlotGained, SlotLost, SlotChanged,
+         PointGained, PointLost, PointChanged,
+diff --git a/src/Orc.Game/GameUpdates.cs b/src/Orc.Game/GameUpdates.cs
+index 7452c34..0cf2a5c 100644
+--- a/src/Orc.Game/GameUpdates.cs
++++ b/src/Orc.Game/GameUpdates.cs
+@@ -103,6 +103,9 @@ public static class GameUpdates
+     /// </summary>
+     public const string CardDied = "card.died";
+ 
++    /// <summary>死亡已确认、效果卸载前的宿主结算阶段；载荷同 CardDied。</summary>
++    public const string CardDying = "card.dying";
++
+     // ---------- 第二批 hooks：单位系列 ----------
+ 
+     /// <summary>单位加入（"unit.joined"；载荷＝{ Unit, Position }——Unit＝单位卡牌实例、Position＝槽位引用）：加入途径（非部署）入场。2B 加入路径调用点已接线（单位化完成后发射、恰一次）。</summary>
+@@ -472,6 +475,18 @@ public static class GameUpdates
+             ct);
+     }
+ 
++    /// <summary>死亡已确认、卸载前结算宿主效果；载荷同完成死亡事件。</summary>
++    public static Task EmitCardDying(LogicEngine engine, Card card, Card? killer = null, CancellationToken ct = default)
++    {
++        ArgumentNullException.ThrowIfNull(engine);
++        ArgumentNullException.ThrowIfNull(card);
++        return engine.Emit(CardDying, new Dictionary<string, object?>
++        {
++            [PayloadCard] = card,
++            [PayloadKiller] = killer,
++        }, ct);
++    }
++
+     /// <summary>发射 card.died（载荷＝{ 卡牌实例, Killer? }；2C 起调用点＝战斗死亡流程——清理就绪后、恰一次）。</summary>
+     /// <param name="killer">击杀者（E1-47 加性；null＝非归属驱动来源，如修饰到期致防御归零）。</param>
+     public static Task EmitCardDied(LogicEngine engine, Card card, Card? killer = null, CancellationToken ct = default)
+diff --git a/src/Orc.Game/Judicators/AttackRevalidationJudicator.cs b/src/Orc.Game/Judicators/AttackRevalidationJudicator.cs
+index 05ce158..040d746 100644
+--- a/src/Orc.Game/Judicators/AttackRevalidationJudicator.cs
++++ b/src/Orc.Game/Judicators/AttackRevalidationJudicator.cs
+@@ -66,7 +66,7 @@ internal sealed class AttackRevalidationJudicator : ValidationJudicator
+ 
+         // K3：leg 资格（共享条件源——原内联的 owner/destroyed/can/suppressed/cost 检查迁至 leg 条目；
+         // 复验按 bool 语义消费：非 null＝Invalid；编排保持——leg 整体判定位于 refs/终局/subject 检查之后）。
+-        if (_attackLegEligibility(attacker) is not null)
++        if (!KeywordProgramRuntime.IsEffectAttack(attacker)&&_attackLegEligibility(attacker) is not null)
+         {
+             return ValidationVerdict.Invalid();
+         }
+diff --git a/src/Orc.Game/Judicators/CombatJudicatorInvoker.cs b/src/Orc.Game/Judicators/CombatJudicatorInvoker.cs
+index 0f578f0..81bee7b 100644
+--- a/src/Orc.Game/Judicators/CombatJudicatorInvoker.cs
++++ b/src/Orc.Game/Judicators/CombatJudicatorInvoker.cs
+@@ -1,4 +1,5 @@
+ using Orc.Core;
++using Orc.Game.Cards;
+ 
+ namespace Orc.Game.Judicators;
+ 
+@@ -14,7 +15,12 @@ internal static class CombatJudicatorInvoker
+ {
+     /// <summary>经注册表条目句柄调用并解包 bool（对局路径；每次调用经统一解析点取栈顶——moding 动态生效）。</summary>
+     public static bool InvokeBool(JudicatorRegistration registration, params object[] args)
+-        => UnpackBool(registration.Invoke(args), registration.Name);
++    {
++        var baseline=UnpackBool(registration.Invoke(args), registration.Name);
++        if(registration.Name==JudicatorNames.CombatRange&&args.FirstOrDefault() is UnitCard unit&&KeywordProgramRuntime.BypassesRange(unit))baseline=true;
++        return args.FirstOrDefault() is Orc.Cards.Card actor && KeywordProgram.RuleNames.Contains(registration.Name)
++            ? KeywordProgramRuntime.Resolve(actor,registration.Name,baseline?1:0)!=0 : baseline;
++    }
+ 
+     /// <summary>经内置实例主方法调用并解包 bool（独立构造路径；无注册表、无改写通道）。</summary>
+     public static bool InvokeBool(Judicator judicator, params object[] args)
+diff --git a/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs b/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs
+index 0d922c9..fb24ef4 100644
+--- a/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs
++++ b/src/Orc.Game/Judicators/EffectTargetResolveJudicator.cs
+@@ -72,7 +72,18 @@ public sealed class EffectTargetResolveJudicator : Judicator<EffectTargetResolve
+         {
+             foreach (var slot in line)
+             {
+-                if (slot.Occupant is not UnitCard unit
++                if (slot.Occupant is Hq hq && selector.Zone == "hq"
++                    && (selector.Side is null or "both" or "any"
++                        || viewerOwner is null
++                        || (selector.Side == "friendly" && hq.Owner.Index == viewerOwner.Index)
++                        || (selector.Side == "enemy" && hq.Owner.Index != viewerOwner.Index))
++                    && selector.UnitType is null && selector.Threshold is null
++                    && (string.IsNullOrWhiteSpace(selector.Keyword) || hq.Keywords.Has(selector.Keyword)))
++                {
++                    candidates.Add(hq);
++                    continue;
++                }
++                if (selector.Zone == "hq" || slot.Occupant is not UnitCard unit
+                     || !MatchesSide(unit, selector.Side, viewerOwner)
+                     || !MatchesUnitType(unit, selector.UnitType)
+                     || !MatchesKeyword(unit, selector.Keyword)
+@@ -112,7 +123,7 @@ public sealed class EffectTargetResolveJudicator : Judicator<EffectTargetResolve
+ 
+     private static IEnumerable<BattleLine> SelectLines(Battlefield battlefield, string? zone)
+     {
+-        if (zone is null or "support")
++        if (zone is null or "support" or "hq")
+         {
+             yield return battlefield.PlayerASupportLine;
+             yield return battlefield.PlayerBSupportLine;
 diff --git a/src/Orc.Game/Judicators/LegEligibilityJudicator.cs b/src/Orc.Game/Judicators/LegEligibilityJudicator.cs
-index 5ccf5d4..2960a04 100644
+index bacf123..2960a04 100644
 --- a/src/Orc.Game/Judicators/LegEligibilityJudicator.cs
 +++ b/src/Orc.Game/Judicators/LegEligibilityJudicator.cs
 @@ -2,6 +2,7 @@ using Orc.Core;
@@ -102,6 +963,15 @@ index 5ccf5d4..2960a04 100644
  
  namespace Orc.Game.Judicators;
  
+@@ -116,7 +117,7 @@ internal sealed class LegEligibilityJudicator : Judicator<LegEligibilityJudicato
+         }
+ 
+         var canAction = _isMove ? command.CanMove : command.CanAttack;
+-        if (!canAction)
++        if (!canAction || KeywordProgramRuntime.Resolve(unit,_isMove ? "move.allowed" : "attack.allowed",1)==0)
+         {
+             return LegEligibilityFailure.FlagFalse;
+         }
 @@ -131,7 +132,7 @@ internal sealed class LegEligibilityJudicator : Judicator<LegEligibilityJudicato
              return LegEligibilityFailure.PointShortage; // W2b：行动费读「有效值」（K4：经 OperateCosts 统一取值入口——判定/扣费同源、防旁路直读）
          }
@@ -131,14 +1001,201 @@ index 154fe27..ef35b9e 100644
          {
              return ValidationVerdict.Invalid(); // 推进前置复验（后置项 C；防御性双保险）：前线存在存活敌方单位＝拒绝
          }
-diff --git a/tests/Orc.Game.Tests/KeywordProgramTests.cs b/tests/Orc.Game.Tests/KeywordProgramTests.cs
-index e91e21b..8e7b70c 100644
---- a/tests/Orc.Game.Tests/KeywordProgramTests.cs
-+++ b/tests/Orc.Game.Tests/KeywordProgramTests.cs
-@@ -18,6 +18,56 @@ public sealed class KeywordProgramTests
+diff --git a/src/Orc.Game/Managers/PlayManager.cs b/src/Orc.Game/Managers/PlayManager.cs
+index 05d8bd8..3c84f47 100644
+--- a/src/Orc.Game/Managers/PlayManager.cs
++++ b/src/Orc.Game/Managers/PlayManager.cs
+@@ -119,8 +119,8 @@ public sealed class PlayManager
+         }
+ 
+         // Engine-owned insertion gaps: before, between and after all units and HQ.
+-        var candidates = _battlefield.GetSupportLine(owner).GetInsertionGaps();
+-        if (candidates.Count == 0)
++        var candidates = DeploymentLines(card).SelectMany(line=>line.GetInsertionGaps()).ToArray();
++        if (candidates.Length == 0)
+         {
+             return PlayResult.Failure(PlayFailureReason.PrePlayNoAvailableSlots);
+         }
+@@ -218,6 +218,7 @@ public sealed class PlayManager
+         // 动作作用域（UI 消费桥接）：本动作产生的事件聚合为一段。
+         await using var _actionScope = _engine.BeginAction();
+ 
++        if(!await KeywordProgramRuntime.PreparePlayAsync(card,ct))return PlayResult.Cancelled();
+         var stream = await card.PlayTrigger.InvokeAsync(
+             _engine,
+             new Dictionary<string, object?>
+@@ -243,9 +244,10 @@ public sealed class PlayManager
+         var owner = RequireOwner(card);
+         if (CheckAdmission(card, true) is { } admission) return PlayResult.Failure(admission);
+         if (card.TryGetData<UnitStateData>(out _)) return PlayResult.Failure(PlayFailureReason.UnitAlreadyUnitized);
+-        if (!ReferenceEquals(gap.Line, _battlefield.GetSupportLine(owner)) || !gap.IsCurrent)
++        if (!DeploymentLines(card).Any(line=>ReferenceEquals(gap.Line,line)) || !gap.IsCurrent)
+             return PlayResult.Failure(PlayFailureReason.FormationGapUnavailable);
+         await using var scope = _engine.BeginAction();
++        if(!await KeywordProgramRuntime.PreparePlayAsync(card,ct))return PlayResult.Cancelled();
+         var stream = await card.PlayTrigger.InvokeAsync(_engine, new Dictionary<string, object?>
+         {
+             [GameUpdates.PayloadCard] = card, [GameUpdates.PayloadPlayer] = owner,
+@@ -268,7 +270,7 @@ public sealed class PlayManager
+         {
+             UnitCard unit => !unit.TryGetData<UnitStateData>(out _)
+                 && unit.PrePlayTrigger.EvaluateValidation(Array.Empty<Ref<Entity>>()).IsValid
+-                && _battlefield.GetSupportLine(unit.Owner!).GetInsertionGaps().Count > 0,
++                && DeploymentLines(unit).Any(line=>line.GetInsertionGaps().Count>0),
+             CommandCard command => command.PrePlayTrigger.EvaluateValidation(Array.Empty<Ref<Entity>>()).IsValid,
+             CounterCard counter => counter.UseCounterTrigger.EvaluateValidation(Array.Empty<Ref<Entity>>()).IsValid,
+             _ => false,
+@@ -276,7 +278,13 @@ public sealed class PlayManager
      }
-     private static KeywordProgramAction A(string op,string value="0",string key="",string target="self")=>new(){Op=op,Value=value,Key=key,Target=target};
-     [Fact]
+ 
+     public IReadOnlyList<FormationGap> GetDeploymentGaps(UnitCard card) => CanPlay(card)
+-        ? _battlefield.GetSupportLine(card.Owner!).GetInsertionGaps() : Array.Empty<FormationGap>();
++        ? DeploymentLines(card).SelectMany(line=>line.GetInsertionGaps()).ToArray() : Array.Empty<FormationGap>();
++
++    private IEnumerable<BattleLine> DeploymentLines(UnitCard card)
++    {
++        yield return _battlefield.GetSupportLine(card.Owner!);
++        if(KeywordProgramRuntime.Resolve(card,"deploy.frontline",0)!=0 && !_battlefield.FrontLine.Any(slot=>slot.Occupant is UnitCard enemy && !ReferenceEquals(enemy.Owner,card.Owner)))yield return _battlefield.FrontLine;
++    }
+ 
+     private PlayFailureReason? CheckAdmission(CardBase card, bool requireHand)
+     {
+@@ -432,6 +440,7 @@ public sealed class PlayManager
+         if (CheckAdmission(card, true) is { } commitAdmission) return PlayResult.Failure(commitAdmission);
+ 
+         // ② 打出段：复验＋宣告＋主动 handler 集＋收尾；捕获结果自动移交为 object? 参数。
++        if(!await KeywordProgramRuntime.PreparePlayAsync(card,ct))return PlayResult.Cancelled();
+         var playStream = await card.PlayTrigger.InvokeAsync(
+             _engine,
+             new Dictionary<string, object?>
+diff --git a/src/Orc.Game/Match/Match.cs b/src/Orc.Game/Match/Match.cs
+index 91d915d..b381bea 100644
+--- a/src/Orc.Game/Match/Match.cs
++++ b/src/Orc.Game/Match/Match.cs
+@@ -689,6 +689,8 @@ public sealed class Match
+         // 资产化 P11（甲）：词条效果生产装配**不再硬编码**——由内置插件声明、在 postCommand 相经绑定面执行
+         // （见上「包激活（后）」段）；时点不变（管理器群装配收尾、卡牌加载之前）。
+ 
++        KeywordProgramRuntime.Configure(this);
++
+         // 双方卡组洗切（初始化内自动；W4-1 G14 收尾：经统一「洗切动作」面——每副各发恰一条 deck.shuffled 信号〔就地打乱之后〕；
+         // 固定顺序＝玩家索引升序，保证可复现；G8：随机源＝对局随机服务——洗切与效果取样共用同一流〔单流〕）
+         await ShuffleDeckAsync(_playerManager.Players[0], ct);
+diff --git a/src/Orc/Cards/Card.cs b/src/Orc/Cards/Card.cs
+index 55d4ffc..bfb7481 100644
+--- a/src/Orc/Cards/Card.cs
++++ b/src/Orc/Cards/Card.cs
+@@ -28,8 +28,8 @@ public class Card : Entity
+         engine.RegisterCard(this); // S5 卡牌登记：创建即注册（全量快照数据源；销毁清理响应时移除）
+     }
+ 
+-    /// <summary>所属引擎（构造期绑定；内部使用）。</summary>
+-    internal LogicEngine Engine { get; }
++    /// <summary>所属引擎（构造期绑定，只读；供扩展组件实例化原生效果）。</summary>
++    public LogicEngine Engine { get; }
+ 
+     /// <summary>
+     /// 放置初始化标记：经 card.placed 放置处理置位（先于该处理内效果装载步骤）。
+diff --git a/tests/Orc.Game.Tests/CommandCombatTests.cs b/tests/Orc.Game.Tests/CommandCombatTests.cs
+index 3b87c3a..15adb99 100644
+--- a/tests/Orc.Game.Tests/CommandCombatTests.cs
++++ b/tests/Orc.Game.Tests/CommandCombatTests.cs
+@@ -232,7 +232,7 @@ public class CommandCombatTests
+         Assert.Equal(
+             new[]
+             {
+-                GameUpdates.CardStatChanged, GameUpdates.CardDied, GameUpdates.CardDamaged,
++                GameUpdates.CardStatChanged, GameUpdates.CardDying, GameUpdates.CardDied, GameUpdates.CardDamaged,
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（攻击者造成）
+                 GameUpdates.CardStatChanged, GameUpdates.CardDamaged, // E1-33：受伤害（先数值、后伤害信号）
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（被攻击者反击造成）
+@@ -241,7 +241,7 @@ public class CommandCombatTests
+                 GameUpdates.UnitActed,    // E1-33：攻击者行动后（存活）
+             },
+             recorder.Types);
+-        var diedPayload = recorder.Updates[1].Payload!;
++        var diedPayload = recorder.Updates.Single(u => u.Type == GameUpdates.CardDied).Payload!;
+         Assert.Same(target, diedPayload[GameUpdates.PayloadCard]);
+         Assert.DoesNotContain(GameUpdates.UnitPositionChanged, recorder.Types);
+         // 攻击者收尾照常（未死）：扣费＋清位。
+@@ -326,7 +326,7 @@ public class CommandCombatTests
+         Assert.Equal(2, attacker.GetData<UnitStateData>().Defense); // 无 HP 扣减（直接死亡结果）
+         Assert.Equal(6, ambusher.GetData<UnitStateData>().Defense); // 目标不受伤
+         Assert.Equal(
+-            new[] { GameUpdates.CardDied, GameUpdates.UnitCombatSurvived, GameUpdates.PointChanged }, // E1-39：被攻击者存活；末条＝收尾扣行动费
++            new[] { GameUpdates.CardDying, GameUpdates.CardDied, GameUpdates.UnitCombatSurvived, GameUpdates.PointChanged }, // E1-39：被攻击者存活；末条＝收尾扣行动费
+             recorder.Types);
+         Assert.Equal(0, playerA.Points); // 攻击者死亡不豁免收尾
+     }
+diff --git a/tests/Orc.Game.Tests/CommandUpdateTests.cs b/tests/Orc.Game.Tests/CommandUpdateTests.cs
+index 236be50..be77a6e 100644
+--- a/tests/Orc.Game.Tests/CommandUpdateTests.cs
++++ b/tests/Orc.Game.Tests/CommandUpdateTests.cs
+@@ -116,7 +116,7 @@ public class CommandUpdateTests
+         Assert.Equal(
+             new[]
+             {
+-                GameUpdates.CardStatChanged, GameUpdates.CardDied, GameUpdates.CardDamaged,
++                GameUpdates.CardStatChanged, GameUpdates.CardDying, GameUpdates.CardDied, GameUpdates.CardDamaged,
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（攻击者造成）
+                 GameUpdates.CardStatChanged, GameUpdates.CardDamaged, // E1-33：受伤害（先数值、后伤害信号）
+                 GameUpdates.UnitDamageDealt, // E1-47：来源侧（被攻击者反击造成）
+diff --git a/tests/Orc.Game.Tests/GameHooksTests.cs b/tests/Orc.Game.Tests/GameHooksTests.cs
+index 9ba8844..1881ae6 100644
+--- a/tests/Orc.Game.Tests/GameHooksTests.cs
++++ b/tests/Orc.Game.Tests/GameHooksTests.cs
+@@ -191,7 +191,7 @@ public class GameHooksTests
+         var payloadKeys = constants.Where(c => c.Name.StartsWith("Payload", StringComparison.Ordinal))
+             .Select(c => c.Value).ToList();
+ 
+-        Assert.Equal(31, signals.Count); // S1 受控适配（29 → 30）：新增 unit.upgraded（老兵升级）；S2 受控适配（30 → 31）：新增 unit.revealed（揭示）
++        Assert.Equal(32, signals.Count); // Includes the pre-unmount host death settlement phase.
+         Assert.Equal(16, payloadKeys.Count);
+         Assert.Equal(signals.OrderBy(v => v, StringComparer.Ordinal),
+             GameHooks.Signals.OrderBy(v => v, StringComparer.Ordinal));
+@@ -237,6 +237,7 @@ public class GameHooksTests
+             [GameHooks.CardDiscarded] = "EmitCardDiscarded",
+             [GameHooks.CardBurned] = "EmitCardBurned",
+             [GameHooks.CardDied] = "EmitCardDied",
++            [GameHooks.CardDying] = "EmitCardDying",
+             [GameHooks.UnitJoined] = "EmitUnitJoined",
+             [GameHooks.UnitDeployed] = "EmitUnitDeployed",
+             [GameHooks.UnitPositionChanged] = "EmitUnitPositionChanged",
+@@ -262,7 +263,7 @@ public class GameHooksTests
+             GameHooks.TurnEndBefore, GameHooks.TurnEnd,
+         };
+ 
+-        Assert.Equal(26, helpers.Count); // S1 受控适配（24 → 25）：新增 unit.upgraded（EmitUnitUpgraded）；S2 受控适配（25 → 26）：新增 unit.revealed（EmitUnitRevealed）
++        Assert.Equal(27, helpers.Count);
+         foreach (var (signal, method) in helpers)
+         {
+             Assert.Contains(signal, GameHooks.Signals);
+diff --git a/tests/Orc.Game.Tests/KeywordProgramTests.cs b/tests/Orc.Game.Tests/KeywordProgramTests.cs
+new file mode 100644
+index 0000000..8e7b70c
+--- /dev/null
++++ b/tests/Orc.Game.Tests/KeywordProgramTests.cs
+@@ -0,0 +1,316 @@
++using Orc.Cards;
++using Orc.Core;
++using Orc.Game.Cards;
++using Orc.Game.Commanding;
++using Orc.Game.Effects;
++using Xunit;
++
++namespace Orc.Game.Tests;
++
++public sealed class KeywordProgramTests
++{
++    private static readonly List<string> Registered=[];
++    private static async Task<(Match Match,UnitCard Unit,string Keyword)> Create(KeywordProgram program,int? value=null,MockTargeterBridge? bridge=null)
++    {
++        var id="program."+Guid.NewGuid().ToString("N");ProgramKeywordComponent.Register(id,program);Registered.Add(id);
++        var match=CommandTestKit.CreateCommandMatch(bridge,extraDefinitions:[new CardDefinitionEntry(id,new CardDefinition("程序单位",1,0,2,5,unitTypes:[UnitType.Infantry],keywords:[new KeywordDeclaration(id,value)],faction:Faction.Germany,rarity:Rarity.Standard))]);
++        await match.Initialize();var unit=await CommandTestKit.InstantiateLoadedAsync(match,match.Players[0],id,toHand:true);return(match,unit,id);
++    }
++    private static KeywordProgramAction A(string op,string value="0",string key="",string target="self")=>new(){Op=op,Value=value,Key=key,Target=target};
++    [Fact]
 +    public async Task RetreatUsesNormalDragCostsAndMovementOpportunity()
 +    {
 +        var bridge = new MockTargeterBridge();
@@ -189,9 +1246,252 @@ index e91e21b..8e7b70c 100644
 +        Assert.False((await m.CommandManager.BeginAttackAsync(u)).IsSuccess);
 +    }
 +    [Fact]
-     public async Task IndependentBlitzAndMoveOnlyProgramsChangeActualDeploymentFlags()
-     {
-         foreach(var attack in new[]{false,true})
++    public async Task IndependentBlitzAndMoveOnlyProgramsChangeActualDeploymentFlags()
++    {
++        foreach(var attack in new[]{false,true})
++        {
++            var (m,u,_)=await Create(new(){Handlers=[new(){Actions=[A("move.set","1"),A("attack.set",attack?"1":"0")]}]});
++            var result=await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);Assert.Equal(PlayResultStatus.Success,result.Status);
++            Assert.True(u.GetData<CommandData>().CanMove);Assert.Equal(attack,u.GetData<CommandData>().CanAttack);
++        }
++    }
++    [Fact]
++    public async Task ChargeReadyPersistsUntilConsumedThenStartsAnotherCycle()
++    {
++        var (m,u,k)=await Create(new(){State=new(){{"ticks",0},{"ready",0}},Handlers=[
++            new(){Event="turn.start",Subject="owner",When=[new("state.ready","eq","0")],Actions=[A("state.add","1","ticks"),new(){Op="if",When=[new("state.ticks","gte","value")],Then=[A("state.set","1","ready"),A("emit",key:"keyword.ready")]}]},
++            new(){Event="unit.attack.before",When=[new("state.ready","eq","1")],Actions=[new(){Op="buff",Value="3",Temporary=true}]},
++            new(){Event="unit.attack.after",When=[new("state.ready","eq","1")],Actions=[A("state.set","0","ready"),A("state.set","0","ticks"),A("emit",key:"keyword.consumed")]}
++        ]},3);
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);var component=Assert.Single(KeywordProgramRuntime.Components(u));
++        for(var i=0;i<3;i++)await m.Engine.Emit("turn.start",new Dictionary<string,object?>{{"Player",m.Players[0]}});
++        Assert.Equal(1,component.State["ready"]);Assert.Equal(3,component.State["ticks"]);
++        await m.Engine.Emit("turn.start",new Dictionary<string,object?>{{"Player",m.Players[0]}});Assert.Equal(3,component.State["ticks"]);
++        var enemy=await CommandTestKit.PrepareOnFrontAsync(m,m.Players[1],CommandTestKit.BeastId,0);
++        CommandTestKit.Activate(u);var command=await m.CommandManager.BeginAttackAsync(u);
++        // No scripted choice is supplied: cancellation must not consume readiness.
++        Assert.Equal(1,component.State["ready"]);
++    }
++    [Fact]
++    public async Task RuleDenialComposesWithRangeAndRevokeRestoresAvailability()
++    {
++        var (m,u,k)=await Create(new(){Rules=[new(){Rule="move.allowed",Value="0"},new(){Rule="combat.range",Value="1"}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);CommandTestKit.Activate(u);
++        var e=await CommandTestKit.PrepareOnSupportAsync(m,m.Players[1],CommandTestKit.InfantryId,1);
++        var availability=m.CommandManager.GetCommandAvailability(u);Assert.False(availability.Move.CanUse);Assert.Contains(e.Ref,availability.Attack.Candidates);
++        await u.Keywords.RevokeAsync(k);Assert.True(m.CommandManager.GetCommandAvailability(u).Move.CanUse);
++    }
++    [Fact]
++    public async Task FrontlineDeploymentUsesSameNativeCandidatesAndPortal()
++    {
++        var (m,u,_)=await Create(new(){Rules=[new(){Rule="deploy.frontline",Value="1"}]});
++        var gap=m.PlayManager.GetDeploymentGaps(u).First(g=>ReferenceEquals(g.Line,m.Battlefield.FrontLine));
++        Assert.Equal(PlayResultStatus.Success,(await m.PlayManager.PlayUnitAsync(u,gap)).Status);
++        Assert.Contains(m.Battlefield.FrontLine,s=>ReferenceEquals(s.Occupant,u));
++    }
++    [Fact]
++    public async Task PreventDeathOnceRetainsOneDefenseAndLaterDeathStillExecutes()
++    {
++        var (m,u,_)=await Create(new(){State=new(){{"used",0}},Handlers=[new(){Event="unit.destroy.before",When=[new("state.used","eq","0")],Actions=[A("state.set","1","used"),A("death.cancel"),A("health.set","1")]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);
++        await EffectRuntime.ResolveFor(u)!.DamageAsync(u,100);
++        Assert.False(u.GetData<UnitStateData>().IsDestroyed);Assert.Equal(1,u.Modifiers.GetEffectiveValue(CardStatFields.Defense));
++        await EffectRuntime.ResolveFor(u)!.DamageAsync(u,1);Assert.True(u.GetData<UnitStateData>().IsDestroyed);
++    }
++    [Fact]
++    public async Task RecordValueIsBoundToEachCreatedCardRatherThanGlobalOrSourceReference()
++    {
++        var (m,u,_)=await Create(new(){Handlers=[new(){Actions=[A("capture","target.attack","recordedAttack"),new(){Op="create.hand",Key=CommandTestKit.InfantryId,Bindings=new(){{"damage","data.recordedAttack"}}}]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);
++        var first=m.Players[0].Hand.Single(c=>c.TryGetData<KeywordProgramData>(out _));Assert.Equal(2,first.GetData<KeywordProgramData>().Values["damage"]);
++        await EffectRuntime.ResolveFor(u)!.BuffAsync(u,3,0);
++        Assert.Equal(2,first.GetData<KeywordProgramData>().Values["damage"]);
++        var (other,v,_)=await Create(new(){Handlers=[new(){Actions=[new(){Op="create.hand",Key=CommandTestKit.InfantryId,Bindings=new(){{"damage","7"}}}]}]});
++        await other.PlayManager.PlayUnitAsync(v,other.Battlefield.PlayerASupportLine[1]);Assert.Equal(2,first.GetData<KeywordProgramData>().Values["damage"]);
++        Assert.Equal(7,other.Players[0].Hand.Single(c=>c.TryGetData<KeywordProgramData>(out _)).GetData<KeywordProgramData>().Values["damage"]);
++    }
++    [Fact]
++    public void UnknownDeclarationsAreRejectedBeforeTheyReachAMatch()
++    {
++        Assert.Throws<InvalidDataException>(()=>new KeywordProgram{Rules=[new(){Rule="unknown"}]}.Validate());
++        Assert.Throws<InvalidDataException>(()=>new KeywordProgram{Handlers=[new(){Actions=[A("state.set","1","missing")]}]}.Validate());
++        Assert.Throws<InvalidDataException>(()=>KeywordProgram.Parse("{\"schema\":1,\"typo\":true}"));
++    }
++    [Fact]
++    public async Task AttackBuffIsConsumedOnlyByActualCombatAndRemovedAfterwards()
++    {
++        var bridge=new MockTargeterBridge();
++        var (m,u,_)=await Create(new(){State=new(){{"ready",1}},Handlers=[
++            new(){Event="unit.attack.before",When=[new("state.ready","eq","1")],Actions=[new(){Op="buff",Value="3",Temporary=true}]},
++            new(){Event="unit.attack.after",Actions=[A("state.set","0","ready")]}
++        ]},bridge:bridge);
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);var enemy=await CommandTestKit.PrepareOnFrontAsync(m,m.Players[1],CommandTestKit.InfantryId,0);
++        bridge.CollectScript=CommandTestKit.AllRefsScript(m);CommandTestKit.Activate(u);
++        await CommandTestKit.CancelCommandAsync(m,bridge,u);Assert.Equal(1,Assert.Single(KeywordProgramRuntime.Components(u)).State["ready"]);
++        var result=await CommandTestKit.RunCommandAsync(m,bridge,u,enemy.Ref);Assert.True(result.IsSuccess);
++        Assert.True(enemy.GetData<UnitStateData>().IsDestroyed);Assert.Equal(2,u.Modifiers.GetEffectiveValue(CardStatFields.Attack));Assert.Equal(0,Assert.Single(KeywordProgramRuntime.Components(u)).State["ready"]);
++    }
++    [Fact]
++    public async Task SelectedUnitIsCapturedBeforeDeploymentAndCancellationCostsNothing()
++    {
++        var bridge=new MockTargeterBridge();var (m,u,_)=await Create(new(){Handlers=[new(){Actions=[A("capture","target.attack","loaded","choose.unit")]}]},bridge:bridge);
++        var enemy=await CommandTestKit.PrepareOnFrontAsync(m,m.Players[1],CommandTestKit.BeastId,0);bridge.CollectScript=CommandTestKit.AllRefsScript(m);
++        var points=m.Players[0].Points;var play=m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);var pending=await bridge.WaitForNextBeginAsync();pending.Responder.Cancel(pending.Description.RequestId);await play;
++        Assert.Equal(points,m.Players[0].Points);Assert.Contains(u,m.Players[0].Hand);Assert.False(u.TryGetData<UnitStateData>(out _));
++        play=m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);pending=await bridge.WaitForNextBeginAsync();pending.Responder.Complete(pending.Description.RequestId,TargeterTestKit.Selection(TargetSlot.DefaultName,enemy.Ref));
++        Assert.Equal(PlayResultStatus.Success,(await play).Status);Assert.Equal(6,u.GetData<KeywordProgramData>().Values["loaded"]);
++    }
++    [Fact]
++    public async Task TemporaryCopyHasNoSourceKeywordAndOnlyItsHandInstanceExpires()
++    {
++        var (m,u,k)=await Create(new(){Handlers=[new(){Actions=[new(){Op="copy.hand",Temporary=true}]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);var copy=Assert.Single(m.Players[0].Hand.OfType<CardBase>().Where(c=>c.Definition==u.Definition));
++        Assert.False(copy.Keywords.Has(k));await m.EndTurn();Assert.DoesNotContain(copy,m.Players[0].Hand);Assert.False(u.GetData<UnitStateData>().IsDestroyed);
++    }
++    [Fact]
++    public async Task ActiveSkillChecksAndPaysPointsAndAttackOpportunityOnce()
++    {
++        var (m,u,_)=await Create(new(){Skills=[new(){Id="test",Name="强化",Cost="1",SpendAttack=true,Actions=[A("buff","2")]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);CommandTestKit.Activate(u);var component=Assert.Single(KeywordProgramRuntime.Components(u));
++        Assert.False(component.CanUse("test"));await EffectRuntime.ResolveFor(u)!.GainPointsAsync(u,2);Assert.True(component.CanUse("test"));
++        Assert.True(await component.UseAsync("test"));Assert.Equal(1,m.Players[0].Points);Assert.False(await component.UseAsync("test"));Assert.Equal(4,u.Modifiers.GetEffectiveValue(CardStatFields.Attack));
++    }
++
++    // ────────────── 机制示范包词条专项（docs/CUSTOM_KEYWORD_SYSTEM.md 验收清单的落地口径） ──────────────
++
++    private static async Task<(Match Match,UnitCard Unit,string Keyword,CardDefinitionEntry Entry)> CreateWithExtra(KeywordProgram program,CardDefinitionEntry extra,MockTargeterBridge? bridge=null)
++    {
++        var id="program."+Guid.NewGuid().ToString("N");ProgramKeywordComponent.Register(id,program);Registered.Add(id);
++        var entry=new CardDefinitionEntry(id,new CardDefinition("程序单位",1,0,2,5,unitTypes:[UnitType.Infantry],keywords:[new KeywordDeclaration(id)],faction:Faction.Germany,rarity:Rarity.Standard));
++        var match=CommandTestKit.CreateCommandMatch(bridge,extraDefinitions:[entry,extra]);
++        await match.Initialize();var unit=await CommandTestKit.InstantiateLoadedAsync(match,match.Players[0],id,toHand:true);return(match,unit,id,entry);
++    }
++    private static CardDefinitionEntry UnitDef(string id,string name,int cost,int attack,int defense)=>new(id,new CardDefinition(name,deployCost:cost,operateCost:1,attack:attack,defense:defense,unitTypes:[UnitType.Infantry],faction:Faction.Germany,rarity:Rarity.Standard));
++    private static CardDefinitionEntry OrderDef(string id,string name,int cost,KeywordDeclaration keyword)=>new(id,new CardDefinition(name,deployCost:cost,operateCost:0,attack:0,defense:0,CardCategory.Command,keywords:[keyword],faction:Faction.Germany,rarity:Rarity.Standard));
++
++    [Fact]
++    public async Task JiDongSkillRestoresActionOnceAndRemovesItself()
++    {
++        var (m,u,k)=await Create(new(){Skills=[new(){Id="extra",Name="额外行动",Cost="0",SpendMove=false,SpendAttack=false,
++            Actions=[A("move.set","1"),A("attack.set","1"),new(){Op="keyword.remove",Target="self",Key=""}]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);CommandTestKit.Activate(u,false,false);
++        var c=Assert.Single(KeywordProgramRuntime.Components(u));Assert.True(await c.UseAsync("extra"));
++        Assert.True(u.GetData<CommandData>().CanMove);Assert.True(u.GetData<CommandData>().CanAttack);
++        Assert.False(u.Keywords.Has(k));Assert.False(await c.UseAsync("extra"));
++    }
++    [Fact]
++    public async Task BuQuCanclesFirstDeathThenDiesAtOwnerTurnStart()
++    {
++        var (m,u,_)=await Create(new(){State=new(){{"owed",0}},Handlers=[
++            new(){Event="unit.destroy.before",Subject="self",When=[new("state.owed","eq","0")],Actions=[A("state.set","1","owed"),new(){Op="death.cancel",Target="self"},new(){Op="health.set",Target="self",Value="1"}]},
++            new(){Event="turn.start",Subject="owner",When=[new("state.owed","eq","1")],Actions=[new(){Op="kill",Target="self"}]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);
++        await EffectRuntime.ResolveFor(u)!.DamageAsync(u,100);
++        Assert.False(u.GetData<UnitStateData>().IsDestroyed);Assert.Equal(1,u.Modifiers.GetEffectiveValue(CardStatFields.Defense));
++        await m.Engine.Emit("turn.start",new Dictionary<string,object?>{{"Player",m.Players[0]}});
++        Assert.True(u.GetData<UnitStateData>().IsDestroyed);
++    }
++    [Fact]
++    public async Task ZhanlveTransformsIntoRoutedArmyInsteadOfDying()
++    {
++        const string routed="u_routed_test";
++        var (m,u,_,__)=await CreateWithExtra(new(){Handlers=[new(){Event="unit.destroy.before",Subject="self",Actions=[
++            new(){Op="death.cancel",Target="self"},new(){Op="replace",Target="self",Key=routed}]}]},UnitDef(routed,"溃军",0,1,1));
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);
++        await EffectRuntime.ResolveFor(u)!.DamageAsync(u,100);
++        var occupant=m.Battlefield.PlayerASupportLine[1].Occupant as CardBase;
++        Assert.NotNull(occupant);Assert.True(m.CardLibrary.TryGetRegisteredId(occupant!.Definition,out var id));Assert.Equal(routed,id);
++    }
++    [Fact]
++    public async Task HuShiConvertsSurvivingAttackedEnemyIntoRoutedArmy()
++    {
++        const string routed="u_routed_test";
++        var bridge=new MockTargeterBridge();
++        var (m,u,_,__)=await CreateWithExtra(new(){Handlers=[new(){Event="unit.attack.after",Subject="self",Actions=[
++            new(){Op="replace",Target="attack.target",Key=routed}]}]},UnitDef(routed,"溃军",0,1,1),bridge);
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);
++        var enemy=await CommandTestKit.PrepareOnFrontAsync(m,m.Players[1],CommandTestKit.InfantryId,0);
++        await EffectRuntime.ResolveFor(enemy)!.BuffAsync(enemy,0,5);
++        CommandTestKit.Activate(u);bridge.CollectScript=CommandTestKit.AllRefsScript(m);
++        await CommandTestKit.RunCommandAsync(m,bridge,u,enemy.Ref);
++        var occupant=m.Battlefield.FrontLine[0].Occupant as CardBase;
++        Assert.NotNull(occupant);Assert.True(m.CardLibrary.TryGetRegisteredId(occupant!.Definition,out var id));Assert.Equal(routed,id);
++    }
++    [Fact]
++    public async Task FuYuanCopiesToHandWithExtraCostWhenLeaving()
++    {
++        var (m,u,k)=await Create(new(){Handlers=[new(){Event="card.leaving",Subject="self",Actions=[new(){Op="copy.hand",Target="self",Value="2"}]}],
++            Skills=[new(){Id="muster",Name="复员归队",Cost="0",SpendMove=false,SpendAttack=false,Actions=[new(){Op="return.hand",Target="self"}]}]});
++        await m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);var c=Assert.Single(KeywordProgramRuntime.Components(u));
++        Assert.True(await c.UseAsync("muster"));
++        var copies=m.Players[0].Hand.OfType<CardBase>().Where(x=>ReferenceEquals(x.Definition,u.Definition)).ToList();
++        static void Walk(Orc.Core.EventStream s,List<string> acc){foreach(var e in s.Entries)if(e.Level>=LogLevel.Error)acc.Add($"{e.Source}:{e.Message}");foreach(var c in s.Children)Walk(c,acc);}
++        var errors=new List<string>();Walk(m.Engine.RootStream,errors);
++        Assert.True(copies.Count==2,$"手牌实例数={copies.Count}（含复员={copies.Count(x=>x.Keywords.Has(k))}）；流错误：{string.Join(" | ",errors)}");
++        var copy=Assert.Single(copies.Where(x=>!x.Keywords.Has(k)));var returned=Assert.Single(copies.Where(x=>x.Keywords.Has(k)));
++        Assert.Equal(u.Definition.DeployCost+2,copy.Modifiers.GetEffectiveValue(CardStatFields.DeployCost));
++        Assert.Equal(u.Definition.DeployCost,returned.Modifiers.GetEffectiveValue(CardStatFields.DeployCost));
++    }
++    [Fact]
++    public async Task ChanDouLinksEnemyDeniesPairAndFightsAtOwnerTurnStart()
++    {
++        var bridge=new MockTargeterBridge();
++        var (m,u,k)=await Create(new(){Handlers=[
++            new(){Event="unit.deployed",Subject="self",Actions=[new(){Op="link",Target="choose.enemy.unit"}]},
++            new(){Event="turn.start",Subject="owner",Actions=[new(){Op="attack",Target="linked"}]}],Rules=[
++            new(){Rule="move.allowed",Scope="pair",Value="0",Priority=1},
++            new(){Rule="attack.allowed",Scope="pair",Value="0",Priority=1}]},bridge:bridge);
++        var enemy=await CommandTestKit.PrepareOnFrontAsync(m,m.Players[1],CommandTestKit.InfantryId,0);
++        var play=m.PlayManager.PlayUnitAsync(u,m.Battlefield.PlayerASupportLine[1]);
++        var pending=await bridge.WaitForNextBeginAsync();
++        pending.Responder.Complete(pending.Description.RequestId,TargeterTestKit.Selection(TargetSlot.DefaultName,enemy.Ref));
++        Assert.Equal(PlayResultStatus.Success,(await play).Status);
++        Assert.False(m.CommandManager.GetCommandAvailability(u).Move.CanUse);
++        Assert.False(m.CommandManager.GetCommandAvailability(enemy).Move.CanUse);
++        await EffectRuntime.ResolveFor(u)!.BuffAsync(u,2,0);
++        var c=Assert.Single(KeywordProgramRuntime.Components(u));
++        var defenseBefore=enemy.Modifiers.GetEffectiveValue(CardStatFields.Defense);
++        await m.Engine.Emit("turn.start",new Dictionary<string,object?>{{"Player",m.Players[0]}});
++        Assert.Equal(1,c.Attacks);
++        Assert.True(enemy.GetData<UnitStateData>().IsDestroyed||enemy.Modifiers.GetEffectiveValue(CardStatFields.Defense)<defenseBefore);
++    }
++    [Fact]
++    public async Task ZhuangTianRecordsAttackThenLaunchDealsRecordedDamage()
++    {
++        const string loader="u_loader_test";const string launch="u_launch_test";
++        var bridge=new MockTargeterBridge();
++        ProgramKeywordComponent.Register(loader,new KeywordProgram{Handlers=[new(){Event="card.played",Subject="self",Actions=[
++            new(){Op="capture",Target="choose.unit",Value="target.attack",Key="loaded"},
++            new(){Op="create.hand",Target="self",Key=launch,Bindings=new(){{"damage","data.loaded"}}}]}]});
++        ProgramKeywordComponent.Register(launch,new KeywordProgram{Handlers=[new(){Event="card.played",Subject="self",Actions=[
++            new(){Op="damage",Target="choose.unit",Value="data.damage"}]}]});
++        Registered.Add(loader);Registered.Add(launch);
++        var match=CommandTestKit.CreateCommandMatch(bridge,extraDefinitions:[
++            OrderDef(loader,"装填",0,new KeywordDeclaration(loader)),
++            OrderDef(launch,"发射",0,new KeywordDeclaration(launch))]);
++        await match.Initialize();
++        var source=await CommandTestKit.PrepareOnSupportAsync(match,match.Players[0],CommandTestKit.InfantryId,1);
++        var enemy=await CommandTestKit.PrepareOnFrontAsync(match,match.Players[1],CommandTestKit.MegaId,0);
++        var loaderCard=await PlayChainTestKit.InstantiateLoadedAsync<CommandCard>(match,match.Players[0],loader);
++        var play=match.PlayManager.BeginCommandPrePlayAsync(loaderCard);
++        var pending=await bridge.WaitForNextBeginAsync();
++        pending.Responder.Complete(pending.Description.RequestId,TargeterTestKit.Selection(TargetSlot.DefaultName,source.Ref));
++        Assert.Equal(PlayResultStatus.Success,(await play).Status);
++        var launchCard=match.Players[0].Hand.OfType<CardBase>().SingleOrDefault(x=>match.CardLibrary.TryGetRegisteredId(x.Definition,out var lid)&&lid==launch);
++        static void Walk(Orc.Core.EventStream s,List<string> acc){foreach(var e in s.Entries)if(e.Level>=LogLevel.Error)acc.Add($"{e.Source}:{e.Message}");foreach(var c in s.Children)Walk(c,acc);}
++        var errors=new List<string>();Walk(match.Engine.RootStream,errors);
++        var handIds=string.Join("、",match.Players[0].Hand.Select(x=>match.CardLibrary.TryGetRegisteredId(((CardBase)x).Definition,out var cid)?cid:"("+x.GetType().Name+")"));
++        Assert.True(launchCard is not null,$"发射未入手；手牌：{handIds}；流错误：{string.Join(" | ",errors)}");
++        var recorded=Assert.Single(launchCard.GetData<KeywordProgramData>().Values);
++        Assert.Equal("damage",recorded.Key);Assert.Equal(source.Modifiers.GetEffectiveValue(CardStatFields.Attack),recorded.Value);
++        var before=enemy.Modifiers.GetEffectiveValue(CardStatFields.Defense);
++        var second=match.PlayManager.BeginCommandPrePlayAsync((CommandCard)launchCard);
++        var secondPending=await bridge.WaitForNextBeginAsync();
++        secondPending.Responder.Complete(secondPending.Description.RequestId,TargeterTestKit.Selection(TargetSlot.DefaultName,enemy.Ref));
++        Assert.Equal(PlayResultStatus.Success,(await second).Status);
++        Assert.Equal(before-recorded.Value,enemy.Modifiers.GetEffectiveValue(CardStatFields.Defense));
++    }
++}
 diff --git a/src/Orc.Game/Commanding/CommandMovementRules.cs b/src/Orc.Game/Commanding/CommandMovementRules.cs
 new file mode 100644
 index 0000000..90a1f9e

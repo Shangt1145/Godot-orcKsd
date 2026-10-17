@@ -2,7 +2,7 @@
 
 ## 当前 Beta.2 拖拽词条发布依赖（2026-10-17）
 
-当前引擎基线为 `93bf79468f516ee97325f0c676ff5e89fa5855a0` 加 [beta2-drag-keywords-native.patch](engine-patches/beta2-drag-keywords-native.patch)。该补丁包含指令选择的原生纯查询、通用后撤规则 `move.retreat`、可用性与执行复验共享的移动方向判定，以及相关测试。对独立、干净的该提交 checkout 执行 `git apply --check`，再 `git apply` 此补丁；`OrcEngineRoot` 指向其 `src/Orc.Game`。本地现用引擎已包含这些修改，不要重复应用。引擎全量 1122 项测试通过。
+当前引擎基线为 `750e11efcc34d8c96188e6f5a9044bec594b807a` 加 [beta2-drag-keywords-native.patch](engine-patches/beta2-drag-keywords-native.patch)。该完整补丁同时包含原生自定义词条运行时、自定义国家与生命周期修复、指令选择的原生纯查询、通用后撤规则 `move.retreat`、可用性与执行复验共享的移动方向判定，以及相关测试。对独立、干净的该提交 checkout 执行 `git apply --check`，再 `git apply` 此补丁；`OrcEngineRoot` 指向其 `src/Orc.Game`。本地现用引擎已包含这些修改，不要重复应用。引擎全量 1122 项测试通过。
 
 此次向 `Shangt1145/Godot-orcKsd` 推送客户端和配套源码补丁；不向另一个引擎远端发布。以下 Beta.1 接入记录是历史基线，不与当前补丁叠加使用。
 
