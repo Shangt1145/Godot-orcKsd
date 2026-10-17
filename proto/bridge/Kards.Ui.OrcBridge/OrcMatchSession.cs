@@ -32,6 +32,8 @@ public sealed partial class OrcMatchSession : IDisposable
     private readonly SemaphoreSlim _commands = new(1, 1);
     private bool _disposed;
     private bool _automaticChoice;
+    /// <summary>Upper bound for one driven opponent turn, before play is forcibly handed back.</summary>
+    private static readonly TimeSpan OpponentTurnBudget = TimeSpan.FromSeconds(20);
     private readonly OrcMatchHost _host;
     private Task<MulliganResult>? _mulliganRequest;
     private ISelectorInstance? _pendingMulligan;
@@ -679,8 +681,18 @@ public sealed partial class OrcMatchSession : IDisposable
                     if (DriveOpponent && Match.State == MatchState.InProgress && !ReferenceEquals(Match.CurrentPlayer, _host.Viewer))
                     {
                         _automaticChoice = true;
-                        try { await OrcOpponentDriver.PlayTurnAsync(Match, Match.CurrentPlayer, ct: ct,
-                            actionCompleted: _host.CaptureCompletedActions); }
+                        try
+                        {
+                            // The driver answers the opponent's own requests. A request the engine refuses to
+                            // settle would otherwise strand the turn here, with play never handed back.
+                            await OrcOpponentDriver.PlayTurnAsync(Match, Match.CurrentPlayer, ct: ct,
+                                actionCompleted: _host.CaptureCompletedActions).WaitAsync(OpponentTurnBudget, ct);
+                        }
+                        catch (TimeoutException)
+                        {
+                            LastRejectionReason = "OpponentStalled:" + PendingSelectorName;
+                            CancelTargetChoice();
+                        }
                         finally { _automaticChoice = false; }
                     }
                     return UiSubmitOutcome.Applied;

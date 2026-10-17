@@ -97,6 +97,7 @@ public partial class Main
             submitted = null; var beforePrompts = prompts;
             await _battle.DragAsync(grapple.Uid, _battle.DeploymentGapPoint(session.Actions.DeploymentGaps.Count - 1));
             await Wait(() => _battle.TargetChoiceVisible);
+            GD.Print($"SAVED_DEMO_GRAPPLE_PROBE arrow={_battle.ArrowChoiceActive} panel={_battle.ChoicePanelVisibleForProbe}");
             if (submitted?.IsCompleted != false || prompts != beforePrompts + 1)
                 throw new Exception("Grapple did not wait for the separate deployment target drag.");
             // After placement the arrow already follows the pointer. A fresh target press/release
@@ -107,6 +108,16 @@ public partial class Main
             session.SettleProjection(); await Render();
             GD.Print("SAVED_DEMO_GRAPPLE_TARGETING_OK landing-first target-second native-link");
             int Health(string uid) => session.View.SelfLine.Concat(session.View.EnemyLine).FirstOrDefault(c => c.Uid == uid)?.EffectiveDefense ?? 0;
+            var enemyBeforeTurn = Health(enemyUid);
+            var grapplerBeforeTurn = Health(grapple.Uid);
+            var turnErrors = new List<string>();
+            session.Host.ErrorRaised += turnErrors.Add;
+            await OrcDragVerification.CycleTurnAsync(session); session.SettleProjection();
+            GD.Print($"SAVED_DEMO_GRAPPLE_TICK enemyHpBefore={enemyBeforeTurn} enemyHpAfter={Health(enemyUid)} selfHpBefore={grapplerBeforeTurn} selfHpAfter={Health(grapple.Uid)} errors={string.Join(" | ", turnErrors)}");
+            if (enemyBeforeTurn == Health(enemyUid) && grapplerBeforeTurn == Health(grapple.Uid))
+                findings.Add("Linked support-line units did not fight at the controller's next turn start.");
+            // Run last: a standalone launch damages its target, which would end the very fight the
+            // grapple check above is about to observe.
             var standalone = session.View.SelfHand.FirstOrDefault(c => existingFire.Contains(c.Uid));
             if (standalone is not null)
             {
@@ -123,12 +134,6 @@ public partial class Main
                 }
                 catch (Exception e) { findings.Add("Standalone launch fault: " + e.Message); GD.Print($"SAVED_DEMO_STANDALONE_FIRE_FAULT {e.GetType().Name}: {e.Message}"); }
             }
-            var enemyBeforeTurn = Health(enemyUid);
-            var grapplerBeforeTurn = Health(grapple.Uid);
-            await OrcDragVerification.CycleTurnAsync(session); session.SettleProjection();
-            GD.Print($"SAVED_DEMO_GRAPPLE_TICK enemyHpBefore={enemyBeforeTurn} enemyHpAfter={Health(enemyUid)} selfHpBefore={grapplerBeforeTurn} selfHpAfter={Health(grapple.Uid)}");
-            if (enemyBeforeTurn == Health(enemyUid) && grapplerBeforeTurn == Health(grapple.Uid))
-                findings.Add("Linked support-line units did not fight at the controller's next turn start.");
         }
         finally
         {
@@ -137,6 +142,42 @@ public partial class Main
         }
         foreach (var finding in findings) GD.Print("SAVED_DEMO_PACK_FINDING " + finding);
         GD.Print($"SAVED_DEMO_PACK_AUDIT_COMPLETE targeting=pass findings={findings.Count} workshop-files-unchanged");
+    }
+
+    /// <summary>
+    /// The opponent turn is driven inside the viewer's EndTurn submission. A request the engine refuses to
+    /// settle would strand the turn there, so this cycles turns and proves play always comes back.
+    /// </summary>
+    private async void VerifyOpponentTurnLiveness()
+    {
+        try
+        {
+            StopRealMatch(); Show("battle");
+            var folder = System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData),
+                "Godot", "app_userdata", "OrC-KSD · 卡牌指挥部");
+            var library = new DiyWorkshopLibrary(System.IO.Path.Combine(folder, "diy-packs.json"));
+            var cards = new DiyCardLibrary(System.IO.Path.Combine(folder, "diy-cards.json"));
+            WorkshopAuthoring.Configure(library, cards.Cards);
+            var cycles = 0;
+            using var session = await OrcMatchSession.CreateFromCatalogAsync(_catalog.Cards, 7, "opponent-turn-liveness", "unused",
+                sourceDirectory: RuntimeGameData.Directory("nations"), customCards: cards.Cards.ToArray());
+            session.DriveOpponent = true;
+            await session.SettleMulliganAsync(false);
+            while (cycles < 8 && session.View.Phase != "over")
+            {
+                await session.SubmitAsync(new EndTurn()).WaitAsync(TimeSpan.FromSeconds(30));
+                session.SettleProjection();
+                // Handing the turn over drives the opponent and passes it straight back; the
+                // contract is what says play is ours again, so the UI assembly stays engine-free.
+                if (session.View.Phase != "over" && !session.Actions.CanEndTurn)
+                    throw new Exception("Opponent kept the turn: play was never handed back.");
+                cycles++;
+            }
+            GD.Print($"OPPONENT_TURN_LIVENESS_OK cycles={cycles} lastRejection={session.LastRejectionReason ?? "none"}");
+            GetTree().Quit();
+        }
+        catch (Exception e) { GD.PushError(e.ToString()); GetTree().Quit(1); }
+        finally { WorkshopAuthoring.Configure(_workshopLibrary, _diy.Cards); }
     }
 
     private async Task VerifySavedRoutedDeploymentAsync(DiyCardDraft[] demo)

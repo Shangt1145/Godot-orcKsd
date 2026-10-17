@@ -13,6 +13,8 @@ public sealed partial class OrcMatchSession
     public event Action<UiTargetRequest, IUiTargetResponder>? TargetRequested;
     public event Action? TargetClosed;
     public bool TargetPending => _targetChoice is not null;
+    /// <summary>Selector waiting on an answer, for diagnosing an opponent turn that never passes.</summary>
+    internal string? PendingSelectorName => _targetChoice?.SelectorName;
     private void PresentTargetChoice(ISelectorInstance selector)
     {
         if (_disposed || _activeCommandToken.IsCancellationRequested) { selector.Submit(new CancelEvent()); return; }
@@ -64,6 +66,7 @@ public sealed partial class OrcMatchSession
         string requestId, string slotName) : IUiTargetResponder
     {
         public string RequestId => requestId;
+        public string SelectorName => selector.SelectorName;
         public bool Complete(string requestId, IReadOnlyDictionary<string, IReadOnlyList<string>> selectionsBySlot)
         {
             if (requestId != RequestId || session._targetChoice != this || selectionsBySlot.Count != 1

@@ -16,6 +16,11 @@ namespace Kards.Ui.OrcBridge;
 public static class OrcOpponentDriver
 {
     private const int MaxActions = 12;
+    /// <summary>
+    /// Ceiling for one engine request and for passing the turn. The driver answers requests on the
+    /// viewer's behalf, so a request that refuses to settle must not strand the turn forever.
+    /// </summary>
+    private static readonly TimeSpan ActionBudget = TimeSpan.FromSeconds(4);
 
     public static async Task PlayTurnAsync(Match match, Player opponent, Action<string>? log = null,
         CancellationToken ct = default, Action? actionCompleted = null)
@@ -23,17 +28,33 @@ public static class OrcOpponentDriver
         ArgumentNullException.ThrowIfNull(match);
         ArgumentNullException.ThrowIfNull(opponent);
         var actions = 0;
-        while (match.State == MatchState.InProgress && match.Phase == MatchPhase.Play
-            && ReferenceEquals(match.CurrentPlayer, opponent) && actions < MaxActions)
+        try
         {
-            if (!await TryOneActionAsync(match, opponent, log, ct, actionCompleted)) break;
-            actions++;
-            await Task.Delay(80, ct);
+            while (match.State == MatchState.InProgress && match.Phase == MatchPhase.Play
+                && ReferenceEquals(match.CurrentPlayer, opponent) && actions < MaxActions)
+            {
+                bool acted;
+                try { acted = await TryOneActionAsync(match, opponent, log, ct, actionCompleted).WaitAsync(ActionBudget, ct); }
+                catch (OperationCanceledException) { break; }
+                catch (Exception e)
+                {
+                    // A stalled decision is reported instead of hanging: the turn still passes.
+                    log?.Invoke($"opponent stalled: {e.GetType().Name}: {e.Message}");
+                    break;
+                }
+                if (!acted) break;
+                actions++;
+                await Task.Delay(80, ct);
+            }
         }
-        if (match.State == MatchState.InProgress && ReferenceEquals(match.CurrentPlayer, opponent))
+        finally
         {
-            await match.EndTurn(ct);
-            actionCompleted?.Invoke();
+            if (match.State == MatchState.InProgress && ReferenceEquals(match.CurrentPlayer, opponent))
+            {
+                try { await match.EndTurn(ct).WaitAsync(ActionBudget, ct); }
+                catch (Exception e) { log?.Invoke($"opponent could not pass the turn: {e.GetType().Name}: {e.Message}"); }
+                actionCompleted?.Invoke();
+            }
         }
     }
 

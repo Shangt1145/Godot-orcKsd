@@ -21,6 +21,9 @@ public partial class BattleScreen
     private readonly Dictionary<string, string> _orderChoiceCaptions = new();
     private readonly Dictionary<string, UiCardView> _orderChoiceFaces = new();
     public bool TargetChoiceVisible => _choiceRequest is not null;
+    /// <summary>True while an onboard single-target choice is answered by pointing an arrow instead of a panel.</summary>
+    internal bool ArrowChoiceActive => _arrowSlot is not null;
+    internal bool ChoicePanelVisibleForProbe => _choicePanel is { Visible: true };
     private void InitializeTargetChoices()
     {
         _choicePanel = new BattleChoices { ZIndex = 270 };

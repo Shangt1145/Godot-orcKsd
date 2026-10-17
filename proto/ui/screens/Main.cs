@@ -297,6 +297,8 @@ public partial class Main : Control
             CallDeferred(MethodName.VerifyDemoPackTargeting);
         else if (args.Contains("--verify-discard"))
             CallDeferred(MethodName.VerifyDiscardAnimation);
+        else if (args.Contains("--verify-opponent-turn"))
+            CallDeferred(MethodName.VerifyOpponentTurnLiveness);
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>

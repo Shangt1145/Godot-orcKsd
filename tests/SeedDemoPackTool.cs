@@ -56,7 +56,9 @@ public sealed class SeedDemoPackTool
             new(){Id="kw-demo-chandou",Name="缠斗",Battle=true,EffectText="部署时指定 1 个敌军，双方无法移动或攻击；缠斗方回合开始时双方进行 1 次战斗，直到一方离开战场。",
                 ProgramJson=P("缠斗",new(){Handlers=[
                     new(){Event="unit.deployed",Subject="self",Actions=[new(){Op="link",Target="choose.enemy.unit"}]},
-                    new(){Event="turn.start",Subject="owner",Actions=[new(){Op="attack",Target="linked"}]}],Rules=[
+                    // 缠斗的周期战斗由词条触发，必须穿过本词条自己立的「pair 不可攻击」规则，
+                    // 否则双方被锁死却谁也不掉血——贴身缠斗的意义正是无视阵线互相厮打。
+                    new(){Event="turn.start",Subject="owner",Actions=[new(){Op="attack",Target="linked",BypassRange=true}]}],Rules=[
                     new(){Rule="move.allowed",Scope="pair",Value="0",Priority=1},
                     new(){Rule="attack.allowed",Scope="pair",Value="0",Priority=1}]})},
             new(){Id="kw-demo-kuijun",Name="溃退",Battle=true,EffectText="本单位可以消耗正常移动机会和行动花费，从前线移动回己方支援线。",
@@ -66,7 +68,8 @@ public sealed class SeedDemoPackTool
                     new(){Op="capture",Target="choose.unit",Value="target.attack",Key="loaded"},
                     new(){Op="create.hand",Target="self",Key=launchId,Bindings=new(){{"damage","data.loaded"}}}]}]})},
             new(){Id="kw-demo-fashe",Name="发射",Battle=true,EffectText="打出时对 1 个单位造成等同于记录值的伤害。",
-                ProgramJson=P("发射",new(){Handlers=[new(){Event="card.played",Subject="self",Actions=[
+                // DefaultValue＝单独从卡组打出时的记录值（由装填生成时会被捕获值覆盖）。
+                ProgramJson=P("发射",new(){DefaultValue=2,Handlers=[new(){Event="card.played",Subject="self",Actions=[
                     new(){Op="damage",Target="choose.unit",Value="data.damage"}]}]})},
         };
         var pack=new DiyPackDraft{Id="pack/diy-demo-mechanics",Name="机制示范包",Keywords=keywords.ToArray()};
@@ -84,7 +87,9 @@ public sealed class SeedDemoPackTool
             new(){Id="diy/demo-chandou",PackId=pack.Id,Name="缠斗步兵",Cost=2,OpCost=1,Attack=2,Defense=3,Keywords=["kw-demo-chandou"],Flavor="死磕到底。"},
             new(){Id=routedId,PackId=pack.Id,Name="溃军",Cost=0,OpCost=1,Attack=1,Defense=1,Keywords=["kw-demo-kuijun"],Flavor="士气崩溃的残部。"},
             new(){Id="diy/demo-zhuangtian",PackId=pack.Id,Name="装填",CardType="order",Cost=2,Keywords=["kw-demo-zhuangtian"],Flavor="记录 1 个单位的攻击力，将 1 张「发射」加入手牌。"},
-            new(){Id=launchId,PackId=pack.Id,Name="发射",CardType="order",Cost=2,Keywords=["kw-demo-fashe"],Flavor="对 1 个单位造成等同于记录值的伤害。"},
+            // 发射的伤害＝实例记录值；由装填生成时写入捕获的攻击力，单独从卡组打出时回退到卡面参数。
+            new(){Id=launchId,PackId=pack.Id,Name="发射",CardType="order",Cost=2,Keywords=["kw-demo-fashe"],
+                KeywordValues=new(){["kw-demo-fashe"]=2},Flavor="对 1 个单位造成等同于记录值的伤害（无记录时＝2）。"},
         };
 
         foreach(var draft in drafts)cards.Save(draft);
