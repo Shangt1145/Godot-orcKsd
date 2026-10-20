@@ -18,6 +18,8 @@ internal partial class NativeEffectInspector
     private readonly HashSet<string> _expanded=[];
     internal Button NewEffectButton=null!,PickerAddButton=null!;
     internal Button CardKeywordsButton=null!,KeywordDoneButton=null!;
+    internal Button NewNativeEffectButton=null!;
+    internal event Action? CountersRequested;
     internal ItemList PickerItems=null!;
     internal LineEdit PickerSearch=null!;
     internal readonly Dictionary<string,Control> FriendlyControls=[];
@@ -35,20 +37,26 @@ internal partial class NativeEffectInspector
         _friendlyRoot=new HSplitContainer{SizeFlagsVertical=SizeFlags.ExpandFill,SplitOffsets=[240]};AddChild(_friendlyRoot);
         var left=Card(_friendlyRoot);left.CustomMinimumSize=new(200,0);
         left.GetParent<PanelContainer>().SizeFlagsHorizontal=SizeFlags.Fill;
-        _friendlyRoot.Resized+=()=>_friendlyRoot.SplitOffsets=[240];
-        left.AddChild(UiStyles.Label("这张牌的效果",18,UiStyles.Gold));
-        left.AddChild(Note("每条效果都有自己的时机，\n也可以包含多个动作。"));
+        _friendlyRoot.Resized+=()=>_friendlyRoot.SplitOffsets=[Math.Clamp((int)_friendlyRoot.Size.X/5,190,240)];
+        left.AddChild(MenuStyles.Label("这张牌的效果",18,MenuStyles.Gold));
+        left.AddChild(Note("选一条效果，再设置何时发生、\n做什么，以及作用于谁。"));
         var scroll=new ScrollContainer{SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled};left.AddChild(scroll);
         _effectList=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};scroll.AddChild(_effectList);
-        NewEffectButton=UiStyles.Button("＋ 添加一条效果",()=>
+        NewEffectButton=MenuStyles.Button("＋ 添加一条效果",()=>
         {
-            var seed=InspectorVocabulary.Effect();
-            if(Document.Root["cardType"]?.ToString()=="order")seed["trigger"]="order";
+            var seed=InspectorVocabulary.Effect();seed["trigger"]="";
             Structural(()=>{Document.Append("/effects",seed);_selectedEffect=((JsonArray)Document.Root["effects"]!).Count-1;});
         });left.AddChild(NewEffectButton);
-        CardKeywordsButton=UiStyles.Button("卡牌自带的词条",OpenCardKeywords);left.AddChild(CardKeywordsButton);
+        NewNativeEffectButton=MenuStyles.Button("＋ 添加原生效果",()=>Structural(()=>
+        {
+            var native=new Kards.Ui.Contracts.OrcEffectDraft{Template="",Guard="",Hook=null};
+            Document.Append("/effects",new JsonObject{[InspectorCardRecord.SourceMarker]="native-v1",[InspectorCardRecord.NativeKey]=JsonSerializer.SerializeToNode(native)});
+            _selectedEffect=Document.At("/effects")!.AsArray().Count-1;
+        }));left.AddChild(NewNativeEffectButton);
+        CardKeywordsButton=MenuStyles.Button("卡牌自带的词条",OpenCardKeywords);left.AddChild(CardKeywordsButton);
+        left.AddChild(MenuStyles.Button("管理本卡计数器",()=>CountersRequested?.Invoke()));
         var right=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};_friendlyRoot.AddChild(right);
-        _sentence=UiStyles.Label("",17,UiStyles.Gold);_sentence.AutowrapMode=TextServer.AutowrapMode.WordSmart;right.AddChild(_sentence);
+        _sentence=MenuStyles.Label("",17,MenuStyles.Gold);_sentence.AutowrapMode=TextServer.AutowrapMode.WordSmart;right.AddChild(_sentence);
         _friendlyScroll=new ScrollContainer{SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled};right.AddChild(_friendlyScroll);
         _effectForm=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};_effectForm.AddThemeConstantOverride("separation",14);_friendlyScroll.AddChild(_effectForm);
         BuildActionPicker();
@@ -80,9 +88,9 @@ internal partial class NativeEffectInspector
             {
                 var value=new SpinBox{Editable=isOn,Value=Document.Root["kwValues"]![id]!.GetValue<double>(),AllowGreater=true,AllowLesser=true,MinValue=-1000,MaxValue=1000,Step=1,CustomMinimumSize=new(120,0)};row.AddChild(value);
                 value.ValueChanged+=v=>SetCardMap("kwValues",id,JsonValue.Create(v));
-                var clear=UiStyles.Button("不指定数值",()=>{Document.Remove("/kwValues/"+id);OpenCardKeywords();});clear.Disabled=!isOn;row.AddChild(clear);
+                var clear=MenuStyles.Button("不指定数值",()=>{Document.Remove("/kwValues/"+id);OpenCardKeywords();});clear.Disabled=!isOn;row.AddChild(clear);
             }
-            else{var add=UiStyles.Button("指定数值",()=>{SetCardMap("kwValues",id,JsonValue.Create(1));OpenCardKeywords();});add.Disabled=!isOn;row.AddChild(add);}
+            else{var add=MenuStyles.Button("指定数值",()=>{SetCardMap("kwValues",id,JsonValue.Create(1));OpenCardKeywords();});add.Disabled=!isOn;row.AddChild(add);}
         }
         _keywordDialog.PopupCentered(new Vector2I(650,Math.Min(520,(int)GetViewportRect().Size.Y-80)));
     }
@@ -93,14 +101,14 @@ internal partial class NativeEffectInspector
     private static VBoxContainer Card(Container parent)
     {
         var panel=new PanelContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};parent.AddChild(panel);
-        var style=new StyleBoxFlat{BgColor=new Color("202722ed"),BorderColor=new Color("4d584b"),BorderWidthLeft=1,BorderWidthRight=1,BorderWidthTop=1,BorderWidthBottom=1,
-            CornerRadiusTopLeft=6,CornerRadiusTopRight=6,CornerRadiusBottomLeft=6,CornerRadiusBottomRight=6,
+        var style=new StyleBoxFlat{BgColor=MenuStyles.Panel,BorderColor=MenuStyles.Line,BorderWidthLeft=1,BorderWidthRight=1,BorderWidthTop=1,BorderWidthBottom=1,
+            CornerRadiusTopLeft=2,CornerRadiusTopRight=2,CornerRadiusBottomLeft=2,CornerRadiusBottomRight=2,
             ContentMarginLeft=16,ContentMarginRight=16,ContentMarginTop=12,ContentMarginBottom=12};panel.AddThemeStyleboxOverride("panel",style);
         var box=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};box.AddThemeConstantOverride("separation",10);panel.AddChild(box);return box;
     }
     private static Label Note(string text)
     {
-        var label=UiStyles.Label(text,13,UiStyles.Dim);label.AutowrapMode=TextServer.AutowrapMode.WordSmart;return label;
+        var label=MenuStyles.Label(text,13,MenuStyles.Dim);label.AutowrapMode=TextServer.AutowrapMode.WordSmart;return label;
     }
     private static void Clear(Container box){foreach(var n in box.GetChildren()){box.RemoveChild(n);n.QueueFree();}}
     private void UpdateFriendlySummary()
@@ -109,7 +117,8 @@ internal partial class NativeEffectInspector
         var keywordCount=(Document.Root["kwMap"] as JsonObject)?.Count(p=>p.Value?.GetValueKind()==JsonValueKind.True)??0;
         CardKeywordsButton.Text="卡牌自带词条"+(keywordCount>0?"（"+keywordCount+"）":"");
         var effects=Document.Root["effects"] as JsonArray;
-        _sentence.Text=effects is {Count:>0}?P.Brief(effects[Math.Clamp(_selectedEffect,0,effects.Count-1)]):"先选一个发生时机，再告诉它要做什么。";
+        var selected=effects is {Count:>0}?effects[Math.Clamp(_selectedEffect,0,effects.Count-1)]:null;
+        _sentence.Text=selected is null?"先选一个发生时机，再告诉它要做什么。":InspectorCardRecord.IsNative(selected)||InspectorCardRecord.IsLegacy(selected)?InspectorCardRecord.EffectLabel(selected):P.Brief(selected);
     }
     private void RenderFriendly()
     {
@@ -118,46 +127,49 @@ internal partial class NativeEffectInspector
         try
         {
             var scroll=_renderedEffect==_selectedEffect?_friendlyScroll.ScrollVertical:0;
-            Clear(_effectList);Clear(_effectForm);FriendlyControls.Clear();
+            Clear(_effectList);Clear(_effectForm);FriendlyControls.Clear();_capabilityBadges.Clear();
             if(Document.Root["effects"] is not JsonArray effects){_effectForm.AddChild(Note("这张牌包含自定义结构，请在高级工具中检查；原内容已保留。"));return;}
             _selectedEffect=Math.Clamp(_selectedEffect,0,Math.Max(0,effects.Count-1));
+            var programCount=effects.Count(e=>!InspectorCardRecord.IsLegacy(e));NewEffectButton.Disabled=NewNativeEffectButton.Disabled=programCount>=128;
             for(var i=0;i<effects.Count;i++)
             {
-                var index=i;var b=UiStyles.Button("效果 "+(i+1)+"\n"+P.Timing(effects[i]?["trigger"]?.ToString()??"deploy"),()=>{_selectedEffect=index;RenderFriendly();});
-                b.Alignment=HorizontalAlignment.Left;b.ToggleMode=true;b.SetPressedNoSignal(i==_selectedEffect);b.CustomMinimumSize=new(0,65);_effectList.AddChild(b);
+                var index=i;var b=MenuStyles.Button("效果 "+(i+1)+"\n"+InspectorCardRecord.EffectLabel(effects[i]),()=>{_selectedEffect=index;_expanded.Clear();RenderFriendly();});
+                b.Alignment=HorizontalAlignment.Left;b.ToggleMode=true;b.SetPressedNoSignal(i==_selectedEffect);b.CustomMinimumSize=new(0,65);_effectList.AddChild(b);CapabilityBadge(_effectList,i);
             }
             UpdateFriendlySummary();
             if(effects.Count==0)
             {
-                var empty=Card(_effectForm);empty.AddChild(UiStyles.Label("从一条新效果开始",22,UiStyles.Gold));
+                var empty=Card(_effectForm);empty.AddChild(MenuStyles.Label("从一条新效果开始",22,MenuStyles.Gold));
                 empty.AddChild(Note("例如：部署时抽牌、受伤后加强友军、回合结束时检查条件。\n这些都可以继续组合和修改。"));
-                empty.AddChild(UiStyles.Button("添加一条效果",()=>NewEffectButton.EmitSignal(Button.SignalName.Pressed)));
+                empty.AddChild(MenuStyles.Button("添加一条效果",()=>NewEffectButton.EmitSignal(Button.SignalName.Pressed)));
                 AddSentenceStarter(empty);return;
             }
             var path="/effects/"+_selectedEffect;
             if(effects[_selectedEffect] is not JsonObject effect){_effectForm.AddChild(Note("这一条是自定义结构，已保留。可以通过高级工具继续编辑。"));return;}
-            var top=new HBoxContainer();_effectForm.AddChild(top);
-            top.AddChild(UiStyles.Label("正在编辑：效果 "+(_selectedEffect+1),15,UiStyles.Dim));
-            top.AddChild(UiStyles.Button("复制这条",()=>Structural(()=>Document.Duplicate(path))));
-            top.AddChild(UiStyles.Button("上移",()=>{Structural(()=>Document.Move(path,-1));_selectedEffect=Math.Max(0,_selectedEffect-1);}));
-            top.AddChild(UiStyles.Button("下移",()=>{Structural(()=>Document.Move(path,1));_selectedEffect=Math.Min(effects.Count-1,_selectedEffect+1);}));
-            top.AddChild(UiStyles.Button("删除这条",()=>Structural(()=>Document.Remove(path))));
-            FriendlyEffect(_effectForm,path,effect,0,true);
+            var top=new HFlowContainer();_effectForm.AddChild(top);
+            top.AddChild(MenuStyles.Label("正在编辑：效果 "+(_selectedEffect+1),15,MenuStyles.Dim));CapabilityBadge(top,_selectedEffect,_effectForm);
+            top.AddChild(MenuStyles.Button("复制这条",()=>Structural(()=>Document.Duplicate(path))));
+            top.AddChild(MenuStyles.Button("上移",()=>{Structural(()=>Document.Move(path,-1));_expanded.Clear();_selectedEffect=Math.Max(0,_selectedEffect-1);}));
+            top.AddChild(MenuStyles.Button("下移",()=>{Structural(()=>Document.Move(path,1));_expanded.Clear();_selectedEffect=Math.Min(effects.Count-1,_selectedEffect+1);}));
+            top.AddChild(MenuStyles.Button("删除这条",()=>Structural(()=>Document.Remove(path))));
+            if(InspectorCardRecord.IsNative(effect))FriendlyNativeEffect(_effectForm,path,effect);
+            else if(InspectorCardRecord.IsLegacy(effect))CompositionSlot(_effectForm,path+"/"+InspectorCardRecord.LegacyKey,effect[InspectorCardRecord.LegacyKey],InspectorPart.LegacyEffect,"兼容效果参数",0,false,"legacy-effect");
+            else FriendlyEffect(_effectForm,path,effect,0,true);
             Callable.From(()=>_friendlyScroll.ScrollVertical=scroll).CallDeferred();
         }
         finally{_renderedEffect=_selectedEffect;_renderingFriendly=false;}
     }
     private void AddSentenceStarter(VBoxContainer parent)
     {
-        parent.AddChild(Note("也可以先用一句话描述，让解析器生成起点。"));
+        parent.AddChild(Note("也可以输入当前支持的 KARDS 规则语法，生成编辑起点。"));
         var input=new LineEdit{PlaceholderText="例如：部署：抽两张牌。",SizeFlagsHorizontal=SizeFlags.ExpandFill};parent.AddChild(input);
-        parent.AddChild(UiStyles.Button("生成后继续编辑",()=>
+        parent.AddChild(MenuStyles.Button("生成后继续编辑",()=>
         {
             try
             {
                 var result=DesktopOrc.CompileGraph(input.Text,Document.Root["cardType"]?.ToString()??"unit",Catalog?.Invoke());
                 if(!result.GetProperty("complete").GetBoolean())
-                {_status.Text="这句话还没有完整识别，原效果未改动。可以换一种说法，或直接用按钮搭建。";return;}
+                {_status.Text="输入未被当前 KARDS 规则语法完整识别，原效果未改动。也可以用按钮搭建。";return;}
                 var copy=Document.Root.DeepClone().AsObject();copy["effects"]=JsonNode.Parse(result.GetProperty("effects").GetRawText());
                 foreach(var f in result.GetProperty("cardFields").EnumerateObject())copy[f.Name]=JsonNode.Parse(f.Value.GetRawText());
                 foreach(var key in new[]{"kwMap","kwValues"})
@@ -172,20 +184,14 @@ internal partial class NativeEffectInspector
     private void FriendlyEffect(VBoxContainer parent,string path,JsonObject effect,int depth,bool main=false)
     {
         if(depth>12){parent.AddChild(Note("更深层的组合已保留，可在高级工具中继续编辑。"));return;}
-        var timing=Card(parent);timing.AddChild(UiStyles.Label(main?"① 什么时候触发":"这段新效果什么时候触发",18,UiStyles.Gold));
+        var timing=Card(parent);timing.AddChild(MenuStyles.Label(main?"① 什么时候触发":"这段新效果什么时候触发",18,MenuStyles.Gold));
         FriendlyTiming(timing,InspectorDocument.Child(path,"trigger"),effect["trigger"]?.ToString()??"deploy");
         var conditionPath=InspectorDocument.Child(path,"condition");
-        if(effect["condition"] is {} condition)
-        {
-            timing.AddChild(Note("只有下面的条件满足时才执行："));FriendlyValue(timing,conditionPath,condition,"condition","条件",depth+1);
-            timing.AddChild(UiStyles.Button("取消这项前提",()=>Structural(()=>Document.Remove(conditionPath))));
-        }
         var timingTools=new HBoxContainer();timing.AddChild(timingTools);
-        if(effect["condition"] is null)timingTools.AddChild(UiStyles.Button("＋ 添加生效条件",()=>Structural(()=>Document.Set(conditionPath,JsonNode.Parse("{\"op\":\"predicate\",\"test\":{\"test\":\"all\",\"items\":[]}}")))));
         var opts=new[]{"once","oncePerTurn","eventSide","selfOnly","listenZone","firstEvent"};
         var flags=opts.Where(k=>effect[k] is not null&&effect[k]!.ToString()!="false").Select(P.Field).ToArray();
         var timingId=path+"#timing";var open=_expanded.Contains(timingId);
-        timingTools.AddChild(UiStyles.Button((open?"▾ ":"▸ ")+(flags.Length>0?"触发限制（已设置）":"更多触发设置"),()=>{if(!_expanded.Add(timingId))_expanded.Remove(timingId);RenderFriendly();}));
+        timingTools.AddChild(MenuStyles.Button((open?"▾ ":"▸ ")+(flags.Length>0?"触发限制（已设置）":"更多触发设置"),()=>{if(!_expanded.Add(timingId))_expanded.Remove(timingId);RenderFriendly();}));
         if(open)
         {
             var box=new VBoxContainer();timing.AddChild(box);
@@ -193,12 +199,14 @@ internal partial class NativeEffectInspector
             {
                 var p=InspectorDocument.Child(path,key);
                 if(effect.ContainsKey(key))FriendlyValue(box,p,effect[key],key is "once" or "oncePerTurn" or "selfOnly" or "firstEvent"?"boolean":"text",P.Field(key),depth+1,key);
-                else box.AddChild(UiStyles.Button("设置"+P.Field(key),()=>Structural(()=>Document.Set(p,InspectorVocabulary.Initial(key)))));
+                else box.AddChild(MenuStyles.Button("设置"+P.Field(key),()=>Structural(()=>Document.Set(p,InspectorVocabulary.Initial(key)))));
             }
         }
+        var declaredTargets=Card(parent);
+        CompositionSlot(declaredTargets,path+"/targets",effect["targets"]??new JsonArray(),InspectorPart.List,"让玩家先选择目标（可选）",depth,false,"targets");
         if(effect["targets"] is JsonArray targets&&targets.Count>0)
         {
-            var targetBox=Card(parent);targetBox.AddChild(UiStyles.Label("让玩家先选目标",16,UiStyles.Gold));
+            var targetBox=Card(parent);targetBox.AddChild(MenuStyles.Label("让玩家先选目标",16,MenuStyles.Gold));
             for(var i=0;i<targets.Count;i++)
             {
                 var targetPath=path+"/targets/"+i;var index=i;
@@ -207,15 +215,27 @@ internal partial class NativeEffectInspector
                     targetBox.AddChild(Note("目标 "+(i+1)));
                     foreach(var key in new[]{"kind","side","zone","prompt","filter"})
                         if(target.ContainsKey(key))FriendlyValue(targetBox,targetPath+"/"+key,target[key],key=="filter"?"filter":"text",P.Field(key),depth+1,key);
-                    targetBox.AddChild(UiStyles.Button("移除目标 "+(i+1),()=>Structural(()=>Document.Remove(path+"/targets/"+index))));
+                    targetBox.AddChild(MenuStyles.Button("移除目标 "+(i+1),()=>Structural(()=>Document.Remove(path+"/targets/"+index))));
                 }
             }
         }
-        var actions=Card(parent);actions.AddChild(UiStyles.Label(main?"② 要做什么":"执行哪些动作",18,UiStyles.Gold));
+        var actions=Card(parent);actions.AddChild(MenuStyles.Label(main?"② 做什么，作用于谁":"执行哪些动作",18,MenuStyles.Gold));
         FriendlyActions(actions,path+"/actions",effect["actions"] as JsonArray??new(),depth+1);
+        var conditions=Card(parent);conditions.AddChild(MenuStyles.Label("满足条件才执行（可选）",16,MenuStyles.Gold));
+        if(effect["condition"] is {} condition)
+        {
+            CompositionSlot(conditions,conditionPath,condition,InspectorPart.Condition,"本次效果的前提",depth+1,true);
+            conditions.AddChild(MenuStyles.Button("取消前提，不限制生效",()=>Structural(()=>Document.Remove(conditionPath))));
+        }
+        else
+        {
+            conditions.AddChild(Note("无额外条件。需要限制时，再添加判断。"));
+            var add=MenuStyles.Button("＋ 添加前提",()=>Compose(conditionPath,InspectorPart.Condition,"本次效果的前提",true));
+            conditions.AddChild(add);FriendlyControls[conditionPath+"#compose"]=add;
+        }
         if(effect["else"] is JsonArray otherwise)
         {
-            var other=Card(parent);other.AddChild(UiStyles.Label("条件不满足时",16,UiStyles.Gold));FriendlyActions(other,path+"/else",otherwise,depth+1);
+            var other=Card(parent);other.AddChild(MenuStyles.Label("条件不满足时",16,MenuStyles.Gold));FriendlyActions(other,path+"/else",otherwise,depth+1);
         }
     }
     private void FriendlyTiming(VBoxContainer parent,string path,string trigger)
@@ -223,7 +243,7 @@ internal partial class NativeEffectInspector
         var ordinary=InspectorVocabulary.Catalog.GetProperty("labels").GetProperty("TRIGGERS").EnumerateObject().Select(p=>p.Name).ToArray();
         var selected=trigger.StartsWith("behavior:")?"behavior":trigger;
         var ids=ordinary.Concat(new[]{"behavior"}).ToArray();
-        Choose(parent,path,"生效时机",selected,ids,v=>v=="behavior"?"某个行为发生前、发生时或发生后":P.Timing(v),value=>
+        Choose(parent,path,"生效时机",selected,ids,v=>v.Length==0?"请选择发生时机…":v=="behavior"?"某个行为发生前、发生时或发生后":P.Timing(v),value=>
             Structural(()=>Document.Set(path,JsonValue.Create(value=="behavior"?"behavior:game/playCard:after":value))));
         if(selected!="behavior")return;
         var parts=trigger[9..].Split(['/',':']);if(parts.Length!=3)return;
@@ -240,9 +260,9 @@ internal partial class NativeEffectInspector
             var index=i;var p=path+"/"+i;
             if(actions[i] is not JsonObject action){parent.AddChild(Note("自定义步骤已保留，可在高级工具中查看。"));continue;}
             var block=Card(parent);var head=new HBoxContainer();block.AddChild(head);
-            var title=UiStyles.Label((i+1)+". "+P.Operation(action["op"]?.ToString()??""),17,UiStyles.Gold);title.SizeFlagsHorizontal=SizeFlags.ExpandFill;head.AddChild(title);
-            if(actions.Count>1){head.AddChild(UiStyles.Button("↑",()=>Structural(()=>Document.Move(p,-1))));head.AddChild(UiStyles.Button("↓",()=>Structural(()=>Document.Move(p,1))));}
-            head.AddChild(UiStyles.Button("复制",()=>Structural(()=>Document.Duplicate(p))));head.AddChild(UiStyles.Button("移除",()=>Structural(()=>Document.Remove(p))));
+            var title=MenuStyles.Label((i+1)+". "+P.Operation(action["op"]?.ToString()??""),17,MenuStyles.Gold);title.SizeFlagsHorizontal=SizeFlags.ExpandFill;head.AddChild(title);
+            if(actions.Count>1){head.AddChild(MenuStyles.Button("↑",()=>Structural(()=>Document.Move(p,-1))));head.AddChild(MenuStyles.Button("↓",()=>Structural(()=>Document.Move(p,1))));}
+            head.AddChild(MenuStyles.Button("复制",()=>Structural(()=>Document.Duplicate(p))));head.AddChild(MenuStyles.Button("移除",()=>Structural(()=>Document.Remove(p))));
             if(depth>12){block.AddChild(Note("深层组合已保留，可在高级工具中继续编辑。"));continue;}
             var op=action["op"]?.ToString()??"";
             if(!InspectorVocabulary.Operations.Contains(op)){block.AddChild(Note("这是一个扩展动作，内容已保留。"));continue;}
@@ -253,7 +273,7 @@ internal partial class NativeEffectInspector
                 var optional=field.TryGetProperty("optional",out var opt)&&opt.GetBoolean();
                 if(!action.ContainsKey(key))
                 {
-                    if(!optional)block.AddChild(UiStyles.Button("填写"+P.Field(key),()=>Structural(()=>Document.Set(p+"/"+key,JsonNode.Parse(field.GetProperty("initial").GetRawText())))));
+                    if(!optional)block.AddChild(MenuStyles.Button("填写"+P.Field(key),()=>Structural(()=>Document.Set(p+"/"+key,JsonNode.Parse(field.GetProperty("initial").GetRawText())))));
                     continue;
                 }
                 FriendlyValue(block,p+"/"+key,action[key],field.GetProperty("type").GetString()!,P.Field(key),depth+1,key);
@@ -264,32 +284,34 @@ internal partial class NativeEffectInspector
                 foreach(var field in missing)
                 {
                     var key=field.GetProperty("name").GetString()!;
-                    box.AddChild(UiStyles.Button("＋ "+P.Field(key),()=>Structural(()=>Document.Set(p+"/"+key,JsonNode.Parse(field.GetProperty("initial").GetRawText())))));
+                    box.AddChild(MenuStyles.Button("＋ "+P.Field(key),()=>Structural(()=>Document.Set(p+"/"+key,JsonNode.Parse(field.GetProperty("initial").GetRawText())))));
                 }
                 var removable=parameters.Where(f=>f.TryGetProperty("optional",out var opt)&&opt.GetBoolean()&&action.ContainsKey(f.GetProperty("name").GetString()!)).Select(f=>f.GetProperty("name").GetString()!).ToArray();
                 if(removable.Length>0)
                 {
                     var picked=removable[0];Choose(box,p+"#removeOptional","取消一项可选设置",picked,removable,P.Field,k=>picked=k);
-                    box.AddChild(UiStyles.Button("恢复该项的默认行为",()=>Structural(()=>Document.Remove(p+"/"+picked))));
+                    box.AddChild(MenuStyles.Button("恢复该项的默认行为",()=>Structural(()=>Document.Remove(p+"/"+picked))));
                 }
             });
             if(action.Any(pair=>!covered.Contains(pair.Key)))block.AddChild(Note("这一步还包含扩展设置，已原样保留。高级工具中可以继续编辑。"));
         }
-        var add=UiStyles.Button(actions.Count==0?"＋ 选择要做的事":"＋ 再添加一个动作",()=>OpenActionPicker(path));parent.AddChild(add);FriendlyControls[path+"#add"]=add;
+        var add=MenuStyles.Button(actions.Count==0?"＋ 选择要做的事":"＋ 再添加一个动作",()=>OpenActionPicker(path));parent.AddChild(add);FriendlyControls[path+"#add"]=add;
     }
     private void Fold(VBoxContainer parent,string id,string label,Action<VBoxContainer> content)
     {
-        var open=_expanded.Contains(id);var button=UiStyles.Button((open?"▾ ":"▸ ")+label,()=>{if(!_expanded.Add(id))_expanded.Remove(id);RenderFriendly();});parent.AddChild(button);
+        var open=_expanded.Contains(id);var button=MenuStyles.Button((open?"▾ ":"▸ ")+label,()=>{if(!_expanded.Add(id))_expanded.Remove(id);RenderFriendly();});parent.AddChild(button);
         if(open){var box=new VBoxContainer();parent.AddChild(box);content(box);}
     }
     private void FriendlyValue(VBoxContainer parent,string path,JsonNode? value,string type,string label,int depth,string key="")
     {
         if(depth>14){parent.AddChild(Note(label+"：深层组合已保留。"));return;}
         if(type is "query" or "selector"){FriendlyQuery(parent,path,value,label,depth);return;}
-        if(type=="actions"){parent.AddChild(UiStyles.Label(label,15,UiStyles.Gold));FriendlyActions(parent,path,value as JsonArray??new(),depth);return;}
-        if(type=="effect"&&value is JsonObject e){var box=Card(parent);box.AddChild(UiStyles.Label(label,16,UiStyles.Gold));FriendlyEffect(box,path,e,depth+1);return;}
-        if(type is "predicate" or "condition"){FriendlyCondition(parent,path,value,label,depth,type=="condition");return;}
+        if(type=="actions"){parent.AddChild(MenuStyles.Label(label,15,MenuStyles.Gold));FriendlyActions(parent,path,value as JsonArray??new(),depth);return;}
+        if(type=="effect"&&value is JsonObject e){var box=Card(parent);box.AddChild(MenuStyles.Label(label,16,MenuStyles.Gold));FriendlyEffect(box,path,e,depth+1);return;}
+        if(value is JsonObject nativeCondition&&nativeCondition["kind"] is not null){CompositionSlot(parent,path,value,InspectorPart.Record,label,depth,false,"native-dsl-condition");return;}
+        if(type is "predicate" or "condition"){CompositionSlot(parent,path,value,InspectorPart.Condition,label,depth,type=="condition");return;}
         if(type=="value"){FriendlyNumber(parent,path,value,label,depth);return;}
+        if(type is "filter" or "cardPool"){CompositionSlot(parent,path,value,InspectorSchema.Part(type),label,depth,false,type);return;}
         var choices=type switch
         {
             "side" or "legacySide"=>new[]{"self","enemy","both","any"},"scope"=>["unit","player","match"],
@@ -318,7 +340,7 @@ internal partial class NativeEffectInspector
         if(value is JsonValue number&&number.GetValueKind()==JsonValueKind.Number){FriendlyNumber(parent,path,value,label,depth);return;}
         if(value is JsonObject obj)
         {
-            var box=Card(parent);box.AddChild(UiStyles.Label(label,15,UiStyles.Gold));
+            var box=Card(parent);box.AddChild(MenuStyles.Label(label,15,MenuStyles.Gold));
             foreach(var (k,v) in obj)FriendlyValue(box,InspectorDocument.Child(path,k),v,P.ParameterType(obj,k),P.Field(k),depth+1,k);
             if(type is "filter" or "cardPool")
                 AddOptionalFields(box,path,obj,type=="filter"?["unitType","cardType","set","minCost","maxCost","keyword","where"]:["cardIds","filter"],depth);
@@ -326,7 +348,7 @@ internal partial class NativeEffectInspector
         }
         if(value is JsonArray array)
         {
-            var box=Card(parent);box.AddChild(UiStyles.Label(label,15,UiStyles.Gold));
+            var box=Card(parent);box.AddChild(MenuStyles.Label(label,15,MenuStyles.Gold));
             for(var i=0;i<array.Count;i++)
             {
                 var p=path+"/"+i;var row=Card(box);
@@ -337,9 +359,9 @@ internal partial class NativeEffectInspector
                 }
                 else if(type=="effectList"&&array[i] is JsonObject effect)FriendlyEffect(row,p,effect,depth+1);
                 else FriendlyValue(row,p,array[i],key=="cardIds"?"card":key is "keywords" or "removeKeywords"?"keyword":"data","第 "+(i+1)+" 项",depth+1);
-                row.AddChild(UiStyles.Button("移除这一项",()=>Structural(()=>Document.Remove(p))));
+                row.AddChild(MenuStyles.Button("移除这一项",()=>Structural(()=>Document.Remove(p))));
             }
-            box.AddChild(UiStyles.Button("＋ 添加一项",()=>Structural(()=>Document.Append(path,type=="options"?JsonNode.Parse("{\"label\":\"新方案\",\"actions\":[]}"):type=="effectList"?InspectorVocabulary.Effect():JsonValue.Create("")))));return;
+            box.AddChild(MenuStyles.Button("＋ 添加一项",()=>Structural(()=>Document.Append(path,type=="options"?JsonNode.Parse("{\"label\":\"新方案\",\"actions\":[]}"):type=="effectList"?InspectorVocabulary.Effect():JsonValue.Create("")))));return;
         }
         var line=new HBoxContainer();parent.AddChild(line);line.AddChild(FieldLabel(label));
         if(type=="code")
@@ -349,7 +371,7 @@ internal partial class NativeEffectInspector
         var input=new LineEdit{Text=value?.ToString()??"",PlaceholderText="在这里填写",SizeFlagsHorizontal=SizeFlags.ExpandFill};line.AddChild(input);FriendlyControls[path]=input;
         input.TextChanged+=s=>Document.Set(path,JsonValue.Create(s));
     }
-    private static Label FieldLabel(string label){var l=UiStyles.Label(label,14,UiStyles.Dim);l.CustomMinimumSize=new(125,0);return l;}
+    private static Label FieldLabel(string label){var l=MenuStyles.Label(label,14,MenuStyles.Dim);l.CustomMinimumSize=new(125,0);return l;}
     private OptionButton Choose(VBoxContainer parent,string id,string label,string current,IReadOnlyList<string> items,Func<string,string> name,Action<string> change)
     {
         var row=new HBoxContainer();parent.AddChild(row);row.AddChild(FieldLabel(label));
@@ -359,6 +381,17 @@ internal partial class NativeEffectInspector
         pick.ItemSelected+=i=>change(ids[(int)i]);FriendlyControls[id]=pick;return pick;
     }
     private void FriendlyNumber(VBoxContainer parent,string path,JsonNode? value,string label,int depth)
+    {
+        if(value is JsonValue scalar&&scalar.GetValueKind()==JsonValueKind.Number)
+        {
+            var row=new HBoxContainer();parent.AddChild(row);row.AddChild(FieldLabel(label));
+            var spin=new SpinBox{Value=scalar.GetValue<double>(),MinValue=-1e9,MaxValue=1e9,AllowGreater=true,AllowLesser=true,Step=1,CustomMinimumSize=new(110,38),SizeFlagsHorizontal=SizeFlags.ExpandFill};row.AddChild(spin);FriendlyControls[path]=spin;
+            spin.ValueChanged+=n=>Document.Set(path,JsonValue.Create(n));
+            var edit=MenuStyles.Button("改用属性或计算 ›",()=>Compose(path,InspectorPart.Value,label));row.AddChild(edit);FriendlyControls[path+"#compose"]=edit;
+        }
+        else CompositionSlot(parent,path,value,InspectorPart.Value,label,depth);
+    }
+    private void LegacyFriendlyNumber(VBoxContainer parent,string path,JsonNode? value,string label,int depth)
     {
         if(depth>14){parent.AddChild(Note(label+"：深层取值已保留。"));return;}
         var expression=value as JsonObject;var mode=expression?["expr"]?.ToString()??"literal";
@@ -387,7 +420,7 @@ internal partial class NativeEffectInspector
                 if(key=="items"&&v is JsonArray a)
                 {
                     for(var i=0;i<a.Count;i++)FriendlyNumber(box,path+"/items/"+i,a[i],"第 "+(i+1)+" 个值",depth+1);
-                    box.AddChild(UiStyles.Button("＋ 再加一个值",()=>Structural(()=>Document.Append(path+"/items",JsonValue.Create(0)))));
+                    box.AddChild(MenuStyles.Button("＋ 再加一个值",()=>Structural(()=>Document.Append(path+"/items",JsonValue.Create(0)))));
                 }
                 else FriendlyValue(box,path+"/"+key,v,key=="query"?"query":key=="value"?"value":P.ParameterType(expression,key),P.Field(key),depth+1,key);
             return;
@@ -398,7 +431,7 @@ internal partial class NativeEffectInspector
             var spin=new SpinBox{Value=number.GetValue<double>(),MinValue=-1e9,MaxValue=1e9,AllowGreater=true,AllowLesser=true,Step=1,CustomMinimumSize=new(150,38)};row.AddChild(spin);FriendlyControls[path]=spin;
             spin.ValueChanged+=n=>Document.Set(path,JsonValue.Create(n));
             if(!showMode)
-            {var calc=UiStyles.Button("改用计算值",()=>{_expanded.Add(path+"#calculation");RenderFriendly();});row.AddChild(calc);FriendlyControls[path+"#calculation"]=calc;}
+            {var calc=MenuStyles.Button("改用计算值",()=>{_expanded.Add(path+"#calculation");RenderFriendly();});row.AddChild(calc);FriendlyControls[path+"#calculation"]=calc;}
         }
         else
         {
@@ -429,10 +462,7 @@ internal partial class NativeEffectInspector
             Structural(()=>Document.Set(path,next.StartsWith("ref:")?JsonValue.Create(next[4..]):JsonNode.Parse(next=="self"?"{\"sel\":\"self\"}":"{\"sel\":\"all\",\"side\":\"friendly\",\"zone\":\"field\"}")));
         });
         if(obj is null||mode=="self")return;
-        var box=Card(parent);
-        foreach(var key in new[]{"sel","side","zone","ref","count","where","filter","queries","includeAnchor"})
-            if(obj.ContainsKey(key))FriendlyValue(box,path+"/"+key,obj[key],key=="where"?"predicate":key=="count"?"value":key=="filter"?"filter":"data",P.Field(key),depth+1,key);
-        AddOptionalFields(box,path,obj,["where","filter","count","ref","queries"],depth);
+        CompositionSlot(parent,path,value,InspectorPart.Query,"范围与筛选",depth);
     }
     private void FriendlyCondition(VBoxContainer parent,string path,JsonNode? value,string label,int depth,bool outer=false)
     {
@@ -448,9 +478,9 @@ internal partial class NativeEffectInspector
             if(items.Count==0)parent.AddChild(Note(kind=="all"?"未添加条件时，不限制生效。":"至少添加一个条件，才能满足这项判断。"));
             for(var i=0;i<items.Count;i++)
             {
-                var p=path+"/items/"+i;var box=Card(parent);FriendlyCondition(box,p,items[i],"条件 "+(i+1),depth+1);box.AddChild(UiStyles.Button("移除这个条件",()=>Structural(()=>Document.Remove(p))));
+                var p=path+"/items/"+i;var box=Card(parent);FriendlyCondition(box,p,items[i],"条件 "+(i+1),depth+1);box.AddChild(MenuStyles.Button("移除这个条件",()=>Structural(()=>Document.Remove(p))));
             }
-            parent.AddChild(UiStyles.Button("＋ 添加一个条件",()=>Structural(()=>
+            parent.AddChild(MenuStyles.Button("＋ 添加一个条件",()=>Structural(()=>
             {var copy=obj.DeepClone().AsObject();copy["items"]??=new JsonArray();copy["items"]!.AsArray().Add(JsonNode.Parse("{\"test\":\"compare\",\"left\":1,\"cmp\":\">=\",\"right\":1}"));Document.Set(path,copy);})));return;
         }
         if(kind=="not"){FriendlyCondition(Card(parent),path+"/item",obj["item"],"不满足的条件",depth+1);return;}
@@ -463,7 +493,7 @@ internal partial class NativeEffectInspector
                 {
                     var key=f.GetProperty("name").GetString()!;
                     if(obj.ContainsKey(key))FriendlyValue(parent,path+"/"+key,obj[key],f.GetProperty("type").GetString()!,P.Field(key),depth+1,key);
-                    else parent.AddChild(UiStyles.Button("填写"+P.Field(key),()=>Structural(()=>Document.Set(path+"/"+key,JsonNode.Parse(f.GetProperty("initial").GetRawText())))));
+                    else parent.AddChild(MenuStyles.Button("填写"+P.Field(key),()=>Structural(()=>Document.Set(path+"/"+key,JsonNode.Parse(f.GetProperty("initial").GetRawText())))));
                 }
             return;
         }
@@ -480,7 +510,7 @@ internal partial class NativeEffectInspector
         Fold(box,path+"#options","增加筛选或细节",parent=>
         {
             foreach(var key in keys.Where(k=>!obj.ContainsKey(k)))
-                parent.AddChild(UiStyles.Button("＋ "+P.Field(key),()=>Structural(()=>Document.Set(path+"/"+key,key switch{"where"=>JsonNode.Parse("{\"test\":\"all\",\"items\":[]}"),"filter"=>new JsonObject(),"queries" or "cardIds"=>new JsonArray(),_=>InspectorVocabulary.Initial(key)}))));
+                parent.AddChild(MenuStyles.Button("＋ "+P.Field(key),()=>Structural(()=>Document.Set(path+"/"+key,key switch{"where"=>JsonNode.Parse("{\"test\":\"all\",\"items\":[]}"),"filter"=>new JsonObject(),"queries" or "cardIds"=>new JsonArray(),_=>InspectorVocabulary.Initial(key)}))));
         });
     }
     private void BuildActionPicker()
@@ -494,7 +524,7 @@ internal partial class NativeEffectInspector
         _pickerGroup.AddItem("所有动作");foreach(var group in InspectorVocabulary.Operations.Select(P.Group).Distinct().Order())_pickerGroup.AddItem(group);
         PickerItems=new ItemList{AutoHeight=false,CustomMinimumSize=new(0,270),SizeFlagsVertical=SizeFlags.ExpandFill,AllowReselect=true};box.AddChild(PickerItems);
         _pickerExplanation=Note("");_pickerExplanation.CustomMinimumSize=new(600,52);box.AddChild(_pickerExplanation);
-        PickerAddButton=UiStyles.Button("添加这个动作",ConfirmAction);box.AddChild(PickerAddButton);
+        PickerAddButton=MenuStyles.Button("添加这个动作",ConfirmAction);box.AddChild(PickerAddButton);
         PickerSearch.TextChanged+=_=>FilterFriendlyPicker();_pickerGroup.ItemSelected+=_=>FilterFriendlyPicker();
         PickerItems.ItemSelected+=i=>_pickerExplanation.Text="需要设置："+string.Join("、",P.Parameters(_pickerOps[(int)i]).Where(f=>!f.TryGetProperty("optional",out var optional)||!optional.GetBoolean()).Select(f=>P.Field(f.GetProperty("name").GetString()!)));
         PickerItems.ItemActivated+=_=>ConfirmAction();

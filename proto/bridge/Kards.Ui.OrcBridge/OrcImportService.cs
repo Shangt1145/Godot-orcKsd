@@ -233,7 +233,7 @@ public static class OrcImportService
                     _ => null,
                 };
                 if (condition is not null)
-                    ops = effect.Ops.Select(op => CloneWithCondition(op, condition)).ToArray();
+                    ops = effect.Ops.Select(op => CloneWithCondition(op, op.Condition is { } existing ? new DslCondition(DslCondition.AllKind,all:[condition,existing]) : condition)).ToArray();
             }
         }
         else template = TriggerTemplate(effect.TemplateId);

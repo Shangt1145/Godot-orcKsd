@@ -15,6 +15,7 @@ public partial class CardControl : Control
     public string Uid => View?.Uid ?? "";
     private TextureCache _cache = null!;
     private bool _selected, _target, _pressing, _longPressed;
+    public bool UseEditableFace { get; set; }
     private double _pressTime;
     public event Action<CardControl>? Activated;
     public event Action<CardControl>? LongPressed;
@@ -40,24 +41,27 @@ public partial class CardControl : Control
     }
     private void Rebuild()
     {
-        UiStyles.Clear(this);
+        MenuStyles.Clear(this);
         Visual = new Control { MouseFilter = MouseFilterEnum.Ignore };
         AddChild(Visual);
         Visual.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         Visual.PivotOffset = Size / 2;
         var full = View is null || View.Visibility == Visibility.Full;
         var tex = full ? _cache.Get(Definition.ArtPath) : null;
-        var custom = full && Definition.CardId.StartsWith("diy/", StringComparison.Ordinal);
+        var custom = full && (Definition.CardId.StartsWith("diy/", StringComparison.Ordinal)
+            || (View is null && (UseEditableFace || Kards.Ui.OrcBridge.WorkshopAuthoring.EditedCardIds.Contains(Definition.CardId))));
         if (custom)
         {
             var raw = Definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal);
-            var face = new DiyCardFace
+            // DIY 卡没有现成的完整卡面，用模板合成；官方卡的卡图本身就是完整卡面，直接贴图（不走这里）。
+            var face = new CardFace
             {
-                Definition = Definition, View = View, IllustrationSource = tex,
-                IllustrationRaw = raw, IllustrationZoom = raw ? DiyArtStore.ZoomOf(Definition.CardId) : 100,
+                Position = Vector2.Zero, Size = new Vector2(Size.X, Size.Y),
                 MouseFilter = MouseFilterEnum.Ignore
             };
-            Visual.AddChild(face); face.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            Visual.AddChild(face);
+            face.SetDefinition(Definition);
+            face.SetIllustration(tex, raw ? DiyArtStore.ZoomOf(Definition.CardId) : 100);
         }
         else if (tex is not null)
         {
@@ -83,7 +87,7 @@ public partial class CardControl : Control
         else
         {
             var back = new Panel { MouseFilter = MouseFilterEnum.Ignore };
-            back.AddThemeStyleboxOverride("panel", UiStyles.Box(UiStyles.Panel2));
+            back.AddThemeStyleboxOverride("panel", MenuStyles.Box(MenuStyles.Panel2));
             Visual.AddChild(back);
             back.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             var margin = new MarginContainer { MouseFilter = MouseFilterEnum.Ignore };
@@ -93,7 +97,7 @@ public partial class CardControl : Control
             margin.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
             var content = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore, Alignment = BoxContainer.AlignmentMode.Center };
             margin.AddChild(content);
-            var text = UiStyles.Label(full ? Definition.Name : "？", Size.X > 200 ? 24 : 16, UiStyles.Gold);
+            var text = MenuStyles.Label(full ? Definition.Name : "？", Size.X > 200 ? 24 : 16, MenuStyles.Gold);
             text.HorizontalAlignment = HorizontalAlignment.Center;
             text.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             text.MouseFilter = MouseFilterEnum.Ignore;
@@ -102,16 +106,16 @@ public partial class CardControl : Control
             {
                 if (Definition.NameEn.Length > 0)
                 {
-                    var en = UiStyles.Label(Definition.NameEn, 11, UiStyles.Dim);
+                    var en = MenuStyles.Label(Definition.NameEn, 11, MenuStyles.Dim);
                     en.AutowrapMode = TextServer.AutowrapMode.WordSmart;
                     en.MouseFilter = MouseFilterEnum.Ignore;
                     content.AddChild(en);
                 }
-                var cost = UiStyles.Label($"{Definition.Cost?.ToString() ?? "—"} K · {UiStyles.TypeName(Definition.CardType)}", 12, UiStyles.Dim);
+                var cost = MenuStyles.Label($"{Definition.Cost?.ToString() ?? "—"} K · {MenuStyles.TypeName(Definition.CardType)}", 12, MenuStyles.Dim);
                 cost.HorizontalAlignment = HorizontalAlignment.Center;
                 cost.MouseFilter = MouseFilterEnum.Ignore;
                 content.AddChild(cost);
-                var desc = UiStyles.Label(Definition.Text, Size.X > 200 ? 15 : 11);
+                var desc = MenuStyles.Label(Definition.Text, Size.X > 200 ? 15 : 11);
                 desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
                 desc.MouseFilter = MouseFilterEnum.Ignore;
                 desc.MaxLinesVisible = Size.X > 200 ? 12 : 5;
@@ -129,8 +133,8 @@ public partial class CardControl : Control
             foreach (var s in new[] { ("费", View.EffectiveCost), ("攻", View.EffectiveAttack), ("防", View.EffectiveDefense), ("操", View.EffectiveOpCost) })
             {
                 var badge = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, MouseFilter = MouseFilterEnum.Ignore };
-                badge.AddThemeStyleboxOverride("panel", UiStyles.Box(new Color(.06f, .07f, .09f, .94f), UiStyles.Gold, 3, 2));
-                var l = UiStyles.Label($"{s.Item1}{s.Item2?.ToString() ?? "—"}", 12);
+                badge.AddThemeStyleboxOverride("panel", MenuStyles.Box(new Color(.06f, .07f, .09f, .94f), MenuStyles.Gold, 3, 2));
+                var l = MenuStyles.Label($"{s.Item1}{s.Item2?.ToString() ?? "—"}", 12);
                 l.HorizontalAlignment = HorizontalAlignment.Center;
                 badge.AddChild(l);
                 stats.AddChild(badge);
@@ -148,7 +152,7 @@ public partial class CardControl : Control
                     flags.Add(KeywordLabel(kw, View.KeywordValues));
             if (flags.Count > 0)
             {
-                var label = UiStyles.Label(string.Join(" · ", flags), 11, UiStyles.Gold);
+                var label = MenuStyles.Label(string.Join(" · ", flags), 11, MenuStyles.Gold);
                 label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
                 label.MouseFilter = MouseFilterEnum.Ignore;
                 Visual.AddChild(label);
@@ -184,8 +188,8 @@ public partial class CardControl : Control
         if (Definition is null)
             return;
         var full = View is null || View.Visibility == Visibility.Full;
-        var color = _selected ? new Color("6cc0ff") : _target ? UiStyles.Gold : View?.CanAttack == true ? UiStyles.Green : View?.CanPlayCard == true ? UiStyles.Gold : full ? UiStyles.RarityColor(Definition.Rarity) : UiStyles.Line;
-        var b = UiStyles.Box(Colors.Transparent, color, 6, 0);
+        var color = _selected ? MenuStyles.Gold : _target ? MenuStyles.Gold : View?.CanAttack == true ? MenuStyles.Green : View?.CanPlayCard == true ? MenuStyles.Gold : full ? MenuStyles.RarityColor(Definition.Rarity) : MenuStyles.Line;
+        var b = MenuStyles.Box(Colors.Transparent, color, 2, 0);
         var w = _selected || _target || View?.CanAttack == true ? 3 : 2;
         b.BorderWidthLeft = b.BorderWidthRight = b.BorderWidthTop = b.BorderWidthBottom = w;
         DrawStyleBox(b, new Rect2(Vector2.Zero, Size));

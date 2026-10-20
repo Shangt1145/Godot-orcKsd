@@ -37,7 +37,7 @@ public partial class Main
         StopRealMatch(); Show("battle");
         var speed = _clock.Current; var reduced = _clock.ReducedMotion;
         _clock.SetSpeed(AnimClock.Speed.Normal); _clock.SetReducedMotion(false);
-        var runner = new OrcMatchRunner { InteractiveMulligan = false, DeckSeed = 7 };
+        var runner = new OrcMatchRunner { InteractiveMulligan = false, DeckSeed = 7, FirstPlayerIndex = 0 };
         BindRunner(runner);
         var commands = 0;
         void OnCommand(UiCommand _) => commands++;
@@ -98,7 +98,7 @@ public partial class Main
         var speed = _clock.Current; var reduced = _clock.ReducedMotion;
         _clock.SetSpeed(AnimClock.Speed.Normal); _clock.SetReducedMotion(false);
         // A real engine probe has enough affordable cards for two successive gestures.
-        var runner = new OrcMatchRunner { ManualOpponentForVerification = true, InteractiveMulligan = false, DeckSeed = 7 };
+        var runner = new OrcMatchRunner { ManualOpponentForVerification = true, InteractiveMulligan = false, DeckSeed = 7, FirstPlayerIndex = 0 };
         BindRunner(runner);
         var phases = new List<string>();
         void OnPhase(string phase) => phases.Add(phase);

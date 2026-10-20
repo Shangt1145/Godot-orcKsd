@@ -19,7 +19,7 @@ public sealed class DeckConstructionService
     public IReadOnlyList<UiCardDefinition> Pool(ConstructedDeck deck) => PlayableCards
         .Where(c => DeckCardPacks.Allows(deck, c.CardId)).ToArray();
     public IReadOnlyList<DeckPackChoice> Packs => PlayableCards.GroupBy(c => DeckCardPacks.Of(c.CardId))
-        .Select(g => new DeckPackChoice(g.Key, g.Key switch { "source" => "太空战争", "diy" => "我的 DIY 卡牌", "orc" => "已导入卡牌",
+        .Select(g => new DeckPackChoice(g.Key, g.Key switch { "source" => WorkshopAuthoring.PackNames.GetValueOrDefault("source")??"太空战争", "diy" => "我的 DIY 卡牌", "orc" => "已导入卡牌",
             _ => WorkshopAuthoring.PackNames.GetValueOrDefault(g.Key)??OrcEngineHost.PackDescriptors.FirstOrDefault(p => "pack/" + p.Id == g.Key)?.Name ?? g.Key[5..] }, g.Count()))
         .OrderBy(p => p.Id == "source" ? 0 : p.Id.StartsWith("pack/") ? 1 : 2).ThenBy(p => p.Name).ToArray();
     public UiCardPoolReport Report { get; }
@@ -37,7 +37,7 @@ public sealed class DeckConstructionService
         var custom = new List<UiCardDefinition>(); var errors = new Dictionary<string, string>();
         foreach (var draft in drafts)
         {
-            var result = DiyCardCompiler.Validate(draft, _sourceCards);
+            var result = DiyCardCompiler.Validate(draft, _sourceCards.Concat(_packCards).ToArray());
             if (!result.Success) { errors[draft.Id] = string.Join("；", result.Errors); continue; }
             if (custom.Any(c => c.CardId == draft.Id)) throw new InvalidDataException("DIY 卡牌编号重复");
             custom.Add(result.Card!);
@@ -64,7 +64,7 @@ public sealed class DeckConstructionService
 
     private void Rebuild(IReadOnlyList<UiCardDefinition> custom)
     {
-        Cards = _sourceCards.Concat(_packCards).Concat(custom).Concat(_imported).ToArray();
+        Cards = _sourceCards.Concat(_packCards).Concat(custom).Concat(_imported).GroupBy(c=>c.CardId,StringComparer.Ordinal).Select(g=>g.Last()).ToArray();
         PlayableIds = _reviewedIds.Concat(_packCards.Select(c => c.CardId)).Concat(custom.Select(c => c.CardId))
             .Concat(_imported.Select(c => c.CardId))
             .ToHashSet(StringComparer.Ordinal);

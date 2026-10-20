@@ -79,7 +79,7 @@ public partial class Main
     {
         StopRealMatch(); Show("battle");
         _clock.SetSpeed(AnimClock.Speed.Normal); _clock.SetReducedMotion(false);
-        var runner = new OrcMatchRunner { InteractiveMulligan = false, DeckSeed = 37 };
+        var runner = new OrcMatchRunner { InteractiveMulligan = false, DeckSeed = 37, FirstPlayerIndex = 0 };
         BindRunner(runner); await runner.StartAsync();
         _battle.UpdateInputProjection(runner.CurrentView!, runner.CurrentActions);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);

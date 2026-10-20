@@ -228,7 +228,7 @@ public sealed class RealMatchReproTests
 
     /// <summary>
     /// Bug 5 (the big one for playability): the bridge refuses every order with UnknownCard, yet
-    /// PlayManager exposes BeginCommandPrePlayAsync as a public UI entry point. This drives that
+    /// PlayManager exposes BeginOrderPrePlayAsync as a public UI entry point. This drives that
     /// entry directly to find out what actually happens when an order is played — accepted, cost
     /// paid, card leaves hand, and whether anything else moves.
     /// </summary>
@@ -268,7 +268,7 @@ public sealed class RealMatchReproTests
             session.Host.PresentationReady += (r, _) => steps += r.Steps.Count;
             session.Host.CombatReady += (i, _, _) => impacts += i.Count;
 
-            var result = await session.Host.Match.PlayManager.BeginCommandPrePlayAsync((CommandCard)card!);
+            var result = await session.Host.Match.PlayManager.BeginOrderPrePlayAsync((OrderCard)card!);
             session.Pump();
             Dump($"[order] direct engine entry status={result.Status} failure={result.FailureReason} " +
                 $"kredits {before}->{session.View.SelfKredits} hand {handBefore}->{session.View.SelfHand.Count} " +

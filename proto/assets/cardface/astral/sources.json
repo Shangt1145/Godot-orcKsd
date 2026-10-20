@@ -1,0 +1,130 @@
+{
+  "canvas": [
+    500,
+    701
+  ],
+  "sources": [
+    {
+      "name": "Astral单位模板.psd",
+      "sha256": "b7308302f1c509ac746bb7b05c2b73edf3a97afd6dfe4d67efdd0abb95292b08"
+    },
+    {
+      "name": "Astral指令模板.psd",
+      "sha256": "1e8263054e054171c31f06228b71483342523e324d14bc339a3e54a0bb9953f2"
+    }
+  ],
+  "layers": {
+    "unit-master.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "边框"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-infantry.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/步兵"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-tank.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/坦克"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-artillery.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/炮兵"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-fighter.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/战斗机"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-bomber.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/轰炸机"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-space-fighter.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/太空战机"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-landship.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/巡地舰"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "unit-cruiser.png": {
+      "source": "Astral单位模板.psd",
+      "layers": [
+        "单位类型/巡航舰"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "order-master.png": {
+      "source": "Astral指令模板.psd",
+      "layers": [
+        "边框",
+        "类型/指令"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    },
+    "counter-master.png": {
+      "source": "Astral指令模板.psd",
+      "layers": [
+        "边框",
+        "类型/反制指令"
+      ],
+      "size": [
+        500,
+        701
+      ]
+    }
+  }
+}

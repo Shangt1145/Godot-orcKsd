@@ -16,7 +16,7 @@ public static class OrcStateFeedbackVerification
             keywords: [new(KeywordIds.Blitz)], unitTypes: [UnitType.Bomber], faction: Faction.Germany, rarity: Rarity.Standard)) };
         var deck = Enumerable.Repeat(id, 24).ToArray();
         using var session = await OrcMatchSession.CreateAsync(definitions, deck, deck, 17,
-            "native-hq-zero-" + Guid.NewGuid().ToString("N"), ct: ct);
+            "native-hq-zero-" + Guid.NewGuid().ToString("N"), ct: ct, firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false, ct);
         var uid = session.View.SelfHand[0].Uid;
         if (await session.SubmitAsync(new PlayCard(uid), ct) != UiSubmitOutcome.Applied)
@@ -45,7 +45,7 @@ public static class OrcStateFeedbackVerification
         };
         var deck = Enumerable.Repeat(basic, 24).ToArray();
         using var session = await OrcMatchSession.CreateAsync(definitions, deck, deck, 17,
-            "native-feedback-" + Guid.NewGuid().ToString("N"), ct: ct);
+            "native-feedback-" + Guid.NewGuid().ToString("N"), ct: ct, firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false, ct);
         var uid = session.View.SelfHand[0].Uid;
         if (await session.SubmitAsync(new PlayCard(uid), ct) != UiSubmitOutcome.Applied)

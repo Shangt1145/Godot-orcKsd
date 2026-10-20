@@ -93,7 +93,7 @@ public sealed class OrcUpdateTranslator
                             update == GameUpdates.UnitUpgraded ? UiStatusKind.Veteran : UiStatusKind.Revealed));
                     break;
                 case GameUpdates.CardPlayed:
-                    if (PayloadCard(payload) is CommandCard order && _readCard(order, viewer, "hand", 0) is { } orderView)
+                    if (PayloadCard(payload) is OrderCard order && _readCard(order, viewer, "hand", 0) is { } orderView)
                         steps.Add(new UiOrderPresentation(orderView, []));
                     break;
                 case GameUpdates.CounterTriggered:

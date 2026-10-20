@@ -8,7 +8,7 @@ public static class OrcDiscardVerification
 {
     public static async Task<NativeStateFeedback> RunAsync(bool burn = false)
     {
-        using var session = await OrcMatchSession.CreateProbeAsync("verify/discard-paper", 24, 37, "native-discard");
+        using var session = await OrcMatchSession.CreateProbeAsync("verify/discard-paper", 24, 37, "native-discard", firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         if (burn)
             foreach (var owner in session.Host.Match.Players)

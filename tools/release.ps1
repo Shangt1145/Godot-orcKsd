@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = (Join-Path $PSScriptRoot 'godot-wait.ps1'),
     [string]$Preset = 'Windows Desktop',
@@ -7,7 +7,12 @@
     [switch]$FullTests,
     [string]$BaselineZip='',
     [string]$BaselineVersion='',
-    [string]$UpdaterBuildRoot='H:\g\orc-offline-update'
+    [string[]]$AdditionalBaselineZips=@(),
+    [string]$UpdaterBuildRoot='H:\g\orc-offline-update',
+    # Delivered-version ZIPs are archived so older players can still be patched. They are large
+    # (200-300 MB each) and none of them ship, so they live outside the working tree by default;
+    # keeping them inside made the project folder grow past 1 GB for no build-time benefit.
+    [string]$BaselineArchiveDir='H:\g\baselines'
 )
 # Builds the player-facing package.
 #
@@ -16,6 +21,12 @@
 # build fine, run fine on this machine, and only fail on a player's. That is what the postflight
 # below exists to catch.
 $ErrorActionPreference = 'Stop'
+if($AdditionalBaselineZips.Count -gt 63){throw 'At most 64 source builds are supported.'}
+$AdditionalBaselineZips=@($AdditionalBaselineZips|ForEach-Object{
+    $resolved=[IO.Path]::GetFullPath($_)
+    if(!(Test-Path -LiteralPath $resolved)){throw "Additional baseline not found: $resolved"}
+    $resolved
+})
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (!(Test-Path -LiteralPath $Godot)) { throw "Godot not found: $Godot" }
 
@@ -41,7 +52,8 @@ if($BaselineZip){
             if([IO.Path]::GetFileName($BaselineZip) -match '^OrC-KSD-(.+)-win-x64\.zip$'){$BaselineVersion=$Matches[1]}else{$BaselineVersion=$version}
         }
     }
-    $archiveDir=Join-Path $sourceRoot 'artifacts/update-baselines';New-Item -ItemType Directory $archiveDir -Force|Out-Null
+    $archiveDir=if([IO.Path]::IsPathRooted($BaselineArchiveDir)){[IO.Path]::GetFullPath($BaselineArchiveDir)}else{Join-Path $sourceRoot $BaselineArchiveDir}
+    New-Item -ItemType Directory $archiveDir -Force|Out-Null
     $savedBaseline=Join-Path $archiveDir ($baseHash+'.zip')
     if(!(Test-Path -LiteralPath $savedBaseline)){Copy-Item -LiteralPath $BaselineZip -Destination $savedBaseline}
     $BaselineZip=$savedBaseline
@@ -135,8 +147,28 @@ if($BaselineZip){
     try{$reader=[IO.StreamReader]::new($archive.GetEntry('patch.json').Open());try{$patchInfo=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()}}finally{$archive.Dispose()}
     $namedPatch=Join-Path (Split-Path -Parent $target) "OrC-KSD-$version-from-$($patchInfo.Source.BuildId.Substring(0,12))-to-$($buildInfo.BuildId.Substring(0,12)).orcupdate"
     Move-Item -LiteralPath $patch -Destination $namedPatch -Force;$patch=$namedPatch
+    if($AdditionalBaselineZips.Count){
+        $parts=@($patch);$sourceIds=@($patchInfo.Source.BuildId)
+        foreach($additional in $AdditionalBaselineZips){
+            $additionalVersion=$BaselineVersion
+            $archive=[IO.Compression.ZipFile]::OpenRead($additional)
+            try{
+                $entry=$archive.GetEntry('.orcksd-build.json')
+                if($entry){$reader=[IO.StreamReader]::new($entry.Open());try{$additionalVersion=($reader.ReadToEnd()|ConvertFrom-Json).Version}finally{$reader.Dispose()}}
+            }finally{$archive.Dispose()}
+            $part=Join-Path (Split-Path -Parent $target) ('baseline-'+[Guid]::NewGuid().ToString('N')+'.orcupdate')
+            & dotnet $updateDll build $additional $target $part $additionalVersion $version
+            if($LASTEXITCODE -ne 0){throw 'Additional baseline patch generation failed.'}
+            $info=(& dotnet $updateDll inspect $part)|ConvertFrom-Json
+            if($sourceIds -notcontains $info.Source.BuildId){$parts+=$part;$sourceIds+=$info.Source.BuildId}
+        }
+        $compatible=Join-Path (Split-Path -Parent $target) "OrC-KSD-$version-compatible-to-$($buildInfo.BuildId.Substring(0,12)).orcupdate"
+        & dotnet $updateDll combine $compatible @parts
+        if($LASTEXITCODE -ne 0){throw 'Compatible patch generation failed.'}
+        $patch=$compatible
+    }
 }
-$bootstrap=Join-Path (Split-Path -Parent $target) 'OrC-KSD-offline-updater-1.0.0-win-x64.zip'
+$bootstrap=Join-Path (Split-Path -Parent $target) 'OrC-KSD-offline-updater-1.1.0-win-x64.zip'
 if(Test-Path -LiteralPath $bootstrap){Remove-Item -LiteralPath $bootstrap -Force}
 Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $updaterOutput|Select-Object -ExpandProperty FullName) -DestinationPath $bootstrap
 $zip = Join-Path (Split-Path -Parent $target) "OrC-KSD-$version-win-x64.zip"
@@ -163,8 +195,9 @@ $workshopProcess.Refresh()
 if ($workshopProcess.ExitCode -ne 0 -or !(Select-String -LiteralPath $workshopLog -SimpleMatch 'WORKSHOP_VERIFY_OK' -Quiet)) { throw "Exported workshop verification failed. See $workshopLog" }
 $patchLog=$null
 if($patch){
+  foreach($upgradeBaseline in (@($BaselineZip)+$AdditionalBaselineZips)){
     $upgrade=Join-Path ([IO.Path]::GetTempPath()) ('OrC 离线升级 验证 '+[Guid]::NewGuid().ToString('N'))
-    Expand-Archive -LiteralPath $BaselineZip -DestinationPath $upgrade
+    Expand-Archive -LiteralPath $upgradeBaseline -DestinationPath $upgrade
     $sentinel=Join-Path $upgrade '玩家自己的文件.txt';Set-Content -LiteralPath $sentinel -Value 'preserve me' -Encoding utf8
     $sentinelHash=(Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash
     $patchLog=Join-Path $upgrade 'verify-offline-update.log'
@@ -181,6 +214,7 @@ if($patch){
     $upgraded.Refresh()
     if($upgraded.ExitCode -ne 0 -or !(Select-String -LiteralPath $upgradedLog -SimpleMatch 'EXPORT_VERIFY_OK' -Quiet)){throw "Upgraded EXE failed: $upgradedLog"}
     Write-Host "OFFLINE_UPGRADE_EXE_VERIFY_OK $upgrade"
+  }
 }
 $delivery = Join-Path $sourceRoot 'dist'
 New-Item -ItemType Directory -Path $delivery -Force | Out-Null

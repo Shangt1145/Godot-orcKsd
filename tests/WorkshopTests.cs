@@ -18,6 +18,19 @@ public sealed class WorkshopTests : IDisposable
     private readonly CardCatalog catalog=new();
     public WorkshopTests(){Directory.CreateDirectory(root);store=new(Path.Combine(root,"packs.json"));cards=new(Path.Combine(root,"cards.json"));catalog.Load(Source);}
     [Fact]
+    public void DiyNationChoicesCoverTheNativeFactionCatalogAndCompile()
+    {
+        foreach(var faction in Faction.All)
+        {
+            Assert.Contains(DiyCardCompiler.BuiltInNations,n=>n.Id==faction);
+            var result=DiyCardCompiler.Validate(new(){Nation=faction},catalog.Cards);
+            Assert.True(result.Success,faction+": "+string.Join(';',result.Errors));
+            Assert.Contains(faction,result.EngineCardJson);
+        }
+        foreach(var legacy in new[]{"av76","deran","USG","UN"})
+            Assert.True(DiyCardCompiler.Validate(new(){Nation=legacy},catalog.Cards).Success);
+    }
+    [Fact]
     public void PackExpansionAndVocabularyPersistWithoutAliasing()
     {
         var nation=new DiyNationDraft{Name="测试国家"};var keyword=new DiyKeywordDraft{Name="成长",EffectText="友方回合开始时，获得 +1+1。"};
@@ -200,6 +213,7 @@ public sealed class WorkshopTests : IDisposable
         session.TargetRequested += (request, responder) =>
         {
             prompts++; Assert.Equal(actor.Uid, request.SourceCard?.Uid);
+            Assert.True(request.Slots.Single().BoardTargets);
             Assert.Contains(request.Slots.Single().Allowed, c => c.Id == victim.Uid);
             if (cancel) Assert.True(responder.Cancel(request.RequestId));
             else Assert.True(responder.Complete(request.RequestId,

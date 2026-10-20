@@ -14,9 +14,12 @@ public partial class Main
     {
         if (_deckPackPicker is not null && _deckPackPicker.Scroll.IsAncestorOf(control))
             _deckPackPicker.Scroll.EnsureControlVisible(control);
+        for(var ancestor=control.GetParent();ancestor is not null;ancestor=ancestor.GetParent())
+            if(ancestor is ScrollContainer scroll)scroll.EnsureControlVisible(control);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         var at = control.GetGlobalTransformWithCanvas() * (control.Size / 2);
         if (control.GetWindow() != GetWindow()) at += control.GetWindow().Position;
+        GetViewport().PushInput(new InputEventMouseMotion { Position = at, GlobalPosition = at }, true);
         GetViewport().PushInput(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = MouseButton.Left, Pressed = true }, true);
         GetViewport().PushInput(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = MouseButton.Left, Pressed = false }, true);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -89,11 +92,18 @@ public partial class Main
         {
             Show("deck"); var deck = _deckService.Starter(size, 5) with { Name = $"自定义 {size + 1} 张", Options = new DeckOptions { UnrestrictedNations = true, TotalCards = size + 1, UnrestrictedSize = size == 30 } };
             _deckEditor.Load(deck); _deckEditor.Search.Text = "";
+            await MenuSettledAsync();
+            await MenuFrameAsync();
+            if (_deckEditor.GetGlobalRect().End.X > GetViewportRect().End.X + 1)
+                throw new Exception("Deck builder overflowed after returning from a full-screen match.");
             await DeckClickAsync(_deckEditor.StartButton);
             var deadline = DateTime.UtcNow.AddSeconds(12);
             while (!_battle.MulliganPanelVisible && DateTime.UtcNow < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-            if (!_battle.MulliganPanelVisible || _runner?.CurrentView is not { } opening) throw new Exception("Constructed start did not open mulligan.");
-            if (opening.SelfHand.Count != 4 || opening.SelfDeckCount != size - 4 || opening.SelfHand.Any(c => !deck.CardIds.Contains(c.Definition.CardId))) throw new Exception("Wrong constructed deck was dealt.");
+            if (!_battle.MulliganPanelVisible || _runner?.CurrentView is not { } opening)
+                throw new Exception($"Constructed start did not open mulligan. size={size} page={_active} disabled={_deckEditor.StartButton.Disabled} phase={_runner?.CurrentView?.Phase} pending={_runner?.MulliganPending} errors={string.Join(";", _deckService.Validate(_deckEditor.Draft))}");
+            // 先手随机：先手起手 4 张、后手 5 张，牌库数必须与之匹配。
+            if (opening.SelfHand.Count is not (4 or 5) || opening.SelfDeckCount != size - opening.SelfHand.Count
+                || opening.SelfHand.Any(c => !deck.CardIds.Contains(c.Definition.CardId))) throw new Exception("Wrong constructed deck was dealt.");
             _battle.ConfirmMulligan();
             deadline = DateTime.UtcNow.AddSeconds(12);
             while (_runner?.CurrentView?.Phase != "play" && DateTime.UtcNow < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);

@@ -65,7 +65,7 @@ public static class OrcEngineHost
             var packages = _host.CreateSnapshot().CardPacks;
             var ids = packages.Select(p => p.Manifest.Id).ToHashSet(StringComparer.Ordinal);
             var parents = packages.ToDictionary(p => p.Manifest.Id,
-                p => p.Manifest.Dependencies.Where(d => ids.Contains(d.Id)).Select(d => d.Id).ToArray(), StringComparer.Ordinal);
+                p => p.Manifest.RequiredPackages.Where(ids.Contains).ToArray(), StringComparer.Ordinal);
             var families = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var id in ids)
             {
@@ -88,6 +88,32 @@ public static class OrcEngineHost
     public static AssetCatalogSnapshot Snapshot()
         => (Current ?? Initialize()).CreateSnapshot();
 
+    /// <summary>
+    /// 装载一个卡包目录的解析产物（卡定义／内联预制体／声明／文本）。
+    /// 引擎 I3 拆分把 <c>CardPackLoader</c> 删掉了（扫描＝<see cref="PackageScanner"/>、注册＝
+    /// <see cref="PackageRegistrar"/>），这里用一个**临时注册表**只取 <c>Content</c>：
+    /// 它不参与对局装配（那仍走 <c>SnapshotPackageActivator</c> + <c>CardPackAssembler</c>），
+    /// 只为图鉴/构筑/工坊取卡包内容，和原来的 Load 语义等价。
+    /// </summary>
+    public static CardPackContent LoadPackContent(string packageRoot, PackageManifest manifest)
+        => LoadPackContent(packageRoot, manifest, out _);
+
+    /// <summary>
+    /// 同上，并交出**被引擎规则过滤掉的卡**（如"指令卡必须有内置效果"——卡面文本里有描述、
+    /// 但没有可执行效果的空壳卡会被丢弃）。这些卡的文件仍在磁盘上，只是进不了卡池。
+    /// </summary>
+    public static CardPackContent LoadPackContent(string packageRoot, PackageManifest manifest,
+        out IReadOnlyList<string> rejected)
+    {
+        var result = PackageRegistrar.Register(packageRoot, manifest, new AssetRegistry());
+        // 只算卡类资产：效果/触发器资产的 Card 也恒为 null，混进来会让计数对不上。
+        rejected = result.Assets
+            .Where(a => a.Card is null && a.Metadata.Kind == Orc.Core.AssetKind.Card)
+            .Select(a => a.AppId)
+            .ToArray();
+        return result.Content;
+    }
+
     /// <summary>重置（测试/重开用）。</summary>
     public static void Reset()
     {
@@ -100,10 +126,20 @@ public static class OrcEngineHost
     }
 
     private static IReadOnlyList<PackDescriptor> _lastPacks = [];
+    private static IReadOnlyList<string> _lastRejected = [];
+
+    /// <summary>
+    /// 最近一次 <see cref="LoadPackCards"/> 中被引擎规则过滤掉的卡（文件在磁盘上、但进不了卡池）。
+    /// 新引擎对指令/反制卡要求内置效果非空，只有卡面文本没有实现的空壳卡会被这里点名——
+    /// 验证据此核对"文件数 = 卡池数 + 被过滤数"，避免把静默丢卡当成正常。
+    /// </summary>
+    public static IReadOnlyList<string> RejectedPackCards
+    {
+        get { lock (Gate) return _lastRejected; }
+    }
 
     /// <summary>最近一次 <see cref="LoadPackCards"/> 装载出的卡包描述（未装载＝空；收藏页瓷砖/来源筛选消费）。</summary>
-    public static IReadOnlyList<PackDescriptor> PackDescriptors
-    {
+    public static IReadOnlyList<PackDescriptor> PackDescriptors    {
         get { lock (Gate) return _lastPacks; }
     }
 
@@ -121,13 +157,16 @@ public static class OrcEngineHost
         var host = Initialize(baseDirectory);
         var failures = host.LoadFailures.ToList();
         var snapshot = host.CreateSnapshot();
+        Console.WriteLine($"[pack-load] base={baseDirectory} packs={snapshot.CardPacks.Count} runtimeCards={snapshot.RuntimeCards.Count} failures={failures.Count}");
         var cards = new List<UiCardDefinition>();
         var packs = new List<PackDescriptor>();
+        var rejectedAll = new List<string>();
         foreach (var package in snapshot.CardPacks)
         {
             try
             {
-                var content = CardPackLoader.Load(package.RootDirectory, package.Manifest);
+                var content = LoadPackContent(package.RootDirectory, package.Manifest, out var rejected);
+                rejectedAll.AddRange(rejected);
                 var texts = PackPresentationData.Texts(content);
                 _ = PackPresentationData.Plans(content);
                 var prefix = content.Prefix;
@@ -141,10 +180,13 @@ public static class OrcEngineHost
                         text: texts.TryGetValue(rawId, out var text) ? text : null));
                 }
 
+                // v1 的 dependsOn 已退役，依赖一律读 v2 的 requires（包 ID 列表）。
+                var required = package.Manifest.RequiredPackages;
                 packs.Add(new PackDescriptor(
                     package.Manifest.Id, ManifestName(package.RootDirectory, package.Manifest.Id),
-                    package.Manifest.Dependencies.Count == 1 ? package.Manifest.Dependencies[0].Id : null,
+                    required.Count == 1 ? required[0] : null,
                     content.Definitions.Count));
+                Console.WriteLine($"[pack-load] {package.Manifest.Id} defs={content.Definitions.Count} root={package.RootDirectory}");
             }
             catch (Exception e) when (e is not OutOfMemoryException)
             {
@@ -157,7 +199,7 @@ public static class OrcEngineHost
             cards.Add(StaticCardProjection.Project(entry.Id, entry.Definition, artLookup));
         }
 
-        lock (Gate) _lastPacks = packs;
+        lock (Gate) { _lastPacks = packs; _lastRejected = rejectedAll; }
         return (cards, failures, packs);
     }
 

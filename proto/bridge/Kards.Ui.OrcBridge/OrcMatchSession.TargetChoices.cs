@@ -27,8 +27,13 @@ public sealed partial class OrcMatchSession
         var name = tag?.SlotName ?? "default";
         var kind = data.Identifiers is null ? ChoiceKind.Reference
             : selector.SelectorName == SelectorNames.CardPicker ? ChoiceKind.CardDefinition : ChoiceKind.Option;
-        var visible = View.SelfHand.Concat(View.SelfLine).Concat(View.EnemyLine)
-            .Concat(new[] { View.SelfHq, View.EnemyHq }.OfType<UiCardView>()).ToArray();
+        var visible = View.SelfLine.Concat(View.EnemyLine)
+            .Concat(new[] { View.SelfHq, View.EnemyHq }.OfType<UiCardView>()).Concat(View.SelfHand)
+            .DistinctBy(c=>c.Uid).ToArray();
+        var boardTargets=kind==ChoiceKind.Reference&&(selector.SelectorName==SelectorNames.FieldUnit
+            ||(selector.SelectorName is not (SelectorNames.Hand or SelectorNames.CardPickerReference)
+                &&data.Candidates.Any(r=>r.IsAlive&&visible.Any(c=>c.Uid==OrcRefs.KeyOf(r.Value)
+                    &&(c.IsHq||c.Zone is "support" or "frontline")))));
         var choices = data.Identifiers is { } identifiers
             ? identifiers.Select(id =>
             {
@@ -43,9 +48,9 @@ public sealed partial class OrcMatchSession
             }).ToArray();
         // Engine retries reuse the instance Id. Each UI delivery gets a fresh token so stale answers cannot win.
         var request = new UiTargetRequest($"{MatchId}:{selector.Id}:{Interlocked.Increment(ref _choiceDelivery)}",
-            [new(name, kind, data.Min, data.Max, choices)])
+            [new(name, kind, data.Min, data.Max, choices){BoardTargets=boardTargets}])
         {
-            SourceCard = visible.FirstOrDefault(c => c.Uid == _choiceSourceUid),
+            SourceCard = View.SelfHand.FirstOrDefault(c=>c.Uid==_choiceSourceUid) ?? visible.FirstOrDefault(c => c.Uid == _choiceSourceUid),
             SelectorName = selector.SelectorName,
             IsDrag = selector.Mode == SelectorInteractionMode.Drag
         };

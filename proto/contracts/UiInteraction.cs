@@ -5,7 +5,11 @@ public enum ChoiceKind
     Reference, Option, CardDefinition
 }
 public sealed record UiChoice(string Id, string Label, ChoiceKind Kind, UiCardView? Card = null);
-public sealed record UiChoiceSlot(string Name, ChoiceKind Kind, int Min, int Max, IReadOnlyList<UiChoice> Allowed);
+public sealed record UiChoiceSlot(string Name, ChoiceKind Kind, int Min, int Max, IReadOnlyList<UiChoice> Allowed)
+{
+    /// <summary>Battlefield references are answered only by dragging an arrow, never by a card picker.</summary>
+    public bool BoardTargets { get; init; }
+}
 public sealed record UiTargetRequest(string RequestId, IReadOnlyList<UiChoiceSlot> Slots)
 {
     public UiCardView? SourceCard { get; init; }

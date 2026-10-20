@@ -33,7 +33,10 @@ public sealed partial class OrcMatchSession : IDisposable
     private bool _disposed;
     private bool _automaticChoice;
     /// <summary>Upper bound for one driven opponent turn, before play is forcibly handed back.</summary>
-    private static readonly TimeSpan OpponentTurnBudget = TimeSpan.FromSeconds(20);
+    // 对手回合的总预算必须覆盖最坏情况：每一步都用满 ActionBudget（12 × 4s）。
+    // 之前写死 20 秒，长回合会被 WaitAsync 截断，任务被丢弃、回合留在对手侧——玩家再也点不动。
+    private static readonly TimeSpan OpponentTurnBudget =
+        OrcOpponentDriver.ActionBudget * OrcOpponentDriver.MaxActions + TimeSpan.FromSeconds(10);
     private readonly OrcMatchHost _host;
     private Task<MulliganResult>? _mulliganRequest;
     private ISelectorInstance? _pendingMulligan;
@@ -62,6 +65,9 @@ public sealed partial class OrcMatchSession : IDisposable
     public bool DriveOpponent { get; set; } = true;
     public bool IsSubmitting => _commands.CurrentCount == 0;
     public string? LastRejectionReason { get; private set; }
+
+    /// <summary>本局的 targeter 桥（AI 动作链的挂起点；对手驱动 OrcOpponentDriver 使用）。</summary>
+    public OrcTargeterBridge TargeterBridge { get; private set; } = null!;
     public string MatchId { get; private init; } = "";
     public UiCardPoolReport? CardPoolReport { get; private set; }
 
@@ -69,6 +75,29 @@ public sealed partial class OrcMatchSession : IDisposable
     internal Match Match { get; private init; } = null!;
 
     public void Pump() { if (!_disposed) _host.Pump(); }
+
+    /// <summary>
+    /// 对手回合的兜底收尾：驱动跑完（或被超时截断）之后如果回合仍停在对手侧，强制交回玩家。
+    /// 驱动内部的 EndTurn 有它自己的 try/catch，失败只会写日志，外层无从得知——
+    /// 不做这一步，一次收尾失败就会把整局卡死在对面的回合里。
+    /// </summary>
+    private async Task ForceOpponentPassAsync(CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            if (Match.State != MatchState.InProgress) return;
+            if (ReferenceEquals(Match.CurrentPlayer, _host.Viewer)) return;
+            try
+            {
+                await Match.EndTurn(ct).WaitAsync(OrcOpponentDriver.ActionBudget, ct);
+                _host.CaptureCompletedActions();
+            }
+            catch (Exception e)
+            {
+                LastRejectionReason = "OpponentPassFailed:" + e.GetType().Name;
+            }
+        }
+    }
     public void SettleProjection() { if (!_disposed) _host.SettleProjection(); }
     public void SelectViewer(int index)
     {
@@ -102,8 +131,9 @@ public sealed partial class OrcMatchSession : IDisposable
     /// <summary>UI-facing probe factory; its signature contains no engine callback types.</summary>
     public static Task<OrcMatchSession> CreateDefaultProbeAsync(
         string cardId, int copies, int seed, string matchId,
-        Func<string, string>? artLookup = null, CancellationToken ct = default) =>
-        CreateProbeAsync(cardId, copies, seed, matchId, artLookup: artLookup, ct: ct);
+        Func<string, string>? artLookup = null, CancellationToken ct = default,
+        int? firstPlayerIndex = null) =>
+        CreateProbeAsync(cardId, copies, seed, matchId, artLookup: artLookup, ct: ct, firstPlayerIndex: firstPlayerIndex);
 
     /// <summary>Catalogue compilation and deck construction stay behind the engine boundary.</summary>
     public static async Task<OrcMatchSession> CreateFromCatalogAsync(
@@ -111,7 +141,7 @@ public sealed partial class OrcMatchSession : IDisposable
         Func<string, string>? artLookup = null, CancellationToken ct = default,
         IReadOnlyList<string>? openingHand = null, string? sourceDirectory = null, ConstructedDeck? constructedDeck = null,
         IReadOnlyList<DiyCardDraft>? customCards = null, PackSet? packs = null,
-        IReadOnlyList<OrcImportOutcome>? imported = null)
+        IReadOnlyList<OrcImportOutcome>? imported = null, int? firstPlayerIndex = null)
     {
         if (sourceDirectory is null) throw new InvalidDataException("Catalog admission requires its source directory.");
         // 目录编译会构造引擎 CardDefinition（词条注册面 fail-fast），必须先暖机——幂等，应用启动本就先于建局。
@@ -120,7 +150,7 @@ public sealed partial class OrcMatchSession : IDisposable
             && !c.CardId.StartsWith("pack/", StringComparison.Ordinal)
             && !c.CardId.StartsWith("orc/", StringComparison.Ordinal)).ToArray();
         var (reviewed, report, effects, convertedEffects) = VerifiedCardPool.CompileInternal(sourceCards, sourceDirectory);
-        var custom = (customCards ?? []).Select(c => DiyCardCompiler.Compile(c.Snapshot(), sourceCards)).ToArray();
+        var custom = (customCards ?? []).Select(c => DiyCardCompiler.Compile(c.Snapshot(), cards)).ToArray();
         if (custom.Select(c => c.Entry.Id).Distinct(StringComparer.Ordinal).Count() != custom.Length)
             throw new InvalidDataException("DIY 卡牌编号重复");
         if (cards.Any(c => c.CardId.StartsWith("diy/", StringComparison.Ordinal) && !custom.Any(d => d.Entry.Id == c.CardId)))
@@ -137,10 +167,11 @@ public sealed partial class OrcMatchSession : IDisposable
         var packIdSet = packEntries.Select(e => e.Id).ToHashSet(StringComparer.Ordinal);
         if (packIdSet.Count != packEntries.Count)
             throw new InvalidDataException("卡包卡牌编号重复");
-        var pool = reviewed.Concat(custom.Select(c => c.Entry)).Concat(packEntries)
+        var replacements=custom.Select(c=>c.Entry.Id).ToHashSet(StringComparer.Ordinal);
+        var pool = reviewed.Where(c=>!replacements.Contains(c.Id)).Concat(custom.Select(c => c.Entry)).Concat(packEntries.Where(c=>!replacements.Contains(c.Id)))
             .Concat(importedCards.Select(o => o.Entry!)).ToArray();
-        var completeCards = sourceCards.Concat(custom.Select(c => c.Card))
-            .Concat(PackCardDefinitions(packSet, artLookup))
+        var completeCards = sourceCards.Where(c=>!replacements.Contains(c.CardId)).Concat(custom.Select(c => c.Card))
+            .Concat(PackCardDefinitions(packSet, artLookup).Where(c=>!replacements.Contains(c.CardId)))
             .Concat(importedCards.Select(o => o.Card!)).ToArray();
         if (reviewed.Count == 0) throw new InvalidDataException("No reviewed cards are available; probe fallback is not a catalog match.");
         if (openingHand is not null && openingHand.Any(id => !pool.Any(e => e.Id == id)))
@@ -162,16 +193,16 @@ public sealed partial class OrcMatchSession : IDisposable
         var session = await CreateNativeAsync(pool, deck, opponentDeck, seed, matchId,
             artLookup: artLookup, ct: ct, openingHand: openingHand, deckConfiguration: constructedDeck?.Options,
             opponentDeckConfiguration: opponent?.Options, customCards: custom, packs: packSet,
-            convertedEffects: convertedEffects, importedEffects: importedEffects);
+            convertedEffects: convertedEffects.Where(p=>!replacements.Contains(p.Key)).ToDictionary(p=>p.Key,p=>p.Value), importedEffects: importedEffects, firstPlayerIndex: firstPlayerIndex);
         try
         {
-            session._effects = new SourceEffectAssembly(session.Match, effects, reason => session.LastRejectionReason ??= reason);
+            session._effects = new SourceEffectAssembly(session.Match, effects.Where(p=>!replacements.Contains(p.Key)).ToDictionary(p=>p.Key,p=>p.Value), reason => session.LastRejectionReason ??= reason);
             var desktopPlans=new Dictionary<string,string[]>(StringComparer.Ordinal);
             foreach(var content in packSet.Contents)
                 foreach(var plan in PackPresentationData.Plans(content)) desktopPlans.Add(plan.Key,plan.Value);
-            foreach(var card in custom)desktopPlans[card.Draft.Id]=(card.Draft.OrcEffects.Length>0
+            foreach(var card in custom)desktopPlans[card.Entry.Id]=(card.Draft.OrcEffects.Length>0
                 ?card.Draft.OrcEffects.Where(e=>e.DesktopJson is not null).Select(e=>e.DesktopJson!).ToArray()
-                :card.Draft.EffectText.Length>0?OrcInspector.CompileText(card.Draft.Id,card.Draft.EffectText,card.Draft.CardType).Parse.Effects.Select(e=>e.DesktopJson!).ToArray():[]).Concat(WorkshopAuthoring.KeywordGraphs(card.Draft)).ToArray();
+                :!card.Draft.UseStructuredEffects&&card.Draft.EffectText.Length>0?OrcInspector.CompileText(card.Draft.Id,card.Draft.EffectText,card.Draft.CardType).Parse.Effects.Select(e=>e.DesktopJson!).ToArray():[]).Concat(WorkshopAuthoring.KeywordGraphs(card.Draft)).ToArray();
             foreach(var card in importedCards.Where(c=>c.DesktopEffectsJson is not null))
             {using var graph=System.Text.Json.JsonDocument.Parse(card.DesktopEffectsJson!);desktopPlans[card.Entry!.Id]=graph.RootElement.EnumerateArray().Select(e=>e.GetRawText()).ToArray();}
             session._desktopTargets=new DesktopTargetContext(session.Match,desktopPlans);
@@ -191,7 +222,8 @@ public sealed partial class OrcMatchSession : IDisposable
     /// </summary>
     public static async Task<OrcMatchSession> CreateProbeAsync(
         string cardId, int copies, int seed, string matchId, int viewerIndex = 0,
-        Func<string, string>? artLookup = null, CancellationToken ct = default)
+        Func<string, string>? artLookup = null, CancellationToken ct = default,
+        int? firstPlayerIndex = null)
     {
         var definitions = new[]
         {
@@ -201,7 +233,7 @@ public sealed partial class OrcMatchSession : IDisposable
         };
         var probe = Enumerable.Repeat(cardId, copies).ToArray();
         return await CreateAsync(definitions, probe, probe, seed, matchId, viewerIndex,
-            artLookup, ct);
+            artLookup, ct, firstPlayerIndex: firstPlayerIndex);
     }
 
     /// <summary>
@@ -222,9 +254,10 @@ public sealed partial class OrcMatchSession : IDisposable
         IReadOnlyList<string> deckA, IReadOnlyList<string> deckB,
         int seed, string matchId, int viewerIndex = 0,
         Func<string, string>? artLookup = null, CancellationToken ct = default,
-        IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null)
+        IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null,
+        int? firstPlayerIndex = null)
         => CreateNativeAsync(definitions, deckA, deckB, seed, matchId, viewerIndex, artLookup, ct,
-            openingHand, deckConfiguration, opponentDeckConfiguration);
+            openingHand, deckConfiguration, opponentDeckConfiguration, firstPlayerIndex: firstPlayerIndex);
 
     private static async Task<OrcMatchSession> CreateNativeAsync(
         IReadOnlyList<CardDefinitionEntry> definitions,
@@ -234,8 +267,12 @@ public sealed partial class OrcMatchSession : IDisposable
         IReadOnlyList<string>? openingHand = null, DeckOptions? deckConfiguration = null, DeckOptions? opponentDeckConfiguration = null,
         IReadOnlyList<CompiledDiyCard>? customCards = null, PackSet? packs = null,
         IReadOnlyDictionary<string, EffectSnapshot>? convertedEffects = null,
-        IReadOnlyDictionary<string, IReadOnlyList<EffectSnapshot>>? importedEffects = null)
+        IReadOnlyDictionary<string, IReadOnlyList<EffectSnapshot>>? importedEffects = null,
+        int? firstPlayerIndex = null)
     {
+        // 引擎 S2：动作实现注册表必须先有默认集，否则 CommandManager 构造直接抛
+        // 「未注册动作实现」。Register 幂等，放在建局入口最稳。
+        Orc.Foundation.Actions.FoundationActions.Register();
         if (deckA.Count == 0 || deckB.Count == 0)
             throw new ArgumentException("Both decks must have at least one card.", nameof(deckA));
         var known = definitions.Select(d => d.Id).ToHashSet(StringComparer.Ordinal);
@@ -277,7 +314,11 @@ public sealed partial class OrcMatchSession : IDisposable
             registry.DeclarePrefab(cardId, importedEffects![cardId].Select(s => s.Root.Id).ToArray());
         // 卡包按一个整体装配：声明进 registry、内联预制体与效果库进对局的 PrefabManager；
         // 注册先于卡加载（引擎管道序），且 InitializeAsync 会把每个词条绑定对本局预制体核验。
-        var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: viewerIndex, targeterBridge: bridge, effectRegistry: registry,
+        // 先手完全随机：由对局种子派生（与洗切同一受控随机体系，界面不参与、玩家不可指定）。
+        // 种子默认来自 Random.Shared.Next()，所以每局不同；显式给种子时仍可整体复现。
+        // 诊断路径可显式传 firstPlayerIndex 固定座位——只有验证夹具用它，玩家入口永远走随机。
+        var openingPlayer = firstPlayerIndex ?? new MatchRandomService(seed).Next(2);
+        var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: openingPlayer, targeterBridge: bridge, effectRegistry: registry,
             deckConfigForPlayerA: Config(deckConfiguration), deckConfigForPlayerB: Config(opponentDeckConfiguration),
             packageActivator: new SnapshotPackageActivator(packSet.Snapshot));
         match.Engine.ScriptEvaluator = NativeScriptHost.Evaluator;
@@ -288,7 +329,12 @@ public sealed partial class OrcMatchSession : IDisposable
         if (importedEffects is not null)
             foreach (var snapshots in importedEffects.Values)
                 foreach (var snapshot in snapshots) match.Engine.Prefabs.RegisterPrefab(snapshot);
-        CardPackAssembler.Attach(registry, match.Engine, packSet.Contents);
+        // Load immutable native prefabs through the native assembler, then bind only the
+        // declarations not replaced by a local edit. Otherwise old and edited effects run twice.
+        CardPackAssembler.Attach(new CardEffectRegistry(), match.Engine, packSet.Contents);
+        var replacedIds=(customCards??[]).Select(c=>c.Entry.Id).ToHashSet(StringComparer.Ordinal);
+        foreach(var declaration in packSet.Contents.SelectMany(c=>c.Declarations).Where(d=>!replacedIds.Contains(d.CardId)))
+            registry.DeclarePrefab(declaration.CardId,declaration.PrefabIds);
         // 引擎级运行期卡（随快照冻结）：声明与预制体同样先于卡加载登记。
         foreach (var entry in packSet.Snapshot.RuntimeCards)
         {
@@ -297,10 +343,11 @@ public sealed partial class OrcMatchSession : IDisposable
         }
         var host = new OrcMatchHost(match, matchId, viewerIndex, artLookup);
         session = new OrcMatchSession(host, match) { MatchId = matchId };
+        session.TargeterBridge = bridge; // AI 动作链的挂起点（对手驱动 OrcOpponentDriver 使用）。
         try
         {
             await host.InitializeAsync(ct);
-            var packExpected = packSet.Contents.SelectMany(c => c.Declarations)
+            var packExpected = packSet.Contents.SelectMany(c => c.Declarations).Where(d=>!replacedIds.Contains(d.CardId))
                 .ToLookup(d => d.CardId, d => d.PrefabIds, StringComparer.Ordinal);
             foreach (var player in match.Players)
                 foreach (var card in player.Hand.OfType<CardBase>()
@@ -683,9 +730,8 @@ public sealed partial class OrcMatchSession : IDisposable
                         _automaticChoice = true;
                         try
                         {
-                            // The driver answers the opponent's own requests. A request the engine refuses to
-                            // settle would otherwise strand the turn here, with play never handed back.
-                            await OrcOpponentDriver.PlayTurnAsync(Match, Match.CurrentPlayer, ct: ct,
+                            // 决策走引擎的 AiPilot（HeuristicPolicy）；本类只管步进与预算。
+                            await OrcOpponentDriver.PlayTurnAsync(_host, TargeterBridge, Match.CurrentPlayer, ct: ct,
                                 actionCompleted: _host.CaptureCompletedActions).WaitAsync(OpponentTurnBudget, ct);
                         }
                         catch (TimeoutException)
@@ -694,6 +740,9 @@ public sealed partial class OrcMatchSession : IDisposable
                             CancelTargetChoice();
                         }
                         finally { _automaticChoice = false; }
+                        // 兜底：驱动可能被超时截断，或它内部的 EndTurn 抛错只记了日志，
+                        // 这两种情况都会把回合留在对手侧，玩家点什么都无效。这里再交一次。
+                        await ForceOpponentPassAsync(ct);
                     }
                     return UiSubmitOutcome.Applied;
                 case ChooseTarget:
@@ -722,10 +771,10 @@ public sealed partial class OrcMatchSession : IDisposable
 
     private async Task<UiSubmitOutcome> PlayAsync(string uid, int? supportIndex, CancellationToken ct)
     {
-        if (Resolve(uid) is CommandCard order)
+        if (Resolve(uid) is OrderCard order)
         {
             _interactiveCommand = true;
-            return Report(await Match.PlayManager.BeginCommandPrePlayAsync(order, ct));
+            return Report(await Match.PlayManager.BeginOrderPrePlayAsync(order, ct));
         }
         if (Resolve(uid) is CounterCard counter)
             return Report(await Match.PlayManager.UseCounterAsync(counter, ct));

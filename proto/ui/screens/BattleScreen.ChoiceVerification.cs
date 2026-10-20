@@ -118,7 +118,7 @@ public partial class BattleScreen
         finally { ResetDemo(); _clock.SetSpeed(speed); _clock.SetReducedMotion(reduced); }
     }
 
-    /// <summary>Armed battlefield targeting accepts target press/release and source-to-target drag.</summary>
+    /// <summary>Battlefield targets accept only source-to-target drag; never clicks or paper choices.</summary>
     public async Task VerifyArrowChoicesAsync()
     {
         try
@@ -173,20 +173,36 @@ public partial class BattleScreen
             if (clickResponder.Calls != 0) throw new Exception("Target press confirmed before release.");
             GetViewport().PushInput(new InputEventMouseButton { Position = targetPoint, GlobalPosition = targetPoint,
                 ButtonIndex = MouseButton.Left, Pressed = false }, true);
-            await WaitChoiceClosedAsync();
-            if (clickResponder.Calls != 1) throw new Exception("Armed targeting ignored a target press/release without movement.");
+            if (clickResponder.Calls != 0 || !TargetChoiceVisible || _choicePanel.Visible)
+                throw new Exception("A target click submitted a board choice.");
+            ChooseTargetOption("pick",units[0].Uid);
+            if(clickResponder.Calls!=0)throw new Exception("Programmatic paper selection submitted a board choice.");
+            await DragTargetChoiceAsync(CardPoint(units[0].Uid));await WaitChoiceClosedAsync();
+            if(clickResponder.Calls!=1)throw new Exception("Valid source drag was not submitted.");
             var twoSlots = clickRequest with { RequestId = "arrow-two-slots", Slots =
                 [clickRequest.Slots[0], clickRequest.Slots[0] with { Name = "second" }] };
             var twoResponder = new MockTargetResponder(twoSlots);
             ShowTargetChoice(twoSlots, twoResponder);
-            await ClickFixtureAsync(CardPoint(units[0].Uid));
+            await DragTargetChoiceAsync(CardPoint(units[0].Uid));
             if (twoResponder.Calls != 0 || _choiceSlot?.Name != "second")
                 throw new Exception("First target click did not advance exactly one choice slot.");
             GetViewport().PushInput(new InputEventMouseButton { Position = targetPoint, GlobalPosition = targetPoint,
                 ButtonIndex = MouseButton.Left, Pressed = false }, true);
             if (twoResponder.Calls != 0) throw new Exception("An old release answered the next target slot.");
-            await ClickFixtureAsync(CardPoint(units[0].Uid)); await WaitChoiceClosedAsync();
+            await DragTargetChoiceAsync(CardPoint(units[0].Uid)); await WaitChoiceClosedAsync();
             if (twoResponder.Calls != 1) throw new Exception("Second target click did not submit the complete native choice.");
+            var multi=request with{RequestId="arrow-multi",Slots=[request.Slots[0] with{Min=2,Max=2,BoardTargets=true}]};
+            var multiResponder=new MockTargetResponder(multi);ShowTargetChoice(multi,multiResponder);
+            if(_choicePanel.Visible)throw new Exception("Multiple board targets opened a card picker.");
+            await DragTargetChoiceAsync(CardPoint(units[0].Uid));
+            if(multiResponder.Calls!=0)throw new Exception("Multi-target choice submitted early.");
+            await DragTargetChoiceAsync(CardPoint(units[1].Uid));await WaitChoiceClosedAsync();
+            if(multiResponder.Calls!=1)throw new Exception("Multi-target drag did not complete.");
+            var transient=request with{RequestId="arrow-transient",Slots=[request.Slots[0] with{BoardTargets=true,
+                Allowed=request.Slots[0].Allowed.Append(new UiChoice("missing-actor","尚未显示的单位",ChoiceKind.Reference)).ToArray()}]};
+            ShowTargetChoice(transient,new MockTargetResponder(transient));
+            if(!ArrowChoiceActive||_choicePanel.Visible)throw new Exception("Missing board actor fell back to card picking.");
+            CancelChoiceWithMouseForVerification(true);await WaitChoiceClosedAsync();
             var retry = request with { RequestId = "arrow-cancel" };
             var cancelResponder = new MockTargetResponder(retry);
             ShowTargetChoice(retry, cancelResponder);
@@ -217,7 +233,23 @@ public partial class BattleScreen
             if (_cards[source.Uid].Mode != BattleCardMode.Hand || _deploymentChoiceCenters.Count != 0
                 || _cards[source.Uid].Position != _cards[source.Uid].RestPosition)
                 throw new Exception("Cancelled deployment targeting did not restore the hand.");
-            GD.Print("ARROW_CHOICE_VERIFY_OK no-panel release-only target-click-and-drag invalid-release-retry two-slots-no-click-through landing-preview no-placement-click-through right-cancel");
+            // References to hand/pile cards are genuine card picking, not battlefield targeting.
+            foreach (var (selector, zone) in new[] { ("hand", "hand"), ("cardPickerReference", "deck"), ("unknown-card-picker", "discard") })
+            {
+                ResetDemo();
+                var candidate = _state.SelfHand[0] with { Uid = "pile-reference", Zone = zone };
+                var pick = new UiTargetRequest("pile-" + zone,
+                    [new("pick", ChoiceKind.Reference, 1, 1,
+                        [new UiChoice(candidate.Uid, candidate.Definition.Name, ChoiceKind.Reference, candidate)])])
+                    { SelectorName = selector };
+                var picked = new MockTargetResponder(pick);
+                ShowTargetChoice(pick, picked);
+                if (ArrowChoiceActive || !_choicePanel.Visible)
+                    throw new Exception($"A {zone} card choice incorrectly became battlefield targeting.");
+                await ClickTargetChoiceAsync(0); await WaitChoiceClosedAsync();
+                if (picked.Calls != 1) throw new Exception($"The {zone} card picker did not accept its mouse choice.");
+            }
+            GD.Print("ARROW_CHOICE_VERIFY_OK no-panel drag-only clicks-and-paper-blocked invalid-release-retry two-slots-no-click-through landing-preview no-placement-click-through right-cancel hand-deck-discard-pickers-preserved");
         }
         finally { ResetDemo(); }
     }
@@ -228,6 +260,9 @@ public partial class BattleScreen
         var end = _canvas.GetGlobalTransformWithCanvas() * target;
         GetViewport().PushInput(new InputEventMouseButton { Position = start, GlobalPosition = start,
             ButtonIndex = MouseButton.Left, Pressed = true, ButtonMask = MouseButtonMask.Left }, true);
+        if(start.DistanceTo(end)<9)
+            GetViewport().PushInput(new InputEventMouseMotion { Position=start+new Vector2(40,0),GlobalPosition=start+new Vector2(40,0),
+                Relative=new Vector2(40,0),ButtonMask=MouseButtonMask.Left},true);
         GetViewport().PushInput(new InputEventMouseMotion { Position = end, GlobalPosition = end,
             Relative = end - start, ButtonMask = MouseButtonMask.Left }, true);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);

@@ -1,4 +1,4 @@
-using Kards.Ui.OrcBridge;
+﻿using Kards.Ui.OrcBridge;
 using Godot;
 using Kards.Ui.Core;
 using Kards.Ui.Contracts;
@@ -17,6 +17,7 @@ public partial class Main : Control
     private AnimationEngine _fx = null!;
     private AnimationGallery _gallery = null!;
     private BattleScreen _battle = null!;
+    private SetupScreen _setup = null!;
     private TabContainer _helpTabs = null!;
     private Label _pool = null!, _speedLabel = null!;
     private PanelContainer _shellBar = null!, _shellFooter = null!;
@@ -90,6 +91,8 @@ public partial class Main : Control
         // CardDefinition 解析装配（ResolveKeywords 对未注册标识 fail-fast）；此处一并完成卡包发现，
         // ReloadPacks 的 LoadPackCards 幂等复用同一宿主。
         OrcEngineHost.WarmUp(RuntimeGameData.Directory("kards"));
+        // 卡图对齐参数（user:// 下）在宿主就绪后读回，之后所有 CardFace 都按它排布。
+        if (!_verificationRun) CardFaceTuner.LoadSaved();
         _deckService = new DeckConstructionService(_catalog.Cards, RuntimeGameData.Directory("nations"));
         _diyPath = ProjectSettings.GlobalizePath(_verificationRun
             ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
@@ -106,7 +109,7 @@ public partial class Main : Control
         WorkshopAuthoring.Configure(_workshopLibrary,_diy.Cards);
         // 自导入卡图：art/ 目录与卡库同生命周期；缩放表随卡库刷新（RefreshImportedDiyArt）。
         DiyArtStore.Configure(Path.Combine(Path.GetDirectoryName(_diyPath)!, "art"),
-            _diy.Cards.Where(c => c.ArtFile.Length > 0).Select(c => (c.Id, c.ArtScale)));
+            _diy.Cards.Where(c => c.ArtFile.Length > 0).Select(c => (c.RuntimeId, c.ArtScale)));
         _deckService.UpdateCustom(_diy.Cards);
         _catalog.SetCustomCards(_deckService.CustomCards);
         // OrC 批量导入：装载持久化行并重编译（解析器演进时旧导入自动跟随新面）；
@@ -145,7 +148,9 @@ public partial class Main : Control
             }
             CommandRequested?.Invoke(command);
         };
-        _battle.RealMatchRequested += () => _ = StartRealMatchAsync(trialDeck: _trialDeck);
+        // 验证环境里重开沿用同一套固定条件（人工对手、玩家先手），产品环境仍按种子随机。
+        _battle.RealMatchRequested += () => _ = StartRealMatchAsync(trialDeck: _trialDeck,
+            manualOpponentForVerification: _verificationRun, firstPlayerIndex: _verificationRun ? 0 : null);
         _battle.NavigationRequested += id => {
             if (id == "deck" && _deckEditor.Draft.PackIds is { Length: 0 }) _deckEditor.CreateNew();
             else Show(id);
@@ -172,8 +177,14 @@ public partial class Main : Control
         _home = new HomeScreen(); _home.Initialize(_decks, _deckService, _textures);
         _home.PlayRequested += OpenPlaySelection;
         _home.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        _home.NavigationRequested += NavigateMenu;
         _deckLibrary.Changed += RefreshMenuData;
         AddScreen(content, "home", _home);
+        _setup = new SetupScreen(); _setup.Initialize(_decks, _deckService, _textures);
+        _setup.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        _setup.ChooseDeckRequested += () => Show("decklib");
+        _setup.BackRequested += () => Show("home");
+        AddScreen(content, "setup", _setup);
         _diyEditor = new DiyEditorScreen();
         _diyEditor.Initialize(_diy, () => _catalog.Cards, _textures, id => _decks.Decks.Count(d => d.CardIds.Contains(id)),
             id => _deckService.CustomErrors.GetValueOrDefault(id), _orcImports, () => _importedOutcomes);
@@ -185,7 +196,8 @@ public partial class Main : Control
             var copies = Math.Min(2, ConstructionRules.CopyLimit(outcome.Card!.Rarity));
             var trial = starter with { Name = outcome.Name + " · 试打",
                 CardIds = Enumerable.Repeat("orc/" + outcome.Id, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
-            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
+            // 试打固定玩家先手：它的目的是立刻看到这张卡上场，不是打一场正式对局。
+            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial, firstPlayerIndex: 0);
         };
         _diyEditor.ConstructRequested += id =>
         {
@@ -199,8 +211,9 @@ public partial class Main : Control
             var starter = _deckService.Starter(12);
             var copies = Math.Min(2, ConstructionRules.CopyLimit(card.Rarity));
             var trial = starter with { Name = card.Name + " · 试打",
-                CardIds = Enumerable.Repeat(card.Id, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
-            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial);
+                CardIds = Enumerable.Repeat(card.RuntimeId, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
+            // 试打固定玩家先手，同导入卡的试打路径。
+            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial, firstPlayerIndex: 0);
         };
         _diyEditor.ConfigureWorkshop(_workshopLibrary,RefreshDiy);
         _workshop=new DiyWorkshopScreen();_workshop.Initialize(_workshopLibrary,_diy,_diyEditor,_deckService,_textures,RefreshDiy,()=>_clock.ReducedMotion);
@@ -231,7 +244,7 @@ public partial class Main : Control
         AddScreen(content, "settings", Settings());
         var footer = new PanelContainer();
         _shellFooter = footer;
-        footer.AddThemeStyleboxOverride("panel", UiStyles.Box(new("141b17ed"), new("4d5243"), 0, 8));
+        footer.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("141c17"), new("354032"), 0, 6));
         root.AddChild(footer);
         var footRow = new HBoxContainer();
         footer.AddChild(footRow);
@@ -248,15 +261,24 @@ public partial class Main : Control
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
+        else if (args.Contains("--capture-setup")) Callable.From(CaptureSetup).CallDeferred();
         else if (args.Contains("--verify-export")) CallDeferred(MethodName.VerifyExport);
         else if (args.Contains("--capture-official-art")) CallDeferred(MethodName.CaptureOfficialArt);
         else if (args.Contains("--verify-inflight-draw")) CallDeferred(MethodName.VerifyInFlightDrawOnly);
         else if (args.Contains("--verify-action-portals") || args.Contains("--capture-action-portals"))
             CallDeferred(MethodName.VerifyActionPortals);
+        else if (args.Contains("--verify-inspector-composition") || args.Contains("--capture-inspector-composition"))
+            Callable.From(VerifyInspectorComposition).CallDeferred();
         else if (args.Contains("--verify-desktop-authoring") || args.Contains("--capture-desktop-authoring"))
             CallDeferred(MethodName.VerifyDesktopAuthoring);
         else if(args.Contains("--verify-workshop")||args.Contains("--capture-workshop"))
             CallDeferred(MethodName.VerifyWorkshop);
+        else if (args.Contains("--verify-diy-layout") || args.Contains("--capture-diy-layout"))
+            CallDeferred(MethodName.VerifyDiyLayout);
+        else if (args.Contains("--verify-cardface") || args.Contains("--capture-cardface"))
+            CallDeferred(MethodName.VerifyCardFace);
+        else if (args.Contains("--tune-cardface"))
+            CallDeferred(MethodName.OpenCardFaceTuner);
         else if (args.Contains("--verify-diy") || args.Contains("--capture-diy"))
             CallDeferred(MethodName.VerifyDiy);
         else if (args.Contains("--verify-decks") || args.Contains("--capture-decks"))
@@ -306,7 +328,7 @@ public partial class Main : Control
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>
     public async Task StartRealMatchAsync(bool interactiveMulligan = true, bool manualOpponentForVerification = false,
         int? deckSeed = null, bool demoOpeningHand = false, bool probe = false, IReadOnlyList<string>? verificationHand = null, bool useConstructedDeck = false,
-        ConstructedDeck? trialDeck = null)
+        ConstructedDeck? trialDeck = null, int? firstPlayerIndex = null)
     {
         ConstructedDeck? selected = null;
         if (trialDeck is not null)
@@ -334,11 +356,14 @@ public partial class Main : Control
             ArtLookup = id => matchArt.GetValueOrDefault(id, ""),
             // Production uses the admitted source catalog; only explicit verification uses a probe.
             CatalogCards = probe ? null : _deckService.Cards.ToArray(),
-            CustomCards = probe ? null : _diy.Cards.Where(c => _deckService.PlayableIds.Contains(c.Id)).Select(c => c.Snapshot()).ToArray(),
+            CustomCards = probe ? null : _diy.Cards.Where(c => _deckService.PlayableIds.Contains(c.RuntimeId) && !_deckService.CustomErrors.ContainsKey(c.Id)).Select(c => c.Snapshot()).ToArray(),
             ImportedCards = probe ? null : _importedOutcomes.Where(o => o.Complete).ToArray(),
             CatalogSourceDirectory = RuntimeGameData.Directory("nations"),
             ManualOpponentForVerification = manualOpponentForVerification,
             DeckSeed = deckSeed,
+            // 先手默认随机。人工对手夹具由验证脚本手动推进双方，前提是玩家先手，所以它默认落座位 0；
+            // 产品入口不走这条分支，玩家无法指定先后手。
+            FirstPlayerIndex = firstPlayerIndex ?? (manualOpponentForVerification ? 0 : null),
             // Pinning the hand is a demonstration aid, not the default: the verify and capture paths
             // need the engine's own deal, so they leave this off.
             OpeningHand = verificationHand ?? (demoOpeningHand ? new[] { "USG/units/_4", "av76/units/13", "deran/units/_6q", "av76/units/18" } : null),
@@ -628,40 +653,34 @@ public partial class Main : Control
     }
     private Control Settings()
     {
-        var screen = new VBoxContainer();
-        screen.AddChild(UiStyles.Label("设置", 30, UiStyles.MenuInk));
-        screen.AddChild(UiStyles.Label("演出与音效偏好会自动保存。", 14, UiStyles.MenuDim));
-        var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; screen.AddChild(body);
-        var panel = new PanelContainer { CustomMinimumSize = new(720, 0) }; body.AddChild(panel);
-        var v = new VBoxContainer(); panel.AddChild(v); v.AddThemeConstantOverride("separation", 20);
-        v.AddChild(UiStyles.Label("演出", 24, UiStyles.MenuInk));
-        v.AddChild(UiStyles.Label("动画速度", 18, UiStyles.Gold));
+        var screen = new VBoxContainer(); screen.AddThemeConstantOverride("separation", 20);
+        screen.AddChild(MenuStyles.Label("设置", 32, MenuStyles.Ink));
+        screen.AddChild(MenuStyles.Label("调整演出与声音，偏好自动保存。", 15, MenuStyles.Dim));
+        var body = new HBoxContainer(); body.AddThemeConstantOverride("separation", 24); screen.AddChild(body);
+        VBoxContainer Section(string title)
+        {
+            var panel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new(0, 370) }; body.AddChild(panel);
+            var box = new VBoxContainer(); box.AddThemeConstantOverride("separation", 18); panel.AddChild(box);
+            box.AddChild(MenuStyles.Label(title, 24, MenuStyles.Ink)); return box;
+        }
+        var motionSection = Section("演出");
+        motionSection.AddChild(MenuStyles.Label("动画速度", 14, MenuStyles.Gold));
         var speed = new OptionButton();
-        speed.AddItem("正常 · 1.00");
-        speed.AddItem("快 · 0.60");
-        speed.AddItem("极快 · 0.32");
-        speed.Select((int)_clock.Current);
-        speed.ItemSelected += i => _clock.SetSpeed((AnimClock.Speed)i);
-        v.AddChild(speed);
+        speed.AddItem("正常 · 1.00"); speed.AddItem("快 · 0.60"); speed.AddItem("极快 · 0.32");
+        speed.Select((int)_clock.Current); speed.ItemSelected += i => _clock.SetSpeed((AnimClock.Speed)i); motionSection.AddChild(speed);
         var motion = new CheckButton { Text = "减弱动效", ButtonPressed = _clock.ReducedMotion };
-        motion.Toggled += on => { _clock.SetReducedMotion(on); _fx.InterruptAll(); };
-        v.AddChild(motion);
-        v.AddChild(UiStyles.Label("关闭菜单位移、卡牌展开与鼠标跟随；减少战场碎屑，保留音效和卡面揭示。", 14, UiStyles.Dim));
-        v.AddChild(new HSeparator());
-        v.AddChild(UiStyles.Label("音效", 24, UiStyles.MenuInk));
-        var mute = new CheckButton { Text = "静音", ButtonPressed = _clock.Muted };
-        mute.Toggled += on => _clock.SetMuted(on);
-        v.AddChild(mute);
-        v.AddChild(UiStyles.Label("音效音量", 18, UiStyles.Gold));
-        var level = UiStyles.Label($"{_clock.Volume:P0}", 14, UiStyles.MenuDim);
-        var volume = new HSlider { MinValue = 0, MaxValue = 1, Step = .01, Value = _clock.Volume, CustomMinimumSize = new(350, 32) };
-        volume.ValueChanged += x => { _clock.SetVolume((float)x); level.Text = $"{x:P0}"; };
-        v.AddChild(volume);
-        v.AddChild(level);
-        var notes = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; body.AddChild(notes);
-        notes.AddChild(UiStyles.Label("操作提示", 20, UiStyles.Gold));
-        var guide = UiStyles.Label("点击左上角 OrC-KSD 返回主菜单。\n\n顶部直接进入卡组、收藏或 DIY 工坊；新建和编辑在卡组库中进行。\n\n对战中使用右上角菜单返回主菜单，再点“返回战场”继续当前对局。", 15, UiStyles.MenuInk);
-        guide.AutowrapMode = TextServer.AutowrapMode.WordSmart; notes.AddChild(guide);
+        motion.Toggled += on => { _clock.SetReducedMotion(on); _fx.InterruptAll(); }; motionSection.AddChild(motion);
+        var description = MenuStyles.Label("减少菜单位移、卡牌展开与鼠标跟随，保留卡面揭示和必要的操作反馈。", 14, MenuStyles.Dim);
+        description.AutowrapMode = TextServer.AutowrapMode.WordSmart; motionSection.AddChild(description);
+        var audio = Section("声音");
+        var mute = new CheckButton { Text = "静音", ButtonPressed = _clock.Muted }; mute.Toggled += on => _clock.SetMuted(on); audio.AddChild(mute);
+        audio.AddChild(MenuStyles.Label("音效音量", 14, MenuStyles.Gold));
+        var level = MenuStyles.Label($"{_clock.Volume:P0}", 18, MenuStyles.Ink);
+        var volume = new HSlider { MinValue = 0, MaxValue = 1, Step = .01, Value = _clock.Volume, CustomMinimumSize = new(0, 32) };
+        volume.ValueChanged += x => { _clock.SetVolume((float)x); level.Text = $"{x:P0}"; }; audio.AddChild(volume); audio.AddChild(level);
+        var hintPanel = new PanelContainer(); screen.AddChild(hintPanel);
+        var hint = MenuStyles.Label("从左侧切换卡组、收藏与工坊。对局中可从右上角菜单返回指挥部，再选择“返回战场”继续。", 14, MenuStyles.Dim);
+        hint.AutowrapMode = TextServer.AutowrapMode.WordSmart; hintPanel.AddChild(hint);
         return screen;
     }
     private void UpdateStatus()
@@ -677,6 +696,10 @@ public partial class Main : Control
         _active = id;
         if (id == "decklib") _deckLibrary.Refresh();
         if (id == "home") _home.Refresh();
+        if (id == "setup") _setup.Refresh();
+        // 换屏统一走快门：盖住 → 切可见性 → 揭开。战场与菜单同一套过场（此前战场是硬切）。
+        var curtained = changed && !_clock.ReducedMotion;
+        if (curtained) CoverScreen();
         foreach (var (key, screen) in _screens)
             screen.Visible = key == id;
         foreach (var (key, b) in _nav)
@@ -684,6 +707,7 @@ public partial class Main : Control
         SetBattlePresentation(id == "battle");
         UpdateMenuNavigation();
         if (changed) EnterMenuScreen(id);
+        if (curtained) RevealScreen();
     }
     public event Action<UiCommand>? CommandRequested;
     public void ApplyMatch(UiMatchView? match, UiBattleActions? actions = null)
@@ -696,10 +720,10 @@ public partial class Main : Control
     private void SetBattlePresentation(bool activeMatch)
     {
         _pool.Visible = !activeMatch;
-        _shellBar.Visible = _shellFooter.Visible = !activeMatch;
+        _shellBar.Visible = _shellFooter.Visible = !activeMatch && _active != "setup";
         _menuBackdrop.Visible = !activeMatch;
         foreach (var edge in new[] { "left", "right", "top", "bottom" })
-            _contentMargin.AddThemeConstantOverride("margin_" + edge, activeMatch ? 0 : 24);
+            _contentMargin.AddThemeConstantOverride("margin_" + edge, activeMatch ? 0 : 28);
     }
     public Task PresentCombatAsync(UiCombatResolution resolution, UiBattleActions afterActions) => _battle.PresentCombatAsync(resolution, afterActions);
     public Task PresentSequenceAsync(UiPresentationResolution resolution, UiBattleActions afterActions) => _battle.PresentSequenceAsync(resolution, afterActions);
@@ -743,8 +767,18 @@ public partial class Main : Control
                 throw new Exception("Wrong catalogue size.");
             var originalCards = _catalog.Cards.Where(c => c.CardId.StartsWith("pack/", StringComparison.Ordinal)).ToArray();
             var expectedOriginal = System.IO.Directory.GetFiles(RuntimeGameData.Directory("kards"), "*.card.json", System.IO.SearchOption.AllDirectories).Length;
-            if (originalCards.Length != expectedOriginal || originalCards.Any(c => c.ArtPath.Length == 0 || _textures.Get(c.ArtPath) is null))
-                throw new Exception("Original KARDS artwork is missing or cannot be decoded.");
+            // 新引擎会按资产规则过滤非法卡（典型：指令/反制卡必须有内置效果——只有卡面文本、
+            // 没有实现效果的空壳卡会被丢弃）。所以「卡池数 == 文件数」不再成立；
+            // 正确的不变式是「卡池数 + 被过滤数 == 文件数」，且被过滤的卡必须能点名。
+            var rejectedPacks = Kards.Ui.OrcBridge.OrcEngineHost.RejectedPackCards;
+            if (originalCards.Length + rejectedPacks.Count != expectedOriginal)
+                throw new Exception($"Pack card count mismatch: pool={originalCards.Length} rejected={rejectedPacks.Count} files={expectedOriginal}.");
+            if (rejectedPacks.Count > 0)
+                GD.Print($"PACK_REJECTED cards={rejectedPacks.Count} {string.Join(",", rejectedPacks)}");
+            var artless = originalCards.Where(c => c.ArtPath.Length == 0 || _textures.Get(c.ArtPath) is null)
+                .Select(c => c.CardId + "@" + (c.ArtPath.Length == 0 ? "<no art path>" : c.ArtPath)).Take(6).ToArray();
+            if (artless.Length > 0)
+                throw new Exception("Pack artwork missing or cannot be decoded: " + string.Join(" | ", artless));
             GD.Print($"OFFICIAL_ART_VERIFY_OK cards={originalCards.Length}");
             foreach (var c in _catalog.Cards.Where(c => c.ArtPath.Length > 0 && !c.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)))
                 if (!ResourceLoader.Exists(c.ArtPath))

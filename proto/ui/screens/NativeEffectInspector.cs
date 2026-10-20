@@ -43,6 +43,7 @@ internal partial class NativeEffectInspector : VBoxContainer
         });tools.AddChild(advancedToggle);
         _advancedRoot=new VBoxContainer{Visible=false,SizeFlagsVertical=SizeFlags.ExpandFill};
         InitializeFriendly();AddChild(_advancedRoot);
+        BuildComposer();
         var advancedTools=new HBoxContainer();_advancedRoot.AddChild(advancedTools);
         _search=new LineEdit{PlaceholderText="搜索动作 / 中文名",CustomMinimumSize=new(180,0)};advancedTools.AddChild(_search);
         OperationPick=new OptionButton{FitToLongestItem=false,SizeFlagsHorizontal=SizeFlags.ExpandFill,CustomMinimumSize=new(200,0)};advancedTools.AddChild(OperationPick);
@@ -86,8 +87,9 @@ internal partial class NativeEffectInspector : VBoxContainer
     internal void ShowAdvanced(){_friendlyRoot.Visible=false;_advancedRoot.Visible=true;}
     internal void Open(JsonObject card)
     {
+        Composer.Hide();
         _expanded.Clear();_selectedEffect=0;_renderedEffect=-1;_advancedRoot.Visible=false;_friendlyRoot.Visible=true;
-        Document=new InspectorDocument(card);_path="/effects";
+        Document=new InspectorDocument(card){NormalizeBeforeCommit=InspectorCardRecord.SynchronizeText};_path="/effects";
         Document.Changed+=()=>{RefreshTree();RawEditor.Text=Document.Root.ToJsonString(Pretty);SyncHistory();UpdateFriendlySummary();Edited?.Invoke();};
         Refresh();
     }
@@ -108,7 +110,8 @@ internal partial class NativeEffectInspector : VBoxContainer
         if(effects is not JsonArray)return;
         try
         {
-            var report=DesktopOrc.Request(new {method="validate",value=JsonSerializer.SerializeToElement(effects)});
+            var desktop=new JsonArray(effects.AsArray().Where(e=>!InspectorCardRecord.IsNative(e)&&!InspectorCardRecord.IsLegacy(e)).Select(e=>e?.DeepClone()).ToArray());
+            var report=DesktopOrc.Request(new {method="validate",value=JsonSerializer.SerializeToElement(desktop)});
             var issues=report.GetProperty("errors").EnumerateArray().Concat(report.GetProperty("warnings").EnumerateArray()).Select(e=>e.GetProperty("path").GetString()+"："+e.GetProperty("msg").GetString()).ToArray();
             _status.Text=issues.Length==0?"设置已填写完整。可以继续添加动作，或保存卡牌。":$"还有 {issues.Length} 处设置需要检查："+string.Join("；",issues.Take(2).Select(x=>x[(x.IndexOf('：')+1)..]));
         }
@@ -157,7 +160,7 @@ internal partial class NativeEffectInspector : VBoxContainer
     private void Structural(Action edit)
     {
         if(HasPendingRaw&&!CommitPendingRaw())return;
-        edit();Callable.From(()=>{RenderProperties();RenderFriendly();}).CallDeferred();
+        Document.Transaction(edit);Callable.From(()=>{RenderProperties();RenderFriendly();}).CallDeferred();
     }
     private void AddSelected()
     {

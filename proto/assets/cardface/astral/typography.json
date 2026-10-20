@@ -1,0 +1,651 @@
+{
+  "canvas": [
+    500,
+    701
+  ],
+  "sources": [
+    {
+      "name": "Astral单位模板.psd",
+      "sha256": "b7308302f1c509ac746bb7b05c2b73edf3a97afd6dfe4d67efdd0abb95292b08"
+    },
+    {
+      "name": "Astral指令模板.psd",
+      "sha256": "1e8263054e054171c31f06228b71483342523e324d14bc339a3e54a0bb9953f2"
+    }
+  ],
+  "masters": {
+    "unit": {
+      "name": {
+        "fonts": [
+          "SourceHanSansCN-Bold"
+        ],
+        "size": 33.0,
+        "baseline": [
+          257.09083791502076,
+          65.86088363421668
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.76077,
+          0.7843,
+          0.69803,
+          1.0
+        ],
+        "bbox": [
+          109,
+          37,
+          405,
+          70
+        ],
+        "sample": "斯派克国防军首都师",
+        "layer": "名称和效果/有词条/卡名"
+      },
+      "namePlain": {
+        "fonts": [
+          "SourceHanSansCN-Bold"
+        ],
+        "size": 33.0,
+        "baseline": [
+          257.09083791502076,
+          65.86088363421668
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.76077,
+          0.7843,
+          0.69803,
+          1.0
+        ],
+        "bbox": [
+          109,
+          37,
+          405,
+          70
+        ],
+        "sample": "斯派克国防军首都师",
+        "layer": "名称和效果/有词条/卡名"
+      },
+      "keyword": {
+        "fonts": [
+          "SourceHanSansCN-Bold"
+        ],
+        "size": 30.0,
+        "baseline": [
+          250.2904387688277,
+          581.5561747721976
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.33334,
+          0.33334,
+          0.31372,
+          1.0
+        ],
+        "bbox": [
+          221,
+          556,
+          280,
+          585
+        ],
+        "sample": "奋战",
+        "layer": "名称和效果/有词条/词条"
+      },
+      "body": {
+        "fonts": [
+          "SourceHanSansCN-Normal"
+        ],
+        "size": 24.0,
+        "baseline": [
+          252.98621262054093,
+          608.2091246096379
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 37.5,
+        "color": [
+          0.34119,
+          0.34119,
+          0.31766,
+          1.0
+        ],
+        "bbox": [
+          108,
+          588,
+          397,
+          611
+        ],
+        "sample": "获得守护时，获得+3防御力",
+        "layer": "名称和效果/有词条/效果描述"
+      },
+      "bodyPlain": {
+        "fonts": [
+          "SourceHanSansCN-Normal"
+        ],
+        "size": 24.0,
+        "baseline": [
+          250.05607476635515,
+          587.4371892531904
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 37.5,
+        "color": [
+          0.34119,
+          0.34119,
+          0.31766,
+          1.0
+        ],
+        "bbox": [
+          220,
+          568,
+          279,
+          588
+        ],
+        "sample": "dewd",
+        "layer": "名称和效果/无词条/效果描述"
+      },
+      "cost": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 76.0,
+        "baseline": [
+          40.98214631075095,
+          78.89086618825341
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.74118,
+          0.75687,
+          0.68234,
+          1.0
+        ],
+        "bbox": [
+          22,
+          24,
+          61,
+          80
+        ],
+        "sample": "3",
+        "layer": "费用/0-9费/部署费用"
+      },
+      "costDouble": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 51.0,
+        "baseline": [
+          44.36798140588837,
+          71.23038714633725
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -90,
+        "leading": 12.0,
+        "color": [
+          0.74118,
+          0.75687,
+          0.68234,
+          1.0
+        ],
+        "bbox": [
+          16,
+          34,
+          68,
+          72
+        ],
+        "sample": "24",
+        "layer": "费用/10-99费/部署费用"
+      },
+      "k": {
+        "fonts": [
+          "FranklinGothic-DemiCond"
+        ],
+        "size": 31.0,
+        "baseline": [
+          71.5599943804391,
+          48.93736069596247
+        ],
+        "horizontalScale": 1.15,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.81177,
+          0.54117,
+          0.18823,
+          1.0
+        ],
+        "bbox": [
+          64,
+          28,
+          82,
+          49
+        ],
+        "sample": "K",
+        "layer": "费用/0-9费/K"
+      },
+      "kDouble": {
+        "fonts": [
+          "FranklinGothic-DemiCond"
+        ],
+        "size": 21.0,
+        "baseline": [
+          77.5599943804391,
+          49.93736069596247
+        ],
+        "horizontalScale": 1.15,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.8,
+          0.53309,
+          0.18401,
+          1.0
+        ],
+        "bbox": [
+          72,
+          36,
+          85,
+          50
+        ],
+        "sample": "K",
+        "layer": "费用/10-99费/K"
+      },
+      "opCost": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 30.5,
+        "baseline": [
+          72.41747496132393,
+          78.6726831213715
+        ],
+        "horizontalScale": 0.95,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.74118,
+          0.75687,
+          0.68234,
+          1.0
+        ],
+        "bbox": [
+          65,
+          56,
+          80,
+          79
+        ],
+        "sample": "2",
+        "layer": "费用/0-9费/行动费用"
+      },
+      "opCostDouble": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 21.0,
+        "baseline": [
+          77.41747496132393,
+          70.6726831213715
+        ],
+        "horizontalScale": 0.9,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.74118,
+          0.75687,
+          0.68234,
+          1.0
+        ],
+        "bbox": [
+          72,
+          55,
+          83,
+          71
+        ],
+        "sample": "8",
+        "layer": "费用/10-99费/行动费用"
+      },
+      "attack": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 58.0,
+        "baseline": [
+          129.89764912930013,
+          534.6797297297297
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.79999,
+          0.81961,
+          0.76471,
+          1.0
+        ],
+        "bbox": [
+          114,
+          493,
+          146,
+          535
+        ],
+        "sample": "4",
+        "layer": "数值/0-9点/攻击力"
+      },
+      "defense": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 58.0,
+        "baseline": [
+          370.8527651429936,
+          532.6868118827042
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.81177,
+          0.83136,
+          0.77646,
+          1.0
+        ],
+        "bbox": [
+          355,
+          491,
+          387,
+          533
+        ],
+        "sample": "4",
+        "layer": "数值/0-9点/2"
+      },
+      "defenseDouble": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 41.0,
+        "baseline": [
+          369.89764912930013,
+          529.6797297297297
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -10,
+        "leading": 12.0,
+        "color": [
+          0.81177,
+          0.82352,
+          0.78824,
+          1.0
+        ],
+        "bbox": [
+          359,
+          500,
+          380,
+          530
+        ],
+        "sample": "2",
+        "layer": "数值/10-99点/防御力"
+      }
+    },
+    "order": {
+      "name": {
+        "fonts": [
+          "SourceHanSansCN-Bold"
+        ],
+        "size": 46.0,
+        "baseline": [
+          250.04744525547449,
+          545.6367283617029
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -5,
+        "leading": 12.0,
+        "color": [
+          0.3255,
+          0.3255,
+          0.30588,
+          1.0
+        ],
+        "bbox": [
+          207,
+          507,
+          294,
+          550
+        ],
+        "sample": "间谍",
+        "layer": "名称和效果/有词条/卡名"
+      },
+      "namePlain": {
+        "fonts": [
+          "SourceHanSansCN-Bold"
+        ],
+        "size": 48.0,
+        "baseline": [
+          250.04744525547449,
+          545.6367283617029
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -5,
+        "leading": 12.0,
+        "color": [
+          0.3255,
+          0.3255,
+          0.30588,
+          1.0
+        ],
+        "bbox": [
+          156,
+          505,
+          342,
+          550
+        ],
+        "sample": "卫星计划",
+        "layer": "名称和效果/无词条/卡名"
+      },
+      "keyword": {
+        "fonts": [
+          "SourceHanSansCN-Bold"
+        ],
+        "size": 30.0,
+        "baseline": [
+          250.16666666666663,
+          586.5393444776673
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.33334,
+          0.33334,
+          0.31372,
+          1.0
+        ],
+        "bbox": [
+          212,
+          561,
+          288,
+          590
+        ],
+        "sample": "情报3",
+        "layer": "名称和效果/有词条/词条"
+      },
+      "body": {
+        "fonts": [
+          "SourceHanSansCN-Normal",
+          "FranklinGothic-MediumCond"
+        ],
+        "size": 31.0,
+        "baseline": [
+          250.05607476635515,
+          621.4371892531904
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -5,
+        "leading": 35.0,
+        "color": [
+          0.34119,
+          0.34119,
+          0.31766,
+          1.0
+        ],
+        "bbox": [
+          29,
+          595,
+          470,
+          659
+        ],
+        "sample": "使一个敌方单位撤退。将一张”军\n团”增加至支援阵线。",
+        "layer": "名称和效果/有词条/效果描述"
+      },
+      "bodyPlain": {
+        "fonts": [
+          "SourceHanSansCN-Normal"
+        ],
+        "size": 20.0,
+        "baseline": [
+          253.49735590514527,
+          579.5412501668958
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -5,
+        "leading": 35.0,
+        "color": [
+          0.34119,
+          0.34119,
+          0.31766,
+          1.0
+        ],
+        "bbox": [
+          69,
+          562,
+          426,
+          617
+        ],
+        "sample": "将一张“332工程步兵团”加入支援阵线，\n使其具有闪击",
+        "layer": "名称和效果/无词条/效果描述"
+      },
+      "cost": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 76.0,
+        "baseline": [
+          38.86798140588837,
+          80.73038714633725
+        ],
+        "horizontalScale": 1.0,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.74118,
+          0.75687,
+          0.68234,
+          1.0
+        ],
+        "bbox": [
+          24,
+          26,
+          49,
+          81
+        ],
+        "sample": "1",
+        "layer": "费用/0-9费/费用"
+      },
+      "costDouble": {
+        "fonts": [
+          "Roboto-Black"
+        ],
+        "size": 51.0,
+        "baseline": [
+          44.36798140588837,
+          71.23038714633725
+        ],
+        "horizontalScale": 1.0,
+        "tracking": -90,
+        "leading": 12.0,
+        "color": [
+          0.74118,
+          0.75687,
+          0.68234,
+          1.0
+        ],
+        "bbox": [
+          29,
+          34,
+          56,
+          72
+        ],
+        "sample": "8",
+        "layer": "费用/10-99费/费用"
+      },
+      "k": {
+        "fonts": [
+          "FranklinGothic-DemiCond"
+        ],
+        "size": 31.0,
+        "baseline": [
+          71.5599943804391,
+          48.93736069596247
+        ],
+        "horizontalScale": 1.15,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.81177,
+          0.54117,
+          0.18823,
+          1.0
+        ],
+        "bbox": [
+          64,
+          28,
+          82,
+          49
+        ],
+        "sample": "K",
+        "layer": "费用/0-9费/K"
+      },
+      "kDouble": {
+        "fonts": [
+          "FranklinGothic-DemiCond"
+        ],
+        "size": 21.0,
+        "baseline": [
+          77.5599943804391,
+          49.93736069596247
+        ],
+        "horizontalScale": 1.15,
+        "tracking": 5,
+        "leading": 12.0,
+        "color": [
+          0.8,
+          0.53309,
+          0.18401,
+          1.0
+        ],
+        "bbox": [
+          72,
+          36,
+          85,
+          50
+        ],
+        "sample": "K",
+        "layer": "费用/10-99费/K"
+      }
+    }
+  },
+  "fonts": {
+    "Roboto-Black.ttf": "c78ce438e9d91ea8c16341aaf2c6cf07f9c347eb1130bd922796ad4fb78fe885",
+    "SiYuanHeiTi-Normal.otf": "df5ff3ec41c52fa0bf63239e4ac056bdba0f3ef6510c71ebe4dc3b78cbd2370b",
+    "SourceHanSansCN-Bold.otf": "97e5eff6dd208ccb814726458c8c7ab4b59327c62b9ee8df3440e7e835209ab9",
+    "FRADMCN.TTF": "4ab0f4d87991cbda91a625369e2804c4fb88969cdb1e4bd83b6bf37d07cf9cfd",
+    "FRAMDCN.TTF": "1861e0824e53ca60a04ea1bc7bdb159131448fec711ed079ebccbf645dd345d1"
+  }
+}

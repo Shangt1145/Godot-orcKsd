@@ -14,8 +14,9 @@ public partial class MenuBackdrop : Control
     }
     public override void _Draw()
     {
-        if (_desk is not null) DrawTextureRect(_desk, new(Vector2.Zero, Size), false, new Color(.72f, .72f, .64f));
-        DrawRect(new(Vector2.Zero, Size), new Color(.045f, .065f, .045f, .40f));
+        DrawRect(new(Vector2.Zero, Size), MenuStyles.Bg);
+        if (_desk is not null) DrawTextureRect(_desk, new(Vector2.Zero, Size), false, new Color(.35f, .40f, .31f, .10f));
+        DrawRect(new(Vector2.Zero, Size), new Color(.055f, .085f, .06f, .35f));
     }
 }
 
@@ -38,13 +39,16 @@ public partial class MenuDeckCover : Control
         else DrawRect(card, new("424e35"));
         DrawRect(new(card.Position + new Vector2(14, 21), new(card.Size.X - 28, 28)), new("182016dd"));
         var font = GetThemeDefaultFont();
-        DrawString(font, card.Position + new Vector2(18, 41), _nation.ToUpperInvariant(), HorizontalAlignment.Center, card.Size.X - 36, 15, UiStyles.MenuInk);
+        DrawString(font, card.Position + new Vector2(18, 41), _nation.ToUpperInvariant(), HorizontalAlignment.Center, card.Size.X - 36, 15, MenuStyles.MenuInk);
     }
 }
 
 public partial class MenuHero : Control
 {
     private Texture2D? _map, _back;
+    private Texture2D[] _faces = [];
+    public void SetCards(TextureCache textures, IEnumerable<string> paths)
+    { _faces = paths.Select(textures.Get).OfType<Texture2D>().Take(3).ToArray(); QueueRedraw(); }
     private Tween? _entrance;
     private float _reveal = 1;
     private Vector2 _pointer;
@@ -84,10 +88,11 @@ public partial class MenuHero : Control
     public override void _Draw()
     {
         var rect = new Rect2(Vector2.Zero, Size);
-        if (_map is not null) DrawTextureRectRegion(_map, rect, new Rect2(0, 340, 1086, 600), new Color(.62f, .64f, .48f));
-        DrawRect(rect, new Color(.055f, .095f, .065f, .42f));
+        DrawRect(rect, new("202e23"));
+        if (_map is not null) DrawTextureRectRegion(_map, rect, new Rect2(0, 340, 1086, 600), new Color(.45f, .52f, .38f));
+        DrawRect(rect, new Color(.055f, .095f, .065f, .65f));
         // A map route and physical card fan, drawn in Godot and independent of game rules.
-        var route = new Vector2[] { new(Size.X * .42f, Size.Y * .66f), new(Size.X * .60f, Size.Y * .52f), new(Size.X * .69f, Size.Y * .23f) };
+        var route = new Vector2[] { new(Size.X * .60f, Size.Y * .80f), new(Size.X * .72f, Size.Y * .65f), new(Size.X * .83f, Size.Y * .25f) };
         for (var i = 0; i < route.Length - 1; i++)
         {
             var segment = Math.Clamp(_reveal * 2 - i, 0, 1);
@@ -97,24 +102,25 @@ public partial class MenuHero : Control
         {
             var alpha = Math.Clamp(_reveal * 3 - i, 0, 1);
             DrawArc(route[i], 10, 0, Mathf.Tau, 32, new Color(new Color("d3b77980"), alpha * .5f), 1.5f, true);
-            DrawCircle(route[i], 3, new Color(UiStyles.Gold, alpha));
+            DrawCircle(route[i], 3, new Color(MenuStyles.Gold, alpha));
         }
         if (_back is not null)
         {
             var width = Math.Min(192, Size.X * .21f); var height = width * 1.38f;
-            var center = new Vector2(Size.X * .77f, Size.Y * .40f) + _pointer;
+            var center = new Vector2(Size.X * .81f, Size.Y * .48f) + _pointer;
             for (var i = -1; i <= 1; i++)
             {
                 DrawSetTransform(center + new Vector2(i * width * .43f * _reveal, Math.Abs(i) * 25 + (1 - _reveal) * 35), i * .16f * _reveal);
                 var card = new Rect2(-width / 2, -height / 2, width, height);
                 DrawRect(new(card.Position + new Vector2(7, 9), card.Size), new("080d0bcc"));
-                DrawTextureRect(_back, card, false, new Color(i == 0 ? Colors.White : new Color(.82f, .84f, .72f), .25f + .75f * _reveal));
+                var face = _faces.Length > 0 ? _faces[(i + 1) % _faces.Length] : _back;
+                DrawTextureRect(face, card, false, new Color(i == 0 ? Colors.White : new Color(.82f, .84f, .72f), .25f + .75f * _reveal));
             }
             DrawSetTransform(Vector2.Zero);
         }
         // Keep the bottom caption legible on both light and dark areas of the map.
         DrawTextureRect(_shade, new(0, Size.Y * .58f, Size.X, Size.Y * .42f), false);
-        DrawRect(rect, UiStyles.MenuLine, false, 1);
+        DrawRect(rect, MenuStyles.MenuLine, false, 1);
     }
     public override void _ExitTree() => _entrance?.Kill();
 }

@@ -60,14 +60,32 @@ public static class PatchBuilder
         finally {if(File.Exists(temporary))File.Delete(temporary);}
     }
     public static PatchManifest Inspect(string patch)
-    {using var zip=ZipFile.OpenRead(patch);return Read(zip);}
-    internal static PatchManifest Read(ZipArchive zip)
+    {using var zip=ZipFile.OpenRead(patch);return ReadAll(zip)[0];}
+    public static PatchManifest[] InspectAll(string patch)
+    {using var zip=ZipFile.OpenRead(patch);return ReadAll(zip);}
+    internal static PatchManifest[] ReadAll(ZipArchive zip)
     {
         if(zip.Entries.GroupBy(e=>e.FullName,StringComparer.OrdinalIgnoreCase).Any(g=>g.Count()>1))throw new InvalidDataException("补丁包含重复数据。");
         var entry=zip.GetEntry("patch.json")??throw new InvalidDataException("这不是 OrC-KSD 离线补丁。");
         if(entry.Length>32*1024*1024)throw new InvalidDataException("补丁清单过大。");
-        using var stream=entry.Open();var p=JsonSerializer.Deserialize<PatchManifest>(stream)??throw new InvalidDataException("补丁清单为空。");
-        if(p.Format!=1)throw new InvalidDataException("请使用新版更新器打开此补丁。");
+        using var stream=entry.Open();using var document=JsonDocument.Parse(stream);
+        var format=document.RootElement.GetProperty("Format").GetInt32();
+        PatchManifest[] variants=format switch
+        {
+            1=>[document.RootElement.Deserialize<PatchManifest>()??throw new InvalidDataException("补丁清单为空。")],
+            2=>document.RootElement.Deserialize<PatchBundle>()?.Variants??throw new InvalidDataException("兼容补丁清单为空。"),
+            _=>throw new InvalidDataException("请使用新版更新器打开此补丁。")
+        };
+        if(variants.Length is <1 or >64||variants.Any(p=>p is null)||variants.Select(p=>p.Source.BuildId).Distinct().Count()!=variants.Length)
+            throw new InvalidDataException("兼容补丁来源数量或编号无效。");
+        foreach(var p in variants)ValidatePlan(zip,p);
+        if(variants.Any(p=>p.Target.BuildId!=variants[0].Target.BuildId||p.Target.Version!=variants[0].Target.Version))
+            throw new InvalidDataException("兼容补丁必须升级到相同目标构建。");
+        return variants;
+    }
+    private static void ValidatePlan(ZipArchive zip,PatchManifest p)
+    {
+        if(p.Format!=1)throw new InvalidDataException("差分格式无效。");
         Builds.Validate(p.Source);Builds.Validate(p.Target);
         var before=p.Source.Files.ToDictionary(f=>f.Path,StringComparer.OrdinalIgnoreCase);var after=p.Target.Files.ToDictionary(f=>f.Path,StringComparer.OrdinalIgnoreCase);
         var expected=after.Values.Where(f=>!before.TryGetValue(f.Path,out var b)||f.Sha256!=b.Sha256).Select(f=>f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -86,7 +104,64 @@ public static class PatchBuilder
             }
             if(total!=after[c.Path].Size)throw new InvalidDataException("差分文件大小不匹配。");
         }
-        return p;
+    }
+    internal static PatchManifest Select(ZipArchive archive,string root)
+    {
+        var plans=ReadAll(archive);
+        if(plans.Length==1){Builds.Verify(root,plans[0].Source);return plans[0];}
+        // Verify bytes rather than trusting the display version or a stale local manifest.
+        foreach(var plan in plans)
+        {
+            try{Builds.Verify(root,plan.Source);return plan;}
+            catch(InvalidDataException) { }
+        }
+        throw new InvalidDataException("当前游戏文件不匹配本兼容补丁支持的任何构建（"+
+            string.Join("、",plans.Select(p=>p.Source.BuildId[..12]))+
+            "）。可能是未收录构建、混装或文件已损坏；请使用对应原始完整包恢复，不能跳过文件校验。");
+    }
+
+    public static PatchManifest[] Combine(IEnumerable<string> patches,string output)
+    {
+        var variants=new List<PatchManifest>();
+        var temporary=output+"."+Guid.NewGuid().ToString("N")+".building";
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
+        try
+        {
+            using(var target=ZipFile.Open(temporary,ZipArchiveMode.Create))
+            {
+                var blocks=new HashSet<string>(StringComparer.Ordinal);
+                foreach(var path in patches)
+                {
+                    using var source=ZipFile.OpenRead(path);
+                    foreach(var plan in ReadAll(source))
+                    {
+                        if(variants.Count>=64||variants.Any(p=>p.Source.BuildId==plan.Source.BuildId))throw new InvalidDataException("来源构建重复或过多。");
+                        if(variants.Count>0&&(plan.Target.BuildId!=variants[0].Target.BuildId||plan.Target.Version!=variants[0].Target.Version))
+                            throw new InvalidDataException("只能合并相同目标构建的补丁。");
+                        var changes=new List<FileDelta>();
+                        foreach(var change in plan.Changes)
+                        {
+                            var parts=new List<DeltaPart>();
+                            foreach(var part in change.Parts)
+                            {
+                                if(part.Entry is null){parts.Add(part);continue;}
+                                using var raw=source.GetEntry(part.Entry)!.Open();using var data=new MemoryStream();raw.CopyTo(data);
+                                var bytes=data.ToArray();var name="blocks/"+Convert.ToHexString(SHA256.HashData(bytes))+".br";
+                                if(blocks.Add(name)){using var dest=target.CreateEntry(name,CompressionLevel.NoCompression).Open();dest.Write(bytes);}
+                                parts.Add(part with{Entry=name});
+                            }
+                            changes.Add(change with{Parts=parts.ToArray()});
+                        }
+                        variants.Add(plan with{Changes=changes.ToArray()});
+                    }
+                }
+                if(variants.Count==0)throw new InvalidDataException("请选择至少一份来源补丁。");
+                using var manifest=target.CreateEntry("patch.json",CompressionLevel.Optimal).Open();
+                JsonSerializer.Serialize(manifest,new PatchBundle(2,variants.ToArray()),Builds.Json);
+            }
+            InspectAll(temporary);File.Move(temporary,output,true);return variants.ToArray();
+        }
+        finally{if(File.Exists(temporary))File.Delete(temporary);}
     }
     internal static void Rebuild(ZipArchive zip,FileDelta change,string? oldFile,string output,CancellationToken ct)
     {

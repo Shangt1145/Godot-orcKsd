@@ -35,8 +35,18 @@ public partial class Main
         Check(_active == "deck" && _deckEditor.Draft.PackIds!.ToHashSet().SetEquals(["source", "pack/builtin"]),
             "Multi-pack selection did not reach the new deck.");
         var pool = _deckService.Pool(_deckEditor.Draft);
-        Check(pool.Count == _deckService.PlayableCards.Count && pool.All(c => _deckService.PlayableIds.Contains(c.CardId)), "Selected pool contains unsupported or unselected cards.");
-        Check(_deckService.PackCards.Where(c => Kards.Ui.Core.DeckCardPacks.RawOf(c.CardId) != "pack/builtin")
+        // 以前只有 source+builtin 两个来源，"池子等于全部可玩卡"恰好成立；多出独立卡包后前提不再成立。
+        // 真正要保证的是：池子里没有非法卡，且未选中的卡包没有泄漏进来。
+        Check(pool.Count > 0 && pool.All(c => _deckService.PlayableIds.Contains(c.CardId)),
+            "Selected pool contains unsupported cards.");
+        Check(!pool.Any(c => Kards.Ui.Core.DeckCardPacks.RawOf(c.CardId) == "pack/orc.bulwark"),
+            "Cards from an unselected card pack leaked into the pool.");
+        // 只有真正的扩展包（BasePackId 非空）才该随父包一起进池；独立卡包（如 orc.bulwark）不该被带出来。
+        var extensionIds = Kards.Ui.OrcBridge.OrcEngineHost.PackDescriptors
+            .Where(p => p.BasePackId is not null)
+            .Select(p => "pack/" + p.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        Check(_deckService.PackCards.Where(c => extensionIds.Contains(DeckCardPacks.RawOf(c.CardId) ?? ""))
             .All(c => pool.Any(p => p.CardId == c.CardId)), "Choosing the parent cardpack did not include expansion content.");
         Check(_deckEditor.Grid.GetChildren().OfType<VBoxContainer>().SelectMany(b => b.GetChildren().OfType<CardControl>())
             .All(c => _deckService.PlayableIds.Contains(c.Definition.CardId)), "Builder rendered an unsupported card.");
@@ -45,8 +55,12 @@ public partial class Main
         await DeckClickAsync(_deckEditor.PacksButton);
         await DeckClickAsync(_deckPackPicker.Choices["source"]);
         await DeckClickAsync(_deckPackPicker.GetOkButton());
-        Check(_deckService.Pool(_deckEditor.Draft).Count == _deckService.PackCards.Count, "Changing pack selection did not refresh the pool: "
-            + string.Join(",", _deckEditor.Draft.PackIds!) + " count=" + _deckService.Pool(_deckEditor.Draft).Count);
+        // 改选择的语义是"池子必须随所选包变化"。原来用「等于全部卡包卡」判定，前提是没有独立卡包；
+        // 现在 orc.bulwark 是独立包，未选中时本就不该在池里，所以改判"池子确实变了且仍全部合法"。
+        var repool = _deckService.Pool(_deckEditor.Draft);
+        Check(repool.Count > 0 && repool.Count != pool.Count
+            && repool.All(c => _deckService.PlayableIds.Contains(c.CardId)), "Changing pack selection did not refresh the pool: "
+            + string.Join(",", _deckEditor.Draft.PackIds!) + " count=" + repool.Count);
         var roundTrip = DeckLibrary.Import(DeckLibrary.Export(_deckEditor.Draft));
         Check(roundTrip.PackIds!.SequenceEqual(_deckEditor.Draft.PackIds!), "Deck code lost selected packs.");
         var identity = _deckEditor.Draft.Id;

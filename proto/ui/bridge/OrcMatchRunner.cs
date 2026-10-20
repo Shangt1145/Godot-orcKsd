@@ -59,6 +59,13 @@ public sealed class OrcMatchRunner
     public int? DeckSeed { get; init; }
 
     /// <summary>
+    /// Pins who opens the match. Product behaviour is a coin flip derived from the deck seed; this
+    /// exists only so verification fixtures that assume the viewer opens stay deterministic.
+    /// Never set from a player-facing screen.
+    /// </summary>
+    public int? FirstPlayerIndex { get; init; }
+
+    /// <summary>
     /// Pins the cards the player opens with, replacing whatever was dealt. A demonstration aid: it
     /// lets the deployment slam be observed at every size tier in a real match. Null deals normally.
     /// </summary>
@@ -106,12 +113,12 @@ public sealed class OrcMatchRunner
                 seed: DeckSeed ?? Random.Shared.Next(), matchId: MatchId, fallbackCardId: InfantryId, artLookup: ArtLookup, ct: ct,
                 openingHand: OpeningHand, sourceDirectory: CatalogSourceDirectory, constructedDeck: ConstructedDeck, customCards: CustomCards,
                 imported: ImportedCards,
-                packs: Packs);
+                packs: Packs, firstPlayerIndex: FirstPlayerIndex);
         }
         else
         {
             session = await OrcMatchSession.CreateDefaultProbeAsync(InfantryId, 20, seed: DeckSeed ?? Random.Shared.Next(),
-                matchId: MatchId, artLookup: ArtLookup, ct: ct);
+                matchId: MatchId, artLookup: ArtLookup, ct: ct, firstPlayerIndex: FirstPlayerIndex);
         }
         if (_stopped) { session.Dispose(); return; }
         _session = session;

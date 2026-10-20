@@ -23,7 +23,13 @@ internal sealed record CompiledDiyCard(DiyCardDraft Draft, UiCardDefinition Card
 public static class DiyCardCompiler
 {
     public static IReadOnlyList<UiDiyChoice> BuiltInNations { get; } =
-        [new("av76", "苏联"), new("deran", "德国"), new("USG", "美国"), new("UN", "英国")];
+        Faction.All.Select(id => new UiDiyChoice(id, id switch
+        {
+            Faction.Germany => "德国", Faction.Soviet => "苏联", Faction.USA => "美国", Faction.Britain => "英国",
+            Faction.Japan => "日本", Faction.France => "法国", Faction.Italy => "意大利", Faction.Poland => "波兰",
+            Faction.Finland => "芬兰", Faction.Anzac => "澳新联军", Faction.Neutral => "中立", _ => id
+        })).Concat(new UiDiyChoice[] { new("av76", "苏联（旧卡池）"), new("deran", "德国（旧卡池）"),
+            new("USG", "美国（旧卡池）"), new("UN", "英国（旧卡池）") }).ToArray();
     public static IReadOnlyList<UiDiyChoice> Nations=>BuiltInNations.Concat(WorkshopAuthoring.Nations.Select(n=>new UiDiyChoice(n.Id,n.Name))).ToArray();
     public static IReadOnlyList<UiDiyChoice> Rarities { get; } =
         [new("iron", "基础"), new("bronze", "限定"), new("silver", "特殊"), new("gold", "精英")];
@@ -144,7 +150,7 @@ public static class DiyCardCompiler
     {
         return new UiCardDefinition
         {
-            CardId = draft.Id, Name = draft.Name, Set = draft.Nation, Rarity = draft.Rarity,
+            CardId = draft.RuntimeId, Name = draft.Name, Set = draft.Nation, Rarity = draft.Rarity,
             CardType = draft.CardType, UnitType = draft.CardType == "unit" ? draft.UnitType : "",
             Cost = draft.Cost, BaseAttack = draft.CardType == "unit" ? draft.Attack : null,
             BaseDefense = draft.CardType == "unit" ? draft.Defense : null, BaseOpCost = draft.CardType == "unit" ? draft.OpCost : null,
@@ -173,9 +179,11 @@ public static class DiyCardCompiler
         Orc.Plugins.BuiltIn.BuiltInPlugin.RegisterProcessDefaults();
         _=DesktopCardAdmission.Read(draft);
         DiyCardLibrary.CheckShape(draft);
+        if(draft.OrcEffects.Any(e=>e.TextCardType is not null&&e.TextCardType!=draft.CardType))throw new InvalidDataException("文本效果的卡牌类型已经变化，请重新解析，或显式转为高级结构。");
         if(WorkshopAuthoring.CheckScope(draft) is { } scopeError)throw new InvalidDataException(scopeError);
-        if (catalog.Any(c => c.CardId == draft.Id && !c.CardId.StartsWith("diy/", StringComparison.Ordinal)))
-            throw new InvalidDataException("DIY 卡牌不能覆盖原始卡牌");
+        if (draft.SourceCardId.Length > 0 && (!catalog.Any(c=>c.CardId==draft.SourceCardId)
+            || DeckCardPacks.RawOf(draft.SourceCardId)!=draft.PackId))
+            throw new InvalidDataException("找不到此卡包中的原始卡牌，无法应用本地修改");
         if (!Nations.Any(n => n.Id == draft.Nation) || !Rarities.Any(r => r.Id == draft.Rarity)
             || draft.CardType is not ("unit" or "order"))
             throw new InvalidDataException("当前 DIY 支持已列出的国家、稀有度、单位与指令");
@@ -187,7 +195,7 @@ public static class DiyCardCompiler
         // 编译真源优先级：OrcEffects 结构（Inspector 编辑面）> 旧版规则文本 > 效果行。
         // 结构模式由编辑器保证可持久化（无 threshold 维），文本模式保持解析器演进自动跟随。
         var effectText = draft.EffectText.Trim();
-        var textMode = effectText.Length > 0 && draft.OrcEffects.Length == 0;
+        var textMode = effectText.Length > 0 && draft.OrcEffects.Length == 0 && !draft.UseStructuredEffects;
         var orcMode = draft.OrcEffects.Length > 0;
         // 指令必须有打出效果；词条面只放行包内程序词条（kw-*，行为由词条程序自定义）——
         // 内置词条是单位战斗语义（闪击/伏击…），对指令无意义，仍然禁止。
@@ -292,14 +300,14 @@ public static class DiyCardCompiler
             }));
             components.Add(EffectsDefinition.Read(effectsJson.RootElement));
         }
-        var json = CardDataJson.Serialize(new CardDataBody(draft.Id, native.Name, components), out var warnings);
+        var json = CardDataJson.Serialize(new CardDataBody(draft.RuntimeId, native.Name, components), out var warnings);
         if (warnings.Count != 0) throw new InvalidDataException(string.Join("；", warnings));
         if (!CardDataJson.TryDeserialize(json, out var body, out var readWarnings, out var error))
             throw new InvalidDataException(error);
         if (readWarnings.Count != 0) throw new InvalidDataException(string.Join("；", readWarnings));
         var roundTrip = new CardDefinition(body!.Name, body.Components);
         return new(draft.Snapshot(), Preview(draft with { Name = native.Name }, catalog),
-            new(draft.Id, roundTrip), snapshots.AsReadOnly(), json);
+            new(draft.RuntimeId, roundTrip), snapshots.AsReadOnly(), json);
     }
 
     /// <summary>词条声明：文本模式＝解析词条 ∪ 勾选词条（按引擎 id 去重）；行模式＝勾选词条。</summary>
@@ -354,6 +362,7 @@ public static class DiyCardCompiler
     }
     private static void CheckEffect(string type, DiyEffectDraft e)
     {
+        if(e.ExtraFields is {Count:>0})throw new InvalidDataException("旧效果含尚未适配的扩展参数；已原样保留，仅可保存草稿。");
         if (!Operations.Any(o => o.Id == e.Op) || !Targets.Any(t => t.Id == e.Target) || !Durations.Any(d => d.Id == e.Until))
             throw new InvalidDataException("效果包含未知操作、目标或期限");
         if (e.Op is not ("buff" or "costMod") && e.Until.Length != 0)

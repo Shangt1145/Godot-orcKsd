@@ -29,7 +29,7 @@ public sealed class DiyWorkshopLibrary
         var ids=new HashSet<string>(StringComparer.Ordinal);
         foreach(var p in packs)
         {
-            if(!Id(p.Id,"pack/diy-")||string.IsNullOrWhiteSpace(p.Name)||p.Name.Length>60||p.Nations is null||p.Keywords is null||p.Nations.Length>64||p.Keywords.Length>128)throw new InvalidDataException("卡包内容无效");
+            if(!ValidPackId(p.Id)||string.IsNullOrWhiteSpace(p.Name)||p.Name.Length>60||p.Nations is null||p.Keywords is null||p.Nations.Length>64||p.Keywords.Length>128)throw new InvalidDataException("卡包内容无效");
             if(p.BasePackId is { } parent)
             {
                 if(!DeckCardPacks.ValidSelection([parent])||parent==p.Id||packs.Any(q=>q.Id==parent&&q.IsExpansion))throw new InvalidDataException("扩展包必须基于一个基础卡包");
@@ -44,6 +44,8 @@ public sealed class DiyWorkshopLibrary
         foreach(var p in packs.Where(p=>p.IsExpansion&&p.BasePackId!.StartsWith("pack/diy-",StringComparison.Ordinal)))
             if(!packs.Any(b=>b.Id==p.BasePackId&&!b.IsExpansion))throw new InvalidDataException("扩展包的基础卡包不存在");
     }
+    public static bool ValidPackId(string? id)=>id is not null && (id=="source" || (id.StartsWith("pack/diy-",StringComparison.Ordinal)
+        ? Id(id,"pack/diy-") : id.StartsWith("pack/",StringComparison.Ordinal)&&DeckCardPacks.ValidSelection([id])));
     public void Save(DiyPackDraft pack)
     {
         if(LoadError is not null)throw new InvalidDataException(LoadError);

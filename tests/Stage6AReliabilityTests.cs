@@ -10,7 +10,8 @@ public sealed class Stage6AReliabilityTests
 {
     private static async Task<OrcMatchSession> ReadyAsync(string id)
     {
-        var session = await OrcMatchSession.CreateProbeAsync("probe", 20, 17, id);
+        // 先手随机后，这些用例都假设"玩家先手能立刻行动"，必须固定座位（产品路径仍是随机）。
+        var session = await OrcMatchSession.CreateProbeAsync("probe", 20, 17, id, firstPlayerIndex: 0);
         session.DriveOpponent = false;
         await session.SettleMulliganAsync(interactive: false);
         session.Pump();
@@ -112,7 +113,9 @@ public sealed class Stage6AReliabilityTests
         var match = session.Host.Match;
         using (match.Engine.BeginAction())
         {
-            await match.Players[0].Hq.ApplyDamageAsync(1);
+            // R11：Hq.ApplyDamageAsync 收为 internal，唯一调用方是 MatchActionServices（也是 internal）。
+            // 界面侧没有公开的伤害门户，这里经反射驱动同一条数值路径，只为造出一次真实伤害。
+            await DamageHqAsync(match.Players[0].Hq, 1);
             await match.PlayerManager.DrawCard(match.Players[0]);
         }
         session.Host.CaptureCompletedActions();
@@ -181,8 +184,12 @@ public sealed class Stage6AReliabilityTests
             Assert.False(System.Text.RegularExpressions.Regex.IsMatch(code,
                 @"\b(CardPoolCompiler|DeckBuilder)\b|OrcMatchSession\.Create(Async|ProbeAsync)\("), path);
         }
+        // Orc.UI.Contracts 是中立的视图契约程序集（项目既有约定：零引擎依赖、proto/ui 经全局 using 消费），
+        // 只有引擎运行时程序集才算越界。
         foreach (var assembly in new[] { typeof(UiMatchView).Assembly, typeof(PresentationPlayer).Assembly })
-            Assert.DoesNotContain(assembly.GetReferencedAssemblies(), a => a.Name?.StartsWith("Orc.", StringComparison.Ordinal) == true || a.Name == "Orc");
+            Assert.DoesNotContain(assembly.GetReferencedAssemblies(), a =>
+                a.Name is not null && a.Name != "Orc.UI.Contracts"
+                && (a.Name.StartsWith("Orc.", StringComparison.Ordinal) || a.Name == "Orc"));
     }
 
     private static string FindRoot()
@@ -256,5 +263,17 @@ public sealed class Stage6AReliabilityTests
         await player.Completion.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal("original", Assert.Single(Assert.Single(received!.Steps.OfType<UiBoardImpactsPresentation>()).Impacts).Source!.Definition.Keywords.Single());
         Assert.Equal("card", Assert.Single(receivedActions!.PlayableUids));
+    }
+
+    /// <summary>
+    /// R11 把 <c>Hq.ApplyDamageAsync</c> 收成 internal（唯一调用方 MatchActionServices 也是 internal），
+    /// 界面侧已没有公开的伤害门户。这里经反射驱动同一条数值路径，只为在测试里造出一次真实伤害。
+    /// </summary>
+    private static async Task DamageHqAsync(Orc.Game.Players.Hq hq, int amount)
+    {
+        var method = typeof(Orc.Game.Players.Hq).GetMethod("ApplyDamageAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Hq.ApplyDamageAsync 不在预期位置（引擎收口方式又变了）");
+        await (Task)method.Invoke(hq, [amount, CancellationToken.None])!;
     }
 }

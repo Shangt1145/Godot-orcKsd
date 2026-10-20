@@ -9,10 +9,22 @@ public sealed class InspectorDocument
 {
     private readonly List<string> _history=[];
     private int _cursor;
+    private int _transactionDepth;
     public JsonNode Root {get;private set;}
     public bool CanUndo=>_cursor>0;
     public bool CanRedo=>_cursor<_history.Count-1;
     public event Action? Changed;
+    public Action<JsonNode>? NormalizeBeforeCommit {get;set;}
+    /// <summary>Authoring edits only: publish one history entry, or roll back the entire command.</summary>
+    public void Transaction(Action edit)
+    {
+        var before=Root.ToJsonString();
+        _transactionDepth++;
+        try{edit();}
+        catch{Root=JsonNode.Parse(before)!;throw;}
+        finally{_transactionDepth--;}
+        if(_transactionDepth==0)Commit();
+    }
     public InspectorDocument(JsonNode root){Root=root.DeepClone();_history.Add(Root.ToJsonString());}
     public static string Child(string path,string key)=>path+"/"+key.Replace("~","~0").Replace("/","~1");
     public JsonNode? At(string path)
@@ -52,6 +64,9 @@ public sealed class InspectorDocument
     public void Redo(){if(CanRedo){Root=JsonNode.Parse(_history[++_cursor])!;Changed?.Invoke();}}
     private void Commit()
     {
+        if(_transactionDepth>0)return;
+        try{NormalizeBeforeCommit?.Invoke(Root);}
+        catch{Root=JsonNode.Parse(_history[_cursor])!;throw;}
         var json=Root.ToJsonString();if(json==_history[_cursor])return;
         _history.RemoveRange(_cursor+1,_history.Count-_cursor-1);_history.Add(json);
         if(_history.Count>80)_history.RemoveAt(0);_cursor=_history.Count-1;Changed?.Invoke();
@@ -134,7 +149,7 @@ public static class InspectorVocabulary
         "of"=>["self","source","eventUnit","event","dead","eventVictim","victim","defender","attackTarget","attacker","summoned","lastSummoned","target","eventCard","remembered","candidate","current","friendlyPlayer","enemyPlayer","state"],
         "kind"=>["unit","hq","card","any"],
         "cardType"=>["unit","order","counter"],
-        "unitType"=>["infantry","tank","artillery","fighter","bomber"],
+        "unitType"=>DiyCardCompiler.UnitTypes.Select(t=>t.Id).ToArray(),
         _=>[]
     };
 }

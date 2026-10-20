@@ -27,5 +27,6 @@ public sealed record DiyPackDraft
     public DiyNationDraft[] Nations {get;init;}=[];
     public DiyKeywordDraft[] Keywords {get;init;}=[];
     public bool IsExpansion=>BasePackId is not null;
+    public bool IsBuiltIn=>Id=="source" || !Id.StartsWith("pack/diy-",StringComparison.Ordinal);
     public DiyPackDraft Snapshot()=>this with{Nations=Nations.ToArray(),Keywords=Keywords.Select(k=>k.Snapshot()).ToArray()};
 }

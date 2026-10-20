@@ -44,14 +44,19 @@ public static class Installer
         }
         return false;
     }
-    public static void InstallUpdater(string sourceRoot,string gameRoot)
+    public static void InstallUpdater(string sourceRoot,string gameRoot)=>InstallUpdater(sourceRoot,gameRoot,false);
+    public static void InstallUpdater(string sourceRoot,string gameRoot,bool keepExistingDifferent)
     {
         sourceRoot=Path.GetFullPath(sourceRoot);gameRoot=Path.GetFullPath(gameRoot);
         if(sourceRoot.Equals(gameRoot,StringComparison.OrdinalIgnoreCase))return;
         if(!File.Exists(Path.Combine(gameRoot,"KardsUi.exe")))throw new IOException("请选择已有游戏所在文件夹。");
         using var lease=Lock(gameRoot);
         var files=new[]{"更新游戏.exe","更新游戏.pck"}.Concat(Directory.GetFiles(Path.Combine(sourceRoot,"data_OrC.Updater_windows_x86_64"),"*",SearchOption.AllDirectories)
-            .Select(p=>Path.GetRelativePath(sourceRoot,p).Replace('\\','/')));
+            .Select(p=>Path.GetRelativePath(sourceRoot,p).Replace('\\','/'))).ToArray();
+        // A newer external updater can operate without replacing a different installed updater.
+        // Preflight the entire set before copying, so no mixed updater is installed.
+        if(keepExistingDifferent&&files.Any(name=>File.Exists(Builds.Safe(gameRoot,name))
+            &&Builds.Hash(Builds.Safe(sourceRoot,name))!=Builds.Hash(Builds.Safe(gameRoot,name))))return;
         foreach(var name in files)
         {
             var source=Builds.Safe(sourceRoot,name);var dest=Builds.Safe(gameRoot,name);
@@ -73,7 +78,9 @@ public static class Installer
     {
         root=Path.GetFullPath(root);options??=new();using var lease=Lock(root);
         await WaitForGame(root,options,progress,ct);RecoverLocked(root);
-        using var archive=ZipFile.OpenRead(patch);var plan=PatchBuilder.Read(archive);Builds.Verify(root,plan.Source);
+        progress?.Report(new("正在识别本地构建并核对程序文件…",.02));
+        using var archive=ZipFile.OpenRead(patch);var plan=PatchBuilder.Select(archive,root);
+        progress?.Report(new("已识别构建 "+plan.Source.BuildId[..12]+"，正在准备更新…",.05));
         var before=plan.Source.Files.ToDictionary(f=>f.Path,StringComparer.OrdinalIgnoreCase);var after=plan.Target.Files.ToDictionary(f=>f.Path,StringComparer.OrdinalIgnoreCase);
         var paths=ChangedPaths(plan);
         foreach(var name in paths)

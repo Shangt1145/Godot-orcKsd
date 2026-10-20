@@ -69,6 +69,10 @@ public sealed class OrcMatchHost
     private IUiProjectionProvider? Provider()
         => _match.UiProjections.CreateProvider(_artLookup, _matchId, DefinitionLookup);
 
+    /// <summary>AI 座位的投影提供者（AiPilot 视野＝座位过滤投影；与玩家共用同一装配工厂）。</summary>
+    public IUiProjectionProvider? CreateAiProjectionProvider()
+        => _match.UiProjections.CreateProvider(_artLookup, _matchId, DefinitionLookup);
+
     /// <summary>单卡投影委托（供表现层"段→演出"取不在盘面上的卡视图）。</summary>
     private UiCardView? ReadCardFor(Card card, Player viewer, string zone, int slotIndex)
         => Provider()?.ReadCard(_match, card, viewer, zone, slotIndex);

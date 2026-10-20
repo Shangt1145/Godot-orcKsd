@@ -60,9 +60,10 @@ public partial class Main
     private static string OfficialCardArt(string id)
     {
         // Pack ids are namespaced; image names use the official card id only.
+        // 点号在卡 id 里合法（如 bulwark.entrench-infantry），这里必须放行，否则新卡包整包没卡图。
         var parts = id.Split('/');
         if (parts.Length != 3 || parts[0] != "pack"
-            || parts[2].Length == 0 || parts[2].Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '_' and not '-')) return "";
+            || parts[2].Length == 0 || parts[2].Any(c => !char.IsAsciiLetterOrDigit(c) && c is not '_' and not '-' and not '.')) return "";
         var path = "res://proto/art/kards/" + parts[2] + ".png";
         return Godot.ResourceLoader.Exists(path) ? path : "";
     }
@@ -76,6 +77,8 @@ public partial class Main
                 Godot.GD.PushWarning($"卡包/插件装载隔离：{failure}");
             _catalog.SetPackCards(cards);
             _deckService.UpdatePacks(cards);
+            _deckService.UpdateCustom(_diy.Cards);
+            _catalog.SetCustomCards(_deckService.CustomCards);
         }
         catch (Exception e)
         {

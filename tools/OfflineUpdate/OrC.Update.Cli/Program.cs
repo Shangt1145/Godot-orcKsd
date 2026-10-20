@@ -6,6 +6,12 @@ try
 {
     switch(args[0])
     {
+        case "combine":
+        {
+            var plans=PatchBuilder.Combine(args.Skip(2),args[1]);
+            Console.WriteLine($"PATCH_COMBINE_OK sources={plans.Length} target={plans[0].Target.BuildId} bytes={new FileInfo(args[1]).Length}");break;
+        }
+        case "inspect-all":Console.WriteLine(JsonSerializer.Serialize(PatchBuilder.InspectAll(args[1])));break;
         case "build":
         {
             var source=args[1];string? temporary=null;

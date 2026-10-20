@@ -14,10 +14,48 @@ public partial class Main
             StopRealMatch(); Show("battle");
             await _battle.VerifyArrowChoicesAsync();
             await VerifyNativeDeploymentDragAsync();
+            await VerifyNoTargetDragAsync();
             GD.Print("TARGET_DRAG_VERIFY_OK"); GetTree().Quit();
         }
         catch (Exception e) { GD.PushError(e.ToString()); GetTree().Quit(1); }
         finally { WorkshopAuthoring.Configure(_workshopLibrary, _diy.Cards); }
+    }
+
+    private async Task VerifyNoTargetDragAsync()
+    {
+        var root=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"OrC-no-target-"+Guid.NewGuid().ToString("N"));
+        var library=new DiyWorkshopLibrary(System.IO.Path.Combine(root,"packs.json"));
+        var keyword=new DiyKeywordDraft{Name="自动命中总部",ProgramJson=OrcDragVerification.NonTargetOrderProgram()};
+        var pack=new DiyPackDraft{Keywords=[keyword]};library.Save(pack);
+        var unit=new DiyCardDraft{PackId=pack.Id,Name="无目标单位",Cost=0};
+        var order=new DiyCardDraft{PackId=pack.Id,Name="无目标指令",CardType="order",Cost=0,Keywords=[keyword.Id]};
+        WorkshopAuthoring.Configure(library,[unit,order]);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(_catalog.Cards,31,"no-target-drag","unused",
+            sourceDirectory:RuntimeGameData.Directory("nations"),openingHand:[unit.Id,order.Id],customCards:[unit,order]);
+        session.DriveOpponent=false;await session.SettleMulliganAsync(false);
+        var calls=0;Task<UiSubmitOutcome>? submitted=null;
+        void Request(UiTargetRequest request,IUiTargetResponder responder){calls++;responder.Cancel(request.RequestId);}
+        void Submit(UiCommand command)=>submitted=session.SubmitAsync(command);
+        session.TargetRequested+=Request;_battle.CommandRequested+=Submit;
+        try
+        {
+            session.SettleProjection();_battle.ApplyProjection(session.View,session.Actions);
+            var actor=session.View.SelfHand.First(c=>c.CardId==unit.Id);
+            await _battle.DragAsync(actor.Uid,_battle.DeploymentGapPoint(0));
+            if(submitted is null||await submitted!=UiSubmitOutcome.Applied)throw new Exception("Plain unit did not deploy.");
+            session.SettleProjection();_battle.ApplyProjection(session.View,session.Actions);
+            if(!session.View.SelfLine.Any(c=>c.Uid==actor.Uid)||calls!=0||_battle.TargetChoiceVisible||_battle.ChoicePanelVisibleForProbe)
+                throw new Exception("Plain deployment entered target selection.");
+            var command=session.View.SelfHand.First(c=>c.CardId==order.Id);var health=session.View.EnemyHq!.Health;
+            if(session.Actions.OrderTargets.Any(t=>t.Uid==command.Uid))throw new Exception("Automatic order projected a target request.");
+            submitted=null;await _battle.DragAsync(command.Uid,new(700,350));
+            if(submitted is null||await submitted!=UiSubmitOutcome.Applied)throw new Exception("Automatic order did not play.");
+            session.SettleProjection();
+            if(session.View.EnemyHq!.Health!=health-1||calls!=0||_battle.TargetChoiceVisible||_battle.ChoicePanelVisibleForProbe)
+                throw new Exception("Automatic order selected a target or failed to resolve.");
+            GD.Print("NO_TARGET_DRAG_VERIFY_OK plain-unit automatic-order zero-target-requests zero-card-picker native-effects");
+        }
+        finally{session.TargetRequested-=Request;_battle.CommandRequested-=Submit;_battle.ResetDemo();}
     }
 
     private async Task VerifyNativeDeploymentDragAsync()

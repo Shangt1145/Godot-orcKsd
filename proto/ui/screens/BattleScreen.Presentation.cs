@@ -131,8 +131,7 @@ public partial class BattleScreen
         foreach (var back in _cardLayer.GetChildren().OfType<BattleCard>()
             .Where(c => c.View is null && c.Mode == BattleCardMode.Hidden && c.Visible).Skip(Math.Max(0, count.Value))) back.Visible = false;
     }
-    public async Task PresentSequenceAsync(UiPresentationResolution supplied, UiBattleActions afterActions)
-    {
+    public async Task PresentSequenceAsync(UiPresentationResolution supplied, UiBattleActions afterActions)    {
         if (supplied.MatchId != _state.MatchId || supplied.After.MatchId != supplied.MatchId) return;
         var initialGeneration = _generation;
         await WaitForGestureReleaseAsync();
@@ -144,6 +143,8 @@ public partial class BattleScreen
         _selfResource.Bind(resolution.After.SelfKredits, resolution.After.SelfMaxKredits, resolution.After.SelfPlayerName);
         _enemyResource.Bind(resolution.After.EnemyKredits, resolution.After.EnemyMaxKredits, resolution.After.EnemyPlayerName);
         _deckCount.Text = resolution.After.SelfDeckCount.ToString();
+        // 战报：移动没有自己的演出段（直接走状态刷新），靠前后快照差分补记换线动作。
+        RecordZoneMoves(resolution);
         try
         {
             for (var stepIndex = 0; stepIndex < resolution.Steps.Count; stepIndex++)
@@ -415,5 +416,20 @@ public partial class BattleScreen
             GetViewport().GetTexture().GetImage().SavePng($"{dir}/battle-stage3-{kind}-settled.png");
         }
         _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); ResetDemo();
+    }
+
+    /// <summary>
+    /// 战报的移动条目：演出层没有「移动」段（移动直接落在状态刷新里），
+    /// 所以用前后快照做差分——己方单位换线（前线 ↔ 支援线）记一条。前线内调位不记，太琐碎。
+    /// </summary>
+    private void RecordZoneMoves(UiPresentationResolution resolution)
+    {
+        if (resolution.Before is not { } before) return;
+        foreach (var unit in before.SelfLine)
+        {
+            var moved = resolution.After.SelfLine.FirstOrDefault(c => c.Uid == unit.Uid);
+            if (moved is null || moved.Zone == unit.Zone) continue;
+            Record(moved, $"{moved.Definition.Name} → {(moved.Zone == "frontline" ? "前线" : "支援线")}");
+        }
     }
 }

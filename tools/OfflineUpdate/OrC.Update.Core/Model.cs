@@ -9,6 +9,7 @@ public sealed record BuildManifest(string Version, string BuildId, FileStamp[] F
 public sealed record DeltaPart(long Offset, int Length, string? Entry = null);
 public sealed record FileDelta(string Path, DeltaPart[] Parts);
 public sealed record PatchManifest(int Format, BuildManifest Source, BuildManifest Target, FileDelta[] Changes);
+public sealed record PatchBundle(int Format, PatchManifest[] Variants);
 public sealed record UpdateProgress(string Message, double Fraction);
 public sealed class UpdateOptions
 {

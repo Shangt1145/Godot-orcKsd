@@ -20,7 +20,7 @@ public sealed class OrcFormationScenario : IDisposable
     }
     public static async Task<OrcFormationScenario> CreateAsync(int units, Func<string, string>? artLookup = null)
     {
-        var s = await OrcMatchSession.CreateProbeAsync("formation-probe", 20, 37, $"formation-{units}", artLookup: artLookup);
+        var s = await OrcMatchSession.CreateProbeAsync("formation-probe", 20, 37, $"formation-{units}", artLookup: artLookup, firstPlayerIndex: 0);
         var fixture = new OrcFormationScenario(s);
         try
         {

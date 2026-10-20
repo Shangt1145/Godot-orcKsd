@@ -100,9 +100,8 @@ public partial class Main
             GD.Print($"SAVED_DEMO_GRAPPLE_PROBE arrow={_battle.ArrowChoiceActive} panel={_battle.ChoicePanelVisibleForProbe}");
             if (submitted?.IsCompleted != false || prompts != beforePrompts + 1)
                 throw new Exception("Grapple did not wait for the separate deployment target drag.");
-            // After placement the arrow already follows the pointer. A fresh target press/release
-            // must confirm it without requiring another drag from the source unit.
-            await _battle.ClickAsync(_battle.CardPoint(enemyUid));
+            if(!_battle.ArrowChoiceActive||_battle.ChoicePanelVisibleForProbe)throw new Exception("Board target opened paper choices.");
+            await _battle.DragTargetChoiceAsync(_battle.CardPoint(enemyUid));
             await Wait(() => submitted?.IsCompleted == true);
             if (await submitted! != UiSubmitOutcome.Applied) throw new Exception("Grapple target release failed.");
             session.SettleProjection(); await Render();
@@ -119,7 +118,9 @@ public partial class Main
             // Run last: a standalone launch damages its target, which would end the very fight the
             // grapple check above is about to observe.
             var standalone = session.View.SelfHand.FirstOrDefault(c => existingFire.Contains(c.Uid));
-            if (standalone is not null)
+            // 上面的 grapple 检测会把目标打到 0 血；对着死目标开火只会得到 SelectedTargetUnavailable，
+            // 那是验证自伤，不是卡的问题。目标已倒就跳过，别把噪声当结论。
+            if (standalone is not null && Health(enemyUid) > 0)
             {
                 var pointsBefore = session.View.SelfKredits;
                 var hpBefore = Health(enemyUid);
@@ -128,8 +129,12 @@ public partial class Main
                 {
                     var outcome = await session.SubmitAsync(new PlayCard(standalone.Uid, TargetUid: enemyUid));
                     session.SettleProjection();
-                    GD.Print($"SAVED_DEMO_STANDALONE_FIRE_RESULT outcome={outcome} pointsSpent={pointsBefore-session.View.SelfKredits} stillInHand={session.View.SelfHand.Any(c=>c.Uid==standalone.Uid)} damage={hpBefore-Health(enemyUid)}");
-                    if (outcome == UiSubmitOutcome.Applied && hpBefore == Health(enemyUid))
+                    var damage = hpBefore - Health(enemyUid);
+                    GD.Print($"SAVED_DEMO_STANDALONE_FIRE_RESULT outcome={outcome} pointsSpent={pointsBefore-session.View.SelfKredits} stillInHand={session.View.SelfHand.Any(c=>c.Uid==standalone.Uid)} damage={damage}");
+                    // 打出却没伤害是问题；直接拒绝同样是问题（以前只查前者，后者会静默漏过）。
+                    if (outcome != UiSubmitOutcome.Applied)
+                        findings.Add($"Standalone launch was rejected: {outcome}.");
+                    else if (damage == 0)
                         findings.Add("Standalone launch has no captured record but is consumed and charged without damage.");
                 }
                 catch (Exception e) { findings.Add("Standalone launch fault: " + e.Message); GD.Print($"SAVED_DEMO_STANDALONE_FIRE_FAULT {e.GetType().Name}: {e.Message}"); }
@@ -160,7 +165,10 @@ public partial class Main
             WorkshopAuthoring.Configure(library, cards.Cards);
             var cycles = 0;
             using var session = await OrcMatchSession.CreateFromCatalogAsync(_catalog.Cards, 7, "opponent-turn-liveness", "unused",
-                sourceDirectory: RuntimeGameData.Directory("nations"), customCards: cards.Cards.ToArray());
+                sourceDirectory: RuntimeGameData.Directory("nations"), customCards: cards.Cards.ToArray(),
+                // 这条验证的前提是"玩家先手、交回合给 AI、AI 交回来"。先手随机后会抽到对手先手，
+                // 第一次 EndTurn 就是 NotYourTurn，测出来的不是 AI 的问题。
+                firstPlayerIndex: 0);
             session.DriveOpponent = true;
             await session.SettleMulliganAsync(false);
             while (cycles < 8 && session.View.Phase != "over")
@@ -171,6 +179,11 @@ public partial class Main
                 // contract is what says play is ours again, so the UI assembly stays engine-free.
                 if (session.View.Phase != "over" && !session.Actions.CanEndTurn)
                     throw new Exception("Opponent kept the turn: play was never handed back.");
+                // AI 行为痕迹：对手在动（手牌减少/场上增多）才说明 AiPilot 真在决策，而非每步 Idle 靠兜底。
+                var view = session.View;
+                GD.Print($"[liveness] cycle={cycles} turn={view.Turn} selfHand={view.SelfHand.Count} " +
+                         $"selfFront={view.SelfLine.Count(c => c.Zone == "frontline" && !c.IsHq)} " +
+                         $"enemyHand={view.EnemyHandCount} enemyBoard={view.EnemyLine.Count(c => !c.IsHq)}");
                 cycles++;
             }
             GD.Print($"OPPONENT_TURN_LIVENESS_OK cycles={cycles} lastRejection={session.LastRejectionReason ?? "none"}");

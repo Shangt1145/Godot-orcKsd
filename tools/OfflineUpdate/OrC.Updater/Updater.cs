@@ -21,7 +21,7 @@ public partial class Updater : Control
         {
             try
             {
-                if(!OS.HasFeature("editor"))Installer.InstallUpdater(OS.GetExecutablePath().GetBaseDir(),args[1]);
+                if(!OS.HasFeature("editor"))Installer.InstallUpdater(OS.GetExecutablePath().GetBaseDir(),args[1],true);
                 await Task.Run(()=>Installer.ApplyAsync(args[1],args[2]));
                 if(Builds.Scan(args[1],"verify").BuildId!=Builds.Scan(args[3],"verify").BuildId)throw new Exception("更新结果不一致。");
                 GD.Print("GODOT_UPDATER_VERIFY_OK exact-files native-offline-ui-core");GetTree().Quit();
@@ -32,7 +32,7 @@ public partial class Updater : Control
         var margin=new MarginContainer();AddChild(margin);margin.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         foreach(var edge in new[]{"left","right","top","bottom"})margin.AddThemeConstantOverride("margin_"+edge,30);
         var column=new VBoxContainer();column.AddThemeConstantOverride("separation",16);margin.AddChild(column);
-        var title=Text(column,"OrC-KSD  离线更新",30);title.Modulate=new Color("d5c28c");
+        var title=Text(column,"OrC-KSD  离线更新 1.1",30);title.Modulate=new Color("d5c28c");
         Text(column,"选择补丁，点击更新。卡组、DIY 卡和导入卡图会保留。",16);
         _folder=Text(column,"",16);_chooseFolder=Button(column,"选择游戏文件夹…",()=>Choose(true));
         _package=Text(column,"尚未选择补丁",16);_choosePatch=Button(column,"选择离线补丁…",()=>Choose(false));
@@ -84,9 +84,11 @@ public partial class Updater : Control
     {
             try
             {
-                var p=PatchBuilder.Inspect(path);_patch=path;
-                _details.Text=$"{p.Source.Version} → {p.Target.Version}\n构建 {p.Source.BuildId[..12]} → {p.Target.BuildId[..12]} · 补丁 {new System.IO.FileInfo(path).Length/1048576d:F1} MB";
-                _status.Text="更新器会检查文件；请先保存进度并关闭游戏。";
+                var variants=PatchBuilder.InspectAll(path);var p=variants[0];_patch=path;
+                _details.Text=variants.Length==1
+                    ?$"{p.Source.Version} → {p.Target.Version}\n构建 {p.Source.BuildId[..12]} → {p.Target.BuildId[..12]} · 补丁 {new System.IO.FileInfo(path).Length/1048576d:F1} MB"
+                    :$"兼容更新 · 自动识别 {variants.Length} 个来源构建 → {p.Target.Version}（{p.Target.BuildId[..12]}）\n支持：{string.Join("、",variants.Select(v=>v.Source.BuildId[..12]))} · 补丁 {new System.IO.FileInfo(path).Length/1048576d:F1} MB";
+                _status.Text="会按本地实际文件自动匹配来源；请先保存进度并关闭游戏。";
             }
             catch(Exception e){_patch="";_status.Text=e.Message;}
             Refresh();
@@ -117,10 +119,10 @@ public partial class Updater : Control
             {
                 await Task.Run(async()=>
                 {
-                    if(!OS.HasFeature("editor"))Installer.InstallUpdater(OS.GetExecutablePath().GetBaseDir(),_install);
+                    if(!OS.HasFeature("editor"))Installer.InstallUpdater(OS.GetExecutablePath().GetBaseDir(),_install,true);
                     await Installer.ApplyAsync(_install,_patch,progress:progress,ct:_cancelUpdate.Token);
                 });
-                _status.Text="更新完成，可以启动游戏。";_progress.Value=100;
+                _status.Text="更新完成，可以启动游戏。请保留此新版更新器，今后继续用它更新。";_progress.Value=100;
             }
             success=true;
         }

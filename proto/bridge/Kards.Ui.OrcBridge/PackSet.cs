@@ -20,7 +20,7 @@ public sealed record PackSet(AssetCatalogSnapshot Snapshot, IReadOnlyList<CardPa
         ArgumentNullException.ThrowIfNull(snapshot);
         return new PackSet(
             snapshot,
-            snapshot.CardPacks.Select(p => CardPackLoader.Load(p.RootDirectory, p.Manifest)).ToArray());
+            snapshot.CardPacks.Select(p => OrcEngineHost.LoadPackContent(p.RootDirectory, p.Manifest)).ToArray());
     }
 
     /// <summary>空集（无卡包）——仍带快照（插件/判定器/投影提供者需要它）。</summary>

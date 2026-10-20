@@ -17,11 +17,14 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     internal Label OrcNotice = null!, _trigger = null!;
     internal ScrollContainer EditorScroll = null!;
     internal IReadOnlyList<EffectRow> EffectRows => _effects;
+    internal IReadOnlyList<OrcEffectRow> StructureRows => _orcRows;
     /// <summary>每次编辑实时上抛（主编辑器把结果并回草稿并刷新预览）。</summary>
     public event Action<OrcEffectDraft[], DiyEffectDraft[]>? Applied;
     /// <summary>「完成」返回主编辑器（Main 负责 Show 切屏）。</summary>
     public event Action? Finished;
     public event Action? DraftTouched;
+    private VBoxContainer _counterBox=null!;
+    private string _counterSignature="";
     private string _cardId = "diy/none", _cardType = "unit";
     private bool _loading;
     private readonly List<OrcEffectRow> _orcRows = [];
@@ -29,6 +32,12 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     private VBoxContainer _orcBox = null!, _effectBox = null!;
     private TextEdit _dslView = null!;
     private Label _dslNotice = null!;
+    internal Label CapabilitySummary=null!;
+    private Label _cardCapability=null!;
+    private Label _editingCard=null!;
+    internal TabContainer EditorTabs=>_editorTabs;
+    internal VBoxContainer CounterReferences=>_counterBox;
+    internal TextEdit CompilationReport=>_dslView;
     private Godot.Timer _orcTimer = null!;
     private readonly List<string> _history = [];
     private int _historyPos = -1;
@@ -49,27 +58,31 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         var heading = new HBoxContainer(); AddChild(heading);
         var legacyTools=new HBoxContainer();
         var title = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; heading.AddChild(title);
-        title.AddChild(UiStyles.Label("效果编辑器", 26, UiStyles.Gold));
-        title.AddChild(UiStyles.Label("先选发生时机，再组合动作。修改会保留在草稿中。", 13, UiStyles.Dim));
-        UndoButton = UiStyles.Button("撤销", Undo); legacyTools.AddChild(UndoButton);
-        RedoButton = UiStyles.Button("重做", Redo); legacyTools.AddChild(RedoButton);
+        title.AddChild(MenuStyles.Label("效果搭建", 30, MenuStyles.Ink));
+        _editingCard=MenuStyles.Label("先选时机，再设条件与动作。",13,MenuStyles.Dim);title.AddChild(_editingCard);
+        UndoButton = MenuStyles.Button("撤销", Undo); legacyTools.AddChild(UndoButton);
+        RedoButton = MenuStyles.Button("重做", Redo); legacyTools.AddChild(RedoButton);
         RecipePick = DiyEditorScreen.Option(new[] { new UiDiyChoice("", "从常见效果开始…") }
             .Concat(OrcEffectEditing.Recipes.Select((r, i) => new UiDiyChoice(i.ToString(), r.Name))).ToArray());
         legacyTools.AddChild(RecipePick);
-        legacyTools.AddChild(UiStyles.Button("添加", () =>
+        legacyTools.AddChild(MenuStyles.Button("添加", () =>
         {
             if (RecipePick.Selected <= 0) { OrcNotice.Text = "先选一个常见效果。"; return; }
             AddOrc(OrcEffectEditing.Recipes[RecipePick.Selected - 1].Effect);
             OrcNotice.Text = "已添加「" + OrcEffectEditing.Recipes[RecipePick.Selected - 1].Name + "」。";
         }));
-        FinishButton = UiStyles.Button("完成", () => {if(NativeInspector.CommitPendingRaw())Finished?.Invoke();}); heading.AddChild(FinishButton);
-        SaveButton=UiStyles.Button("保存卡牌",SaveNative);heading.AddChild(SaveButton);
-        _editorTabs=new TabContainer{TabsVisible=false,SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_editorTabs);
-        NativeInspector=new NativeEffectInspector{Name="效果搭建"};NativeInspector.Initialize();_editorTabs.AddChild(NativeInspector);
+        FinishButton = MenuStyles.Button("完成", () => {if(NativeInspector.CommitPendingRaw())Finished?.Invoke();}); heading.AddChild(FinishButton);
+        SaveButton=MenuStyles.Button("保存卡牌",SaveNative);heading.AddChild(SaveButton);
+        MenuStyles.Primary(SaveButton);
+        CapabilitySummary=MenuStyles.Label("正在检查效果…",15,MenuStyles.Gold);AddChild(CapabilitySummary);
+        _cardCapability=MenuStyles.Label("",12,new("dca58b"));_cardCapability.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_cardCapability);
+        _editorTabs=new TabContainer{TabsVisible=true,SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_editorTabs);
+        NativeInspector=new NativeEffectInspector{Name="图形搭建"};NativeInspector.Initialize();_editorTabs.AddChild(NativeInspector);
         NativeInspector.Edited+=NativeChanged;
+        NativeInspector.CountersRequested+=()=>_editorTabs.CurrentTab=3;
         NativeInspector.RawEdited+=()=>DraftTouched?.Invoke();
 
-        var body = new HBoxContainer { Name="旧结构兼容", SizeFlagsVertical = SizeFlags.ExpandFill }; _editorTabs.AddChild(body);
+        var body = new HBoxContainer { Name="结构编辑", SizeFlagsVertical = SizeFlags.ExpandFill }; _editorTabs.AddChild(body);
         var editPanel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
         body.AddChild(editPanel);
         var margin = new MarginContainer();
@@ -78,47 +91,54 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         editPanel.AddChild(margin);
         var editColumn = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
         margin.AddChild(editColumn);editColumn.AddChild(legacyTools);
-        OrcNotice = UiStyles.Label("", 12, UiStyles.Dim);
+        OrcNotice = MenuStyles.Label("", 12, MenuStyles.Dim);
         OrcNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; AddChild(OrcNotice);
         var editScroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
         editColumn.AddChild(editScroll); EditorScroll = editScroll;
         var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         form.AddThemeConstantOverride("separation", 10); editScroll.AddChild(form);
 
-        var structureSec = Section(form, "效果结构（Inspector，可编辑）");
-        structureSec.AddChild(UiStyles.Label("结构是编译真源；规则文本不随结构修改回写（改卡面文字请回卡牌编辑器）。", 12, UiStyles.Dim));
+        var variables=Section(form,"本卡引用的计数器");
+        var variableHint=MenuStyles.Label(OrcCounterCodegen.Notice,12,MenuStyles.Dim);variableHint.AutowrapMode=TextServer.AutowrapMode.WordSmart;variables.AddChild(variableHint);
+        _counterBox=new VBoxContainer();variables.AddChild(_counterBox);
+        var structureSec = Section(form, "时机、条件与动作");
+        structureSec.AddChild(MenuStyles.Label("结构是编译真源；规则文本不随结构修改回写（改卡面文字请回卡牌编辑器）。", 12, MenuStyles.Dim));
         _orcBox = new VBoxContainer(); _orcBox.AddThemeConstantOverride("separation", 10); structureSec.AddChild(_orcBox);
-        AddOrcButton = UiStyles.Button("＋ 再加一条效果", () => AddOrc(new OrcEffectDraft()));
+        AddOrcButton = MenuStyles.Button("＋ 再加一条效果", () => AddOrc(new OrcEffectDraft()));
         structureSec.AddChild(AddOrcButton);
 
         var legacySec = Section(form, "简易效果行（旧卡兼容）");
-        legacySec.AddChild(UiStyles.Label("九宫格行编辑器，表达不了引擎 21 动作面；新效果请用上方结构编辑。", 12, UiStyles.Dim));
-        _trigger = UiStyles.Label("", 14, UiStyles.Gold); legacySec.AddChild(_trigger);
+        legacySec.AddChild(MenuStyles.Label("九宫格行编辑器，表达不了引擎 21 动作面；新效果请用上方结构编辑。", 12, MenuStyles.Dim));
+        _trigger = MenuStyles.Label("", 14, MenuStyles.Gold); legacySec.AddChild(_trigger);
         _effectBox = new VBoxContainer(); legacySec.AddChild(_effectBox);
-        AddEffectButton = UiStyles.Button("＋ 添加效果", () => AddEffect(new()));
+        AddEffectButton = MenuStyles.Button("＋ 添加效果", () => AddEffect(new()));
         legacySec.AddChild(AddEffectButton);
 
         // ── 最右侧：原始 DSL（编译产物，实时刷新）──
-        var dslPanel = new PanelContainer { CustomMinimumSize = new(390, 0), SizeFlagsVertical = SizeFlags.ExpandFill };
-        body.AddChild(dslPanel);
+        var dslPanel = new PanelContainer { Name="编译结果", SizeFlagsHorizontal=SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
+        _editorTabs.AddChild(dslPanel);
         var dslMargin = new MarginContainer();
         foreach (var (name, value) in new[] { ("margin_left", 12), ("margin_top", 8), ("margin_right", 12), ("margin_bottom", 12) })
             dslMargin.AddThemeConstantOverride(name, value);
         dslPanel.AddChild(dslMargin);
         var dslColumn = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
         dslMargin.AddChild(dslColumn);
-        dslColumn.AddChild(UiStyles.Label("原始 DSL（编译产物）", 16, UiStyles.Gold));
-        dslColumn.AddChild(UiStyles.Label("当前结构的引擎效果 DSL，编辑结构即实时更新；可直接复制给引擎工具核对。", 12, UiStyles.Dim));
+        dslColumn.AddChild(MenuStyles.Label("原始 DSL（编译产物）", 16, MenuStyles.Gold));
+        dslColumn.AddChild(MenuStyles.Label("当前结构的引擎效果 DSL，编辑结构即实时更新；可直接复制给引擎工具核对。", 12, MenuStyles.Dim));
         _dslView = new TextEdit
         {
             Editable = false, WrapMode = TextEdit.LineWrappingMode.Boundary,
             SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new(360, 300)
+            CustomMinimumSize = new(0, 160)
         };
         dslColumn.AddChild(_dslView);
-        _dslNotice = UiStyles.Label("", 12, UiStyles.Dim);
+        _dslNotice = MenuStyles.Label("", 12, MenuStyles.Dim);
         _dslNotice.AutowrapMode = TextServer.AutowrapMode.WordSmart; dslColumn.AddChild(_dslNotice);
-        dslColumn.AddChild(UiStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(_dslView.Text)));
+        dslColumn.AddChild(MenuStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(_dslView.Text)));
+        var countersPage=new ScrollContainer{Name="对局计数器",SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled};
+        _editorTabs.AddChild(countersPage);
+        var variablesPanel=variables.GetParent().GetParent<PanelContainer>();variablesPanel.Reparent(countersPage);
+        variablesPanel.SizeFlagsHorizontal=SizeFlags.ExpandFill;
         _orcTimer = new Godot.Timer { OneShot = true, WaitTime = 0.5 }; AddChild(_orcTimer);
         _orcTimer.Timeout += ()=>{OrcCheck();RefreshDsl();};
     }
@@ -127,7 +147,8 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     internal void ShowCompatibility(){_editorTabs.TabsVisible=true;_editorTabs.CurrentTab=1;}
     public void Open(DiyCardDraft draft)
     {
-        _openedDraft=draft.Snapshot();
+        _openedDraft=draft.Snapshot();_counterSignature="";
+        _editingCard.Text="正在编辑："+draft.Name+"  ·  修改实时保留在草稿，保存后生效。";
         _cardId = draft.Id; _cardType = draft.CardType;
         _loading = true;
         foreach (var row in _orcRows) { _orcBox.RemoveChild(row); row.QueueFree(); } _orcRows.Clear();
@@ -140,8 +161,8 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         _loading = false; Snap();
         OrcCheck(); RefreshDsl();
         NativeInspector.Catalog=Catalog;_nativeSync=true;NativeInspector.Open(InspectorCardRecord.FromDraft(draft));_nativeSync=false;
-        _editorTabs.TabsVisible=draft.OrcEffects.Any(e=>e.DesktopJson is null)||draft.Effects.Length>0;
-        _editorTabs.CurrentTab=draft.OrcEffects.Any(e=>e.DesktopJson is null)||draft.Effects.Length>0?1:0;
+        _editorTabs.TabsVisible=true;
+        _editorTabs.CurrentTab=0;
     }
 
     private void NativeChanged()
@@ -151,13 +172,12 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         try
         {
             var updated=InspectorCardRecord.ApplyRecord(_openedDraft,NativeInspector.Document.Element());
-            // Old finite declarations stay in their dedicated compatibility tab until explicitly replaced.
-            var retained=OrcDrafts().Where(e=>e.DesktopJson is null).ToArray();
-            updated=updated with {OrcEffects=updated.OrcEffects.Concat(retained).ToArray(),Effects=LegacyDrafts()};
             _openedDraft=updated;_cardId=updated.Id;_cardType=updated.CardType;
             _loading=true;
             foreach(var row in _orcRows){_orcBox.RemoveChild(row);row.QueueFree();}_orcRows.Clear();
             foreach(var effect in updated.OrcEffects)AddOrcRow(effect);
+            foreach(var row in _effects){_effectBox.RemoveChild(row);row.QueueFree();}_effects.Clear();
+            foreach(var effect in updated.Effects)AddEffect(effect);
             _loading=false;RenumberOrc();
             DraftEdited?.Invoke(updated);_orcTimer.Start();
         }
@@ -173,7 +193,10 @@ public partial class DiyEffectEditorScreen : VBoxContainer
                 : _openedDraft with {OrcEffects=OrcDrafts(),Effects=LegacyDrafts()};
             InspectorSaved?.Invoke(current);_openedDraft=current.Snapshot();
             var check=DiyCardCompiler.Validate(current,Catalog?.Invoke()??[]);
-            OrcNotice.Text=check.Success?"卡牌已保存，可以用于对局。":"草稿已保存。部分效果暂不能用于对局，详细原因在高级工具中。";
+            var probe=DiyCapability.Probe(current,Catalog?.Invoke()??[]);
+            var blocked=probe.Count(r=>r.Source!="card"&&r.State==DiyPlayability.DraftOnly);
+            OrcNotice.Text=check.Success?"卡牌已保存，可以用于对局。":blocked>0?$"已保存。其中 {blocked} 条效果尚不能进对局（点“仅草稿”看原因）。":"草稿已保存；卡牌本身尚未通过校验："+string.Join("；",check.Errors);
+            OrcCheck();
         }
         catch(Exception e){OrcNotice.Text="保存失败，草稿仍保留："+e.Message;}
     }
@@ -188,7 +211,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         box.AddThemeConstantOverride("separation", 8);
         margin.AddChild(box);
-        box.AddChild(UiStyles.Label(title, 16, UiStyles.Gold));
+        box.AddChild(MenuStyles.Label(title, 16, MenuStyles.Gold));
         return box;
     }
 
@@ -218,7 +241,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     private void RenumberOrc()
     {
         for (var i = 0; i < _orcRows.Count; i++) _orcRows[i].SetIndex(i + 1);
-        AddOrcButton.Disabled = _orcRows.Count >= 8;
+        AddOrcButton.Disabled = _orcRows.Count >= 128;
     }
 
     /// <summary>结构编辑统一入口：快照＋防抖编译校验＋实时写回主编辑器。</summary>
@@ -234,28 +257,47 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     private void LegacyChanged()
     {
         if (_loading) return;
-        Applied?.Invoke(OrcDrafts(), LegacyDrafts());
+        Applied?.Invoke(OrcDrafts(), LegacyDrafts());_orcTimer.Start();
     }
 
     /// <summary>防抖编译校验：逐条编译编辑面，状态行＋行级错误。</summary>
     private void OrcCheck()
     {
-        var drafts = OrcDrafts();
+        var drafts=OrcDrafts();RefreshCounters(drafts);
         NativeInspector.RefreshSourceCheck();
-        if (drafts.Length == 0) { OrcNotice.Text = ""; return; }
-        var compiled = OrcEffectEditing.Compile(_cardId.Replace('/', '.'), drafts);
-        var problems = OrcEffectEditing.Problems(compiled).ToList();
-        if(_editorTabs.CurrentTab==0)
+        var probe=DiyCapability.Probe(_openedDraft with{OrcEffects=drafts,Effects=LegacyDrafts()},Catalog?.Invoke()??[]);
+        var effects=probe.Where(r=>r.Source!="card").ToArray();
+        CapabilitySummary.Text=$"效果 {effects.Length} 条 · 可进对局 {effects.Count(r=>r.State==DiyPlayability.Playable)} · 仅草稿 {effects.Count(r=>r.State==DiyPlayability.DraftOnly)}";
+        _cardCapability.Text=string.Join("；",probe.Where(r=>r.Source=="card").SelectMany(r=>r.Reasons));
+        _cardCapability.Visible=_cardCapability.Text.Length>0;
+        for(var i=0;i<_orcRows.Count;i++)if(probe.FirstOrDefault(r=>r.Source=="structured"&&r.EffectIndex==i) is { } row)_orcRows[i].SetCapability(row);
+        for(var i=0;i<_effects.Count;i++)if(probe.FirstOrDefault(r=>r.Source=="legacy"&&r.EffectIndex==i) is { } row)_effects[i].SetCapability(row);
+        var visible=probe.Where(r=>r.Source=="structured").Concat(probe.Where(r=>r.Source=="legacy").Select(r=>r with{EffectIndex=drafts.Length+r.EffectIndex})).ToArray();
+        NativeInspector.SetCapabilities(visible);
+        if(effects.Any(r=>r.State==DiyPlayability.DraftOnly))OrcNotice.Text="点效果标题旁的“仅草稿”查看具体原因。";
+    }
+
+    private void RefreshCounters(OrcEffectDraft[] drafts)
+    {
+        var names=OrcCounterCodegen.CountersIn(drafts);var signature=string.Join("\n",names);
+        if(signature==_counterSignature&&_counterBox.GetChildCount()>0)return;
+        _counterSignature=signature;MenuStyles.Clear(_counterBox);
+        if(names.Count==0)_counterBox.AddChild(MenuStyles.Label("添加计数器动作，或勾选“数值来自计数器”后，这里会列出本卡引用。",12,MenuStyles.Dim));
+        foreach(var name in names)
         {
-            var admission=DiyCardCompiler.Validate(_openedDraft with {OrcEffects=drafts,Effects=LegacyDrafts()},Catalog?.Invoke()??[]);
-            problems.AddRange(admission.Errors.Where(e=>!problems.Contains(e)));
+            var row=new HBoxContainer();_counterBox.AddChild(row);
+            var input=new LineEdit{Text=name,MaxLength=40,SizeFlagsHorizontal=SizeFlags.ExpandFill};row.AddChild(input);
+            row.AddChild(MenuStyles.Button("重命名引用",()=>
+            {
+                try
+                {
+                    var renamed=OrcCounterCodegen.Rename(OrcDrafts(),name,input.Text);
+                    _loading=true;foreach(var old in _orcRows){_orcBox.RemoveChild(old);old.QueueFree();}_orcRows.Clear();
+                    foreach(var effect in renamed)AddOrcRow(effect);_loading=false;OrcChanged();OrcCheck();
+                }
+                catch(Exception error){_loading=false;OrcNotice.Text=error.Message;}
+            }));
         }
-        for (var i = 0; i < _orcRows.Count; i++)
-            _orcRows[i].SetError(i < compiled.Count ? compiled[i].Error : null);
-        OrcNotice.Text = !NativeInspector.AdvancedVisible ? (problems.Count==0?"设置已通过规则检查，保存后即可用于对局。":"还有设置需要检查，或存在规则暂不支持的效果。草稿可以保留，详情见高级工具。") : problems.Count == 0
-            ? $"编译通过：{drafts.Length} 条效果。回卡牌编辑器保存后进对局生效。"
-            : $"{problems.Count} 项需要检查：{string.Join("；", problems.Take(3))}";
-        OrcNotice.AddThemeColorOverride("font_color", problems.Count == 0 ? UiStyles.Dim : new Color("dca58b"));
     }
 
     private OrcEffectDraft[] OrcDrafts() => _orcRows.Select(r => r.Read()).ToArray();
@@ -274,7 +316,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         var compiled = OrcEffectEditing.Compile(_cardId.Replace('/', '.'), drafts);
         _dslView.Text = string.Join("\n\n", compiled.Select((e, i) =>
             e.Error is null
-                ? $"// 效果 {i + 1}（{OrcEffectEditing.Templates.FirstOrDefault(t => t.Id == e.Draft.Template && t.Guard.ToString() == e.Draft.Guard)?.Label ?? e.Draft.Template}）\n{e.JsonText}"
+                ? $"// 效果 {i + 1}（{OrcEffectEditing.Templates.FirstOrDefault(t => t.Id == e.Draft.Template && t.Guard.ToString() == e.Draft.Guard)?.Label ?? e.Draft.Template}）\n{System.Text.Json.Nodes.JsonNode.Parse(e.JsonText!)!.ToJsonString(new(){WriteIndented=true,Encoder=System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping})}"
                 : $"// 效果 {i + 1} 编译失败：{e.Error}"));
         var problems = OrcEffectEditing.Problems(compiled);
         NativeInspector.SetEngineReport(_dslView.Text);
@@ -328,6 +370,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         {
             var index = _effects.IndexOf(r); var target = Math.Clamp(index + offset, 0, _effects.Count - 1);
             _effects.RemoveAt(index); _effects.Insert(target, r); _effectBox.MoveChild(r, target); LegacyChanged();
+            GD.Print($"[fx-move] loading={_loading} effects0={LegacyDrafts().FirstOrDefault()?.Op ?? "?"} count={_effects.Count}");
         });
         _effects.Add(row); _effectBox.AddChild(row);
         if (!_loading) LegacyChanged();
@@ -340,22 +383,25 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         internal readonly OptionButton Op, Target, Until;
         internal readonly SpinBox Amount, Attack, Defense;
         private readonly Label _amountLabel, _attackLabel, _defenseLabel;
+        private readonly DiyCapabilityBadge _capability;
+        internal void SetCapability(DiyCapabilityRow row)=>_capability.Set(row);
         private bool _updating;
         internal EffectRow(DiyEffectDraft draft, Action changed, Action<EffectRow> remove, Action<EffectRow, int> move)
         {
             var box = new VBoxContainer(); AddChild(box);
             var top = new HBoxContainer(); box.AddChild(top);
+            _capability=new DiyCapabilityBadge(box);top.AddChild(_capability);
             Op = DiyEditorScreen.Option(DiyCardCompiler.Operations); top.AddChild(Op);
             Target = DiyEditorScreen.Option(DiyCardCompiler.Targets); top.AddChild(Target);
-            top.AddChild(UiStyles.Button("↑", () => move(this, -1)));
-            top.AddChild(UiStyles.Button("↓", () => move(this, 1)));
-            top.AddChild(UiStyles.Button("×", () => remove(this)));
+            top.AddChild(MenuStyles.Button("↑", () => move(this, -1)));
+            top.AddChild(MenuStyles.Button("↓", () => move(this, 1)));
+            top.AddChild(MenuStyles.Button("×", () => remove(this)));
             var values = new HBoxContainer(); box.AddChild(values);
-            _amountLabel = UiStyles.Label("数量", 12, UiStyles.Dim); values.AddChild(_amountLabel);
+            _amountLabel = MenuStyles.Label("数量", 12, MenuStyles.Dim); values.AddChild(_amountLabel);
             Amount = DiyEditorScreen.Number(-20, 99); values.AddChild(Amount);
-            _attackLabel = UiStyles.Label("攻击", 12, UiStyles.Dim); values.AddChild(_attackLabel);
+            _attackLabel = MenuStyles.Label("攻击", 12, MenuStyles.Dim); values.AddChild(_attackLabel);
             Attack = DiyEditorScreen.Number(-20, 20); values.AddChild(Attack);
-            _defenseLabel = UiStyles.Label("防御", 12, UiStyles.Dim); values.AddChild(_defenseLabel);
+            _defenseLabel = MenuStyles.Label("防御", 12, MenuStyles.Dim); values.AddChild(_defenseLabel);
             Defense = DiyEditorScreen.Number(-20, 20); values.AddChild(Defense);
             Until = DiyEditorScreen.Option(DiyCardCompiler.Durations); values.AddChild(Until);
             DiyEditorScreen.Select(Op, draft.Op); DiyEditorScreen.Select(Target, draft.Target); DiyEditorScreen.Select(Until, draft.Until);
@@ -394,8 +440,11 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     {
         private readonly OptionButton _trigger;
         private readonly Label _title, _error;
+        private readonly DiyCapabilityBadge _capability;
+        internal void SetCapability(DiyCapabilityRow row){_capability.Set(row);_error.Text="";}
         private readonly VBoxContainer _opsBox;
         private readonly List<OrcOpRow> _ops = [];
+        internal IReadOnlyList<OrcOpRow> OpRows=>_ops;
         private readonly Action _changed;
         private readonly Action<OrcEffectRow> _remove;
         private readonly Action<OrcEffectRow, int> _move;
@@ -407,19 +456,29 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             _changed = changed; _remove = remove; _move = move;
             var box = new VBoxContainer(); box.AddThemeConstantOverride("separation", 8); AddChild(box);
             var head = new HBoxContainer(); head.AddThemeConstantOverride("separation", 8); box.AddChild(head);
-            _title = UiStyles.Label("效果", 14, UiStyles.Gold); head.AddChild(_title);
-            head.AddChild(UiStyles.Button("↑",()=>_move(this,-1)));
-            head.AddChild(UiStyles.Button("↓",()=>_move(this,1)));
+            _title = MenuStyles.Label("效果", 14, MenuStyles.Gold); head.AddChild(_title);_capability=new DiyCapabilityBadge(box);head.AddChild(_capability);
+            head.AddChild(MenuStyles.Button("↑",()=>_move(this,-1)));
+            head.AddChild(MenuStyles.Button("↓",()=>_move(this,1)));
+            if(draft.PrefabJson is { } nativeJson)
+            {
+                _desktopDraft=draft.Snapshot();_trigger=null!;_opsBox=null!;
+                head.AddChild(MenuStyles.Button("复制预制体",()=>DisplayServer.ClipboardSet(nativeJson)));head.AddChild(MenuStyles.Button("×",()=>_remove(this)));
+                box.AddChild(MenuStyles.Label("原生预制体 · 只读保留。注入时机与效果程序不会被结构行覆盖。",12,MenuStyles.Dim));
+                foreach(var injection in DiyInjectionCatalog.Read(nativeJson))
+                {var label=MenuStyles.Label(injection.Summary+(injection.Error is null?"":"\n"+injection.Error),12,injection.Error is null?MenuStyles.Dim:new Color("dca58b"));label.AutowrapMode=TextServer.AutowrapMode.WordSmart;box.AddChild(label);}
+                var source=new TextEdit{Text=nativeJson,Editable=false,CustomMinimumSize=new(0,180),WrapMode=TextEdit.LineWrappingMode.Boundary};box.AddChild(source);
+                _error=MenuStyles.Label("",12,new("dca58b"));box.AddChild(_error);return;
+            }
             if(draft.DesktopJson is { } graph)
             {
                 _desktopDraft=draft.Snapshot();
-                head.AddChild(UiStyles.Button("复制",()=>DisplayServer.ClipboardSet(_desktopDraft.DesktopJson!)));
-                head.AddChild(UiStyles.Button("×",()=>_remove(this)));
+                head.AddChild(MenuStyles.Button("复制",()=>DisplayServer.ClipboardSet(_desktopDraft.DesktopJson!)));
+                head.AddChild(MenuStyles.Button("×",()=>_remove(this)));
                 _trigger=null!;_opsBox=null!;
-                box.AddChild(UiStyles.Label("完整声明：触发、变量、条件、嵌套效果与未知字段均保留。完整表单位于“完整 Inspector”标签。",12,UiStyles.Dim));
+                box.AddChild(MenuStyles.Label("完整声明：触发、变量、条件、嵌套效果与未知字段均保留。完整表单位于“完整 Inspector”标签。",12,MenuStyles.Dim));
                 var editor=new TextEdit {Text=System.Text.Json.Nodes.JsonNode.Parse(graph)!.ToJsonString(new(){WriteIndented=true}),
                     CustomMinimumSize=new(440,210),SizeFlagsHorizontal=SizeFlags.ExpandFill,WrapMode=TextEdit.LineWrappingMode.Boundary};
-                box.AddChild(editor);_error=UiStyles.Label("",12,new("dca58b"));box.AddChild(_error);
+                box.AddChild(editor);_error=MenuStyles.Label("",12,new("dca58b"));box.AddChild(_error);
                 editor.TextChanged+=()=>
                 {
                     try
@@ -435,19 +494,19 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             }
             _trigger = DiyEditorScreen.Option(OrcEffectEditing.Templates.Select(t => new UiDiyChoice(t.Id + "|" + t.Guard, t.Label)));
             _trigger.CustomMinimumSize = new(250, 34); head.AddChild(_trigger);
-            head.AddChild(UiStyles.Button("×", () => _remove(this)));
+            head.AddChild(MenuStyles.Button("×", () => _remove(this)));
             _opsBox = new VBoxContainer(); _opsBox.AddThemeConstantOverride("separation", 8); box.AddChild(_opsBox);
             var addRow = new HBoxContainer(); addRow.AddThemeConstantOverride("separation", 8); box.AddChild(addRow);
             var pick = DiyEditorScreen.Option(new[] { new UiDiyChoice("", "选择动作…") }
                 .Concat(OrcEffectEditing.Ops.Select(o => new UiDiyChoice(o.Id, o.Label + " · " + o.Group))));
             pick.CustomMinimumSize = new(210, 34); addRow.AddChild(pick);
-            addRow.AddChild(UiStyles.Button("添加动作", () =>
+            addRow.AddChild(MenuStyles.Button("添加动作", () =>
             {
                 if (pick.Selected <= 0) return;
                 AddOp(OrcEffectEditing.Seed(OrcEffectEditing.Ops[pick.Selected - 1].Id));
                 _changed();
             }));
-            _error = UiStyles.Label("", 12, new("dca58b"));
+            _error = MenuStyles.Label("", 12, new("dca58b"));
             _error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(_error);
             foreach (var op in draft.Ops) AddOp(op);
             SelectTrigger(draft);
@@ -500,6 +559,15 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         private readonly SpinBox _selCount = null!, _amount = null!, _count = null!, _attack = null!, _defense = null!, _value = null!;
         private readonly LineEdit _name = null!, _condValue = null!;
         private readonly CheckBox _excludeSelf = null!;
+        internal OptionButton ConditionPick=>_cond;
+        internal readonly OptionButton ConditionComparison=null!;
+        internal readonly SpinBox ConditionNumber=null!;
+        private readonly List<string> _conditionTypes=[];
+        private readonly HFlowContainer _conditionChips=null!;
+        private readonly OptionButton _addConditionType=null!;
+        internal readonly LineEdit CounterName=null!;
+        internal readonly CheckBox CounterAmount=null!;
+        private readonly OrcOpDraft? _unknownDraft;
         private readonly Label _summary = null!;
         private readonly List<(Control Wrap, Func<bool> Show)> _visibility = [];
         private readonly Action _changed;
@@ -510,48 +578,72 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             _changed = changed;
             _info = OrcEffectEditing.Op(draft.Op) ?? OrcEffectEditing.Ops[0];
             var head = new HBoxContainer(); head.AddThemeConstantOverride("separation", 6); AddChild(head);
-            _summary = UiStyles.Label("", 13);
+            _summary = MenuStyles.Label("", 13);
             _summary.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _summary.SizeFlagsHorizontal = SizeFlags.ExpandFill; head.AddChild(_summary);
-            head.AddChild(UiStyles.Button("↑", () => move(this, -1)));
-            head.AddChild(UiStyles.Button("↓", () => move(this, 1)));
-            head.AddChild(UiStyles.Button("×", () => remove(this)));
-            var grid = new GridContainer { Columns = 4 };
-            grid.AddThemeConstantOverride("h_separation", 12); grid.AddThemeConstantOverride("v_separation", 6);
-            AddChild(grid);
+            head.AddChild(MenuStyles.Button("↑", () => move(this, -1)));
+            head.AddChild(MenuStyles.Button("↓", () => move(this, 1)));
+            head.AddChild(MenuStyles.Button("×", () => remove(this)));
+            if(OrcEffectEditing.Op(draft.Op) is null)
+            {
+                _unknownDraft=draft.Snapshot();_summary.Text="未接入的动作："+draft.Op;
+                var note=MenuStyles.Label("这条动作的完整参数已保留。请通过原声明编辑，或移除此动作后重新添加。",12,MenuStyles.Dim);note.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(note);return;
+            }
+            GridContainer Group(string caption,Func<bool> visible)
+            {
+                var panel=new PanelContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};AddChild(panel);
+                panel.AddThemeStyleboxOverride("panel",MenuStyles.Box(MenuStyles.Panel2,MenuStyles.Line,2,12));
+                var column=new VBoxContainer();column.AddThemeConstantOverride("separation",8);panel.AddChild(column);
+                column.AddChild(MenuStyles.Label(caption,12,MenuStyles.Dim));
+                var grid=new GridContainer{Columns=3,SizeFlagsHorizontal=SizeFlags.ExpandFill};column.AddChild(grid);
+                grid.AddThemeConstantOverride("h_separation",14);grid.AddThemeConstantOverride("v_separation",10);
+                Resized+=()=>grid.Columns=Size.X<590?2:3;
+                When(panel,visible);return grid;
+            }
+            var conditions=Group("生效条件",()=>true);
+            _cond=DiyEditorScreen.Option(OrcEffectEditing.Conditions);DiyEditorScreen.Field(conditions,"前提",_cond);
+            _condDim=DiyEditorScreen.Option(OrcEffectEditing.ConditionDims);When(DiyEditorScreen.Field(conditions,"过滤维度",_condDim),()=>V(_cond)==OrcEffectEditing.EventCardFilter);
+            _condValue=new LineEdit{MaxLength=40};When(DiyEditorScreen.Field(conditions,"过滤取值",_condValue),()=>V(_cond)==OrcEffectEditing.EventCardFilter);
+            _conditionChips=new HFlowContainer();var types=new VBoxContainer();types.AddChild(_conditionChips);
+            _addConditionType=DiyEditorScreen.Option(new[]{new UiDiyChoice("","＋ 添加兵种")}.Concat(OrcEffectEditing.UnitTypes.Where(t=>t.Id.Length>0)));
+            types.AddChild(_addConditionType);When(DiyEditorScreen.Field(conditions,"控制的兵种",types),()=>V(_cond)==OrcEffectEditing.OwnerControlsType);
+            ConditionComparison=DiyEditorScreen.Option(OrcEffectEditing.Comparisons);When(DiyEditorScreen.Field(conditions,"比较",ConditionComparison),()=>V(_cond)==OrcEffectEditing.OwnerControlsType);
+            ConditionNumber=DiyEditorScreen.Number(0,20);When(DiyEditorScreen.Field(conditions,"单位数量",ConditionNumber),()=>V(_cond)==OrcEffectEditing.OwnerControlsType);
+            _addConditionType.ItemSelected+=_=>{if(V(_addConditionType) is {Length:>0} type){AddConditionType(type);_addConditionType.Select(0);}};
+            var target=Group("作用对象",()=>_info.Target);
+            _sel=DiyEditorScreen.Option(OrcEffectEditing.Sels);DiyEditorScreen.Field(target,"选择方式",_sel);
+            _side=DiyEditorScreen.Option(OrcEffectEditing.Sides);When(DiyEditorScreen.Field(target,"哪一方",_side),()=>V(_sel)!="self");
+            _selZone=DiyEditorScreen.Option(OrcEffectEditing.SelZones);When(DiyEditorScreen.Field(target,"所在区域",_selZone),()=>V(_sel)!="self");
+            _selCount=DiyEditorScreen.Number(1,10);When(DiyEditorScreen.Field(target,"随机数量",_selCount),()=>V(_sel)=="random");
+            _fUnit=DiyEditorScreen.Option(OrcEffectEditing.UnitTypes);When(DiyEditorScreen.Field(target,"兵种过滤",_fUnit),()=>V(_sel)!="self");
+            _fKeyword=DiyEditorScreen.Option(new[]{new UiDiyChoice("","不限词条")}.Concat(OrcEffectEditing.KeywordChoices));When(DiyEditorScreen.Field(target,"词条过滤",_fKeyword),()=>V(_sel)!="self");
+            _fFaction=DiyEditorScreen.Option(OrcEffectEditing.Factions);When(DiyEditorScreen.Field(target,"国家过滤",_fFaction),()=>V(_sel)!="self");
+            _excludeSelf=new CheckBox{Text="排除本单位"};When(DiyEditorScreen.Field(target,"其他限制",_excludeSelf),()=>V(_sel)!="self");
+            var counter=Group("对局计数器",()=>_info.Id.StartsWith("counter.",StringComparison.Ordinal)||_info.Id is "damage" or "buff");
+            CounterAmount=new CheckBox{Text="使用计数器数值"};When(DiyEditorScreen.Field(counter,"数值来源",CounterAmount),()=>_info.Id is "damage" or "buff");
+            CounterName=new LineEdit{MaxLength=40,PlaceholderText="例如：阵亡数"};When(DiyEditorScreen.Field(counter,"计数器名称（本局共享）",CounterName),()=>_info.Id.StartsWith("counter.",StringComparison.Ordinal)||CounterAmount.ButtonPressed);
+            var values=Group("数值与期限",()=>_info.Amount||_info.Count||_info.AttackDefense||_info.Keyword||_info.Name||_info.Zone||_info.Until);
+            _amount=DiyEditorScreen.Number(_info.AmountMin,Math.Max(_info.AmountMax,_info.AmountMin));When(DiyEditorScreen.Field(values,_info.AmountLabel is {Length:>0}?_info.AmountLabel:"数值",_amount),()=>_info.Amount&&!CounterAmount.ButtonPressed);
+            _count=DiyEditorScreen.Number(1,10);When(DiyEditorScreen.Field(values,"张数",_count),()=>_info.Count);
+            _attack=DiyEditorScreen.Number(-20,20);When(DiyEditorScreen.Field(values,"攻击增减 / 计数倍数",_attack),()=>_info.AttackDefense);
+            _defense=DiyEditorScreen.Number(-20,20);When(DiyEditorScreen.Field(values,"防御增减 / 计数倍数",_defense),()=>_info.AttackDefense);
+            _keyword=DiyEditorScreen.Option(OrcEffectEditing.KeywordChoices);When(DiyEditorScreen.Field(values,"获得的词条",_keyword),()=>_info.Keyword);
+            _value=DiyEditorScreen.Number(0,99);When(DiyEditorScreen.Field(values,"词条参值（0＝无）",_value),()=>_info.Keyword);
+            _name=new LineEdit{MaxLength=40};When(DiyEditorScreen.Field(values,"完整卡名",_name),()=>_info.Name);
+            _opZone=DiyEditorScreen.Option(OrcEffectEditing.OpZones);When(DiyEditorScreen.Field(values,"移动落点",_opZone),()=>_info.Zone);
+            _until=DiyEditorScreen.Option(OrcEffectEditing.UntilChoices);When(DiyEditorScreen.Field(values,"持续时间",_until),()=>_info.Until);
 
-            // 参数面：每个控件带小标签（标签在上），按 op 目录显隐——挤在一起的可读性问题在源头杜绝。
-            _sel = DiyEditorScreen.Option(OrcEffectEditing.Sels); When(DiyEditorScreen.Field(grid, "选靶方式", _sel), () => _info.Target);
-            _side = DiyEditorScreen.Option(OrcEffectEditing.Sides); When(DiyEditorScreen.Field(grid, "阵营", _side), () => _info.Target && V(_sel) != "self");
-            _selZone = DiyEditorScreen.Option(OrcEffectEditing.SelZones); When(DiyEditorScreen.Field(grid, "区域", _selZone), () => _info.Target && V(_sel) != "self");
-            _selCount = DiyEditorScreen.Number(1, 10); When(DiyEditorScreen.Field(grid, "数量", _selCount), () => _info.Target && V(_sel) == "random");
-            _fUnit = DiyEditorScreen.Option(OrcEffectEditing.UnitTypes); When(DiyEditorScreen.Field(grid, "限兵种", _fUnit), () => _info.Target && V(_sel) != "self");
-            _fKeyword = DiyEditorScreen.Option(new[] { new UiDiyChoice("", "不限词条") }.Concat(OrcEffectEditing.KeywordChoices));
-            When(DiyEditorScreen.Field(grid, "限词条", _fKeyword), () => _info.Target && V(_sel) != "self");
-            _fFaction = DiyEditorScreen.Option(OrcEffectEditing.Factions); When(DiyEditorScreen.Field(grid, "限阵营", _fFaction), () => _info.Target && V(_sel) != "self");
-            _excludeSelf = new CheckBox { Text = "排除自身" }; When(DiyEditorScreen.Field(grid, "排除自身", _excludeSelf), () => _info.Target && V(_sel) != "self");
-            _amount = DiyEditorScreen.Number(_info.AmountMin, Math.Max(_info.AmountMax, _info.AmountMin));
-            When(DiyEditorScreen.Field(grid, _info.AmountLabel is { Length: > 0 } ? _info.AmountLabel : "数值", _amount), () => _info.Amount);
-            _count = DiyEditorScreen.Number(1, 10); When(DiyEditorScreen.Field(grid, "张数", _count), () => _info.Count);
-            _attack = DiyEditorScreen.Number(-20, 20); When(DiyEditorScreen.Field(grid, "攻击增减", _attack), () => _info.AttackDefense);
-            _defense = DiyEditorScreen.Number(-20, 20); When(DiyEditorScreen.Field(grid, "防御增减", _defense), () => _info.AttackDefense);
-            _keyword = DiyEditorScreen.Option(OrcEffectEditing.KeywordChoices); When(DiyEditorScreen.Field(grid, "词条", _keyword), () => _info.Keyword);
-            _value = DiyEditorScreen.Number(0, 99); When(DiyEditorScreen.Field(grid, "词条参值（0＝无）", _value), () => _info.Keyword);
-            _name = new LineEdit { MaxLength = 40 }; When(DiyEditorScreen.Field(grid, "卡名（需与卡牌全名一致）", _name), () => _info.Name);
-            _opZone = DiyEditorScreen.Option(OrcEffectEditing.OpZones); When(DiyEditorScreen.Field(grid, "落点", _opZone), () => _info.Zone);
-            _until = DiyEditorScreen.Option(OrcEffectEditing.UntilChoices); When(DiyEditorScreen.Field(grid, "期限", _until), () => _info.Until);
-            _cond = DiyEditorScreen.Option(OrcEffectEditing.Conditions); When(DiyEditorScreen.Field(grid, "条件", _cond), () => true);
-            _condDim = DiyEditorScreen.Option(OrcEffectEditing.ConditionDims); When(DiyEditorScreen.Field(grid, "过滤维度", _condDim), () => V(_cond) == OrcEffectEditing.EventCardFilter);
-            _condValue = new LineEdit { MaxLength = 40 }; When(DiyEditorScreen.Field(grid, "过滤取值", _condValue), () => V(_cond) == OrcEffectEditing.EventCardFilter);
 
             Load(draft);
-            foreach (var option in new[] { _sel, _side, _selZone, _fUnit, _fKeyword, _fFaction, _keyword, _opZone, _until, _cond, _condDim })
+            foreach (var option in new[] { _sel, _side, _selZone, _fUnit, _fKeyword, _fFaction, _keyword, _opZone, _until, _cond, _condDim,ConditionComparison })
                 option.ItemSelected += _ => { if (!_mute) { UpdateVisibility(); _changed(); } };
-            foreach (var spin in new[] { _selCount, _amount, _count, _attack, _defense, _value })
-                spin.ValueChanged += _ => { if (!_mute) _changed(); };
-            _name.TextChanged += _ => { if (!_mute) _changed(); };
-            _condValue.TextChanged += _ => { if (!_mute) _changed(); };
-            _excludeSelf.Toggled += _ => { if (!_mute) _changed(); };
+            foreach (var spin in new[] { _selCount, _amount, _count, _attack, _defense, _value,ConditionNumber })
+                spin.ValueChanged += _ => { if (!_mute) {UpdateVisibility();_changed();} };
+            CounterName.TextChanged+=_=>{if(!_mute){UpdateVisibility();_changed();}};
+            CounterAmount.Toggled+=_=>{if(!_mute){UpdateVisibility();_changed();}};
+            _name.TextChanged += _ => { if (!_mute) {UpdateVisibility();_changed();} };
+            _condValue.TextChanged += _ => { if (!_mute) {UpdateVisibility();_changed();} };
+            _excludeSelf.Toggled += _ => { if (!_mute) {UpdateVisibility();_changed();} };
             UpdateVisibility();
             _mute = false;
         }
@@ -571,6 +663,9 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             DiyEditorScreen.Select(_opZone, draft.OpZone ?? "frontline"); DiyEditorScreen.Select(_until, draft.Until ?? "");
             DiyEditorScreen.Select(_cond, draft.Condition ?? ""); DiyEditorScreen.Select(_condDim, Dims(draft.ConditionRaw).dim);
             _condValue.Text = Dims(draft.ConditionRaw).value;
+            _conditionTypes.Clear();_conditionTypes.AddRange(draft.CondUnitTypes??[]);RefreshConditionChips();
+            DiyEditorScreen.Select(ConditionComparison,draft.CondComparison??">=");ConditionNumber.Value=draft.CondValue??0;
+            CounterName.Text=draft.Counter??"";CounterAmount.ButtonPressed=draft.AmountFromCounter;
         }
 
         private static (string dim, string value) Dims(string? raw)
@@ -580,7 +675,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             return split < 0 ? ("keyword", raw) : (raw[..split], raw[(split + 1)..]);
         }
 
-        internal OrcOpDraft Read() => new()
+        internal OrcOpDraft Read() => _unknownDraft?.Snapshot() ?? new()
         {
             Op = _info.Id,
             Sel = _info.Target ? V(_sel) : null,
@@ -602,7 +697,22 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             Until = _info.Until ? Null(V(_until)) : null,
             Condition = Null(V(_cond)),
             ConditionRaw = V(_cond) == OrcEffectEditing.EventCardFilter ? V(_condDim) + ":" + _condValue.Text.Trim() : null,
+            CondUnitTypes=V(_cond)==OrcEffectEditing.OwnerControlsType?_conditionTypes.ToArray():null,
+            CondComparison=V(_cond)==OrcEffectEditing.OwnerControlsType?V(ConditionComparison):null,
+            CondValue=V(_cond)==OrcEffectEditing.OwnerControlsType?(int)ConditionNumber.Value:null,
+            Counter=_info.Id.StartsWith("counter.",StringComparison.Ordinal)||CounterAmount.ButtonPressed?CounterName.Text:null,
+            AmountFromCounter=(_info.Id is "damage" or "buff")&&CounterAmount.ButtonPressed,
         };
+        internal void AddConditionType(string type)
+        {
+            if(!_conditionTypes.Contains(type))_conditionTypes.Add(type);RefreshConditionChips();if(!_mute)_changed();
+        }
+        private void RefreshConditionChips()
+        {
+            MenuStyles.Clear(_conditionChips);
+            foreach(var type in _conditionTypes.ToArray())
+                _conditionChips.AddChild(MenuStyles.Button((OrcEffectEditing.UnitTypes.FirstOrDefault(t=>t.Id==type)?.Label??type)+" ×",()=>{_conditionTypes.Remove(type);RefreshConditionChips();if(!_mute)_changed();}));
+        }
 
         private void UpdateVisibility()
         {

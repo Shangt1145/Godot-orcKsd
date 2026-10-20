@@ -106,18 +106,9 @@ public partial class BattleScreen : Control
         _canvas.AddChild(menu);
         var popup = menu.GetPopup();
         _menu = popup;
-        popup.AddItem("图鉴", 0); popup.AddItem("设置", 1); popup.AddSeparator(); popup.AddItem("重新布阵", 2);
-        popup.AddItem("步兵攻击演示", 3); popup.AddItem("坦克攻击演示", 4); popup.AddItem("火炮攻击演示", 5);
-        popup.AddItem("战斗机攻击演示", 6); popup.AddItem("轰炸机攻击演示", 7); popup.AddItem("总部摧毁演示", 8);
-        popup.AddItem("飞机摧毁演示", 9);
-        popup.AddItem("太空战机攻击演示", 10); popup.AddItem("太空战舰攻击演示", 11);
+        popup.AddItem("图鉴", 0); popup.AddItem("设置", 1);
         popup.AddSeparator();
-        popup.AddItem("抽牌演示", 12); popup.AddItem("连续抽牌演示", 13); popup.AddItem("对手抽牌演示", 14);
-        popup.AddItem("指令揭示演示", 15); popup.AddItem("多目标指令演示", 16); popup.AddItem("对手指令演示", 17);
-        popup.AddSeparator(); popup.AddItem("反制武装演示", 18); popup.AddItem("取消武装演示", 19);
-        popup.AddItem("反制触发演示", 20); popup.AddItem("治疗演示", 21); popup.AddItem("强化演示", 22);
-        popup.AddItem("压制与解除演示", 23); popup.AddItem("费用变化演示", 24);
-        popup.AddSeparator(); popup.AddItem("返回主菜单", 31); popup.AddItem("卡组构筑", 27); popup.AddItem("我的卡组", 28); popup.AddItem("开始新对局", 25);
+        popup.AddItem("返回主菜单", 31); popup.AddItem("卡组构筑", 27); popup.AddItem("我的卡组", 28); popup.AddItem("开始新对局", 25);
         popup.AddItem("认输", 29);
         popup.AddItem("DIY 卡牌", 30);
         _concedeDialog = new ConfirmationDialog { Title = "认输", DialogText = "确认认输并结束本局？", Exclusive = true };
@@ -134,12 +125,6 @@ public partial class BattleScreen : Control
             else if (id == 25) RealMatchRequested?.Invoke();
             else if (id == 0) NavigationRequested?.Invoke("collection");
             else if (id == 1) NavigationRequested?.Invoke("settings");
-            else if (id == 2) ResetDemo();
-            else if (id == 9) StartScenario("tank", false, "fighter");
-            else if (id is 10 or 11) StartScenario(id == 10 ? "spacefighter" : "landcruiser");
-            else if (id is >= 12 and <= 17) _ = StartPresentationScenarioAsync(new[] { "draw", "draw-two", "enemy-draw", "order", "multi-order", "enemy-order" }[(int)id - 12]);
-            else if (id is >= 18 and <= 24) _ = StartPresentationScenarioAsync(new[] { "counter-arm", "counter-disarm", "counter-trigger", "status-heal", "status-buff", "status-suppressed", "status-cost" }[(int)id - 18]);
-            else StartScenario(new[] { "infantry", "tank", "artillery", "fighter", "bomber", "artillery" }[(int)id - 3], id == 8);
         };
         _history = new Control { Position = new(31, 226), Size = new(70, 260), MouseFilter = MouseFilterEnum.Ignore }; _canvas.AddChild(_history);
         var historyToggle = new BattleHistoryButton { Position = new(30, 119), Size = new(36, 30), Flat = true, TooltipText = "行动记录", ToggleMode = true, ButtonPressed = true };
@@ -263,7 +248,6 @@ public partial class BattleScreen : Control
         _deckCount.Text = state.SelfDeckCount.ToString();
         UpdateEndTurnButton();
         _result.Visible = state.Phase == "over";
-        foreach (var id in Enumerable.Range(2, 23)) _menu.SetItemDisabled(_menu.GetItemIndex(id), !_usingDemo);
         if (_result.Visible)
         {
             UiStyles.Clear(_result);
@@ -307,7 +291,8 @@ public partial class BattleScreen : Control
         AddRow(state.Phase == "over" && state.EnemyHq?.Health <= 0 ? null : state.EnemyHq, enemyLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), EnemyArea);
         AddRow(null, OrderFront(enemyLine.Concat(selfLine).Where(c => c.Zone == "frontline")), FrontArea);
         AddRow(state.Phase == "over" && state.SelfHq?.Health <= 0 ? null : state.SelfHq, selfLine.Where(c => c.Zone != "frontline").OrderBy(c => c.SlotIndex).ToArray(), SelfArea);
-        var hand = state.SelfHand.OrderBy(c => c.SlotIndex).ToArray();
+        var onboard = selfLine.Concat(enemyLine).Select(c=>c.Uid).ToHashSet(StringComparer.Ordinal);
+        var hand = state.SelfHand.Where(c=>!onboard.Contains(c.Uid)).DistinctBy(c=>c.Uid).OrderBy(c => c.SlotIndex).ToArray();
         var spacing = Math.Min(98, 590f / Math.Max(1, hand.Length - 1));
         for (var i = 0; i < hand.Length; i++)
         {
@@ -876,19 +861,25 @@ public partial class BattleScreen : Control
                 case InputEventKey: GetViewport().SetInputAsHandled(); return;
                 case InputEventMouseMotion aimMotion:
                     var aimAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * aimMotion.Position;
+                    if(_arrowPressed&&aimAt.DistanceTo(_arrowPressAt)>8)_arrowDragged=true;
                     UpdateArrowAim(aimAt);
                     GetViewport().SetInputAsHandled();
                     return;
                 case InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }:
                     CancelTargetChoice(); return;
                 case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } press:
-                    _arrowPressed = true;
-                    UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * press.Position);
+                    _arrowPressAt=_canvas.GetGlobalTransformWithCanvas().AffineInverse()*press.Position;
+                    // A board arrow starts at the source actor, not by clicking the chosen target.
+                    _arrowPressed=_choiceRequest?.SourceCard is { } arrowSource&&_cards.TryGetValue(arrowSource.Uid,out var arrowActor)
+                        &&new Rect2(arrowActor.Position,arrowActor.Size).HasPoint(_arrowPressAt);
+                    _arrowDragged=false;
+                    UpdateArrowAim(_arrowPressAt);
                     GetViewport().SetInputAsHandled();
                     return;
                 case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: false } drop:
-                    var commit = _arrowPressed;
+                    var commit = _arrowPressed && _arrowDragged;
                     _arrowPressed = false;
+                    _arrowDragged = false;
                     GetViewport().SetInputAsHandled();
                     if (commit) CommitArrowChoice(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * drop.Position);
                     return;

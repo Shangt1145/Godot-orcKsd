@@ -1,54 +1,79 @@
+using Orc.Ai;
 using Orc.Game;
-using Orc.Game.Board;
-using Orc.Game.Cards;
-using Orc.Game.Collections;
-using Orc.Game.Commanding;
 using Orc.Game.Players;
+using Orc.Game.Ui;
 
 namespace Kards.Ui.OrcBridge;
 
 /// <summary>
-/// Simple opponent driver for the shell engine: the engine has no AI, so without this the enemy turn is
-/// a no-op and no full game can be played. The policy is deliberately naive — deploy the cheapest unit,
-/// then advance, then attack the first legal target — and every decision goes through the engine's own
-/// entry points and availability queries, exactly like the human side. It is a harness, not a rule.
+/// 对手驱动：宿主循环调用引擎的 <see cref="AiPilot"/>（HeuristicPolicy），一次一步，直到回合交回。
+/// 决策全在引擎侧（击杀优先 → 敌方总部 → 最强目标；失败意图拉黑不再尝试）；
+/// 本类只负责步进节奏、预算与安全网——AI 没能自己交回回合时兜底，保住可玩性。
 /// </summary>
 public static class OrcOpponentDriver
 {
-    private const int MaxActions = 12;
+    /// <summary>One turn stops after this many accepted actions. Public so the setup screen can show the real value.</summary>
+    public const int MaxActions = 12;
     /// <summary>
     /// Ceiling for one engine request and for passing the turn. The driver answers requests on the
     /// viewer's behalf, so a request that refuses to settle must not strand the turn forever.
     /// </summary>
-    private static readonly TimeSpan ActionBudget = TimeSpan.FromSeconds(4);
+    public static readonly TimeSpan ActionBudget = TimeSpan.FromSeconds(4);
 
-    public static async Task PlayTurnAsync(Match match, Player opponent, Action<string>? log = null,
+    /// <summary>
+    /// 裸对局入口（测试夹具／无宿主场景）：没有选择器桥，AI 只做动作决策，
+    /// 选靶交给桥原有的自动应答策略——行为等同引入 AiPilot 之前的驱动。
+    /// </summary>
+    public static Task PlayTurnAsync(Match match, Player opponent, Action<string>? log = null,
         CancellationToken ct = default, Action? actionCompleted = null)
     {
         ArgumentNullException.ThrowIfNull(match);
-        ArgumentNullException.ThrowIfNull(opponent);
+        return PlayTurnAsync(match, null, match.UiProjections.CreateProvider(null, "opponent-driver"),
+            opponent, log, ct, actionCompleted);
+    }
+
+    /// <summary>生产入口：带宿主投影与 AI 选择器桥（选择器挂起后由 AiPilot 决策）。</summary>
+    public static Task PlayTurnAsync(OrcMatchHost host, OrcTargeterBridge bridge, Player opponent,
+        Action<string>? log = null, CancellationToken ct = default, Action? actionCompleted = null)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        return PlayTurnAsync(host.Match, bridge, host.CreateAiProjectionProvider(), opponent, log, ct, actionCompleted);
+    }
+
+    private static async Task PlayTurnAsync(Match match, OrcTargeterBridge? bridge, IUiProjectionProvider? projection,
+        Player opponent, Action<string>? log, CancellationToken ct, Action? actionCompleted)
+    {
         var actions = 0;
         try
         {
+            if (projection is null)
+            {
+                log?.Invoke("AI 投影提供者不可用（.ui 插件未装配），对手动作跳过。");
+                return;
+            }
+            // AiPilot 默认占用座位 1（产品里玩家永远是座位 0）。
+            var pilot = new AiPilot(new OrcAiGateway(match, bridge), projection);
             while (match.State == MatchState.InProgress && match.Phase == MatchPhase.Play
                 && ReferenceEquals(match.CurrentPlayer, opponent) && actions < MaxActions)
             {
-                bool acted;
-                try { acted = await TryOneActionAsync(match, opponent, log, ct, actionCompleted).WaitAsync(ActionBudget, ct); }
+                AiStepResult step;
+                try { step = await pilot.StepAsync(ct).WaitAsync(ActionBudget, ct); }
                 catch (OperationCanceledException) { break; }
                 catch (Exception e)
                 {
-                    // A stalled decision is reported instead of hanging: the turn still passes.
-                    log?.Invoke($"opponent stalled: {e.GetType().Name}: {e.Message}");
+                    log?.Invoke($"ai step failed: {e.GetType().Name}: {e.Message}");
                     break;
                 }
-                if (!acted) break;
+                actionCompleted?.Invoke();
+                if (!step.Performed) break;   // 未轮到/无事可做
+                if (step.TurnEnded) break;    // 回合已交回
                 actions++;
                 await Task.Delay(80, ct);
             }
         }
         finally
         {
+            // 安全网：AI 没能自己交回回合（Idle 但仍是对手回合、或中途异常），替它交。
             if (match.State == MatchState.InProgress && ReferenceEquals(match.CurrentPlayer, opponent))
             {
                 try { await match.EndTurn(ct).WaitAsync(ActionBudget, ct); }
@@ -56,67 +81,5 @@ public static class OrcOpponentDriver
                 actionCompleted?.Invoke();
             }
         }
-    }
-
-    private static async Task<bool> TryOneActionAsync(Match match, Player opponent, Action<string>? log,
-        CancellationToken ct, Action? actionCompleted)
-    {
-        // 1) Deploy the cheapest affordable unit in hand.
-        foreach (var card in opponent.Hand.OfType<UnitCard>().OrderBy(c => DeployCost(c)))
-        {
-            if (DeployCost(card) > opponent.Points) continue;
-            var play = await match.PlayManager.BeginUnitPrePlayAsync(card, ct);
-            actionCompleted?.Invoke();
-            log?.Invoke($"deploy {card.Name} -> {play.Status} {play.FailureReason}");
-            if (play.Status == PlayResultStatus.Success) return true;
-        }
-        // Use source-assembled commands and reserve counters through the same engine entry points.
-        foreach (var card in opponent.Hand.OfType<CardBase>().ToArray())
-        {
-            if (card.Modifiers.GetEffectiveValue(CardStatFields.DeployCost) > opponent.Points) continue;
-            PlayResult? result = card switch
-            {
-                CommandCard order => await match.PlayManager.BeginCommandPrePlayAsync(order, ct),
-                CounterCard counter when !counter.GetData<CounterActivationData>().IsActive => await match.PlayManager.UseCounterAsync(counter, ct),
-                _ => null
-            };
-            if (result is null) continue;
-            actionCompleted?.Invoke();
-            if (result.IsSuccess) return true;
-        }
-        // 2) Advance units that may move.
-        foreach (var unit in BoardUnits(match, opponent))
-        {
-            var availability = match.CommandManager.GetCommandAvailability(unit);
-            if (!availability.Move.CanUse) continue;
-            var move = await match.CommandManager.BeginMoveAsync(unit, ct);
-            actionCompleted?.Invoke();
-            if (move.Status == CommandResultStatus.Success) return true;
-        }
-        // 3) Attack the first legal target.
-        foreach (var unit in BoardUnits(match, opponent))
-        {
-            var availability = match.CommandManager.GetCommandAvailability(unit);
-            if (!availability.Attack.CanUse) continue;
-            var strike = await match.CommandManager.BeginAttackAsync(unit, ct);
-            actionCompleted?.Invoke();
-            if (strike.Status == CommandResultStatus.Success) return true;
-        }
-        return false;
-    }
-
-    private static IEnumerable<UnitCard> BoardUnits(Match match, Player owner)
-    {
-        var battlefield = match.Battlefield;
-        foreach (var line in new[] { battlefield.PlayerASupportLine, battlefield.FrontLine, battlefield.PlayerBSupportLine })
-            foreach (var slot in line)
-                if (slot.Occupant is UnitCard unit && ReferenceEquals(unit.Owner, owner))
-                    yield return unit;
-    }
-
-    private static int DeployCost(UnitCard card)
-    {
-        try { return card.Modifiers.GetEffectiveValue(CardStatFields.DeployCost); }
-        catch (InvalidOperationException) { return card.Definition.DeployCost; }
     }
 }

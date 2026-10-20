@@ -71,6 +71,9 @@ public static class OrcEffectEditing
         new("shuffleIn", "洗入卡组（指名卡）", "牌库", false, false, false, false, false, true, false, false, 0, 0, ""),
         new("move", "移动", "牌库", true, false, false, false, false, false, false, true, 0, 0, ""),
         new("reveal", "揭示", "牌库", true, false, false, false, false, false, false, false, 0, 0, ""),
+        new("counter.add","计数器增加","对局变量",false,true,false,false,false,false,false,false,0,1000000,"增加"),
+        new("counter.sub","计数器减少","对局变量",false,true,false,false,false,false,false,false,0,1000000,"减少"),
+        new("counter.set","计数器设值","对局变量",false,true,false,false,false,false,false,false,0,1000000,"设为"),
         new("upgrade", "升为老兵", "牌库", true, false, false, false, false, false, false, false, 0, 0, ""),
     ];
 
@@ -98,7 +101,7 @@ public static class OrcEffectEditing
     public static readonly IReadOnlyList<UiDiyChoice> Conditions =
         [new("", "无条件"), new(DslCondition.OwnerSame, "事件归属同主"), new(DslCondition.OwnerDifferent, "事件归属异主"),
          new(DslCondition.OwnerSameByPlayer, "事件玩家同主"), new(DslCondition.OwnerDifferentByPlayer, "事件玩家异主"),
-         new(DslCondition.EventCardFilter, "事件卡过滤…")];
+         new(DslCondition.EventCardFilter, "事件卡过滤…"), new(DslCondition.OwnerControlsType,"宿主控制的兵种数量…")];
     public static readonly IReadOnlyList<UiDiyChoice> ConditionDims =
         [new("keyword", "词条"), new("tag", "子类别"), new("category", "卡类型"), new("faction", "阵营"), new("name", "卡名")];
     public static readonly IReadOnlyList<UiDiyChoice> OpZones =
@@ -131,6 +134,8 @@ public static class OrcEffectEditing
 
     /// <summary>eventCard 过滤条件种类（引擎 DslCondition.EventCardFilter 的桥内转发，UI 装配禁引引擎类型）。</summary>
     public const string EventCardFilter = DslCondition.EventCardFilter;
+    public const string OwnerControlsType = DslCondition.OwnerControlsType;
+    public static IReadOnlyList<UiDiyChoice> Comparisons {get;} = new[]{">=",">","<=","<","=="}.Select(s=>new UiDiyChoice(s,s)).ToArray();
 
     /// <summary>grant 词条默认种子（引擎词条表首项）。</summary>
     public static string DefaultKeyword => Orc.Game.Cards.KeywordIds.All[0];
@@ -140,6 +145,7 @@ public static class OrcEffectEditing
     {
         var info = Op(op.Op);
         var parts = new List<string>();
+        if(op.Op.StartsWith("counter.",StringComparison.Ordinal)||op.AmountFromCounter)parts.Add("计数器「"+(op.Counter??"未命名")+"」"+(op.AmountFromCounter?"作为数值":""));
         if (op.Sel is { } sel && sel != "self")
         {
             var head = Sels.FirstOrDefault(s => s.Id == sel)?.Label ?? sel;
@@ -164,7 +170,8 @@ public static class OrcEffectEditing
         if (op.OpZone is { } zone) parts.Add("落点 " + (zone == "frontline" ? "前线" : "支援阵线"));
         if (!string.IsNullOrEmpty(op.Until))
             parts.Add("期限 " + (op.Until == Untils.TurnEnd ? "本回合结束" : "下个己方回合开始"));
-        if (!string.IsNullOrEmpty(op.Condition)) parts.Add("条件 " + op.Condition + (op.ConditionRaw is { } raw ? "（" + raw + "）" : ""));
+        if(op.Condition==OwnerControlsType) parts.Add("条件 宿主控制 "+(op.CondComparison??">=")+" "+(op.CondValue??0)+" 个"+string.Join("/",(op.CondUnitTypes??[]).Select(t=>UnitTypes.FirstOrDefault(u=>u.Id==t)?.Label??t)));
+        else if (!string.IsNullOrEmpty(op.Condition)) parts.Add("条件 " + op.Condition + (op.ConditionRaw is { } raw ? "（" + raw + "）" : ""));
         return (info?.Label ?? op.Op) + (parts.Count > 0 ? "：" + string.Join("，", parts) : "");
     }
 
@@ -200,7 +207,7 @@ public static class OrcEffectEditing
             if (Op(op.Op) is null) throw new InvalidDataException($"{entry.Label}：未知动作「{op.Op}」");
             ops.Add(ToDslOp(op));
         }
-        return new(entry.Id, entry.Slot, ops, entry.Hook, entry.Guard);
+        return new(entry.Id, entry.Slot, ops, entry.Hook, entry.Guard,NativeGenerated:draft.Ops.Any(o=>o.Op.StartsWith("counter.",StringComparison.Ordinal)||o.AmountFromCounter));
     }
 
     /// <summary>解析产物 → 编辑面 DTO（解析替换/追加用；未知模板拒绝——编辑器不伪装能编辑一切）。</summary>
@@ -224,6 +231,7 @@ public static class OrcEffectEditing
     {
         var selector = BuildSelector(op);
         var condition = BuildCondition(op);
+        if(op.Op.StartsWith("counter.",StringComparison.Ordinal)||op.AmountFromCounter)return OrcCounterCodegen.Generate(op,condition);
         return new DslOp(op.Op,
             target: selector,
             amount: op.Amount,
@@ -261,6 +269,13 @@ public static class OrcEffectEditing
     private static DslCondition? BuildCondition(OrcOpDraft op)
     {
         if (NullIfEmpty(op.Condition) is not { } kind) return null;
+        if(!Conditions.Any(c=>c.Id==kind))throw new InvalidDataException("未知条件："+kind);
+        if(kind==OwnerControlsType)
+        {
+            if(op.CondUnitTypes is not {Length:>0} types || types.Any(t=>t.Length==0||!UnitTypes.Any(u=>u.Id==t)))throw new InvalidDataException("条件：至少选择一个有效兵种");
+            if(!Comparisons.Any(c=>c.Id==(op.CondComparison??">="))||op.CondValue is <0 or >20)throw new InvalidDataException("条件：比较运算或数量无效");
+            return new DslCondition(kind,unitTypes:types.ToArray(),comparison:op.CondComparison??">=",value:op.CondValue??0);
+        }
         return kind == DslCondition.EventCardFilter
             ? new DslCondition(kind, string.IsNullOrWhiteSpace(op.ConditionRaw) ? "keyword:" : op.ConditionRaw)
             : new DslCondition(kind);
@@ -281,6 +296,7 @@ public static class OrcEffectEditing
             Amount = op.Amount, Count = op.Count, Attack = op.Attack, Defense = op.Defense,
             Keyword = op.Keyword, Value = op.Value, OpZone = op.Zone, Name = op.Name, Until = op.Until,
             Condition = op.Condition?.Kind,
+            CondUnitTypes=op.Condition?.UnitTypes?.ToArray(),CondComparison=op.Condition?.Comparison,CondValue=op.Condition?.Value,
             ConditionRaw = op.Condition?.Kind == DslCondition.EventCardFilter ? op.Condition.Raw : op.Condition?.Raw,
         };
     }
@@ -293,20 +309,39 @@ public static class OrcEffectEditing
     public static IReadOnlyList<OrcEditedEffect> Compile(string cardId, IReadOnlyList<OrcEffectDraft> drafts)
     {
         var results = new List<OrcEditedEffect>();
-        foreach (var draft in drafts)
+        for(var effectIndex=0;effectIndex<drafts.Count;effectIndex++)
         {
+            var draft=drafts[effectIndex];
             string? error = null;
             var snapshots = new List<EffectSnapshot>();
             var jsons = new List<System.Text.Json.JsonElement>();
             try
             {
-                var parsed = ToParsed(draft);
-                foreach (var op in parsed.Ops)
+                if(draft.ExtraFields is {Count:>0}||draft.Ops.Any(o=>o.ExtraFields is {Count:>0}||o.Filter?.ExtraFields is {Count:>0}))
+                    throw new InvalidDataException("原生效果含尚未适配的扩展参数；原始值已保留，仅可保存草稿。");
+                if(draft.TextCardType is not null)
                 {
-                    var (one, oneJson) = OrcImportService.CompileOrcEffect(cardId, parsed with { Ops = [op] });
+                    var snapshot=BackendTextAuthoring.Compile(cardId+".e"+effectIndex,draft);snapshots.Add(snapshot);
+                    using var raw=System.Text.Json.JsonDocument.Parse(PrefabJson.SerializeForDisk(snapshot));jsons.Add(raw.RootElement.Clone());
+                }
+                else if(draft.PrefabJson is { } prefabJson)
+                {
+                    var errors=DiyInjectionCatalog.Read(prefabJson).Where(i=>i.Error is not null).Select(i=>i.Error).ToArray();
+                    if(errors.Length>0)throw new InvalidDataException(string.Join("；",errors));
+                    var snapshot=PrefabJson.Deserialize(prefabJson);snapshots.Add(snapshot);
+                    using var raw=System.Text.Json.JsonDocument.Parse(prefabJson);jsons.Add(raw.RootElement.Clone());
+                }
+                else
+                {
+                var parsed = ToParsed(draft);
+                for(var opIndex=0;opIndex<parsed.Ops.Count;opIndex++)
+                {
+                    var op=parsed.Ops[opIndex];
+                    var (one, oneJson) = OrcImportService.CompileOrcEffect(cardId+".e"+effectIndex+".op"+opIndex, parsed with { Ops = [op] });
                     snapshots.Add(one);
                     using var doc = System.Text.Json.JsonDocument.Parse(oneJson);
                     jsons.Add(doc.RootElement.Clone());
+                }
                 }
             }
             catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException

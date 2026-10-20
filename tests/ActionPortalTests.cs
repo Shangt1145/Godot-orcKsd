@@ -106,7 +106,8 @@ public sealed class ActionPortalTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => s.Host.Match.EndTurn());
         phase = UiInteractionPhase.Ready;
         Assert.True((await s.Host.Match.PlayManager.PlayUnitAsync(units[0], gap)).IsSuccess);
-        units[0].GetData<CommandData>().CanMove = true;
+        // 可动/可攻在新引擎里是配额（1＝可，0＝否），属性本身只读。
+        units[0].GetData<CommandData>().SetMoveQuota(1);
         pending = [uid];
         Assert.Equal(CommandFailureReason.InteractionBlocked, (await s.Host.Match.CommandManager.BeginCommandAsync(units[0])).FailureReason);
         Assert.False(s.Host.Match.CommandManager.GetCommandAvailability(units[0]).AnyActionAvailable);

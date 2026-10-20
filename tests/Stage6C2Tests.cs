@@ -2,8 +2,11 @@ using System.Threading.Channels;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 using Kards.Ui.OrcBridge;
+using Orc.Cards;
+using Orc.Core;
 using Orc.Game.Cards;
 using Orc.Game.Targeting;
+using Orc.Game.Triggers;
 using Xunit;
 
 namespace Kards.Ui.Tests;
@@ -15,7 +18,8 @@ public sealed class Stage6C2Tests
     [Fact]
     public async Task SingleHumanMulliganRejectsUnknownDuplicateAndStaleAnswers()
     {
-        using var session = await OrcMatchSession.CreateDefaultProbeAsync("probe", 20, 17, "single-mulligan");
+        // 起手张数随先手变化（先手 4／后手 5）；这条用例断的是 4，必须固定先手。
+        using var session = await OrcMatchSession.CreateDefaultProbeAsync("probe", 20, 17, "single-mulligan", firstPlayerIndex: 0);
         await session.SettleMulliganAsync(true);
         var opening = session.View; var token = session.MulliganRequestId;
         Assert.True(session.MulliganPending); Assert.Equal(4, opening.SelfHand.Count);
@@ -58,7 +62,7 @@ public sealed class Stage6C2Tests
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var requests = Channel.CreateUnbounded<(UiTargetRequest Request, IUiTargetResponder Responder)>();
         session.TargetRequested += (request, responder) => requests.Writer.TryWrite((request, responder));
-        var order = (CommandCard)session.Host.Viewer.Hand[0];
+        var order = (OrderCard)session.Host.Viewer.Hand[0];
         var refs = session.Host.Viewer.Hand.Skip(1).Take(2).Select(c => c.Ref).ToArray();
         var effectRan = false;
         order.AddPrePlayHandler("test/native-multi", async (view, ctx, ct) =>
@@ -77,8 +81,13 @@ public sealed class Stage6C2Tests
             });
             if (result.IsOk) view.CaptureBox!.Capture("chosen"); else view.CaptureBox!.CancelPrePlay();
         });
-        order.AddActiveHandler("test/native-effect", (view, ctx, ct) =>
-        { Assert.Equal("chosen", view.Argument); effectRan = true; return Task.CompletedTask; });
+        // S13：引擎删除 AddActiveHandler，主动效果改由 ActiveEffect 承载（与 SourceEffectAssembly 同一迁移）。
+        // 施放载荷只有 Source/Target/Amount（OrderFlowView），捕获的字符串选择值不再回传。
+        order.AddEffect(new TestCast(view =>
+        {
+            Assert.Same(order, view.Source); effectRan = true; return Task.CompletedTask;
+        }));
+        Assert.Single(order.Effects.OfType<ICastAction>()); // 二分：是没装上，还是装上没执行
         var uid = session.View.SelfHand[0].Uid;
         var action = session.SubmitAsync(new PlayCard(uid));
         var first = await requests.Reader.ReadAsync().AsTask().WaitAsync(Limit);
@@ -104,5 +113,16 @@ public sealed class Stage6C2Tests
         Assert.Equal(!cancel, effectRan); Assert.False(session.TargetPending);
         Assert.Equal(cancel, session.View.SelfHand.Any(c => c.Uid == uid));
         Assert.DoesNotContain(session.Host.Viewer.Hand.OfType<CardBase>(), c => c.Definition.Name == "引擎候选单位");
+    }
+
+    /// <summary>测试用主动效果：引擎的 OrderCard 已不接受 AddActiveHandler，主动效果必须装成 ActiveEffect。</summary>
+    private sealed class TestCast : ActiveEffect<OrderCastView>
+    {
+        public TestCast(Func<OrderCastView, Task> body)
+            : base("test/native-effect", castEvents:
+            [
+                new TriggerEvent<OrderCastView>("test/native-effect", (view, ctx, ct) => body(view))
+            ])
+        { }
     }
 }

@@ -8,7 +8,7 @@ internal static class KeywordOrderTargeting
 {
     public static IEnumerable<UiOrderTargeting> Read(Player viewer)
     {
-        foreach (var card in viewer.Hand.OfType<CommandCard>())
+        foreach (var card in viewer.Hand.OfType<OrderCard>())
             foreach (var component in KeywordProgramRuntime.Components(card))
             {
                 var input = component.ReadFirstPlayInput();

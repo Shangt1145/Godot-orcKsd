@@ -12,8 +12,11 @@ public partial class BattleScreen
     private UiChoiceSlot? _choiceSlot;
     private DeploymentPose? _choiceReturnPose;
     private bool _choosing;
-    private UiChoiceSlot? _arrowSlot; // 场上单位直接箭头指向：单选 Reference 且候选全部在场上时取代选择面板
+    private UiChoiceSlot? _arrowSlot; // 场上目标使用箭头；手牌、牌堆与抉择继续使用选牌界面。
     private bool _arrowPressed;
+    private bool _arrowDragged;
+    private Vector2 _arrowPressAt;
+    private readonly List<string> _arrowPicks = new();
     private DeploymentPose? _choiceSourcePose;
     private readonly Dictionary<string, DeploymentPose> _choiceFormationPoses = new();
     private readonly Dictionary<string, Vector2> _deploymentChoiceCenters = new();
@@ -21,7 +24,7 @@ public partial class BattleScreen
     private readonly Dictionary<string, string> _orderChoiceCaptions = new();
     private readonly Dictionary<string, UiCardView> _orderChoiceFaces = new();
     public bool TargetChoiceVisible => _choiceRequest is not null;
-    /// <summary>True while an onboard single-target choice is answered by pointing an arrow instead of a panel.</summary>
+    /// <summary>True while onboard targets are selected by dragging an arrow.</summary>
     internal bool ArrowChoiceActive => _arrowSlot is not null;
     internal bool ChoicePanelVisibleForProbe => _choicePanel is { Visible: true };
     private void InitializeTargetChoices()
@@ -54,26 +57,32 @@ public partial class BattleScreen
         _choiceSlot = request.Slots.FirstOrDefault(s => !_choiceSelections.ContainsKey(s.Name));
         if (_choiceSlot is not { } slot) return;
         _arrowPressed = false;
-        // Placement has already armed targeting. A fresh press/release on the target confirms it;
-        // the release that placed the unit must never be reused for this request.
-        _arrowSlot = slot.Kind == ChoiceKind.Reference && slot.Min == 1 && slot.Max == 1 && slot.Allowed.Count > 0
-            && slot.Allowed.All(c => _cards.TryGetValue(c.Id, out var card) && card.View?.Visibility == Visibility.Full
-                && card.View.Zone != "hand")
-            ? slot : null;
+        _arrowDragged = false; _arrowPicks.Clear();
+        // Board semantics come from the bridge; a transient missing actor never changes the input mode.
+        var boardTargets = slot.BoardTargets || request.SelectorName == "fieldUnit"
+            || (request.SelectorName is not ("hand" or "cardPickerReference")
+                && slot.Allowed.Any(c => IsBoardTarget(c.Card)
+                    || (_cards.TryGetValue(c.Id, out var actor) && IsBoardTarget(actor.View))));
+        _arrowSlot = slot.Kind == ChoiceKind.Reference && boardTargets ? slot : null;
         if (_arrowSlot is not null)
         {
             _choicePanel.Reset(); RestoreChoiceSource();
+            if (slot.Max < 1 || slot.Allowed.Count < Math.Max(1,slot.Min))
+            { CancelTargetChoice(); return; }
             UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * GetViewport().GetMousePosition());
-            Hint("将箭头指向目标，按下并松手确认；也可拖动选靶；右键取消"); return;
+            Hint("从单位拖出箭头，在目标上松手；右键取消"); return;
         }
         _aim.Visible = false;
         var origin = request.SourceCard is { } card && _orderOrigins.TryGetValue(card.Uid, out var pose) ? pose : (DeploymentPose?)null;
         _choicePanel.Open(slot, request.SourceCard, origin, selected);
         if (request.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand)) hand.Visible = false;
     }
+    private static bool IsBoardTarget(UiCardView? card) => card is not null
+        && (card.IsHq || card.Zone is "support" or "frontline");
     public void ChooseTargetOption(string slotName, string id) => ChooseTargetOptions(slotName, [id]);
     public async void ChooseTargetOptions(string slotName, IReadOnlyList<string> ids)
     {
+        if (_arrowSlot is not null) return; // No paper/button/programmatic alternative for board targeting.
         if (!IsFriendlyTurn || _choosing || _choiceRequest is not { } request || _choiceResponder is not { } responder
             || _choiceSlot is not { } slot || slot.Name != slotName || ids.Count == 0 || ids.Count < slot.Min || ids.Count != slot.Max
             || ids.Distinct().Count() != ids.Count || ids.Any(id => slot.Allowed.All(c => c.Id != id))) return;
@@ -108,6 +117,16 @@ public partial class BattleScreen
     {
         if (_choosing || _choiceRequest is not { } request || _choiceResponder is not { } responder) return;
         _choosing = true;
+        if (_arrowSlot is not null)
+        {
+            if(responder.Cancel(request.RequestId))
+            {
+                if(request.SourceCard is { } source)RefuseCommand(new PlayCard(source.Uid));
+                if(_choiceRequest==request)CloseTargetChoice();
+            }
+            else {_choosing=false;OpenChoiceSlot();}
+            return;
+        }
         await _choicePanel.FinishAsync(null, request.SourceCard, _choiceReturnPose);
         if (_choiceRequest != request) return;
         if (responder.Cancel(request.RequestId))
@@ -127,7 +146,7 @@ public partial class BattleScreen
                 && new Rect2(card.Position, card.Size).HasPoint(at)) { hovered = candidate.Id; break; }
         foreach (var pair in _cards)
         {
-            var on = pair.Key == hovered;
+            var on = pair.Key == hovered || _arrowPicks.Contains(pair.Key);
             if (pair.Value.Targeted != on) { pair.Value.Targeted = on; pair.Value.QueueRedraw(); }
         }
         _aim.From = ArrowSourceCenter();
@@ -173,7 +192,10 @@ public partial class BattleScreen
             && new Rect2(card.Position, card.Size).HasPoint(at));
         if (hit is null) return;
         if (_choiceRequest is not { } request || _choiceResponder is not { } responder) return;
-        _choiceSelections[slot.Name] = [hit.Id];
+        if(_arrowPicks.Contains(hit.Id))return;
+        _arrowPicks.Add(hit.Id);
+        if(_arrowPicks.Count<Math.Min(slot.Max,slot.Allowed.Count)) {UpdateArrowAim(at);return;}
+        _choiceSelections[slot.Name] = _arrowPicks.ToArray();
         if (!request.Slots.All(s => _choiceSelections.ContainsKey(s.Name))) { OpenChoiceSlot(); return; }
         _choosing = true; _aim.Visible = false;
         if (responder.Complete(request.RequestId, _choiceSelections))
@@ -188,7 +210,7 @@ public partial class BattleScreen
     {
         if (_choicePanel is null) return;
         _arrowSlot = null;
-        _arrowPressed = false; _aim.Visible = false;
+        _arrowPressed = false; _arrowDragged = false; _arrowPicks.Clear(); _aim.Visible = false;
         foreach (var (uid, pose) in _choiceFormationPoses)
             if (_cards.TryGetValue(uid, out var neighbour)) neighbour.Position = pose.Position;
         _choiceFormationPoses.Clear();

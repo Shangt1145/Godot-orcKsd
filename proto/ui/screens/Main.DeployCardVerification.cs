@@ -34,6 +34,9 @@ public partial class Main
             GD.Print($"DEPLOY_TARGET_REQUEST selector={request.SelectorName} drag={request.IsDrag} slots={slots}");
         }
         runner.TargetRequested += OnTarget;
+        var errors=new List<string>();
+        void OnError(string error)=>errors.Add(error);
+        runner.ErrorRaised+=OnError;
 
         try
         {
@@ -71,14 +74,21 @@ public partial class Main
                     if (!answered)
                     {
                         waitedForTarget = 1;
-                        GD.Print($"DEPLOY_TARGET_HOLD submitting={runner.IsSubmitting} targetPending={runner.TargetPending}");
+                        if(waitedForTarget==1)GD.Print($"DEPLOY_TARGET_HOLD submitting={runner.IsSubmitting} targetPending={runner.TargetPending}");
+                        waitedForTarget=2;
                     }
-                    var picks = pending.Slots.ToDictionary(s => s.Name, s => (IReadOnlyList<string>)
-                        s.Allowed.Take(Math.Max(1, s.Min)).Select(c => c.Id).ToList());
-                    var ok = responder.Complete(pending.RequestId, picks);
-                    answered = true;
-                    GD.Print($"DEPLOY_TARGET_ANSWER ok={ok} picks=[{string.Join("; ", picks.Select(p => p.Key + "=" + string.Join(',', p.Value)))}]");
-                    pending = null;
+                    if(_battle.ChoicePanelVisibleForProbe)throw new Exception("Unit target opened card-picking UI.");
+                    if(_battle.ArrowChoiceActive)
+                    {
+                        var request=pending;
+                        var target=request.Slots.Where(s=>s.BoardTargets).SelectMany(s=>s.Allowed).FirstOrDefault(c=>_battle.HasCard(c.Id));
+                        if(target is not null)
+                        {
+                            await _battle.DragTargetChoiceAsync(_battle.CardPoint(target.Id));answered=true;
+                            GD.Print("DEPLOY_TARGET_MOUSE_DRAG "+target.Id);
+                            if(pending==request)pending=null;
+                        }
+                    }
                 }
                 var view = runner.CurrentView!;
                 if (!runner.IsSubmitting && !runner.TargetPending
@@ -96,13 +106,15 @@ public partial class Main
                 + $"settled={settled} submitting={runner.IsSubmitting} targetPending={runner.TargetPending} "
                 + $"targets={requests.Count} held={waitedForTarget} line=[{string.Join(' ', final.SelfLine.Select(c => $"{c.CardId}@{c.SlotIndex}"))}] "
                 + $"diff=[{_battle.ProjectionDiff(final)}]");
+            if(errors.Count!=0)throw new Exception("Deployment raised native errors: "+string.Join(";",errors));
+            if(_battle.ProjectionDiff(final).Any())throw new Exception("Deployment projection did not settle.");
             if (!settled) throw new Exception($"deployment never settled: targets={requests.Count} targetPending={runner.TargetPending}");
             if (!landed) throw new Exception("card left the hand but is not on the line");
             GD.Print("DEPLOY_CARD_VERIFY_OK");
         }
         finally
         {
-            runner.TargetRequested -= OnTarget;
+            runner.TargetRequested -= OnTarget;runner.ErrorRaised-=OnError;
             StopRealMatch(); _battle.ResetDemo();
         }
     }

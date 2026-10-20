@@ -96,17 +96,15 @@ public partial class BattleScreen
                 if (responder.Answer is not null || _orderOrigins.Count != 0) throw new Exception("Multi cancel committed an answer.");
             }
             ResetDemo();
-            var emptyRequest = new UiTargetRequest("zero-maximum", [new("empty", ChoiceKind.Reference, 0, 0, [])]);
+            var emptyRequest = new UiTargetRequest("zero-maximum", [new("empty", ChoiceKind.Reference, 0, 0, []) { BoardTargets = true }]);
             var emptyResponder = new RecordingChoiceResponder(emptyRequest);
             ShowTargetChoice(emptyRequest, emptyResponder);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             ChooseTargetOptions("empty", []);
             GetViewport().PushInput(new InputEventKey { Keycode = Key.Enter, Pressed = true }, true);
             GetViewport().PushInput(new InputEventKey { Keycode = Key.Escape, Pressed = true }, true);
-            if (emptyResponder.Calls != 0 || emptyResponder.CancelCalls != 0 || !TargetChoiceVisible)
-                throw new Exception("An empty request submitted itself or accepted keyboard input.");
-            CancelChoiceWithMouseForVerification(true); await WaitChoiceClosedAsync();
-            if (emptyResponder.CancelCalls != 1) throw new Exception("Right-click did not release an empty request.");
+            if (emptyResponder.Calls != 0 || emptyResponder.CancelCalls != 1 || TargetChoiceVisible || _choicePanel.Visible)
+                throw new Exception("An empty board request opened or retained a target picker.");
             ResetDemo();
             GD.Print("MULTI_CHOICE_VERIFY_OK samples=12 real-mouse min-max toggle-off mulligan-red-stamp paging-selected-count-only full-count-auto-submit cross-page-selection rejection-retains-selection no-partial-no-empty no-keyboard-submit-cancel right-cancel source-face-handoff");
         }

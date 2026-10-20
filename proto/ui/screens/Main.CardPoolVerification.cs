@@ -15,7 +15,8 @@ public partial class Main
     private async Task VerifyCardPoolStageAsync()
     {
         Show("battle");
-        await StartRealMatchAsync(interactiveMulligan: false, manualOpponentForVerification: true, deckSeed: 7, demoOpeningHand: true);
+        // 卡池夹具断言的是"玩家先手"下的起手与牌库数，先手随机后必须显式固定。
+        await StartRealMatchAsync(interactiveMulligan: false, manualOpponentForVerification: true, deckSeed: 7, demoOpeningHand: true, firstPlayerIndex: 0);
         var runner = _runner!; var report = runner.CardPoolReport ?? throw new Exception("Catalog admission did not report its support set.");
         if (report.Total != 315 || report.Verified != 24 || report.StructurallyRepresentable <= report.Verified)
             throw new Exception("Reviewed and structural card coverage were confused.");

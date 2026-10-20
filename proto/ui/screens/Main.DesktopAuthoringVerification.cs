@@ -17,6 +17,12 @@ public partial class Main
             var inspector=_diyEffects.NativeInspector;
             if(inspector.AdvancedVisible)throw new Exception("默认仍显示底层结构工具");
             async Task Click(Control control){inspector.EnsureFriendlyVisible(control);await DeckClickAsync(control);}
+            async Task ComposerClick(Control control)
+            {
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                await DeckClickAsync(control);
+            }
             void Choose(Control control,string id)
             {
                 var pick=(OptionButton)control;
@@ -31,24 +37,51 @@ public partial class Main
                 inspector.PickFriendlyAction(op);await Click(inspector.PickerAddButton);
             }
             await Click(inspector.NewEffectButton);
+            Choose(inspector.FriendlyControls["/effects/0/trigger"],"deploy");
+            await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
             await AddAction("/effects/0/actions","loop");
             ((SpinBox)inspector.FriendlyControls["/effects/0/actions/0/times"]).Value=3;
-            await Click(inspector.FriendlyControls["/effects/0/actions/0/times#calculation"]);
-            Choose(inspector.FriendlyControls["/effects/0/actions/0/times#valueMode"],"math");
+            await Click(inspector.FriendlyControls["/effects/0/actions/0/times#compose"]);
+            Choose(inspector.Composer.Controls["/value#mode"],"math");
             await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+            Choose(inspector.Composer.Controls["/value/operator"],"add");
+            await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+            GD.Print("COMPOSER_LAYOUT size="+inspector.Composer.Size+" min="+inspector.Composer.GetContentsMinimumSize()+" position="+inspector.Composer.Position);
+            // The same cancellable composer works for every numeric parameter.
+            for(var i=0;i<2;i++)
+            {
+                await ComposerClick(inspector.Composer.Controls["/value/items/"+i+"#open"]);
+                Choose(inspector.Composer.Controls["/value/items/"+i+"#mode"],"literal");
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                ((LineEdit)inspector.Composer.Controls["/value/items/"+i+"#number"]).Text="1";
+                inspector.Composer.Controls["/value/items/"+i+"#number"].EmitSignal(LineEdit.SignalName.TextChanged,"1");
+                await ComposerClick(inspector.Composer.BackButton);
+            }
+            await ComposerClick(inspector.Composer.GetOkButton());
             if(inspector.Document.At("/effects/0/actions/0/times/expr")!.ToString()!="math")throw new Exception("普通界面无法组合计算值");
-            // Any numeric parameter can use the same expression UI; no card-specific templates.
-            ((SpinBox)inspector.FriendlyControls["/effects/0/actions/0/times/items/0"]).Value=1;
-            ((SpinBox)inspector.FriendlyControls["/effects/0/actions/0/times/items/1"]).Value=1;
             await AddAction("/effects/0/actions/0/actions","drawOne");
             await Click(inspector.UndoButton);
             if(inspector.Document.At("/effects/0/actions/0/actions")!.AsArray().Count!=0)throw new Exception("撤销失败");
             await Click(inspector.RedoButton);
             // A different composition exercises generic condition and action-list editors.
             await Click(inspector.NewEffectButton);
-            await AddAction("/effects/1/actions","branch");
-            Choose(inspector.FriendlyControls["/effects/1/actions/0/test#condition"],"compare");
+            Choose(inspector.FriendlyControls["/effects/1/trigger"],"deploy");
             await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+            await AddAction("/effects/1/actions","branch");
+            await Click(inspector.FriendlyControls["/effects/1/actions/0/test#compose"]);
+            Choose(inspector.Composer.Controls["/value#mode"],"compare");
+            await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+            Choose(inspector.Composer.Controls["/value/cmp"],">=");
+            foreach(var side in new[]{"left","right"})
+            {
+                await ComposerClick(inspector.Composer.Controls["/value/"+side+"#open"]);
+                Choose(inspector.Composer.Controls["/value/"+side+"#mode"],"literal");
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                ((LineEdit)inspector.Composer.Controls["/value/"+side+"#number"]).Text="1";
+                inspector.Composer.Controls["/value/"+side+"#number"].EmitSignal(LineEdit.SignalName.TextChanged,"1");
+                await ComposerClick(inspector.Composer.BackButton);
+            }
+            await ComposerClick(inspector.Composer.GetOkButton());
             await AddAction("/effects/1/actions/0/then","drawOne");
             await Click(inspector.CardKeywordsButton);
             await Click(inspector.KeywordControls["blitz"]);

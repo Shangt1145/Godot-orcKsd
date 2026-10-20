@@ -29,7 +29,8 @@ public sealed class DiyCardLibrary
             if (data is null || data.Schema != 1 || data.Cards is null || data.Cards.Length > 128)
                 throw new InvalidDataException("DIY 卡库版本或内容无效");
             foreach (var card in data.Cards) CheckShape(card);
-            if (data.Cards.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count() != data.Cards.Length)
+            if (data.Cards.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count() != data.Cards.Length
+                || data.Cards.Select(c=>c.RuntimeId).Distinct(StringComparer.Ordinal).Count()!=data.Cards.Length)
                 throw new InvalidDataException("DIY 卡牌编号重复");
             _cards = data.Cards.Select(c => c.Snapshot()).ToList();
         }
@@ -41,7 +42,9 @@ public sealed class DiyCardLibrary
         if (card is null || card.Id is null || !Regex.IsMatch(card.Id, @"\Adiy/[a-zA-Z0-9_-]{1,64}\z")
             || string.IsNullOrWhiteSpace(card.Name) || card.Name.Length > 40
             || card.Nation is null || card.Rarity is null || card.CardType is null || card.UnitType is null
-            || card.PackId is null || (card.PackId.Length>0&&!Regex.IsMatch(card.PackId,@"\Apack/diy-[a-zA-Z0-9_-]{1,64}\z"))
+            || card.PackId is null || (card.PackId.Length>0&&!DiyWorkshopLibrary.ValidPackId(card.PackId))
+            || card.SourceCardId is null || card.SourceCardId.Length>200 || card.SourceCardId.Any(char.IsControl)
+            || (card.SourceCardId.Length>0 && (card.SourceCardId.StartsWith("diy/",StringComparison.Ordinal)||card.SourceCardId.StartsWith("orc/",StringComparison.Ordinal)))
             || card.ArtSourceFile is null || (card.ArtSourceFile.Length>0&&!Regex.IsMatch(card.ArtSourceFile,@"\A[a-zA-Z0-9_-]{1,80}\.png\z"))
             || card.ArtImportMode is not ("illustration" or "card") || card.ArtRegion is null
             || !float.IsFinite(card.ArtRegion.X+card.ArtRegion.Y+card.ArtRegion.Width+card.ArtRegion.Height)
@@ -57,15 +60,21 @@ public sealed class DiyCardLibrary
             || card.Effects is null || card.Effects.Length > 8
             || card.Effects.Any(e => e is null || e.Op is null || e.Target is null || e.Until is null)
             || card.OrcEffects is null || card.OrcEffects.Length > 128
-            || card.OrcEffects.Any(e => e is null || string.IsNullOrWhiteSpace(e.Template)
-                || e.Ops is null || (e.DesktopJson is null && e.Ops.Length == 0) || e.Ops.Length > 128
-                || e.Ops.Any(o => o is null || string.IsNullOrWhiteSpace(o.Op))))
+            || card.OrcEffects.Any(e => e is null || e.Template is null
+                || e.Ops is null || e.Ops.Length > 128
+                || e.Ops.Any(o => o is null || o.Op is null || o.CondUnitTypes is {Length:>16} || o.CondUnitTypes?.Any(t=>string.IsNullOrWhiteSpace(t))==true)))
             throw new InvalidDataException("DIY 卡牌字段无效，编号必须使用 diy/ 前缀");
         foreach(var effect in card.OrcEffects.Where(e=>e.DesktopJson is not null))
         {
             if(effect.DesktopJson!.Length>250_000)throw new InvalidDataException("单条效果声明过大");
             using var graph=JsonDocument.Parse(effect.DesktopJson);
             if(graph.RootElement.ValueKind!=JsonValueKind.Object)throw new InvalidDataException("效果声明必须是对象");
+        }
+        foreach(var effect in card.OrcEffects.Where(e=>e.PrefabJson is not null))
+        {
+            if(effect.PrefabJson!.Length>250_000)throw new InvalidDataException("原生预制体声明过大");
+            using var raw=JsonDocument.Parse(effect.PrefabJson);
+            if(raw.RootElement.ValueKind!=JsonValueKind.Object)throw new InvalidDataException("原生预制体必须是对象");
         }
         if(card.DesktopCardJson is { } cardJson)
         {
@@ -77,6 +86,7 @@ public sealed class DiyCardLibrary
     public void Save(DiyCardDraft card)
     {
         CheckShape(card);
+        if(_cards.Any(c=>c.Id!=card.Id && c.RuntimeId==card.RuntimeId))throw new InvalidDataException("同一原始卡牌不能存在多个本地修改");
         if (_cards.Count >= 128 && !_cards.Any(c => c.Id == card.Id)) throw new InvalidDataException("最多保存 128 种 DIY 卡牌");
         Mutate(() => { _cards.RemoveAll(c => c.Id == card.Id); _cards.Add(card.Snapshot() with { Name = card.Name.Trim() }); });
     }
@@ -142,7 +152,7 @@ public sealed class DiyCardLibrary
             var card = JsonSerializer.Deserialize<DiyCardDraft>(Encoding.UTF8.GetString(Convert.FromBase64String(text.Trim()[8..])), Json);
             CheckShape(card);
             // Import is a new card, never an overwrite of another author's card.
-            return card! with { Id = "diy/" + Guid.NewGuid().ToString("N") };
+            return card! with { Id = "diy/" + Guid.NewGuid().ToString("N"), SourceCardId="" };
         }
         catch (Exception e) when (e is FormatException or JsonException)
         { throw new InvalidDataException("DIY 卡牌代码无效", e); }

@@ -35,7 +35,7 @@ public sealed class DesktopTargetContext : IDisposable
                     ?targets.EnumerateArray().Select(t=>(Declaration:t.GetRawText(),Scope:Scope(e))).ToArray():[];
             }).Distinct().ToArray();
             if(declarations.Length==0)continue;
-            var trigger=card switch{UnitCard unit=>unit.PrePlayTrigger,CommandCard command=>command.PrePlayTrigger,_=>null};
+            var trigger=card switch{UnitCard unit=>unit.PrePlayTrigger,OrderCard command=>command.PrePlayTrigger,_=>null};
             if(trigger is null)continue;
             var handle=trigger.Register("desktop/capture",async(view,_,ct)=>
             {
@@ -102,7 +102,7 @@ public sealed class DesktopTargetContext : IDisposable
     public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
     {
         var result=new List<UiOrderTargeting>();
-        foreach(var card in viewer.Hand.OfType<CommandCard>())
+        foreach(var card in viewer.Hand.OfType<OrderCard>())
         {
             if(!_match.CardLibrary.TryGetRegisteredId(card.Definition,out var id)||!_plans.TryGetValue(id,out var graphs))continue;
             var targets=new List<JsonElement>();foreach(var g in graphs){using var d=JsonDocument.Parse(g);if(Text(d.RootElement,"trigger") is "play" or "order"&&d.RootElement.TryGetProperty("targets",out var ts))targets.AddRange(ts.EnumerateArray().Select(t=>t.Clone()));}

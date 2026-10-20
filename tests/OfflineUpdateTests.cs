@@ -24,6 +24,70 @@ public sealed class OfflineUpdateTests : IDisposable
     private PatchManifest Build()=>PatchBuilder.Create(Old,New,Patch,"0.0.0-beta.1","0.0.0-beta.1");
     private void Exact(string expected)=>Assert.Equal(Builds.Scan(expected,"v").BuildId,Builds.Scan(Old,"v").BuildId);
     [Fact]
+    public async Task OneBundleRecognizesBothRealBasesAndRollsBackToTheSelectedBase()
+    {
+        var first=Build();var secondRoot=Path.Combine(root,"另一个 来源");Directory.CreateDirectory(secondRoot);
+        Write(secondRoot,"KardsUi.exe",[7]);Write(secondRoot,"KardsUi.pck",File.ReadAllBytes(Path.Combine(Old,"KardsUi.pck")));
+        var secondPatch=Path.Combine(root,"second.orcupdate");var second=PatchBuilder.Create(secondRoot,New,secondPatch,"same-display-version","target");
+        // Use one identical target version, independently of the source display versions.
+        PatchBuilder.Create(Old,New,Patch,"old","target");
+        var bundle=Path.Combine(root,"compatible.orcupdate");PatchBuilder.Combine([Patch,secondPatch],bundle);
+        Assert.Equal(2,PatchBuilder.InspectAll(bundle).Length);
+        Write(Old,"玩家文件.txt",[10]);Write(secondRoot,"data_Kards.Ui_windows_x86_64/玩家自己的文件.txt",[20]);
+        // A false/stale manifest must not select the wrong differential.
+        Builds.Write(secondRoot,first.Source);
+        await Installer.ApplyAsync(Old,bundle);Exact(New);Installer.Rollback(Old);Assert.Equal(first.Source.BuildId,Builds.Scan(Old,"v").BuildId);
+        await Installer.ApplyAsync(secondRoot,bundle);
+        foreach(var f in second.Target.Files)Assert.Equal(f.Sha256,Builds.Hash(Path.Combine(secondRoot,f.Path)));
+        Installer.Rollback(secondRoot);Assert.Equal(new byte[]{20},File.ReadAllBytes(Path.Combine(secondRoot,"data_Kards.Ui_windows_x86_64/玩家自己的文件.txt")));
+        Assert.Equal(new byte[]{7},File.ReadAllBytes(Path.Combine(secondRoot,"KardsUi.exe")));
+    }
+    [Fact]
+    public async Task CompatibleBundleRejectsCorruptBaseAndMissingBlocksWithoutReplacingFiles()
+    {
+        Build();var alternative=Path.Combine(root,"alternative");Directory.CreateDirectory(alternative);
+        Write(alternative,"KardsUi.exe",[6]);Write(alternative,"KardsUi.pck",File.ReadAllBytes(Path.Combine(Old,"KardsUi.pck")));
+        var alternativePatch=Path.Combine(root,"alternative.orcupdate");PatchBuilder.Create(alternative,New,alternativePatch,"old","0.0.0-beta.1");
+        var bundle=Path.Combine(root,"bundle.orcupdate");PatchBuilder.Combine([Patch,alternativePatch],bundle);
+        var original=Builds.Scan(Old,"v").BuildId;
+        using(var zip=ZipFile.Open(bundle,ZipArchiveMode.Update))zip.Entries.First(e=>e.FullName.StartsWith("blocks/")).Delete();
+        await Assert.ThrowsAsync<InvalidDataException>(()=>Installer.ApplyAsync(Old,bundle));Assert.Equal(original,Builds.Scan(Old,"v").BuildId);
+        PatchBuilder.Combine([Patch,alternativePatch],bundle);Write(Old,"KardsUi.pck",[4,5]);original=Builds.Scan(Old,"v").BuildId;
+        var error=await Assert.ThrowsAsync<InvalidDataException>(()=>Installer.ApplyAsync(Old,bundle));Assert.Contains("不匹配",error.Message);Assert.Equal(original,Builds.Scan(Old,"v").BuildId);
+    }
+    [Theory]
+    [InlineData("stage:1")]
+    [InlineData("commit:1")]
+    public async Task CompatibleUpdateInterruptedAfterSelectingAlternativeRestoresThatExactSource(string phase)
+    {
+        Build();var alternative=Path.Combine(root,"alternative");Directory.CreateDirectory(alternative);
+        Write(alternative,"KardsUi.exe",[6]);Write(alternative,"KardsUi.pck",File.ReadAllBytes(Path.Combine(Old,"KardsUi.pck")));
+        var alternativePatch=Path.Combine(root,"alternative.orcupdate");var source=PatchBuilder.Create(alternative,New,alternativePatch,"old","0.0.0-beta.1").Source;
+        var bundle=Path.Combine(root,"bundle.orcupdate");PatchBuilder.Combine([Patch,alternativePatch],bundle);
+        await Assert.ThrowsAsync<IOException>(()=>Installer.ApplyAsync(alternative,bundle,new(){Checkpoint=p=>{if(p==phase)throw new IOException("interrupted");}}));
+        Assert.Equal(source.BuildId,Builds.Scan(alternative,"v").BuildId);Assert.False(Installer.HasRecovery(alternative));
+    }
+    [Fact]
+    public void BundleDeduplicatesSharedBlocksAndRejectsDifferentTargetsOrRepeatedBases()
+    {
+        Build();var secondRoot=Path.Combine(root,"second");Directory.CreateDirectory(secondRoot);
+        Write(secondRoot,"KardsUi.exe",[5]);Write(secondRoot,"KardsUi.pck",File.ReadAllBytes(Path.Combine(Old,"KardsUi.pck")));
+        var secondPatch=Path.Combine(root,"second.orcupdate");PatchBuilder.Create(secondRoot,New,secondPatch,"v","0.0.0-beta.1");
+        var bundle=Path.Combine(root,"bundle.orcupdate");PatchBuilder.Combine([Patch,secondPatch],bundle);
+        int Blocks(string path){using var zip=ZipFile.OpenRead(path);return zip.Entries.Count(e=>e.FullName.StartsWith("blocks/"));}
+        Assert.True(Blocks(bundle)<Blocks(Patch)+Blocks(secondPatch));
+        Assert.Throws<InvalidDataException>(()=>PatchBuilder.Combine([Patch,Patch],bundle));
+        Write(New,"KardsUi.exe",[9]);PatchBuilder.Create(secondRoot,New,secondPatch,"v","0.0.0-beta.1");
+        Assert.Throws<InvalidDataException>(()=>PatchBuilder.Combine([Patch,secondPatch],bundle));
+    }
+    [Fact]
+    public void NewExternalUpdaterLeavesTheOldInstalledUpdaterEntirelyIntact()
+    {
+        var bootstrap=Path.Combine(root,"new-updater");Write(bootstrap,"更新游戏.exe",[1]);Write(bootstrap,"更新游戏.pck",[2]);Write(bootstrap,"data_OrC.Updater_windows_x86_64/OrC.Updater.dll",[3]);
+        Write(Old,"更新游戏.exe",[8]);Installer.InstallUpdater(bootstrap,Old,true);
+        Assert.Equal(new byte[]{8},File.ReadAllBytes(Path.Combine(Old,"更新游戏.exe")));Assert.False(File.Exists(Path.Combine(Old,"更新游戏.pck")));
+    }
+    [Fact]
     public async Task IncrementalPatchReusesShiftedPckAndRollsBackWithPlayerFilesIntact()
     {
         var p=Build();Assert.NotEqual(p.Source.BuildId,p.Target.BuildId);

@@ -9,7 +9,7 @@ namespace Kards.Ui.Tests;
 /// <summary>
 /// 机制示范包种子工具：往真实工坊库 upsert「机制示范包」——每个可由规则程序忠实落地的词条
 /// 配一个示范卡。设 SEED_DEMO_PACK=1 才执行（常规测试不触碰真实数据）；目录可用 SEED_DEMO_DIR 覆盖。
-/// 引擎缺口词条（制空/炎热/寒冷/地域/船/阻击/掩护/标记/伺掠）不在包内——口径见 docs/CUSTOM_KEYWORD_SYSTEM.md。
+/// 引擎缺口词条（制空/炎热/寒冷/地域/船/阻击/掩护/标记/伺掠）不在包内——口径见 docs/engine/CUSTOM_KEYWORD_SYSTEM.md。
 /// </summary>
 public sealed class SeedDemoPackTool
 {

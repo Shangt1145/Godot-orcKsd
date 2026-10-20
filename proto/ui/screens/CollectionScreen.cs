@@ -21,6 +21,8 @@ public partial class CollectionScreen : VBoxContainer
     private Control _scrollContent = null!;
     private HBoxContainer _filterRow = null!;
     private Button _filterToggle = null!;
+    private Button _reset = null!;
+    private Control _headingSpacer = null!;
     private UiCardDefinition? _selected;
     private UiCardDefinition[] _results = [];
     private int _firstRow = -1, _lastRow = -1;
@@ -48,7 +50,7 @@ public partial class CollectionScreen : VBoxContainer
             var title = filter.GetItemText(0); filter.Clear(); filter.AddItem(title); filter.SetItemMetadata(0, "");
             foreach (var value in values[i].Where(x => x.Length > 0).Distinct().OrderBy(x => x))
             {
-                filter.AddItem(i switch { 1 => UiStyles.TypeName(value), 3 => UiStyles.RarityName(value),
+                filter.AddItem(i switch { 1 => MenuStyles.TypeName(value), 3 => MenuStyles.RarityName(value),
                     4 => CardControl.KeywordLabel(value, new Dictionary<string, int>()), _ => value });
                 filter.SetItemMetadata(filter.ItemCount - 1, value);
                 if (selected == value) filter.Select(filter.ItemCount - 1);
@@ -65,26 +67,28 @@ public partial class CollectionScreen : VBoxContainer
         _canPlay = canPlay ?? (_ => true);
         _textures = textures;
         SizeFlagsVertical = SizeFlags.ExpandFill;
+        AddThemeConstantOverride("separation", 18);
         var heading = new HBoxContainer();
         AddChild(heading);
-        _backButton = UiStyles.Button("← 卡包", () => OpenPack(null));
+        _backButton = MenuStyles.Button("← 卡包", () => OpenPack(null));
         _backButton.Visible = false;
         heading.AddChild(_backButton);
-        _heading = UiStyles.Label("收藏", 30, UiStyles.MenuInk);
+        _heading = MenuStyles.Label("收藏", 30, MenuStyles.MenuInk);
         heading.AddChild(_heading);
+        _headingSpacer = new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill }; heading.AddChild(_headingSpacer);
         _search = new LineEdit { PlaceholderText = "搜索卡名、编号或卡面文本…", SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(250, 42) };
         heading.AddChild(_search);
         _search.TextChanged += _ => Render();
-        _filterToggle = UiStyles.Button("筛选", () => { _filterRow.Visible = !_filterRow.Visible; _filterToggle.SetPressedNoSignal(_filterRow.Visible); }); _filterToggle.ToggleMode = true; heading.AddChild(_filterToggle);
-        heading.AddChild(UiStyles.Button("重置", () => { foreach (var f in _filters) f.Select(0); _expansionFilter!.Select(0); _search.Text = ""; Render(); }));
-        _count = UiStyles.Label("", 14, UiStyles.Gold); heading.AddChild(_count);
+        _filterToggle = MenuStyles.Button("筛选", () => { _filterRow.Visible = !_filterRow.Visible; _filterToggle.SetPressedNoSignal(_filterRow.Visible); }); _filterToggle.ToggleMode = true; heading.AddChild(_filterToggle);
+        _reset = MenuStyles.Button("重置", () => { foreach (var f in _filters) f.Select(0); _expansionFilter!.Select(0); _search.Text = ""; Render(); }); heading.AddChild(_reset);
+        _count = MenuStyles.Label("", 14, MenuStyles.Gold); heading.AddChild(_count);
         var filters = new HBoxContainer();
         _filterRow = filters; filters.Visible = false;
         AddChild(filters);
         AddFilter(filters, "全部国别", catalog.Cards.Select(c => c.Set), x => x);
-        AddFilter(filters, "全部卡类", catalog.Cards.Select(c => c.CardType), UiStyles.TypeName);
+        AddFilter(filters, "全部卡类", catalog.Cards.Select(c => c.CardType), MenuStyles.TypeName);
         AddFilter(filters, "全部兵种", catalog.Cards.Select(c => c.UnitType), x => x);
-        AddFilter(filters, "全部稀有度", catalog.Cards.Select(c => c.Rarity), UiStyles.RarityName);
+        AddFilter(filters, "全部稀有度", catalog.Cards.Select(c => c.Rarity), MenuStyles.RarityName);
         AddFilter(filters, "全部词条", catalog.Cards.SelectMany(c => c.Keywords), x => CardControl.KeywordLabel(x, new Dictionary<string, int>()));
         // Pack-scoped source picker: expansions fold into their base pack, so they surface here —
         // never as front-page tiles (2026-10-13 用户拍板：扩展包只是卡池内筛选，不单独设入口).
@@ -131,7 +135,7 @@ public partial class CollectionScreen : VBoxContainer
     private static IReadOnlyList<PackFamily> PackFamilies()
     {
         // 引擎卡包与工坊包并集：工坊包的卡 id 是 diy/ 前缀，靠来源映射（RawOf）归到自己的包。
-        var all = OrcEngineHost.PackDescriptors.Select(p => (p.Id, p.Name, p.BasePackId))
+        var all = OrcEngineHost.PackDescriptors.Select(p => (p.Id, Name:WorkshopAuthoring.PackNames.GetValueOrDefault("pack/"+p.Id)??p.Name, p.BasePackId))
             .Concat(WorkshopAuthoring.AuthoredPacks.Select(p => (p.Id[5..], p.Name,
                 p.BasePackId is { } b && b.StartsWith("pack/", StringComparison.Ordinal) ? b[5..] : p.BasePackId)));
         return [.. all.Where(p => p.Item3 is null)
@@ -147,7 +151,7 @@ public partial class CollectionScreen : VBoxContainer
 
     /// <summary>Pack display name across both sources (engine cardpacks + workshop packs).</summary>
     private static string PackNameOf(string id) =>
-        OrcEngineHost.PackDescriptors.FirstOrDefault(p => p.Id == id)?.Name
+        WorkshopAuthoring.PackNames.GetValueOrDefault("pack/"+id) ?? OrcEngineHost.PackDescriptors.FirstOrDefault(p => p.Id == id)?.Name
         ?? WorkshopAuthoring.AuthoredPacks.FirstOrDefault(p => p.Id == "pack/" + id)?.Name ?? id;
 
     private IReadOnlyList<PackTile> PackTiles(CardCatalog catalog)
@@ -155,7 +159,7 @@ public partial class CollectionScreen : VBoxContainer
         var cards = Cards;
         var source = cards.Count(c => DeckCardPacks.Of(c.CardId) == "source");
         var tiles = new List<PackTile>();
-        if (source > 0) tiles.Add(new("太空战争", "builtin:taikong", source));
+        if (source > 0) tiles.Add(new(WorkshopAuthoring.PackNames.GetValueOrDefault("source")??"太空战争", "builtin:taikong", source));
         // Only base packs get tiles; their expansions are already part of the pack's pool and
         // surface as the source picker inside the pack page.
         tiles.AddRange(PackFamilies()
@@ -182,30 +186,40 @@ public partial class CollectionScreen : VBoxContainer
     private void RenderPackPage()
     {
         if (_packPage is null) return;
-        UiStyles.Clear(_packPage);
-        _packPage.AddChild(UiStyles.Label("选择一个卡包查看它的卡池", 15, UiStyles.Dim));
+        MenuStyles.Clear(_packPage);
+        _packPage.AddChild(MenuStyles.Label("卡包档案  /  选择卡包，浏览卡牌与效果", 15, MenuStyles.Dim));
+        var packScroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        _packPage.AddChild(packScroll);
         var grid = new GridContainer { Columns = 4, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        grid.AddThemeConstantOverride("h_separation", 12); grid.AddThemeConstantOverride("v_separation", 12);
-        _packPage.AddChild(grid);
+        grid.AddThemeConstantOverride("h_separation", 20); grid.AddThemeConstantOverride("v_separation", 20);
+        packScroll.AddChild(grid);
+        packScroll.Resized += () => grid.Columns = Math.Max(1, (int)((packScroll.Size.X + 20) / 280));
         foreach (var tile in PackTiles(_catalog))
         {
-            var button = new Button { CustomMinimumSize = new Vector2(220, 96), SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            var button = new Button { CustomMinimumSize = new Vector2(260, 310), SizeFlagsHorizontal = SizeFlags.ExpandFill, MouseDefaultCursorShape = CursorShape.PointingHand };
             var box = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+            button.AddChild(box);
             box.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            box.AddThemeConstantOverride("separation", 6);
-            var name = UiStyles.Label(tile.Name, 20, UiStyles.MenuInk);
+            box.OffsetLeft = box.OffsetTop = 14; box.OffsetRight = box.OffsetBottom = -14;
+            box.AddThemeConstantOverride("separation", 12);
+            var artwork = new ArchiveArtwork { CustomMinimumSize = new(0, 205), SizeFlagsVertical = SizeFlags.ExpandFill };
+            var family = PackFamilies().FirstOrDefault(f => "pack/" + f.Id == tile.Filter);
+            var samples = Cards.Where(c => tile.Filter == "builtin:taikong" ? DeckCardPacks.Of(c.CardId) == "source"
+                : family is not null ? DeckCardPacks.RawOf(c.CardId) == "pack/" + family.Id
+                : c.CardId.StartsWith(tile.Filter + "/", StringComparison.Ordinal));
+            artwork.Initialize(_textures, faces: samples.Select(c => c.ArtPath)); box.AddChild(artwork);
+            var name = MenuStyles.Label(tile.Name, 20, MenuStyles.MenuInk);
             name.HorizontalAlignment = HorizontalAlignment.Center;
             box.AddChild(name);
-            var count = UiStyles.Label($"{tile.Count} 张卡", 13, UiStyles.Dim);
+            var count = MenuStyles.Label($"{tile.Count} 张卡牌   ·   打开卡包 →", 13, MenuStyles.Dim);
             count.HorizontalAlignment = HorizontalAlignment.Center;
             box.AddChild(count);
-            button.AddChild(box);
             var captured = tile;
             button.Pressed += () => OpenPack(captured.Filter);
             grid.AddChild(button);
         }
         if (PackTiles(_catalog).Count == 0)
-            _packPage.AddChild(UiStyles.Label("没有可浏览的卡包", 18, UiStyles.Dim));
+            _packPage.AddChild(MenuStyles.Label("没有可浏览的卡包", 18, MenuStyles.Dim));
     }
     private void AddFilter(HBoxContainer row, string all, IEnumerable<string> values, Func<string, string> label)
     {
@@ -226,12 +240,15 @@ public partial class CollectionScreen : VBoxContainer
         if (_grid is null)
             return;
         var inPack = _activePack is not null;
+        _search.Visible = _filterToggle.Visible = _reset.Visible = inPack;
+        _headingSpacer.Visible = !inPack;
         _backButton!.Visible = inPack;
         _packPage!.Visible = !inPack;
         _cardBody!.Visible = inPack;
         if (!inPack)
         {
-            _heading!.Text = "收藏";
+            _heading!.Text = "卡牌收藏";
+            _filterRow.Visible = false; _filterToggle.SetPressedNoSignal(false);
             _count.Text = $"{PackTiles(_catalog).Count} 个卡包";
             if (_expansionFilter is not null) _expansionFilter.Visible = false;
             return;
@@ -314,7 +331,7 @@ public partial class CollectionScreen : VBoxContainer
         var last = Math.Min(totalRows, (int)Math.Ceiling((_scroll.ScrollVertical + _scroll.Size.Y) / RowStride) + Overscan);
         if (!force && first == _firstRow && last == _lastRow) return;
         _firstRow = first; _lastRow = last;
-        UiStyles.Clear(_grid);
+        MenuStyles.Clear(_grid);
         _grid.Position = new(0, first * RowStride);
         _grid.Size = new(_scrollContent.Size.X, Math.Max(1, last - first) * RowStride - RowGap);
         foreach (var def in _results.Skip(first * _grid.Columns).Take(Math.Max(0, last - first) * _grid.Columns))
@@ -329,55 +346,55 @@ public partial class CollectionScreen : VBoxContainer
             card.Activated += _ => ShowDetail(def);
             card.LongPressed += _ => ShowDetail(def);
             center.AddChild(card);
-            var name = UiStyles.Label(def.Name, 13);
+            var name = MenuStyles.Label(def.Name, 13);
             name.CustomMinimumSize = new Vector2(137, 0);
             name.ClipText = true;
             name.TooltipText = def.Name;
             name.HorizontalAlignment = HorizontalAlignment.Center;
             item.AddChild(name);
-            var meta = UiStyles.Label($"{def.Set} · {UiStyles.TypeName(def.CardType)}", 11, UiStyles.Dim);
+            var meta = MenuStyles.Label($"{def.Set} · {MenuStyles.TypeName(def.CardType)}", 11, MenuStyles.Dim);
             meta.ClipText = true; meta.HorizontalAlignment = HorizontalAlignment.Center; item.AddChild(meta);
         }
         if (_results.Length == 0)
-            _grid.AddChild(UiStyles.Label("没有符合条件的卡牌", 18, UiStyles.Dim));
+            _grid.AddChild(MenuStyles.Label("没有符合条件的卡牌", 18, MenuStyles.Dim));
     }
     public void ShowDetail(UiCardDefinition? card)
     {
         _selected = card;
-        UiStyles.Clear(_detail);
+        MenuStyles.Clear(_detail);
         if (card is null)
             return;
         foreach (var visible in VisibleCards) visible.SetState(visible.Definition.CardId == card.CardId, false);
-        var name = UiStyles.Label(card.Name, 22, UiStyles.Gold); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; name.CustomMinimumSize = new(280, 0); _detail.AddChild(name);
+        var name = MenuStyles.Label(card.Name, 22, MenuStyles.Gold); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; name.CustomMinimumSize = new(280, 0); _detail.AddChild(name);
         if (card.NameEn.Length > 0)
-            _detail.AddChild(UiStyles.Label(card.NameEn, 14, UiStyles.Dim));
+            _detail.AddChild(MenuStyles.Label(card.NameEn, 14, MenuStyles.Dim));
         var full = new CardControl();
         full.Bind(card, _textures, 280);
         _detail.AddChild(full);
-        _detail.AddChild(UiStyles.Label($"{card.Set}  /  {UiStyles.TypeName(card.CardType)}  /  {UiStyles.RarityName(card.Rarity)}", 13, UiStyles.Dim));
+        _detail.AddChild(MenuStyles.Label($"{card.Set}  /  {MenuStyles.TypeName(card.CardType)}  /  {MenuStyles.RarityName(card.Rarity)}", 13, MenuStyles.Dim));
         var statLine = $"费用 {Stat(card.Cost)}   攻击 {Stat(card.BaseAttack)}   防御 {Stat(card.BaseDefense)}   操作 {Stat(card.BaseOpCost)}";
-        _detail.AddChild(UiStyles.Label("基础数值", 12, UiStyles.Dim));
-        var stats = UiStyles.Label(statLine, 13);
+        _detail.AddChild(MenuStyles.Label("基础数值", 12, MenuStyles.Dim));
+        var stats = MenuStyles.Label(statLine, 13);
         stats.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _detail.AddChild(stats);
         if (card.HasVariableStats)
-            _detail.AddChild(UiStyles.Label("含可变数值，以卡面说明为准", 12, UiStyles.Gold));
+            _detail.AddChild(MenuStyles.Label("含可变数值，以卡面说明为准", 12, MenuStyles.Gold));
         if (card.Keywords.Count > 0)
         {
-            var kw = UiStyles.Label(string.Join("  ", card.Keywords.Select(k => CardControl.KeywordLabel(k, card.KeywordValues))), 14, UiStyles.Gold);
+            var kw = MenuStyles.Label(string.Join("  ", card.Keywords.Select(k => CardControl.KeywordLabel(k, card.KeywordValues))), 14, MenuStyles.Gold);
             kw.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _detail.AddChild(kw);
         }
-        var text = UiStyles.Label(card.Text, 15);
+        var text = MenuStyles.Label(card.Text, 15);
         text.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _detail.AddChild(text);
         if (card.Flavor.Length > 0)
         {
-            var flavor = UiStyles.Label(card.Flavor, 12, UiStyles.Dim);
+            var flavor = MenuStyles.Label(card.Flavor, 12, MenuStyles.Dim);
             flavor.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _detail.AddChild(flavor);
         }
-        var id = UiStyles.Label(card.CardId, 11, UiStyles.Dim);
+        var id = MenuStyles.Label(card.CardId, 11, MenuStyles.Dim);
         id.AutowrapMode = TextServer.AutowrapMode.Arbitrary;
         _detail.AddChild(id);
     }

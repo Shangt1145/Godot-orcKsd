@@ -10,7 +10,7 @@
     Engine checkout root. The UI never copies engine sources; it references that checkout.
     Override with: dotnet build -p:OrcEngineRoot=...
     Default points at the dedicated GitHub checkout. Its exact revision and pre-existing local
-    changes are recorded in docs/ENGINE_INTEGRATION_BASELINE.md; it is not assumed to be clean.
+    changes are recorded in docs/engine/ENGINE_INTEGRATION_BASELINE.md; it is not assumed to be clean.
   -->
   <PropertyGroup>
     <OrcEngineRoot Condition="'$(OrcEngineRoot)' == ''">H:\Working Folder\OrC-KSD-github\src\Orc.Game</OrcEngineRoot>
@@ -34,6 +34,10 @@
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Packages/Orc.Packages.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/Orc.Plugins.BuiltIn.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.UI/Orc.UI.csproj" />
+    <!-- S2 动作实现集：建对局前必须有默认实现，否则 CommandManager 构造即抛。 -->
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Foundation.Actions/Orc.Foundation.Actions.csproj" />
+    <!-- 引擎启发式 AI（AiPilot/HeuristicPolicy）：对手驱动的主决策来源。 -->
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Ai/Orc.Ai.csproj" />
   </ItemGroup>
 
   <ItemGroup>

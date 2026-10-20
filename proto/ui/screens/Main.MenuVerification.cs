@@ -144,10 +144,16 @@ public partial class Main
             Check(!_shellBar.Visible && !_menuBackdrop.Visible, "Menu chrome leaked into battle.");
             StopRealMatch(); _battle.ResetDemo(); Show("home"); await MenuSettledAsync();
             await DeckClickAsync(_home.PlayButton);
+            Check(_active == "battle", "Home action did not enter battle directly.");
             deadline = Time.GetTicksMsec() + 20_000;
             while (!_battle.MulliganPanelVisible && Time.GetTicksMsec() < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             Check(_active == "battle" && _battle.MulliganPanelVisible && _runner?.CurrentView is { } homeOpening
                 && homeOpening.SelfHand.All(c => copy.CardIds.Contains(c.Definition.CardId)), "Hero action did not start the saved home deck.");
+            await MenuCaptureAsync("battle-opening");
+            _battle.ConfirmMulligan();
+            Check(await AwaitBoardAsync(() => _runner is { MulliganPending: false } && !_battle.MulliganPanelVisible, 20), "Opening hand did not settle.");
+            Check(await AwaitIdleAsync(20), "Battle did not finish opening presentation.");
+            await MenuCaptureAsync("battle-board");
             // Hidden battle choices must retain their answer without intercepting menu input.
             StopRealMatch(); _battle.ResetDemo();
             var request = new UiTargetRequest("menu-hidden-choice", [new("pick", ChoiceKind.Option, 1, 1,

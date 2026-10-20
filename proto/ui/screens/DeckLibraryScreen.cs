@@ -27,18 +27,19 @@ public partial class DeckLibraryScreen : VBoxContainer
     public void Initialize(DeckLibrary library, DeckConstructionService service, TextureCache textures)
     {
         _library = library; _service = service; _textures = textures; SizeFlagsVertical = SizeFlags.ExpandFill;
+        AddThemeConstantOverride("separation", 16);
         var title = new HBoxContainer(); AddChild(title);
-        _title = UiStyles.Label("我的卡组", 30, UiStyles.MenuInk); title.AddChild(_title);
+        _title = MenuStyles.Label("我的卡组", 30, MenuStyles.MenuInk); title.AddChild(_title);
         title.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
-        ImportButton = UiStyles.Button("导入代码", ImportDialog); title.AddChild(ImportButton);
-        _status = UiStyles.Label("", 13, UiStyles.MenuDim); AddChild(_status);
+        ImportButton = MenuStyles.Button("导入代码", ImportDialog); title.AddChild(ImportButton);
+        _status = MenuStyles.Label("", 13, MenuStyles.MenuDim); AddChild(_status);
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddThemeConstantOverride("separation", 24); AddChild(body);
         var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SizeFlagsHorizontal = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; body.AddChild(scroll);
         Tiles = new GridContainer { Columns = 3, SizeFlagsHorizontal = SizeFlags.ExpandFill }; scroll.AddChild(Tiles);
         Tiles.AddThemeConstantOverride("h_separation", 18); Tiles.AddThemeConstantOverride("v_separation", 18);
         scroll.Resized += () => Tiles.Columns = Math.Max(1, (int)((scroll.Size.X + 18) / 214));
         var panel = new PanelContainer { CustomMinimumSize = new(336, 0) }; body.AddChild(panel);
-        panel.AddThemeStyleboxOverride("panel", UiStyles.Box(UiStyles.MenuPanel, UiStyles.MenuLine, 1, 20));
+        panel.AddThemeStyleboxOverride("panel", MenuStyles.Box(MenuStyles.MenuPanel, MenuStyles.MenuLine, 1, 20));
         var detailScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; panel.AddChild(detailScroll);
         Details = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; detailScroll.AddChild(Details);
         _delete = new ConfirmationDialog { Title = "删除卡组" }; AddChild(_delete);
@@ -51,21 +52,23 @@ public partial class DeckLibraryScreen : VBoxContainer
         if (!decks.Any(d => d.Id == _selectedId)) _selectedId = _library.ActiveId ?? decks.FirstOrDefault()?.Id;
         _title.Text = PlaySelection ? "选择对战卡组" : "我的卡组";
         _status.Text = _library.LoadError ?? $"{decks.Count} 副卡组  ·  点击卡组查看详情";
-        UiStyles.Clear(Tiles);
+        MenuStyles.Clear(Tiles);
         foreach (var deck in decks.OrderByDescending(d => d.Id == _library.ActiveId).ThenBy(d => d.Name))
         {
             var errors = _service.Validate(deck); var active = deck.Id == _library.ActiveId;
-            var tile = UiStyles.Button("", () => SelectDeck(deck.Id)); tile.Name = "Deck_" + deck.Id; tile.SetMeta("deck_id", deck.Id);
+            var tile = MenuStyles.Button("", () => SelectDeck(deck.Id)); tile.Name = "Deck_" + deck.Id; tile.SetMeta("deck_id", deck.Id);
             tile.CustomMinimumSize = new(196, 320); tile.SizeFlagsHorizontal = SizeFlags.ExpandFill; tile.TooltipText = deck.Name;
-            tile.AddThemeStyleboxOverride("normal", UiStyles.Box(new("1b231cde"), _selectedId == deck.Id ? UiStyles.Gold : new("545c4a"), 1, 12)); Tiles.AddChild(tile);
+            var tileStyle = MenuStyles.Box(new("253027"), _selectedId == deck.Id ? MenuStyles.Gold : MenuStyles.Line, 2, 12);
+            tileStyle.BorderWidthBottom = _selectedId == deck.Id ? 4 : 1;
+            tile.AddThemeStyleboxOverride("normal", tileStyle); Tiles.AddChild(tile);
             var contents = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore }; tile.AddChild(contents);
             contents.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect); contents.OffsetLeft = contents.OffsetTop = 12; contents.OffsetRight = contents.OffsetBottom = -12; contents.AddThemeConstantOverride("separation", 8);
             var center = new CenterContainer { MouseFilter = MouseFilterEnum.Ignore }; contents.AddChild(center);
             var cover = new MenuDeckCover(); cover.Initialize(_textures, deck.Options.MainNation, 158); center.AddChild(cover);
-            var name = UiStyles.Label(deck.Name, 17, UiStyles.MenuInk); name.ClipText = true; name.HorizontalAlignment = HorizontalAlignment.Center; name.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(name);
-            var summary = UiStyles.Label($"{deck.CardIds.Length + 1} 张  ·  " + (active ? "当前对战" : errors.Count == 0 ? "可对战" : "草稿"), 12, active ? UiStyles.Gold : UiStyles.MenuDim); summary.HorizontalAlignment = HorizontalAlignment.Center; summary.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(summary);
+            var name = MenuStyles.Label(deck.Name, 17, MenuStyles.MenuInk); name.ClipText = true; name.HorizontalAlignment = HorizontalAlignment.Center; name.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(name);
+            var summary = MenuStyles.Label($"{deck.CardIds.Length + 1} 张  ·  " + (active ? "当前对战" : errors.Count == 0 ? "可对战" : "草稿"), 12, active ? MenuStyles.Gold : MenuStyles.MenuDim); summary.HorizontalAlignment = HorizontalAlignment.Center; summary.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(summary);
         }
-        NewButton = UiStyles.Button("＋\n新建卡组", () => NewRequested?.Invoke()); NewButton.Name = "NewDeckTile"; NewButton.CustomMinimumSize = new(196, 320); NewButton.AddThemeFontSizeOverride("font_size", 24); Tiles.AddChild(NewButton);
+        NewButton = MenuStyles.Button("＋\n新建卡组", () => NewRequested?.Invoke()); NewButton.Name = "NewDeckTile"; NewButton.CustomMinimumSize = new(196, 320); NewButton.AddThemeFontSizeOverride("font_size", 24); Tiles.AddChild(NewButton);
         RenderDetails();
     }
     public void SetPlaySelection(bool enabled) { PlaySelection = enabled; if (Tiles is not null) Refresh(); }
@@ -74,25 +77,26 @@ public partial class DeckLibraryScreen : VBoxContainer
     internal Button TileButton(string id) => Tiles.GetChildren().OfType<Button>().Single(b => b.HasMeta("deck_id") && b.GetMeta("deck_id").AsString() == id);
     private void RenderDetails()
     {
-        UiStyles.Clear(Details); _actions.Clear();
+        MenuStyles.Clear(Details); _actions.Clear();
         var deck = _library.Decks.FirstOrDefault(d => d.Id == _selectedId);
         if (deck is null)
         {
-            var empty = UiStyles.Label("创建第一副卡组，\n或者导入已有卡组代码。", 17, UiStyles.MenuDim); empty.AutowrapMode = TextServer.AutowrapMode.WordSmart; empty.CustomMinimumSize = new(290, 0); Details.AddChild(empty); return;
+            var empty = MenuStyles.Label("创建第一副卡组，\n或者导入已有卡组代码。", 17, MenuStyles.MenuDim); empty.AutowrapMode = TextServer.AutowrapMode.WordSmart; empty.CustomMinimumSize = new(290, 0); Details.AddChild(empty); return;
         }
         var errors = _service.Validate(deck); var active = deck.Id == _library.ActiveId;
-        Details.AddChild(UiStyles.Label(active ? "当前对战卡组" : "卡组详情", 12, UiStyles.Gold));
-        var center = new CenterContainer(); Details.AddChild(center); var cover = new MenuDeckCover(); cover.Initialize(_textures, deck.Options.MainNation, 148); center.AddChild(cover);
-        var name = UiStyles.Label(deck.Name, 23, UiStyles.MenuInk); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; name.CustomMinimumSize = new(290, 0); Details.AddChild(name);
+        Details.AddChild(MenuStyles.Label(active ? "当前对战卡组" : "卡组详情", 12, MenuStyles.Gold));
+        var art = new ArchiveArtwork { CustomMinimumSize = new(0, 150) };
+        art.Initialize(_textures, faces: deck.CardIds.Distinct().Select(id => _service.Cards.FirstOrDefault(c => c.CardId == id)?.ArtPath ?? "")); Details.AddChild(art);
+        var name = MenuStyles.Label(deck.Name, 23, MenuStyles.MenuInk); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; name.CustomMinimumSize = new(290, 0); Details.AddChild(name);
         var ruleText = deck.Options.UnrestrictedNations ? "混编 · 不限制主盟国" : $"{deck.Options.MainNation} / {deck.Options.AllyNation}";
         ruleText += deck.Options.UnrestrictedSize ? " · 不限张数" : $" · 目标 {deck.Options.TotalCards} 张";
-        var rules = UiStyles.Label($"{deck.CardIds.Length + 1} 张（含总部）\n" + ruleText, 13, UiStyles.MenuDim); rules.AutowrapMode = TextServer.AutowrapMode.WordSmart; Details.AddChild(rules);
-        var packs = UiStyles.Label("卡包：" + string.Join("、", DeckCardPacks.Selected(deck)
-            .Select(id => _service.Packs.FirstOrDefault(p => p.Id == id)?.Name ?? "已移除的卡包")), 13, UiStyles.MenuDim);
+        var rules = MenuStyles.Label($"{deck.CardIds.Length + 1} 张（含总部）\n" + ruleText, 13, MenuStyles.MenuDim); rules.AutowrapMode = TextServer.AutowrapMode.WordSmart; Details.AddChild(rules);
+        var packs = MenuStyles.Label("卡包：" + string.Join("、", DeckCardPacks.Selected(deck)
+            .Select(id => _service.Packs.FirstOrDefault(p => p.Id == id)?.Name ?? "已移除的卡包")), 13, MenuStyles.MenuDim);
         packs.AutowrapMode = TextServer.AutowrapMode.WordSmart; Details.AddChild(packs);
-        var validity = UiStyles.Label(errors.Count == 0 ? "准备就绪" : string.Join("\n", errors.Take(2)), 12, errors.Count == 0 ? new Color("bdcc9c") : new("dca58b")); validity.AutowrapMode = TextServer.AutowrapMode.WordSmart; validity.TooltipText = string.Join("\n", errors); Details.AddChild(validity);
+        var validity = MenuStyles.Label(errors.Count == 0 ? "准备就绪" : string.Join("\n", errors.Take(2)), 12, errors.Count == 0 ? new Color("bdcc9c") : new("dca58b")); validity.AutowrapMode = TextServer.AutowrapMode.WordSmart; validity.TooltipText = string.Join("\n", errors); Details.AddChild(validity);
         var ready = errors.Count == 0 && _library.LoadError is null;
-        var start = AddAction(Details, "start", "开始对战", () => Execute(() => { _library.Activate(deck.Id); StartRequested?.Invoke(); })); start.Disabled = !ready; UiStyles.Primary(start);
+        var start = AddAction(Details, "start", "开始对战", () => Execute(() => { _library.Activate(deck.Id); StartRequested?.Invoke(); })); start.Disabled = !ready; MenuStyles.Primary(start);
         AddAction(Details, "edit", "编辑卡组", () => EditRequested?.Invoke(deck));
         var use = AddAction(Details, "activate", active ? "已设为首页卡组" : "设为首页卡组", () => Execute(() => _library.Activate(deck.Id))); use.Disabled = active || !ready;
         var utilities = new HBoxContainer(); utilities.AddThemeConstantOverride("separation", 6); Details.AddChild(utilities);
@@ -102,7 +106,7 @@ public partial class DeckLibraryScreen : VBoxContainer
     }
     private Button AddAction(Container parent, string id, string label, Action action)
     {
-        var button = UiStyles.Button(label, action); button.Name = "DeckAction_" + id; _actions[id] = button; parent.AddChild(button); return button;
+        var button = MenuStyles.Button(label, action); button.Name = "DeckAction_" + id; _actions[id] = button; parent.AddChild(button); return button;
     }
     private void Execute(Action action)
     {
@@ -113,19 +117,19 @@ public partial class DeckLibraryScreen : VBoxContainer
     {
         var dialog = new AcceptDialog { Title = "OrC-KSD 卡组代码", MinSize = new(650, 240) }; AddChild(dialog);
         var box = new VBoxContainer(); dialog.AddChild(box);
-        box.AddChild(UiStyles.Label("包含卡牌、主盟国与张数选项。此代码用于本项目。", 14, UiStyles.Dim));
+        box.AddChild(MenuStyles.Label("包含卡牌、主盟国与张数选项。此代码用于本项目。", 14, MenuStyles.Dim));
         var code = DeckLibrary.Export(deck);
         var text = new TextEdit { Text = code, Editable = false, CustomMinimumSize = new(600, 140), WrapMode = TextEdit.LineWrappingMode.Boundary, SizeFlagsVertical = SizeFlags.ExpandFill }; box.AddChild(text);
-        var copy = UiStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(code)); box.AddChild(copy);
+        var copy = MenuStyles.Button("复制到剪贴板", () => DisplayServer.ClipboardSet(code)); box.AddChild(copy);
         dialog.Confirmed += () => dialog.QueueFree(); dialog.Canceled += () => dialog.QueueFree(); dialog.CloseRequested += () => dialog.QueueFree(); dialog.PopupCentered();
     }
     private void ImportDialog()
     {
         var dialog = new ConfirmationDialog { Title = "导入 OrC-KSD 卡组", MinSize = new(650, 300), DialogHideOnOk = false }; AddChild(dialog);
         var box = new VBoxContainer(); dialog.AddChild(box);
-        box.AddChild(UiStyles.Label("粘贴 ORK1: 开头的代码；导入后作为新草稿保存。", 14, UiStyles.Dim));
+        box.AddChild(MenuStyles.Label("粘贴 ORK1: 开头的代码；导入后作为新草稿保存。", 14, MenuStyles.Dim));
         var text = new TextEdit { CustomMinimumSize = new(600, 150), WrapMode = TextEdit.LineWrappingMode.Boundary, SizeFlagsVertical = SizeFlags.ExpandFill }; box.AddChild(text);
-        var error = UiStyles.Label("", 13, new("dca58b")); error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(error);
+        var error = MenuStyles.Label("", 13, new("dca58b")); error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(error);
         // Keep the dialog open on invalid input so the pasted code can be corrected.
         dialog.Confirmed += () =>
         {

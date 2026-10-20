@@ -12,6 +12,7 @@ public partial class DiyEditorScreen
     private Action? _workshopChanged;
     private GridContainer _keywordGrid=null!;
     private readonly Dictionary<string,SpinBox> _keywordValues=[];
+    private readonly HashSet<string> _originalKeywordChoices=[];
     internal Button CreateNationButton=null!;
     internal OptionButton ArtInputKind=null!;
     private SpinBox _cropX=null!,_cropY=null!,_cropW=null!,_cropH=null!;
@@ -23,7 +24,10 @@ public partial class DiyEditorScreen
     internal void SetPackScope(DiyPackDraft pack)
     {
         _scopePack=pack.Id;
-        Load(_library.Cards.FirstOrDefault(c=>c.PackId==pack.Id)??new(){PackId=pack.Id});
+        _sections.CurrentTab=0;EditorScroll=_sectionScrolls[0];
+        var saved=_library.Cards.FirstOrDefault(c=>c.PackId==pack.Id);
+        var original=pack.IsBuiltIn?_catalog().FirstOrDefault(c=>DeckCardPacks.RawOf(c.CardId)==pack.Id):null;
+        Load(saved??(original is not null?BuiltInWorkshopCatalog.Edit(original,pack.Id,RuntimeGameData.Directory("nations")):new(){PackId=pack.Id}));
     }
     internal void GuardNavigation(Action action)=>Guard(action);
     internal void RefreshWorkshopOptions()
@@ -37,8 +41,14 @@ public partial class DiyEditorScreen
         Nation.Clear();foreach(var n in packId.Length>0?WorkshopAuthoring.NationsFor(packId):DiyCardCompiler.Nations)
         {Nation.AddItem(n.Label);Nation.SetItemMetadata(Nation.ItemCount-1,n.Id);}
         foreach(var value in _keywordValues.Values){value.GetParent().RemoveChild(value);value.QueueFree();}_keywordValues.Clear();
-        foreach(var key in _keywords.Keys.Where(k=>k.StartsWith("kw-",StringComparison.Ordinal)).ToArray())
+        foreach(var key in _keywords.Keys.Where(k=>k.StartsWith("kw-",StringComparison.Ordinal)||_originalKeywordChoices.Contains(k)).ToArray())
         {var control=_keywords[key];_keywordGrid.RemoveChild(control);control.QueueFree();_keywords.Remove(key);}
+        _originalKeywordChoices.Clear();
+        foreach(var keyword in _draft.Keywords.Where(k=>!_keywords.ContainsKey(k)&&!k.StartsWith("kw-",StringComparison.Ordinal)))
+        {
+            var box=new CheckBox{Text=keyword+"（原始词条）"};_keywordGrid.AddChild(box);_keywords[keyword]=box;
+            _originalKeywordChoices.Add(keyword);box.Toggled+=_=>Changed();
+        }
         foreach(var keyword in WorkshopAuthoring.KeywordsFor(packId))
         {
             var box=new CheckBox{Text=keyword.Label};_keywordGrid.AddChild(box);_keywords[keyword.Id]=box;box.Toggled+=_=>Changed();
@@ -57,7 +67,7 @@ public partial class DiyEditorScreen
     }
     private void BuildNationFields(Node parent)
     {
-        CreateNationButton=UiStyles.Button("创建 / 修改国家与图标…",OpenNationEditor);parent.AddChild(CreateNationButton);
+        CreateNationButton=MenuStyles.Button("＋ 新建 / 编辑国家",OpenNationEditor);CreateNationButton.CustomMinimumSize=new(174,42);CreateNationButton.SizeFlagsVertical=SizeFlags.ShrinkEnd;parent.AddChild(CreateNationButton);
     }
     private void OpenNationEditor()
     {
@@ -69,7 +79,7 @@ public partial class DiyEditorScreen
         var form=new VBoxContainer();dialog.AddChild(form);
         var name=new LineEdit{Text=current.Name,MaxLength=40};Field(form,"国家名称",name);
         var color=new ColorPickerButton{Color=new Color(current.Color),CustomMinimumSize=new(0,40)};Field(form,"卡框国家色",color);
-        var iconText=UiStyles.Label(current.IconFile.Length==0?"尚未导入国家图标":"已设置国家图标",13);form.AddChild(iconText);
+        var iconText=MenuStyles.Label(current.IconFile.Length==0?"尚未导入国家图标":"已设置国家图标",13);form.AddChild(iconText);
         var preview=new TextureRect{CustomMinimumSize=new(64,64),ExpandMode=TextureRect.ExpandModeEnum.IgnoreSize,StretchMode=TextureRect.StretchModeEnum.KeepAspectCentered,Texture=DiyArtStore.Load(current.IconFile)};form.AddChild(preview);
         _receiveNationIcon=path=>
         {
@@ -82,7 +92,7 @@ public partial class DiyEditorScreen
                 }
                 catch(Exception e){iconText.Text=e.Message;}
         };
-        var choose=UiStyles.Button("导入国家图标…",()=>
+        var choose=MenuStyles.Button("导入国家图标…",()=>
         {
             var picker=new FileDialog{Access=FileDialog.AccessEnum.Filesystem,FileMode=FileDialog.FileModeEnum.OpenFile,UseNativeDialog=true,Filters=["*.png,*.jpg,*.jpeg,*.webp ; 图标图片"]};AddChild(picker);
             picker.FileSelected+=path=>{OnNationIconChosen(path);picker.QueueFree();};picker.Canceled+=()=>picker.QueueFree();picker.PopupCentered(new(700,480));
@@ -109,7 +119,7 @@ public partial class DiyEditorScreen
         var row=new GridContainer{Columns=4};parent.AddChild(row);
         _cropX=Number(0,99);_cropY=Number(0,99);_cropW=Number(1,100);_cropH=Number(1,100);_cropW.Value=_cropH.Value=100;
         Field(row,"插画左边 %",_cropX);Field(row,"插画上边 %",_cropY);Field(row,"插画宽度 %",_cropW);Field(row,"插画高度 %",_cropH);
-        _cropApply=UiStyles.Button("应用裁切预览",()=>
+        _cropApply=MenuStyles.Button("应用裁切预览",()=>
         {
             try
             {
@@ -118,7 +128,7 @@ public partial class DiyEditorScreen
                 SaveAdapted(image,region,"card",_draft.ArtSourceFile);
             }catch(Exception e){_notice.Text=e.Message;}
         });_cropApply.Disabled=true;parent.AddChild(_cropApply);
-        var hint=UiStyles.Label("完整卡面只提取插画，旧边框、旧数值与旧文字不再叠加。识别后可调整裁切；规则数值仍由上方字段编辑。",12,UiStyles.Dim);hint.AutowrapMode=TextServer.AutowrapMode.WordSmart;parent.AddChild(hint);
+        var hint=MenuStyles.Label("完整卡面只提取插画，旧边框、旧数值与旧文字不再叠加。识别后可调整裁切；规则数值仍由上方字段编辑。",12,MenuStyles.Dim);hint.AutowrapMode=TextServer.AutowrapMode.WordSmart;parent.AddChild(hint);
     }
     private void ImportAdaptedImage(Image image)
     {
@@ -129,7 +139,7 @@ public partial class DiyEditorScreen
     private void SaveAdapted(Image image,DiyArtRegion region,string mode,string original)
     {
         var cropped=CardArtExtractor.Crop(image,region);var name=_library.SaveArt(_draft.Id,cropped.SavePngToBuffer());_textures.Invalidate("diyart://"+name);
-        _importedArt=name;ArtZoom.Value=100;DiyArtStore.UpdateZoom(_draft.Id,100);
+        _importedArt=name;ArtZoom.Value=100;DiyArtStore.UpdateZoom(_draft.RuntimeId,100);
         _draft=_draft with{ArtCardId="",ArtSourceFile=original,ArtRegion=region,ArtImportMode=mode};
         _loading=true;_cropX.Value=region.X*100;_cropY.Value=region.Y*100;_cropW.Value=region.Width*100;_cropH.Value=region.Height*100;_cropApply.Disabled=false;_loading=false;
         Changed();RefreshPreview();_notice.Text=mode=="card"?"已提取插画并适配当前卡框、国家图标。可调整裁切预览；原图已保留。":"插画已导入，保存后用于构筑与对局。";

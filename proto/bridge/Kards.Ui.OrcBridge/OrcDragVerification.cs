@@ -9,6 +9,8 @@ public static class OrcDragVerification
     { Handlers=[new(){Actions=[new(){Op="buff",Target="choose.friendly.unit",Value="2"}]}] }.ToJson();
     public static string OrderProgram() => new KeywordProgram
     { Handlers=[new(){Event="card.played",Actions=[new(){Op="damage",Target="choose.friendly.unit",Value="1"}]}] }.ToJson();
+    public static string NonTargetOrderProgram() => new KeywordProgram
+    { Handlers=[new(){Event="card.played",Actions=[new(){Op="damage",Target="enemy.hq",Value="1"}]}] }.ToJson();
 
     public static async Task FundAsync(OrcMatchSession session)
     {
@@ -40,8 +42,9 @@ public static class OrcDragVerification
         var mobile=(UnitCard)await match.CardService.CreateAsync("diy/demo-jidong",match.Players[0]);
         await match.PlayManager.JoinUnitAsync(routed,match.Battlefield.FrontLine[0]);
         await match.PlayManager.JoinUnitAsync(mobile,match.Battlefield.FrontLine[1]);
+        // 引擎把 CanMove/CanAttack 改成只读：可动/可攻从布尔变成配额（1＝可，0＝否）。
         foreach(var unit in new[]{routed,mobile})
-        {unit.GetData<CommandData>().CanMove=true;unit.GetData<CommandData>().CanAttack=true;}
+        {var data=unit.GetData<CommandData>();data.SetMoveQuota(1);data.SetAttackQuota(1);}
         session.SettleProjection();session.Pump();
         return (OrcRefs.KeyOf(routed),OrcRefs.KeyOf(mobile));
     }
