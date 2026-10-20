@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$BuildRoot='H:\g\orc-offline-update',
     [string]$Godot=(Join-Path $PSScriptRoot 'godot-wait.ps1')
 )

@@ -1,4 +1,4 @@
-param([string]$Api = 'https://herokuapi.kards.com/graphql')
+﻿param([string]$Api = 'https://herokuapi.kards.com/graphql')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $destination = Join-Path $root 'proto/art/kards'

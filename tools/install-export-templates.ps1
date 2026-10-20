@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64_console.exe',
     [string]$Archive = 'H:\g\downloads\Godot_v4.7-stable_mono_export_templates.tpz'
 )

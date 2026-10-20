@@ -147,7 +147,7 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
         var compiled=OrcInspector.CompileText("desktop.draw","部署：抽两张牌","unit");
         Assert.True(compiled.ParseComplete);Assert.True(compiled.AllCompiled,string.Join("；",compiled.Problems));
         var draft=new DiyCardDraft {Id="diy/desktop-draw",Name="原版解析实战",OrcEffects=compiled.Parse.Effects.Select(OrcEffectEditing.ToDraft).ToArray()};
-        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,20261016,"desktop-full","probe",openingHand:[draft.Id],sourceDirectory:source,customCards:[draft]);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,20261016,"desktop-full","probe",openingHand:[draft.Id],sourceDirectory:source,customCards:[draft],firstPlayerIndex:0);
         await session.SettleMulliganAsync(false);session.SettleProjection();
         var actor=session.View.SelfHand.Single(c=>c.CardId==draft.Id);
         for(var i=0;i<8&&session.View.SelfKredits<1;i++){Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new EndTurn()));session.SettleProjection();}
@@ -162,7 +162,7 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
         var left=new DiyCardDraft {Id="diy/full-left",Name="目标甲",Cost=0,Attack=1,Defense=8};
         var right=left with {Id="diy/full-right",Name="目标乙"};
         var order=new DiyCardDraft {Id="diy/full-target",Name="完整指向指令",CardType="order",Cost=1,EffectText="对一个友方单位造成2点伤害。"};
-        using var s=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,20261016,"desktop-targets","probe",sourceDirectory:source,openingHand:[left.Id,right.Id,order.Id],customCards:[left,right,order]);
+        using var s=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,20261016,"desktop-targets","probe",sourceDirectory:source,openingHand:[left.Id,right.Id,order.Id],customCards:[left,right,order],firstPlayerIndex:0);
         s.DriveOpponent=false;await s.SettleMulliganAsync(false);
         await s.Host.Match.ResourceManager.GainSlotsAsync(s.Host.Match.Players[0],10);
         await s.Host.Match.ResourceManager.GainPointsAsync(s.Host.Match.Players[0],10);

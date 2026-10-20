@@ -148,9 +148,10 @@ public class DiyInspectorTests(ITestOutputHelper output)
         };
         var catalog = new CardCatalog();
         catalog.Load(Source);
+        // 玩家先手是本测试前提（起手第一回合就要部署）；先手随机会抽到对手先手导致 NotYourTurn。
         using var session = await OrcMatchSession.CreateFromCatalogAsync(
             catalog.Cards, 20261016, "diy-insp-trial", "probe",
-            openingHand: [draft.Id], sourceDirectory: Source, customCards: [draft]);
+            openingHand: [draft.Id], sourceDirectory: Source, customCards: [draft], firstPlayerIndex: 0);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();
         var actor = session.View.SelfHand.Single(c => c.CardId == draft.Id);
