@@ -192,7 +192,10 @@ public sealed partial class OrcMatchSession : IDisposable
         var opponentDeck = opponent?.CardIds ?? DeckBuilder.BuildVerified(reviewed, unchecked(seed + 1));
         var session = await CreateNativeAsync(pool, deck, opponentDeck, seed, matchId,
             artLookup: artLookup, ct: ct, openingHand: openingHand, deckConfiguration: constructedDeck?.Options,
-            opponentDeckConfiguration: opponent?.Options, customCards: custom, packs: packSet,
+            // 自动对手只沿用主/盟国；牌组由 opponentDeck 提供，不传递编辑器其余选项。
+            opponentDeckConfiguration: opponent is null ? null
+                : new DeckOptions { MainNation = opponent.Options.MainNation, AllyNation = opponent.Options.AllyNation },
+            customCards: custom, packs: packSet,
             convertedEffects: convertedEffects.Where(p=>!replacements.Contains(p.Key)).ToDictionary(p=>p.Key,p=>p.Value), importedEffects: importedEffects, firstPlayerIndex: firstPlayerIndex);
         try
         {

@@ -16,7 +16,11 @@ namespace Kards.Ui.Tests;
 public sealed class DiyEditorUpdateTests
 {
     private const string Source=@"H:\Working Folder\OrC-KSD.Godot\proto\data\nations";
-    private static CardCatalog Catalog(){var catalog=new CardCatalog();catalog.Load(Source);return catalog;}
+    private static CardCatalog Catalog()
+    {
+        OrcEngineHost.WarmUp(Path.Combine(Path.GetDirectoryName(Source)!,"kards"));
+        var catalog=new CardCatalog();catalog.Load(Source);return catalog;
+    }
     [Fact]
     public void CapabilityIsPerEffectAndIncludesLegacyAndCardLevelReasons()
     {

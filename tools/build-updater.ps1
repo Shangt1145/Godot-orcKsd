@@ -16,7 +16,7 @@ if($LASTEXITCODE -ge 8){throw 'Updater workspace sync failed.'}
 $project=Join-Path $BuildRoot 'OrC.Updater'
 $target=[IO.Path]::GetFullPath((Join-Path $BuildRoot 'dist/current'))
 if(!$target.StartsWith($BuildRoot+'\',[StringComparison]::OrdinalIgnoreCase) -or (Get-Content $marker -Raw).Trim() -ne $source){throw 'Unsafe updater export directory.'}
-if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Recurse -Force}
+if([IO.Directory]::Exists($target)){[IO.Directory]::Delete($target,$true)}
 New-Item -ItemType Directory $target -Force|Out-Null
 & dotnet build (Join-Path $project 'OrC.Updater.csproj') --nologo -v:q
 if($LASTEXITCODE -ne 0){throw 'Updater build failed.'}

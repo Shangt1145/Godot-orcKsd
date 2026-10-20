@@ -16,7 +16,12 @@ public sealed class WorkshopTests : IDisposable
     private readonly DiyWorkshopLibrary store;
     private readonly DiyCardLibrary cards;
     private readonly CardCatalog catalog=new();
-    public WorkshopTests(){Directory.CreateDirectory(root);store=new(Path.Combine(root,"packs.json"));cards=new(Path.Combine(root,"cards.json"));catalog.Load(Source);}
+    public WorkshopTests()
+    {
+        Directory.CreateDirectory(root);store=new(Path.Combine(root,"packs.json"));cards=new(Path.Combine(root,"cards.json"));catalog.Load(Source);
+        // 内置词条注册是进程级的；前一用例已注册的词条必须仍能在本局快照中找到效果库。
+        OrcEngineHost.Reset();OrcEngineHost.WarmUp(Path.Combine(Path.GetDirectoryName(Source)!,"kards"));
+    }
     [Fact]
     public void DiyNationChoicesCoverTheNativeFactionCatalogAndCompile()
     {
@@ -318,6 +323,7 @@ public sealed class WorkshopTests : IDisposable
     public void Dispose()
     {
         WorkshopAuthoring.Configure(new DiyWorkshopLibrary(Path.Combine(root,"empty.json")),[]);
+        OrcEngineHost.Reset();
         var full=Path.GetFullPath(root);if(!full.StartsWith(Path.GetFullPath(Path.GetTempPath()),StringComparison.OrdinalIgnoreCase))throw new IOException("Unexpected test workspace");Directory.Delete(full,true);
     }
 }

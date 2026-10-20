@@ -1,5 +1,11 @@
 # OrC-KSD 接入基线
 
+## 当前 Beta.3 发布依赖（2026-10-20）
+
+引擎基线为 [hitman-OLD6/OrC-KSD 的 6d72eac0d30d40e870a4d881be01d7b784d7fb31](https://github.com/hitman-OLD6/OrC-KSD/commit/6d72eac0d30d40e870a4d881be01d7b784d7fb31)，本地引擎工作区干净。`OrcEngineRoot` 指向该版本的 `src/Orc.Game`。本次客户端发布没有修改或推送引擎源码。
+
+此前 Beta.1／Beta.2 源码补丁是历史接入记录，不要叠加到此基线。DIY 文本解析入口、包发现与词条效果装配使用当前后端；界面不自行决定规则与伤害。当前引擎拒绝 13 张缺少可执行效果的原版指令／反制卡，它们不进入可用卡池；不能将卡图存在视为规则已实现。
+
 ## 当前 Beta.2 拖拽词条发布依赖（2026-10-17）
 
 当前引擎基线为 `750e11efcc34d8c96188e6f5a9044bec594b807a` 加 [beta2-drag-keywords-native.patch](../engine-patches/beta2-drag-keywords-native.patch)。该完整补丁同时包含原生自定义词条运行时、自定义国家与生命周期修复、指令选择的原生纯查询、通用后撤规则 `move.retreat`、可用性与执行复验共享的移动方向判定，以及相关测试。对独立、干净的该提交 checkout 执行 `git apply --check`，再 `git apply` 此补丁；`OrcEngineRoot` 指向其 `src/Orc.Game`。本地现用引擎已包含这些修改，不要重复应用。引擎全量 1122 项测试通过。
