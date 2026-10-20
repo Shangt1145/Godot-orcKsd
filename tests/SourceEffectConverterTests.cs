@@ -67,8 +67,10 @@ public class SourceEffectConverterTests
     [Fact]
     public async Task ConvertedOrderDrawsWhenPlayedInARealMatch()
     {
+        // 玩家先手是本测试前提（对手先手时打出指令会撞 NotYourTurn）。
         using var session = await OrcMatchSession.CreateFromCatalogAsync(Catalog().Cards, 20261014,
-            "converted-order-draw", "probe", openingHand: ["deran/command/_1"], sourceDirectory: Source);
+            "converted-order-draw", "probe", openingHand: ["deran/command/_1"], sourceDirectory: Source,
+            firstPlayerIndex: 0);
         Assert.Equal(24, session.CardPoolReport!.Verified);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();
@@ -138,8 +140,11 @@ public class SourceEffectConverterTests
     public async Task ConvertedUnitDeployDrawsAndLandsWithSourceStats()
     {
         var original = Catalog().Cards.Single(c => c.CardId == "UN/unit/_1");
+        // 这条测试的前提是玩家先手（起手第一回合就能下牌）。先手随机会抽到对手先手，
+        // 此时 PlayCard 撞上对手回合报 NotYourTurn——不是效果的问题，是测试前提不成立。
         using var session = await OrcMatchSession.CreateFromCatalogAsync(Catalog().Cards, 20261014,
-            "converted-unit-deploy", "probe", openingHand: ["UN/unit/_1"], sourceDirectory: Source);
+            "converted-unit-deploy", "probe", openingHand: ["UN/unit/_1"], sourceDirectory: Source,
+            firstPlayerIndex: 0);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();
         var actor = session.View.SelfHand.Single(c => c.CardId == "UN/unit/_1");
