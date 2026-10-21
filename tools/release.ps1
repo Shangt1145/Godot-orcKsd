@@ -30,6 +30,17 @@ $AdditionalBaselineZips=@($AdditionalBaselineZips|ForEach-Object{
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 if (!(Test-Path -LiteralPath $Godot)) { throw "Godot not found: $Godot" }
 
+# Remove-Item 在某些受管环境里被改写成「移入回收站」，大文件/大目录会失败并直接中止发布。
+# 删除只是为了让下一步重新生成，因此删不掉就改名让位，绝不阻断打包。
+function Clear-Path([string]$Path) {
+    if (!(Test-Path -LiteralPath $Path)) { return }
+    try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; return } catch { }
+    # 回收站操作可能「报错但实际已移走」——先复查再决定是否改名。
+    if (!(Test-Path -LiteralPath $Path)) { return }
+    $suffix = '.stale-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+    try { Rename-Item -LiteralPath $Path -NewName ([IO.Path]::GetFileName($Path) + $suffix) -Force -ErrorAction Stop } catch { }
+}
+
 # 1) Preflight: a C# project needs the .NET ("mono") export templates, not the plain ones.
 #    Without them the export dies with "Cannot export project ... due to configuration errors",
 #    which says nothing about the real cause.
@@ -84,7 +95,7 @@ if ((!$target.StartsWith($buildPrefix, [StringComparison]::OrdinalIgnoreCase)) -
     throw 'OutDir must be a child directory of BuildRoot.'
 }
 Write-Host "Generated export directory: $target"
-if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+if (Test-Path -LiteralPath $target) { Clear-Path $target }
 New-Item -ItemType Directory -Path $target -Force | Out-Null
 $exe = Join-Path $target 'KardsUi.exe'
 & $Godot --headless --path $BuildRoot --export-release $Preset $exe
@@ -169,10 +180,10 @@ if($BaselineZip){
     }
 }
 $bootstrap=Join-Path (Split-Path -Parent $target) 'OrC-KSD-offline-updater-1.1.0-win-x64.zip'
-if(Test-Path -LiteralPath $bootstrap){Remove-Item -LiteralPath $bootstrap -Force}
+if(Test-Path -LiteralPath $bootstrap){Clear-Path $bootstrap}
 Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $updaterOutput|Select-Object -ExpandProperty FullName) -DestinationPath $bootstrap
 $zip = Join-Path (Split-Path -Parent $target) "OrC-KSD-$version-win-x64.zip"
-if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+if (Test-Path -LiteralPath $zip) { Clear-Path $zip }
 $runtime = Get-ChildItem -LiteralPath $target -Directory -Filter 'data_*' | Select-Object -First 1
 if (!$runtime) { throw 'Missing self-contained .NET runtime directory.' }
 Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $target -Force|Select-Object -ExpandProperty FullName) -DestinationPath $zip

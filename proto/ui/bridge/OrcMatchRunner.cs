@@ -11,7 +11,7 @@ namespace Kards.Ui;
 /// lands in the bridge instead of rippling into the screens. It only adds what the bridge
 /// deliberately leaves out — Godot diagnostics and the player-facing hint strings.
 /// </summary>
-public sealed class OrcMatchRunner
+public sealed class OrcMatchRunner : IMatchFeed
 {
     private const string InfantryId = "orc-demo-infantry";
 
@@ -160,6 +160,12 @@ public sealed class OrcMatchRunner
         }
         _session.Pump();
     }
+
+    /// <summary>
+    /// 接口入口。单机与 <see cref="Pump"/> 等价；联机实现为空——远端盘由服务端推送驱动，
+    /// 没有"每帧排空队列"这回事，但调用方仍可以统一每帧喊一次。
+    /// </summary>
+    void IMatchFeed.Advance(double delta) => Pump(delta);
 
     private void ScheduleOpponent()
     {

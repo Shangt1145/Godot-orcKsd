@@ -24,7 +24,11 @@ public partial class Main : Control
     private MarginContainer _contentMargin = null!;
     private string _active = "home";
     private UiMatchView? _match;
+    /// <summary>本地对局夹具：验证代码依赖 OrcMatchRunner 的测试专用成员（换视角/座椅/卡池报告）。</summary>
     private OrcMatchRunner? _runner;
+
+    /// <summary>正式对局的数据源。单机指向同一个 runner，联机指向远端实现；接线逻辑只认这个。</summary>
+    private IMatchFeed? _feed;
     private PresentationPlayer? _presentations;
     private DeckConstructionService _deckService = null!;
     private DeckLibrary _decks = null!;
@@ -155,10 +159,11 @@ public partial class Main : Control
         _battle.Initialize(_catalog, _textures, _clock, sfx);
         _battle.CommandRequested += command =>
         {
-            if (_runner is { IsRunning: true } runner)
+            // 有对局就转发；SubmitAsync 内部对"会话已结束"已有 null 保护，故不必再问 IsRunning。
+            if (_feed is { } feed)
             {
-                _ = runner.SubmitAsync(command);
-                if (runner.CurrentView is { } view) _battle.UpdateInputProjection(view, runner.CurrentActions);
+                _ = feed.SubmitAsync(command);
+                if (feed.CurrentView is { } view) _battle.UpdateInputProjection(view, feed.CurrentActions);
             }
             CommandRequested?.Invoke(command);
         };
@@ -405,57 +410,69 @@ public partial class Main : Control
 
     }
 
+    /// <summary>绑定本地对局。强类型保留给验证夹具；正式接线走 <see cref="BindFeed"/>。</summary>
     private void BindRunner(OrcMatchRunner runner)
     {
         _runner = runner;
-        runner.InteractionStateReader = _battle.ReadInteractionState;
-        runner.ProjectionReady += (view, actions) => ApplyRunnerProjection(runner, view, actions);
-        runner.MulliganRequested += () => Callable.From(() =>
-        { if (_runner == runner && runner.MulliganPending) _battle.ShowMulliganPanel(runner.CurrentView, runner.MulliganRequestId); }).CallDeferred();
-        runner.TargetRequested += (request, responder) => Callable.From(() =>
-        { if (_runner == runner && runner.TargetPending) _battle.ShowTargetChoice(request, responder); else responder.Cancel(request.RequestId); }).CallDeferred();
-        runner.TargetClosed += () => Callable.From(() =>
-        { if (_runner == runner && !runner.TargetPending) _battle.CloseTargetChoice(); }).CallDeferred();
-        runner.PresentationReady += (resolution, actions) =>
-        {
-            if (_runner != runner) return;
-            _battle.ObservePresentationTurn(resolution);
-            if (runner.CurrentView is { } view) _battle.UpdateInputProjection(view, runner.CurrentActions);
-            _presentations?.Enqueue(resolution, actions);
-        };
-        runner.CommandRefused += command => { if (_runner == runner) _battle.RefuseCommand(command); };
-        runner.ErrorRaised += message => { if (_runner == runner) GD.PushError("[engine] " + message); };
-        runner.HintRequested += message => { if (_runner == runner) _battle.ShowHint(message); };
+        BindFeed(runner);
     }
 
-    private void ApplyRunnerProjection(OrcMatchRunner runner, UiMatchView view, UiBattleActions actions)
+    /// <summary>
+    /// 绑定一个对局数据源。**只依赖 IMatchFeed**——单机传 runner，联机传远端实现，
+    /// 这条路径上不出现任何 OrcMatchRunner 专有成员。
+    /// </summary>
+    private void BindFeed(IMatchFeed feed)
     {
-        if (_runner != runner) return;
+        _feed = feed;
+        feed.InteractionStateReader = _battle.ReadInteractionState;
+        feed.ProjectionReady += (view, actions) => ApplyRunnerProjection(feed, view, actions);
+        feed.MulliganRequested += () => Callable.From(() =>
+        { if (_feed == feed && feed.MulliganPending) _battle.ShowMulliganPanel(feed.CurrentView, feed.MulliganRequestId); }).CallDeferred();
+        feed.TargetRequested += (request, responder) => Callable.From(() =>
+        { if (_feed == feed && feed.TargetPending) _battle.ShowTargetChoice(request, responder); else responder.Cancel(request.RequestId); }).CallDeferred();
+        feed.TargetClosed += () => Callable.From(() =>
+        { if (_feed == feed && !feed.TargetPending) _battle.CloseTargetChoice(); }).CallDeferred();
+        feed.PresentationReady += (resolution, actions) =>
+        {
+            if (_feed != feed) return;
+            _battle.ObservePresentationTurn(resolution);
+            if (feed.CurrentView is { } view) _battle.UpdateInputProjection(view, feed.CurrentActions);
+            _presentations?.Enqueue(resolution, actions);
+        };
+        feed.CommandRefused += command => { if (_feed == feed) _battle.RefuseCommand(command); };
+        feed.ErrorRaised += message => { if (_feed == feed) GD.PushError("[engine] " + message); };
+        feed.HintRequested += message => { if (_feed == feed) _battle.ShowHint(message); };
+    }
+
+    private void ApplyRunnerProjection(IMatchFeed feed, UiMatchView view, UiBattleActions actions)
+    {
+        if (_feed != feed) return;
         _presentations?.Dispose();
         _battle.ApplyProjection(view, actions);
         // Applying a new phase also changes the state pulled by native input judicators.
         // Query again after that transition so a new match does not inherit the old UI lock.
-        _battle.UpdateInputProjection(view, runner.CurrentActions);
-        _presentations = new PresentationPlayer(runner.MatchId, (resolution, available, ct) =>
+        _battle.UpdateInputProjection(view, feed.CurrentActions);
+        _presentations = new PresentationPlayer(feed.MatchId, (resolution, available, ct) =>
         {
             ct.ThrowIfCancellationRequested();
-            return _runner == runner ? _battle.PresentSequenceAsync(resolution, available) : Task.CompletedTask;
+            return _feed == feed ? _battle.PresentSequenceAsync(resolution, available) : Task.CompletedTask;
         }, view);
         _presentations.Failed += e => GD.PushError($"[presentation] {e}");
     }
 
     public override void _Process(double delta)
     {
-        var runner = _runner;
-        runner?.Pump(delta);
-        if (_runner == runner && runner?.CurrentView is { } view)
-            _battle.UpdateInputProjection(view, runner.CurrentActions);
+        var feed = _feed;
+        feed?.Advance(delta);
+        if (_feed == feed && feed?.CurrentView is { } view)
+            _battle.UpdateInputProjection(view, feed.CurrentActions);
     }
 
     private void StopRealMatch()
     {
         var runner = _runner;
         _runner = null;
+        _feed = null;
         _presentations?.Dispose();
         _presentations = null;
         runner?.Stop();
