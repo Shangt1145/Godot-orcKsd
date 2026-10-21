@@ -8,6 +8,7 @@
     [switch]$NetProbe,
     [switch]$NetPlay,
     [switch]$VerifyRoom,
+    [switch]$VerifyRoomRemote,
     [switch]$CaptureRoom,
     [switch]$Capture
 )
@@ -43,6 +44,7 @@ try {
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
     elseif ($VerifyRoom) { & $Godot --headless --path $BuildRoot '--' --verify-room }
+    elseif ($VerifyRoomRemote) { & $Godot --headless --path $BuildRoot '--' --verify-room-remote }
     elseif ($CaptureRoom) { & $Godot --path $BuildRoot '--' --capture-room }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }

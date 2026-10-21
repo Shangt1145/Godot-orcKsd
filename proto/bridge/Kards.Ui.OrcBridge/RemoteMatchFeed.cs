@@ -90,8 +90,9 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public event Action<string>? HintRequested;
 
     /// <summary>连接远端服务端并完成握手。不建局、不占座——那是 <see cref="ClaimSeatAsync"/> 的事。</summary>
+    /// <param name="seat">本端打算占的座位（决定视图按哪一方过滤）；占座仍由 claim 决定。</param>
     public static async Task<RemoteMatchFeed> ConnectAsync(
-        string host, int port, CancellationToken ct = default)
+        string host, int port, CancellationToken ct = default, int seat = 0)
     {
         var client = await OrcClient.ConnectAsync(new ClientOptions { Host = host, Port = port }, ct)
             .ConfigureAwait(false);
@@ -104,7 +105,7 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             await client.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-        return new RemoteMatchFeed(client, seat: 0);
+        return new RemoteMatchFeed(client, seat);
     }
 
     /// <summary>读房间快照（座位、可连地址、卡包状态）。</summary>

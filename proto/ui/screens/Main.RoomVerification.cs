@@ -1,4 +1,5 @@
 using Godot;
+using Kards.Ui.OrcBridge;
 
 namespace Kards.Ui;
 
@@ -93,6 +94,72 @@ public partial class Main
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new Exception(message);
+    }
+
+    /// <summary>
+    /// <c>--verify-room-remote</c>：**两个真人客户端**的第一次实测。
+    /// 房主（seat 0, local）＋ 第二个连接（seat 1, remote）——不是 AI 顶替，
+    /// 用来确认"远端玩家加入"这条路径真的能走通，而不只是文档上说可以。
+    /// </summary>
+    private async void VerifyRoomRemote()
+    {
+        RemoteMatchFeed? guest = null;
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+            var host = _room.Feed ?? throw new Exception("房主没有连上");
+            Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
+
+            // 第二个客户端：同一台机器、同一个端口，模拟另一台机器上的玩家。
+            guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _room.Port, seat: 1);
+            var guestToken = await guest.ClaimSeatAsync(1, "remote", "远端玩家", _room.Deck!.CardIds);
+            Require(guestToken is not null, "远端玩家占座失败");
+            GD.Print("[room-remote] guest joined seat=1");
+
+            // 房主侧快照应看到座位 1 是 remote 玩家，而不是空座。
+            await _room.RefreshForVerificationAsync();
+            var info = await host.RoomInfoAsync();
+            var seats = (info.Details as System.Text.Json.Nodes.JsonObject)?["seats"];
+            var seatOne = (seats as System.Text.Json.Nodes.JsonArray)?
+                .FirstOrDefault(node => node?["seat"]?.GetValue<int>() == 1);
+            var kind = seatOne?["controllerKind"]?.GetValue<string>() ?? "";
+            Require(kind == "remote", $"座位 1 的 controllerKind 应为 remote，实际 '{kind}'");
+            GD.Print($"[room-remote] host sees seat1 kind={kind}");
+
+            var started = await _room.StartForVerificationAsync();
+            Require(started, "有远端玩家时开局失败");
+
+            // 不赌推送时序：两端各主动拉一次视图（observe.view 按座位过滤）。
+            await host.RefreshViewAsync();
+            await guest.RefreshViewAsync();
+            for (var i = 0; i < 100 && (host.CurrentView is null || guest.CurrentView is null); i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(host.CurrentView is not null, "房主没有收到视图");
+            Require(guest.CurrentView is not null, "远端玩家没有收到视图");
+
+            // 两边看到的"自己"必须不是同一个人：视角按座位过滤，这是脱敏的最小证据。
+            var hostHq = host.CurrentView!.SelfHq?.Uid;
+            var guestHq = guest.CurrentView!.SelfHq?.Uid;
+            Require(hostHq != guestHq, "两端拿到了同一个总部，视角没有按座位区分");
+            GD.Print($"[room-remote] host hq={hostHq} guest hq={guestHq} " +
+                     $"hostHand={host.CurrentView.SelfHand.Count} guestHand={guest.CurrentView.SelfHand.Count}");
+
+            GD.Print("ROOM_REMOTE_VERIFY_OK guest-claim seat-split view-per-seat");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("ROOM_REMOTE_VERIFY_FAILED " + error.Message);
+            if (guest is not null) await guest.DisposeAsync();
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        await guest.DisposeAsync();
+        _room.Close();
+        GetTree().Quit();
     }
 
     /// <summary>
