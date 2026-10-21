@@ -6,6 +6,7 @@
     [switch]$Verify,
     [switch]$VerifyEffects,
     [switch]$NetProbe,
+    [switch]$NetPlay,
     [switch]$Capture
 )
 $ErrorActionPreference = 'Stop'
@@ -38,6 +39,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
+    elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }
     elseif ($Editor) { & $Godot --editor --path $BuildRoot }

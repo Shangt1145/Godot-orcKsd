@@ -281,6 +281,7 @@ public partial class Main : Control
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
+        else if (args.Contains("--net-play")) Callable.From(NetPlay).CallDeferred();
         else if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
         else if (args.Contains("--capture-setup")) Callable.From(CaptureSetup).CallDeferred();
         else if (args.Contains("--verify-export")) CallDeferred(MethodName.VerifyExport);

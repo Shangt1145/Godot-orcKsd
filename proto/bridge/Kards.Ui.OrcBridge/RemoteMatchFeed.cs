@@ -121,6 +121,20 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         return result.Details?["seatToken"]?.GetValue<string>();
     }
 
+    /// <summary>房主给空座添加 AI（服务端进程内驱动，不经过协议）。</summary>
+    public async Task<bool> AddAiAsync(int seat, IReadOnlyList<string> deck, string? name = null, CancellationToken ct = default)
+    {
+        var arguments = new JsonObject
+        {
+            ["seat"] = seat,
+            ["name"] = name ?? "AI",
+            ["deck"] = new JsonArray([.. deck.Select(id => (JsonNode)JsonValue.Create(id)!)]),
+        };
+        var result = await _client.CallAsync("room.add_ai", arguments, ct).ConfigureAwait(false);
+        if (!result.Ok) ErrorRaised?.Invoke($"room.add_ai: {result.Code} {result.Message}");
+        return result.Ok;
+    }
+
     /// <summary>房主开局。远端玩家不调用。</summary>
     public async Task<bool> StartMatchAsync(CancellationToken ct = default)
     {
@@ -182,10 +196,30 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 
     /// <summary>
     /// 契约命令 → 协议工具。**返回 null 表示联机暂不支持**，调用方必须拒绝而不是静默丢弃。
-    /// 只映射语义确定的几条；其余等确认参数名后再补，不要靠猜。
+    ///
+    /// <para>
+    /// 参数面来自运行时 <c>tools/list</c>（不是猜的）：
+    /// <c>play.unit{ref,owner,slot}</c>、<c>match.end_turn{}</c>、<c>match.concede{}</c>。
+    /// 其中 <c>ref</c> 正是手牌的 <c>$ref</c>（= <c>UiCardView.Uid</c>）。
+    /// </para>
+    ///
+    /// <para>
+    /// **还没映射的**：<c>CommandUnit</c> / <c>MoveUnit</c> / <c>AttackUnit</c> 走的是
+    /// <c>command.begin{ref}</c> → 等 <c>notify/target.request</c> → <c>target.submit{sessionId,picks}</c>
+    /// 的挂起-应答链，需要先有远端 responder；<c>ChooseMulligan</c> 的 keep 列表在 <c>mulligan.done</c>
+    /// 的单参 schema 里没有落点，等确认后再接。
+    /// </para>
     /// </summary>
-    private static (string? Tool, JsonNode? Arguments) Map(UiCommand command) => command switch
+    private (string? Tool, JsonNode? Arguments) Map(UiCommand command) => command switch
     {
+        // slot 缺省取 0：指挥总部固定在支援线居中槽，槽 0 通常空闲。
+        // 取错只会被服务端拒绝并回业务码，不会写坏状态。
+        PlayCard play => ("play.unit", new JsonObject
+        {
+            ["ref"] = play.Uid,
+            ["owner"] = Seat,
+            ["slot"] = play.SupportIndex ?? 0,
+        }),
         EndTurn => ("match.end_turn", new JsonObject()),
         Concede => ("match.concede", new JsonObject()),
         _ => (null, null),
