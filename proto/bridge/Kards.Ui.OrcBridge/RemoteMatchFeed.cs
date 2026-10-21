@@ -202,12 +202,40 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 MatchId = notification.Params?["matchId"]?.GetValue<string>() ?? MatchId;
                 break;
             case "notify/segment":
-                // 见类注释 ①：远端暂不翻译演出段。
+                ApplySegments(notification.Params);
                 break;
             case "notify/target.expired":
                 _targetPending = false;
                 TargetClosed?.Invoke();
                 break;
+        }
+    }
+
+    /// <summary>
+    /// 演出段推送。`notify/segment` 的载荷是引擎事件条目，要用 <see cref="RemotePresentationTranslator"/>
+    /// 按 `$ref` 在投影里查卡才能翻译成演出步骤。
+    ///
+    /// <para>
+    /// **已知局限**：段里用的是"当前最新投影"作为 after 状态。若 view 推送比 segment 滞后，
+    /// 个别步骤会因为查不到卡而被跳过（不会乱演，只是少一段）。要彻底解决得让服务端在段里带快照，
+    /// 那是协议层的事，不在客户端硬猜。
+    /// </para>
+    /// </summary>
+    private void ApplySegments(JsonNode? payload)
+    {
+        if (_view is null) return;
+        if (payload?["segments"] is not JsonArray segments) return;
+
+        foreach (var segment in segments)
+        {
+            if (segment?["entries"] is not JsonArray entries) continue;
+            var nodes = entries.Select(entry => (JsonNode?)entry).ToArray();
+            var steps = RemotePresentationTranslator.Translate(nodes, _view);
+            if (steps.Count == 0) continue;
+
+            var sequence = segment["sequence"]?.GetValue<long>() ?? 0;
+            var resolution = new UiPresentationResolution(MatchId, steps, _view) { Sequence = sequence };
+            PresentationReady?.Invoke(resolution, _actions);
         }
     }
 
