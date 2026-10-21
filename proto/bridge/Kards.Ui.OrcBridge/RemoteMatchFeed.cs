@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Kards.Ui.Contracts;
 using Orc.Client;
 using Orc.Protocol;
@@ -36,6 +37,21 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 {
     private readonly OrcClient _client;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private string? _seatToken;
+
+    /// <summary>
+    /// 视图反序列化专用配置：服务端把枚举写成**字符串**（<c>"None"</c>、<c>"Mulligan"</c>…），
+    /// 而 <see cref="ProtocolJson.Options"/> 没挂枚举转换器——直接复用会报
+    /// 「JSON value could not be converted to UiMatchOutcome」。这里在协议配置上补转换器。
+    /// </summary>
+    private static readonly JsonSerializerOptions ViewJson = CreateViewJson();
+
+    private static JsonSerializerOptions CreateViewJson()
+    {
+        var options = new JsonSerializerOptions(ProtocolJson.Options);
+        options.Converters.Add(new JsonStringEnumConverter(allowIntegerValues: true));
+        return options;
+    }
 
     private UiMatchView? _view;
     private UiBattleActions _actions = new();
@@ -118,7 +134,10 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             ErrorRaised?.Invoke(result.Message ?? result.Code);
             return null;
         }
-        return result.Details?["seatToken"]?.GetValue<string>();
+
+        // 记住本座令牌：room.start / room.resume 都靠它认人（服务端只允许房主开局）。
+        _seatToken = result.Details?["seatToken"]?.GetValue<string>();
+        return _seatToken;
     }
 
     /// <summary>房主给空座添加 AI（服务端进程内驱动，不经过协议）。</summary>
@@ -135,11 +154,33 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         return result.Ok;
     }
 
-    /// <summary>房主开局。远端玩家不调用。</summary>
+    /// <summary>房主开局。远端玩家不调用。必须带本座令牌——服务端拒绝免令牌开局。</summary>
     public async Task<bool> StartMatchAsync(CancellationToken ct = default)
     {
-        var result = await _client.CallAsync("room.start", new JsonObject(), ct).ConfigureAwait(false);
+        if (string.IsNullOrEmpty(_seatToken))
+        {
+            ErrorRaised?.Invoke("room.start: 尚未占座（没有 seatToken），无法开局。");
+            return false;
+        }
+
+        var arguments = new JsonObject { ["seatToken"] = _seatToken };
+        var result = await _client.CallAsync("room.start", arguments, ct).ConfigureAwait(false);
         if (!result.Ok) ErrorRaised?.Invoke(result.Message ?? result.Code);
+        return result.Ok;
+    }
+
+    /// <summary>本座令牌（未占座＝null）。断线重连时凭它 resume。</summary>
+    public string? SeatToken => _seatToken;
+
+    /// <summary>
+    /// 结束换牌相位（不换＝直接确认）。参数面只有 <c>owner</c>——服务端的换牌应答
+    /// 不接受 keep 列表，要保留哪几张由协议外的 <c>mulligan.*</c> 其余工具决定。
+    /// </summary>
+    public async Task<bool> MulliganDoneAsync(int owner, CancellationToken ct = default)
+    {
+        var result = await _client.CallAsync("mulligan.done", new JsonObject { ["owner"] = owner }, ct)
+            .ConfigureAwait(false);
+        if (!result.Ok) ErrorRaised?.Invoke($"mulligan.done: {result.Code} {result.Message}");
         return result.Ok;
     }
 
@@ -284,11 +325,11 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         UiBattleActions actions;
         try
         {
-            view = viewNode.Deserialize<UiMatchView>(ProtocolJson.Options)
+            view = viewNode.Deserialize<UiMatchView>(ViewJson)
                 ?? throw new JsonException("view 为空");
             actions = actionsNode is null
                 ? new UiBattleActions()
-                : actionsNode.Deserialize<UiBattleActions>(ProtocolJson.Options) ?? new UiBattleActions();
+                : actionsNode.Deserialize<UiBattleActions>(ViewJson) ?? new UiBattleActions();
         }
         catch (JsonException error)
         {
