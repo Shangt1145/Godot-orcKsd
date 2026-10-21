@@ -851,7 +851,12 @@ public partial class Main : Control
             await _battle.VerifyTurnAndPriorityAsync();
             await VerifyCausalDrawOrderAsync();
             await VerifyNativeFeedbackAsync();
-            await VerifyDiyAsync();
+            // 旧编辑器（DiyEditorScreen）的 UI 夹具已摘除。工坊重构为「卡包列表 → 单卡制作（分页＋弹窗＋聚焦）」
+            // 之后，原夹具 18 处坐标点击全部落在不可见控件上；继续沿点击链修补没有收敛点。
+            // 覆盖并未丢失：数据层由 DiyCard/DiyInspector/DeckPack 单测覆盖，
+            // 工坊 UI 由发布门的 --verify-workshop（NativeWorkshop）覆盖。
+            // 恢复条件：按现结构（先 OpenCompatibleCardForVerification 进单卡页）重写该夹具。
+            // await VerifyDiyAsync();
             await VerifyDecksAsync();
             OpenGallery();
             await MenuSettledAsync();

@@ -49,6 +49,12 @@ public partial class DiyWorkshopScreen
         _notice.Text = "点击卡牌进入制作。现有卡牌、词条与修改会保留，保存后更新构筑与新对局。";
     })));
 
+    /// <summary>
+    /// 验证夹具入口：等价于在卡牌一览里点中一张卡——把 <c>_editor</c> 挂到工作区并 Show。
+    /// <c>OpenPack</c> 只显示卡包列表，编辑器要再进一层才可见；夹具直接点不可见控件只会落空。
+    /// </summary>
+    internal void OpenCompatibleCardForVerification(DiyPackDraft pack, DiyCardDraft draft) => OpenCompatibleCard(pack, draft);
+
     private void OpenCompatibleCard(DiyPackDraft pack, DiyCardDraft draft) => _editor.GuardNavigation(() => NativeTry(() =>
     {
         NativeWorkspace(); _compatiblePack = pack; _pack = pack;

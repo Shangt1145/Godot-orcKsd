@@ -183,7 +183,16 @@ public partial class DiyEditorScreen : VBoxContainer
         var artRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         artRow.AddThemeConstantOverride("separation", 8); var artSection = Section(artForm, "卡图与裁切"); artSection.AddChild(artRow);
         ImportArtButton = MenuStyles.Button("导入卡图…", () => _artDialog.Popup()); artRow.AddChild(ImportArtButton);
-        RemoveArtButton = MenuStyles.Button("移除卡图", () => { _importedArt = ""; _draft = _draft with { ArtCardId = "",ArtSourceFile="",ArtRegion=new(0,0,1,1) };_cropApply.Disabled=true; Changed(); RefreshPreview(); });
+        RemoveArtButton = MenuStyles.Button("移除卡图", () =>
+        {
+            _importedArt = "";
+            // 草稿里的 ArtFile 必须一起清：点击后的界面刷新会经 Load 把 draft.ArtFile 读回 _importedArt，
+            // 只清 UI 变量会让"移除"在下一帧被还原成旧图，断言看到的仍是导入路径。
+            _draft = _draft with { ArtCardId = "", ArtSourceFile = "", ArtFile = "", ArtRegion = new(0, 0, 1, 1) };
+            _cropApply.Disabled = true;
+            Changed();
+            RefreshPreview();
+        });
         artRow.AddChild(RemoveArtButton);
         _artStatus = MenuStyles.Label("", 12, MenuStyles.Dim);
         _artStatus.SizeFlagsHorizontal = SizeFlags.ExpandFill; _artStatus.ClipText = true;

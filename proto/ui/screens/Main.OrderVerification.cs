@@ -67,8 +67,15 @@ public partial class Main
         await _battle.DragAsync(counter.Uid, new(640, 350)); await Settle();
         if (runner.CurrentView!.SelfHand.Single(c => c.Uid == counter.Uid).IsCounterArmed || runner.CurrentView.SelfKredits != 7)
             throw new Exception("Mouse counter cancellation did not refund its reservation.");
-        await _battle.DragAsync(counter.Uid, new(640, 350)); await Settle(); await Round();
-        var credits = runner.CurrentView!.SelfKredits;
+        await _battle.DragAsync(counter.Uid, new(640, 350)); await Settle();
+        if (!runner.CurrentView!.SelfHand.Single(c => c.Uid == counter.Uid).IsCounterArmed)
+            throw new Exception("Counter was not re-armed after a cancelled activation.");
+        await Round();
+        // 引擎 45f50cc「反制效果装配」新语义：反制只在对手回合生效，己方回合开始自动解除
+        // （不消耗、不退点、卡留手牌）。这里守卫的是 UI 是否如实反映了引擎的 disarmed。
+        if (runner.CurrentView!.SelfHand.Single(c => c.Uid == counter.Uid).IsCounterArmed)
+            throw new Exception("Counter stayed armed across the turn boundary; the arming window ends when the own turn starts.");
+        var credits = runner.CurrentView.SelfKredits;
         await _battle.DragAsync(damage.Uid, new(640, 350), () =>
         { _battle.VerifyOrderArrow(damage.Uid, null); return Task.CompletedTask; }); await Settle();
         await _battle.DragAsync(damage.Uid, _battle.BoardRect(runner.CurrentView.SelfHq!.Uid).GetCenter(), () =>
@@ -85,9 +92,12 @@ public partial class Main
                 await ShotAsync(ProjectSettings.GlobalizePath("res://artifacts"), "stage6b2-order-arrow");
         }); await Settle();
         if (_battle.TargetChoiceVisible) throw new Exception("Direct arrow target opened an extra selection panel.");
-        if (runner.CurrentView!.SelfLine.Any(c => c.Uid == unit.Uid) || runner.CurrentView.EnemyHq!.Health != hp - 8
-            || runner.CurrentView.SelfHand.Any(c => c.Uid == counter.Uid || c.Uid == damage.Uid))
-            throw new Exception("Mouse damage and friendly-death counter did not consume once and deal the declared damage.");
+        // 新语义 R1①「己方指令不被己方反制拦截」：damage 打死友军也不会触发 counter，
+        // 因此总部血量不变、counter 仍留在手牌（未消耗）。
+        if (runner.CurrentView!.SelfLine.Any(c => c.Uid == unit.Uid) || runner.CurrentView.EnemyHq!.Health != hp
+            || !runner.CurrentView.SelfHand.Any(c => c.Uid == counter.Uid)
+            || runner.CurrentView.SelfHand.Any(c => c.Uid == damage.Uid))
+            throw new Exception("Mouse damage did not consume exactly once and leave the own counter unspent (own orders must not be countered).");
         var beforeChoiceCredits = runner.CurrentView!.SelfKredits;
         var beforeChoiceHp = runner.CurrentView.SelfHq!.Health;
         foreach (var right in new[] { false, true })
@@ -108,7 +118,7 @@ public partial class Main
         await _battle.ClickTargetChoiceAsync(0); await Settle();
         if (runner.CurrentView!.SelfHq!.Health != selfHp + 7 || runner.CurrentView.SelfHand.Any(c => c.Uid == choice.Uid))
             throw new Exception("Mouse choice did not execute the selected branch.");
-        GD.Print("ORDERS_STAGE6B2_VERIFY_OK draw arrow-direct-target empty-HQ-cancel-no-spend no-target-panel paper-choice blank-right-cancel-no-spend counter-arm counter-refund counter-death-trigger mouse-input");
+        GD.Print("ORDERS_STAGE6B2_VERIFY_OK draw arrow-direct-target empty-HQ-cancel-no-spend no-target-panel paper-choice blank-right-cancel-no-spend counter-arm counter-refund counter-rearm counter-disarmed-on-own-turn own-order-not-countered mouse-input");
         StopRealMatch(); _battle.ResetDemo();
     }
 }

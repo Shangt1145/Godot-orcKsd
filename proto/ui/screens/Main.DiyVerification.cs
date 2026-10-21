@@ -43,6 +43,8 @@ public partial class Main
         StopRealMatch(); Show("editor");
         var testPack=_workshopLibrary.Packs.FirstOrDefault(p=>!p.IsExpansion)??new Kards.Ui.Contracts.DiyPackDraft{Name="工坊回归测试卡包"};
         _workshopLibrary.Save(testPack);RefreshDiy();_workshop.OpenPack(testPack);
+        // 工坊 OpenPack 只到卡包列表；旧编辑器要进到单卡制作才可见（等价于点一张卡）。
+        _workshop.OpenCompatibleCardForVerification(testPack,new DiyCardDraft{PackId=testPack.Id});
         async Task Until(Func<bool> done)
         {
             var deadline = Time.GetTicksMsec() + 20_000;
