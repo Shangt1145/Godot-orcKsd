@@ -18,6 +18,7 @@ public partial class Main : Control
     private AnimationGallery _gallery = null!;
     private BattleScreen _battle = null!;
     private SetupScreen _setup = null!;
+    private RoomScreen _room = null!;
     private TabContainer _helpTabs = null!;
     private Label _pool = null!, _speedLabel = null!;
     private PanelContainer _shellBar = null!, _shellFooter = null!;
@@ -204,6 +205,15 @@ public partial class Main : Control
         _setup.ChooseDeckRequested += () => Show("decklib");
         _setup.BackRequested += () => Show("home");
         AddScreen(content, "setup", _setup);
+
+        // 作战房间：进屏即拉起服务器实例，拉人后分配座位，开局交给远端 feed 驱动。
+        _room = new RoomScreen();
+        _room.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
+            ProjectSettings.GlobalizePath("user://net-room"));
+        _room.BackRequested += () => { _room.Close(); Show("setup"); };
+        _room.MatchStarted += () => _ = EnterRemoteMatchAsync();
+        AddScreen(content, "room", _room);
+        _setup.RoomRequested += () => { Show("room"); _room.Open(); };
         _diyEditor = new DiyEditorScreen();
         _diyEditor.Initialize(_diy, () => _catalog.Cards, _textures, id => _decks.Decks.Count(d => d.CardIds.Contains(id)),
             id => _deckService.CustomErrors.GetValueOrDefault(id), _orcImports, () => _importedOutcomes);
@@ -282,6 +292,8 @@ public partial class Main : Control
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
         else if (args.Contains("--net-play")) Callable.From(NetPlay).CallDeferred();
+        else if (args.Contains("--verify-room")) Callable.From(VerifyRoom).CallDeferred();
+        else if (args.Contains("--capture-room")) Callable.From(CaptureRoom).CallDeferred();
         else if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
         else if (args.Contains("--capture-setup")) Callable.From(CaptureSetup).CallDeferred();
         else if (args.Contains("--verify-export")) CallDeferred(MethodName.VerifyExport);
@@ -422,28 +434,39 @@ public partial class Main : Control
     /// <summary>
     /// 绑定一个对局数据源。**只依赖 IMatchFeed**——单机传 runner，联机传远端实现，
     /// 这条路径上不出现任何 OrcMatchRunner 专有成员。
+    /// <para>
+    /// **线程**：单机回调在 Godot 主线程（同步执行，保持验证时序不变）；
+    /// 联机的回调来自协议线程，全部 marshal 回主线程——控件只在主线程能写。
+    /// </para>
     /// </summary>
     private void BindFeed(IMatchFeed feed)
     {
         _feed = feed;
+        // 单机＝主线程，保持同步；远端＝协议线程，必须 deferred。
+        var remote = !ReferenceEquals(feed, _runner);
+        void Marshal(Action action)
+        {
+            if (!remote) { action(); return; }
+            Callable.From(() => { if (_feed == feed) action(); }).CallDeferred();
+        }
+
         feed.InteractionStateReader = _battle.ReadInteractionState;
-        feed.ProjectionReady += (view, actions) => ApplyRunnerProjection(feed, view, actions);
+        feed.ProjectionReady += (view, actions) => Marshal(() => ApplyRunnerProjection(feed, view, actions));
         feed.MulliganRequested += () => Callable.From(() =>
         { if (_feed == feed && feed.MulliganPending) _battle.ShowMulliganPanel(feed.CurrentView, feed.MulliganRequestId); }).CallDeferred();
         feed.TargetRequested += (request, responder) => Callable.From(() =>
         { if (_feed == feed && feed.TargetPending) _battle.ShowTargetChoice(request, responder); else responder.Cancel(request.RequestId); }).CallDeferred();
         feed.TargetClosed += () => Callable.From(() =>
         { if (_feed == feed && !feed.TargetPending) _battle.CloseTargetChoice(); }).CallDeferred();
-        feed.PresentationReady += (resolution, actions) =>
+        feed.PresentationReady += (resolution, actions) => Marshal(() =>
         {
-            if (_feed != feed) return;
             _battle.ObservePresentationTurn(resolution);
             if (feed.CurrentView is { } view) _battle.UpdateInputProjection(view, feed.CurrentActions);
             _presentations?.Enqueue(resolution, actions);
-        };
-        feed.CommandRefused += command => { if (_feed == feed) _battle.RefuseCommand(command); };
+        });
+        feed.CommandRefused += command => Marshal(() => _battle.RefuseCommand(command));
         feed.ErrorRaised += message => { if (_feed == feed) GD.PushError("[engine] " + message); };
-        feed.HintRequested += message => { if (_feed == feed) _battle.ShowHint(message); };
+        feed.HintRequested += message => Marshal(() => _battle.ShowHint(message));
     }
 
     private void ApplyRunnerProjection(IMatchFeed feed, UiMatchView view, UiBattleActions actions)
@@ -468,6 +491,20 @@ public partial class Main : Control
         feed?.Advance(delta);
         if (_feed == feed && feed?.CurrentView is { } view)
             _battle.UpdateInputProjection(view, feed.CurrentActions);
+    }
+
+    /// <summary>
+    /// 房间开局：把远端 feed 接到展示层，切战场，主动拉一次全量视图当首帧。
+    /// 演出/换牌/选靶都由 feed 的事件驱动，和单机走同一个 <see cref="BindFeed"/>。
+    /// </summary>
+    private async Task EnterRemoteMatchAsync()
+    {
+        if (_room.Feed is not { } feed) return;
+        StopRealMatch();
+        BindFeed(feed);
+        Show("battle");
+        try { await feed.RefreshViewAsync(); }
+        catch (Exception error) { GD.PushError($"[remote] 拉取首帧视图失败：{error}"); }
     }
 
     private void StopRealMatch()

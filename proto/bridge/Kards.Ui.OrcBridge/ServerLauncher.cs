@@ -32,12 +32,26 @@ public sealed class ServerLauncher : IAsyncDisposable
 
     public static async Task<ServerLauncher> StartAsync(
         string packsDirectory, string sandboxDirectory, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(packsDirectory);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sandboxDirectory);
+        => await StartAsync([packsDirectory], sandboxDirectory, ct).ConfigureAwait(false);
 
-        if (!Directory.Exists(packsDirectory))
-            throw new DirectoryNotFoundException($"卡包目录不存在：{packsDirectory}");
+    /// <summary>
+    /// 多包启动。<c>--packs</c> 的每个元素都必须是**卡包目录本身**（内有 manifest.json）；
+    /// 传父目录会被服务端判为"不是卡包"。多个目录用分号拼，与服务端的拆分方式一致。
+    /// </summary>
+    public static async Task<ServerLauncher> StartAsync(
+        IReadOnlyList<string> packsDirectories, string sandboxDirectory, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(packsDirectories);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sandboxDirectory);
+        if (packsDirectories.Count == 0) throw new ArgumentException("至少需要一个卡包目录。", nameof(packsDirectories));
+
+        foreach (var directory in packsDirectories)
+        {
+            if (!Directory.Exists(directory))
+                throw new DirectoryNotFoundException($"卡包目录不存在：{directory}");
+            if (!File.Exists(Path.Combine(directory, "manifest.json")))
+                throw new InvalidOperationException($"不是卡包（缺 manifest.json）：{directory}");
+        }
 
         Directory.CreateDirectory(sandboxDirectory);
         var dll = ResolveServerDll();
@@ -45,7 +59,7 @@ public sealed class ServerLauncher : IAsyncDisposable
         var options = new ServerProcessOptions
         {
             ExecutablePath = "dotnet",
-            Arguments = [dll, "--packs", packsDirectory, "--sandbox", sandboxDirectory, "--port", "0"],
+            Arguments = [dll, "--packs", string.Join(';', packsDirectories), "--sandbox", sandboxDirectory, "--port", "0"],
             // 首次启动要装配卡包（项目里有 14 个包），15 秒的默认值不够宽裕。
             StartupTimeout = TimeSpan.FromSeconds(60),
             LogPath = Path.Combine(sandboxDirectory, "server.log"),

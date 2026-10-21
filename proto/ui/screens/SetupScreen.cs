@@ -15,10 +15,13 @@ public partial class SetupScreen : VBoxContainer
     private VBoxContainer _advanced = null!;
     internal Button StartButton = null!;
     internal Button DetailsButton = null!;
-    internal Button BackButton = null!, ChooseDeckButton = null!;
+    internal Button BackButton = null!, ChooseDeckButton = null!, RoomButton = null!;
     public event Action? StartRequested;
     public event Action? ChooseDeckRequested;
     public event Action? BackRequested;
+
+    /// <summary>进入作战房间（拉起服务器实例，拉人分配座位）。</summary>
+    public event Action? RoomRequested;
     private static readonly Color Paper = new("dbd2bb"), PaperInk = new("30382f"), PaperDim = new("58604e");
     private bool ReadyToPlay => _library.ActiveDeck is { } deck && _library.LoadError is null && _service.Validate(deck).Count == 0;
 
@@ -82,6 +85,11 @@ public partial class SetupScreen : VBoxContainer
         StartButton.CustomMinimumSize = new(256, 56); StartButton.AddThemeFontSizeOverride("font_size", 21); actions.AddChild(StartButton);
         var choose = UiStyles.Button("更换卡组", () => ChooseDeckRequested?.Invoke());
         ChooseDeckButton = choose; choose.CustomMinimumSize = new(0, 38); actions.AddChild(choose);
+        // 联机入口：拉起服务器实例、拉人、分配座位。与"进入战场"并列，但用描边区分主次。
+        RoomButton = UiStyles.Button("组建房间  ＋", () => RoomRequested?.Invoke());
+        RoomButton.CustomMinimumSize = new(0, 38);
+        RoomButton.AddThemeStyleboxOverride("normal", UiStyles.Box(new("2b3229"), UiStyles.Accent, 12, 10));
+        actions.AddChild(RoomButton);
         Refresh();
     }
     private VBoxContainer CardColumn(HBoxContainer row, string heading, bool enemy, out SetupDeckArtwork art)

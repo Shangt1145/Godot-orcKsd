@@ -7,6 +7,8 @@
     [switch]$VerifyEffects,
     [switch]$NetProbe,
     [switch]$NetPlay,
+    [switch]$VerifyRoom,
+    [switch]$CaptureRoom,
     [switch]$Capture
 )
 $ErrorActionPreference = 'Stop'
@@ -40,6 +42,8 @@ try {
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
+    elseif ($VerifyRoom) { & $Godot --headless --path $BuildRoot '--' --verify-room }
+    elseif ($CaptureRoom) { & $Godot --path $BuildRoot '--' --capture-room }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }
     elseif ($Editor) { & $Godot --editor --path $BuildRoot }

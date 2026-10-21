@@ -340,8 +340,13 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         _view = view;
         _actions = actions;
         MatchId = view.MatchId;
+        var wasPending = _mulliganPending;
         _mulliganPending = view.Phase == "mulligan";
         ProjectionReady?.Invoke(view, actions);
+
+        // 上升沿触发一次：换牌面板只在"刚进入 mulligan"时弹，不能每帧重弹。
+        // 必须在 ProjectionReady 之后——面板要用 CurrentView 渲染。
+        if (_mulliganPending && !wasPending) MulliganRequested?.Invoke();
     }
 
     public async ValueTask DisposeAsync()
