@@ -280,7 +280,8 @@ public partial class Main : Control
         Show("home");
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
-        if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
+        if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
+        else if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
         else if (args.Contains("--capture-setup")) Callable.From(CaptureSetup).CallDeferred();
         else if (args.Contains("--verify-export")) CallDeferred(MethodName.VerifyExport);
         else if (args.Contains("--capture-official-art")) CallDeferred(MethodName.CaptureOfficialArt);

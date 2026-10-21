@@ -1,7 +1,4 @@
-using Kards.Ui.Contracts;
-using Kards.Ui.Core;
-
-namespace Kards.Ui;
+namespace Kards.Ui.Contracts;
 
 /// <summary>
 /// 一局对战的数据源。单机与联机共用同一套接线，区别只在谁来推进它。

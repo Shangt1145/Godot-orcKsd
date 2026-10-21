@@ -38,6 +38,12 @@
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Foundation.Actions/Orc.Foundation.Actions.csproj" />
     <!-- 引擎启发式 AI（AiPilot/HeuristicPolicy）：对手驱动的主决策来源。 -->
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Ai/Orc.Ai.csproj" />
+    <!-- 联机：OrcClient（TCP/NDJSON JSON-RPC）+ ServerProcess（拉起本地服务端）。
+         注意这条不改单机路径——单机仍走进程内引擎，只有联机模式才用到它。
+         PrivateAssets="all"：**不把引擎程序集传递进 UI 程序集的编译引用**，
+         否则 Kards.Ui.dll 的 AssemblyRef 会出现 Orc.Client／Orc.Protocol，
+         被 UI_BOUNDARY_VERIFY_OK 判为越界（UI 只许经本桥接层的公开面说话）。 -->
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Client/Orc.Client.csproj" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
