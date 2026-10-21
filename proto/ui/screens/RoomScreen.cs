@@ -25,13 +25,16 @@ public partial class RoomScreen : VBoxContainer
     private LobbyDeck.Result? _deck;
     private bool _starting;
     private double _poll;
+    private int _guestPort;
+    private bool _guest;
     /// <summary>座位占用（由快照更新；读它的地方可能在非主线程，别直接问控件）。</summary>
     private readonly bool[] _occupied = new bool[2];
 
     private Label _status = null!, _endpoint = null!, _pool = null!, _room = null!;
     private Label _checkSeat0 = null!, _checkSeat1 = null!, _checkPool = null!, _hint = null!;
     private RoomSeatCard _seat0 = null!, _seat1 = null!;
-    private Button _addAi = null!, _invite = null!, _addAgent = null!, _start = null!, _back = null!;
+    private Button _addAi = null!, _invite = null!, _addAgent = null!, _start = null!, _back = null!, _join = null!;
+    private LineEdit _joinField = null!;
 
     /// <summary>请求返回上一屏（需要释放服务器实例）。</summary>
     public event Action? BackRequested;
@@ -42,8 +45,11 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>当前连接（未就绪＝null）。</summary>
     public RemoteMatchFeed? Feed => _feed;
 
-    /// <summary>本机监听端口（未启动＝0）。</summary>
-    public int Port => _server?.Port ?? 0;
+    /// <summary>本机监听端口（作为客人加入时＝对方端口；未连接＝0）。</summary>
+    public int Port => _server?.Port ?? _guestPort;
+
+    /// <summary>本端是房主（起服务器）还是客人（连别人的）。</summary>
+    public bool IsGuest => _guest;
 
     public void Initialize(string packsRoot, string sandboxDirectory)
     {
@@ -129,6 +135,16 @@ public partial class RoomScreen : VBoxContainer
         column.AddChild(_pool);
         _room = UiStyles.Label("房间 —", 13, UiStyles.MenuDim);
         column.AddChild(_room);
+
+        column.AddChild(new HSeparator());
+        column.AddChild(UiStyles.Label("加入别人的房间", 12, UiStyles.Accent));
+        _joinField = new LineEdit { PlaceholderText = "26.x.x.x:端口" };
+        _joinField.CustomMinimumSize = new(0, 36);
+        _joinField.TextSubmitted += text => { _ = JoinAsync(); };
+        column.AddChild(_joinField);
+        _join = UiStyles.Button("加入  →", () => _ = JoinAsync());
+        _join.CustomMinimumSize = new(0, 36);
+        column.AddChild(_join);
 
         column.AddChild(new HSeparator());
         column.AddChild(UiStyles.Label("拉入", 12, UiStyles.Accent));
@@ -317,9 +333,12 @@ public partial class RoomScreen : VBoxContainer
         _room.Text = $"房间 {snapshot.RoomId}";
         _pool.Text = $"卡池 {_deck?.PackageId ?? "—"} · {snapshot.Policy}" +
                      (snapshot.Fingerprint.Length >= 8 ? $" · {snapshot.Fingerprint[..8]}" : "");
-        _endpoint.Text = snapshot.Addresses.Count > 0
-            ? FormatAddresses(snapshot.Addresses)
-            : $"127.0.0.1:{Port}";
+        // 客人（房主＝false）看不到对方网卡列表——那对"加入方"没意义，显示自己连的是哪。
+        _endpoint.Text = _guest
+            ? $"已连接 {_joinField.Text.Trim()}"
+            : snapshot.Addresses.Count > 0
+                ? FormatAddresses(snapshot.Addresses)
+                : $"127.0.0.1:{Port}";
 
         foreach (var (seat, kind, name, connected) in snapshot.Seats)
         {
@@ -337,9 +356,10 @@ public partial class RoomScreen : VBoxContainer
         SetCheck(_checkSeat1, ready1, "座位 1");
         SetCheck(_checkPool, poolOk, "卡池");
 
-        _start.Disabled = !(ready0 && ready1 && poolOk);
-        _addAi.Disabled = ready0 && ready1;
-        Say($"● 就绪 · 端口 {Port}");
+        _start.Disabled = _guest || !(ready0 && ready1 && poolOk);
+        _start.Text = _guest ? "等待房主开局…" : "开始对局  →";
+        _addAi.Disabled = _guest || (ready0 && ready1);
+        Say(_guest ? $"● 已在房间 · 座位 {_feed?.Seat}" : $"● 就绪 · 端口 {Port}");
     }
 
     /// <summary>
@@ -361,6 +381,81 @@ public partial class RoomScreen : VBoxContainer
     {
         label.Text = ok ? $"✓ {what} 就位" : $"✗ {what} 空缺";
         label.AddThemeColorOverride("font_color", ok ? UiStyles.Green : UiStyles.MenuDim);
+    }
+
+    /// <summary>
+    /// 以客人身份加入别人的房间：连对方地址 → 占一个空座（remote）。
+    /// 不启动本地服务器——这是"拉人"的另一半，此前只有房主侧。
+    /// </summary>
+    private async Task JoinAsync()
+    {
+        if (_feed is not null) { _hint.Text = "已经在房间里了。"; return; }
+        if (!TryParseEndpoint(_joinField.Text, out var host, out var port))
+        {
+            _hint.Text = "地址格式：IP:端口，例如 26.109.28.81:4717";
+            return;
+        }
+
+        try
+        {
+            Ui(() => Say("○ 组装卡组…"));
+            _deck ??= LobbyDeck.Build(_packsRoot);
+
+            Ui(() => Say($"○ 连接 {host}:{port}…"));
+            _guestPort = port;
+            var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
+            feed.ErrorRaised += message => Ui(() => Say("✗ " + message));
+
+            // 两个座位都可能被占：房主通常坐 0，所以先试 1 再试 0。
+            string? token = null;
+            foreach (var candidate in new[] { 1, 0 })
+            {
+                token = await feed.ClaimSeatAsync(candidate, "remote", "远端玩家", _deck.CardIds);
+                if (token is not null) break;
+            }
+
+            if (token is null)
+            {
+                await feed.DisposeAsync();
+                Ui(() => Say("✗ 加入失败（房间已满或已开局）"));
+                return;
+            }
+
+            _feed = feed;
+            _guest = true;
+
+            // 房主开局后服务端会推视图；客人在这一刻自动切战场。
+            // 房主自己走"开始对局"按钮，不依赖这条。
+            var fired = false;
+            feed.ProjectionReady += (_, _) =>
+            {
+                if (fired) return;
+                fired = true;
+                Ui(() => MatchStarted?.Invoke());
+            };
+
+            // 客人不能添 AI、也不能开局——那是房主的权限。
+            Ui(() => { _join.Disabled = true; _addAi.Disabled = true; _joinField.Editable = false; });
+            await RefreshAsync();
+        }
+        catch (Exception error)
+        {
+            Ui(() => Say("✗ " + error.Message));
+        }
+    }
+
+    /// <summary>解析 "IP:端口"（也接受只给 IP，默认端口见调用处提示）。</summary>
+    private static bool TryParseEndpoint(string text, out string host, out int port)
+    {
+        host = "";
+        port = 0;
+        var trimmed = text.Trim();
+        var colon = trimmed.LastIndexOf(':');
+        if (colon <= 0) return false;
+        host = trimmed[..colon].Trim();
+        return host.Length > 0
+               && int.TryParse(trimmed[(colon + 1)..].Trim(), out port)
+               && port is > 0 and < 65536;
     }
 
     private async Task AddAiAsync()
@@ -402,6 +497,14 @@ public partial class RoomScreen : VBoxContainer
 
     /// <summary>立刻拉一次快照（验证/截图用；平时靠 _Process 每 1.5 秒轮询）。</summary>
     internal Task RefreshForVerificationAsync() => RefreshAsync();
+
+    /// <summary>按"客人"路径加入（验证探针用，等价于在输入框填地址后点"加入"）。</summary>
+    internal async Task<bool> JoinForVerificationAsync(string host, int port)
+    {
+        _joinField.Text = $"{host}:{port}";
+        await JoinAsync();
+        return _feed is not null;
+    }
 
     private async Task StartAsync()
     {

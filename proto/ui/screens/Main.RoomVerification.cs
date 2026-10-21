@@ -97,6 +97,78 @@ public partial class Main
     }
 
     /// <summary>
+    /// <c>--verify-room-join</c>：走**界面路径**加入房间。
+    /// 第二个 RoomScreen 实例填地址、点"加入"，而不是探针手动 connect——
+    /// 验的是玩家真正会走的那条路。
+    /// </summary>
+    private async void VerifyRoomJoin()
+    {
+        RoomScreen? guestScreen = null;
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+            var host = _room.Feed ?? throw new Exception("房主没有连上");
+            Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
+
+            // 第二个房间屏：同一个进程里模拟另一台机器。
+            guestScreen = new RoomScreen();
+            guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
+                ProjectSettings.GlobalizePath("user://net-room-guest"));
+            // 挂到与 _room 同一个宿主（content），但保持隐藏：只是为了 Ui() 能投递到主线程。
+            _room.GetParent().AddChild(guestScreen);
+            guestScreen.Visible = false;
+
+            var joined = await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port);
+            Require(joined, "客人加入失败");
+            Require(guestScreen.IsGuest, "客人模式没有正确标记");
+            guestScreen.Feed!.ErrorRaised += message => GD.Print("[room-join] guest error: " + message);
+
+            await _room.RefreshForVerificationAsync();
+            var info = await host.RoomInfoAsync();
+            var seatOne = ((info.Details as System.Text.Json.Nodes.JsonObject)?["seats"]
+                    as System.Text.Json.Nodes.JsonArray)?
+                .FirstOrDefault(node => node?["seat"]?.GetValue<int>() == 1);
+            Require(seatOne?["controllerKind"]?.GetValue<string>() == "remote",
+                "房主侧没有看到座位 1 变成 remote");
+            GD.Print("[room-join] guest joined via UI path, host sees seat1=remote");
+
+            var started = await _room.StartForVerificationAsync();
+            Require(started, "有客人时开局失败");
+
+            // 客人侧不赌推送：主动拉一次对局视图；房主侧同理，否则比对时它还没有视图。
+            await host.RefreshViewAsync();
+            await guestScreen.Feed!.RefreshViewAsync();
+            for (var i = 0; i < 100 && guestScreen.Feed?.CurrentView is null; i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(guestScreen.Feed?.CurrentView is not null, "客人没有收到视图");
+
+            var hostHq = host.CurrentView?.SelfHq?.Uid;
+            var guestHq = guestScreen.Feed!.CurrentView!.SelfHq?.Uid;
+            GD.Print($"[room-join] hostSeat={host.Seat} guestSeat={guestScreen.Feed.Seat} " +
+                     $"hostHq={hostHq} guestHq={guestHq} " +
+                     $"hostSelf={host.CurrentView?.SelfPlayerName} hostEnemy={host.CurrentView?.EnemyPlayerName}");
+            Require(hostHq is not null && hostHq != guestHq,
+                $"两端拿到了同一个总部，视角没有按座位区分（host={hostHq} guest={guestHq}）");
+            GD.Print($"[room-join] host hq={hostHq} guest hq={guestHq}");
+            GD.Print("ROOM_JOIN_VERIFY_OK ui-join remote-seat view-per-seat");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("ROOM_JOIN_VERIFY_FAILED " + error.Message);
+            if (guestScreen is not null) guestScreen.Close();
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        guestScreen?.Close();
+        _room.Close();
+        GetTree().Quit();
+    }
+
+    /// <summary>
     /// <c>--verify-room-remote</c>：**两个真人客户端**的第一次实测。
     /// 房主（seat 0, local）＋ 第二个连接（seat 1, remote）——不是 AI 顶替，
     /// 用来确认"远端玩家加入"这条路径真的能走通，而不只是文档上说可以。
