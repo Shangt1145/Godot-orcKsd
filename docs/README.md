@@ -15,6 +15,20 @@
 | `整理-20261017/` | 2026-10-17 项目目录整理前的扫描与清理账目 | 想知道东西被搬到哪了 |
 | `engine-patches/` | 已提交上游的 `.patch` 原件（A.20 行动判定等） | 追溯对上游的改动 |
 
+当前更新方案：[Beta.4 调研与实施方案](planning/BETA4_UPDATE_RESEARCH_AND_PLAN_20261020.md)。
+
+新引擎适配方案（2026-10-21）：[基于 a35e0b9 重新定制 Beta.4](planning/BETA4_REPLAN_ENGINE_A35E0B9_20261021.md)，后续以此方案为准。
+
+制作前参考研究：[KARDS 与卡牌制作／规则编辑案例](research/DIY_WORKSHOP_UI_CASE_STUDY_20261021.md)。
+
+工坊实施进展：[工作区更新与验证记录](acceptance/BETA4_WORKSHOP_WORKSPACE_UPDATE_20261021.md)。
+
+最新交互修正：[面向制作任务的效果编辑与引擎 88c96bc 适配](acceptance/WORKSHOP_HUMAN_EDITOR_ENGINE_88C96BC_20261021.md)。
+
+全入口遗漏修正：[所有卡包统一工作区与草稿自动恢复](acceptance/WORKSHOP_ALL_PACK_ROUTES_AND_DRAFT_RECOVERY_20261021.md)。
+
+2026-10-21 暂停现场：[Beta.4 开发交接（尚未完成，不可直接发布）](planning/BETA4_HANDOFF_20261021.md)。
+
 ## 不在本目录的文档
 
 - `../架构docs/` —— **上游引擎方提供的架构文档**（2026-10-07 基线，受众写明"Godot 前端开发者"），独立编号 01–09，不并入本目录，以便与上游原文逐条对照。

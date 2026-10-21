@@ -21,7 +21,7 @@ public static class WorkshopAuthoring
     public static IReadOnlySet<string> EditedCardIds {get;private set;}=new HashSet<string>();
     public static bool TryKeyword(string id,out string engine)=>_keywords.TryGetValue(id,out engine!);
     public static string KeywordLabel(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id||_keywords.GetValueOrDefault(k.Id)==id)?.Name??id;
-    public static string NationLabel(string id)=>Nations.FirstOrDefault(n=>n.Id==id)?.Name??id;
+    public static string NationLabel(string id)=>Nations.FirstOrDefault(n=>n.Id==id)?.Name??OrcEngineHost.NativeNations.FirstOrDefault(n=>n.Id==id)?.Label??id;
     public static DiyKeywordDraft? Keyword(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id);
     public static int ParameterDefault(string id)
     {try{return Keyword(id)?.ProgramJson is { } json?KeywordProgram.Parse(json).DefaultValue:1;}catch(InvalidDataException){return 1;}}
@@ -68,7 +68,7 @@ public static class WorkshopAuthoring
         EditedCardIds=cards.Where(c=>c.SourceCardId.Length>0).Select(c=>c.SourceCardId).ToHashSet(StringComparer.Ordinal);
         AuthoredPacks=packs.Where(p=>!p.IsBuiltIn).Select(p=>new PackDescriptor(p.Id,p.Name,p.IsExpansion?p.BasePackId:null,cards.Count(c=>c.PackId==p.Id))).ToArray();
         DeckCardPacks.ConfigureAuthored(cards.Where(c=>c.PackId.Length>0).ToDictionary(c=>c.RuntimeId,c=>c.PackId),packs.Where(p=>p.IsExpansion).ToDictionary(p=>p.Id,p=>p.BasePackId!));
-        ConstructionRules.ConfigureCustomNations(Nations.Select(n=>n.Id));
+        ConstructionRules.ConfigureCustomNations(Nations.Select(n=>n.Id).Concat(OrcEngineHost.NativeNations.Select(n=>n.Id)));
     }
     public static string? CheckScope(DiyCardDraft draft)
     {

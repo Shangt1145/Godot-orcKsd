@@ -250,7 +250,8 @@ public sealed partial class CardFace : Control
     {
         // 素材库保存的是整张旧卡面；仅取插画，避免旧卡名、费用和规则再被贴进新模板。
         // diyart:// 已在导入时裁过，不能在这里重复裁切。
-        if (source is null || _definition?.ArtPath.StartsWith("res://", StringComparison.Ordinal) != true)
+        if (source is null || (_definition?.ArtPath.StartsWith("res://", StringComparison.Ordinal) != true
+            && _definition?.ArtPath.StartsWith("packfull://", StringComparison.Ordinal) != true))
             return source;
         var size = source.GetSize();
         return new AtlasTexture { Atlas = source,

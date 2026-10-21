@@ -24,6 +24,12 @@ public partial class DiyEditorScreen : VBoxContainer
     private readonly Dictionary<string, CheckBox> _keywords = new();
     private readonly List<string> _listed = [];
     private VBoxContainer _preview = null!;
+    private Control _focusTitle = null!, _focusLibrary = null!;
+    private HBoxContainer _focusActions = null!;
+    private readonly Dictionary<Control, Node> _actionParents = [];
+    private bool _workshopFocus;
+    private VBoxContainer _basicFields=null!,_focusedProperties=null!;
+    private readonly Dictionary<Control,Node> _propertyParents=[];
     private Label _previewTitle = null!;
     private Label _notice = null!, _identity = null!, _effectsSummary = null!;
     internal ItemList Cards = null!;
@@ -78,6 +84,7 @@ public partial class DiyEditorScreen : VBoxContainer
         AddThemeConstantOverride("separation", 10);
         var heading = new HBoxContainer(); AddChild(heading);
         var title = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; heading.AddChild(title);
+        _focusTitle = title;
         title.AddChild(MenuStyles.Label("卡牌编辑", 28, MenuStyles.Ink));
         title.AddChild(MenuStyles.Label("编辑 → 校验 → 保存 → 构筑 / 试打", 13, MenuStyles.Dim));
         NewButton = MenuStyles.Button("新建", () => Guard(() => Load(new(){PackId=_scopePack}))); heading.AddChild(NewButton);
@@ -93,6 +100,7 @@ public partial class DiyEditorScreen : VBoxContainer
         }
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; AddChild(body);
         var listPanel = Panel(205); body.AddChild(listPanel);
+        _focusLibrary = listPanel;
         var list = new VBoxContainer(); listPanel.AddChild(list);
         Search = new LineEdit { PlaceholderText = "搜索包内卡牌" }; list.AddChild(Search);
         Search.TextChanged += _ => RefreshList();
@@ -140,10 +148,11 @@ public partial class DiyEditorScreen : VBoxContainer
             _sections.AddChild(page); _sectionScrolls.Add(page);
             var content = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; content.AddThemeConstantOverride("separation", 16); page.AddChild(content); return content;
         }
-        var form = EditorPage("属性"); var rulesForm = EditorPage("规则与词条");
-        var artForm = EditorPage("卡图"); var flavorForm = EditorPage("风味");
+        var form = EditorPage("属性"); var rulesForm = EditorPage("规则");
+        var artForm = EditorPage("卡图"); var flavorForm = EditorPage("描述");
         EditorScroll = _sectionScrolls[0]; _sections.TabChanged += i => EditorScroll = _sectionScrolls[(int)i];
         var basic = Section(form, "基础信息");
+        _basicFields=basic;
         _identity = MenuStyles.Label("", 11, MenuStyles.Dim); _identity.Visible = false; basic.AddChild(_identity);
         CardName = new LineEdit { MaxLength = 40, PlaceholderText = "卡牌名称" }; Field(basic, "名称", CardName);
         CardName.TextChanged += _ => Changed();
@@ -274,7 +283,49 @@ public partial class DiyEditorScreen : VBoxContainer
         DiscardDialog.Confirmed += () => { var action = _afterDiscard; _afterDiscard = null; action?.Invoke(); };
         DiscardDialog.Canceled += () => { _afterDiscard = null; RefreshList(); };
         Load(_library.Cards.FirstOrDefault() ?? new());
+        _focusActions = new HBoxContainer { Visible = false }; AddChild(_focusActions);
         if (_library.LoadError is { } error) _notice.Text = error;
+    }
+    internal void SetWorkshopFocus(bool focused)
+    {
+        _workshopFocus = focused; _focusTitle.Visible = _focusLibrary.Visible = !focused; _focusActions.Visible = focused;
+        if(focused) BuildFocusedProperties();
+        else if(_focusedProperties is not null)
+        {
+            foreach(var pair in _propertyParents){pair.Key.GetParent().RemoveChild(pair.Key);pair.Value.AddChild(pair.Key);}
+            _propertyParents.Clear();_focusedProperties.GetParent().RemoveChild(_focusedProperties);_focusedProperties.QueueFree();_focusedProperties=null!;_basicFields.GetParent().GetParent<Control>().Show();
+        }
+        PreviewPanel.CustomMinimumSize = new(focused ? 300 : 245, 0);
+        foreach (var action in new Control[] { ValidateButton, ConstructButton, TrialButton, AlignButton })
+        {
+            _actionParents.TryAdd(action, action.GetParent());
+            var parent = focused ? _focusActions : _actionParents[action];
+            if (action.GetParent() == parent) continue;
+            action.GetParent().RemoveChild(action); parent.AddChild(action);
+        }
+        RefreshPreview();
+    }
+    private void BuildFocusedProperties()
+    {
+        if(_focusedProperties is not null)return;
+        var originalPanel=_basicFields.GetParent().GetParent<Control>(); originalPanel.Hide();
+        var form=_sectionScrolls[0].GetChild<VBoxContainer>(0);
+        _focusedProperties=new VBoxContainer();_focusedProperties.AddThemeConstantOverride("separation",16);form.AddChild(_focusedProperties);
+        void Place(VBoxContainer parent,string caption,Control control)
+        {
+            _propertyParents[control]=control.GetParent();control.GetParent().RemoveChild(control);
+            var row=new HBoxContainer();row.AddThemeConstantOverride("separation",12);parent.AddChild(row);
+            var label=MenuStyles.Label(caption,14,MenuStyles.Dim);label.CustomMinimumSize=new(126,0);row.AddChild(label);
+            control.SizeFlagsHorizontal=SizeFlags.ExpandFill;row.AddChild(control);
+        }
+        Place(_focusedProperties,"名称",CardName);
+        var columns=new HBoxContainer();columns.AddThemeConstantOverride("separation",28);_focusedProperties.AddChild(columns);
+        var identity=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};identity.AddThemeConstantOverride("separation",16);columns.AddChild(identity);
+        var stats=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};stats.AddThemeConstantOverride("separation",16);columns.AddChild(stats);
+        identity.AddChild(MenuStyles.Label("归属与分类",16,MenuStyles.Gold));stats.AddChild(MenuStyles.Label("费用与战斗属性",16,MenuStyles.Gold));
+        Place(identity,"卡牌类型",CardType);Place(identity,"兵种",UnitType);Place(identity,"国家",Nation);
+        _propertyParents[CreateNationButton]=CreateNationButton.GetParent();CreateNationButton.GetParent().RemoveChild(CreateNationButton);identity.AddChild(CreateNationButton);
+        Place(identity,"稀有度",Rarity);Place(stats,"部署费用",Cost);Place(stats,"攻击",Attack);Place(stats,"防御",Defense);Place(stats,"行动费用",OpCost);Place(stats,"重甲数值",Armor);
     }
     internal void EnsureEditingVisible(Control control)
     {
@@ -421,6 +472,11 @@ public partial class DiyEditorScreen : VBoxContainer
         var draft = Read(); var isUnit = draft.CardType == "unit";
         _previewTitle.Text = "卡面预览 · " + CardFace.MasterName(CardFace.MasterFor(draft.CardType));
         UnitType.Disabled = !isUnit; OpCost.Editable = isUnit; Attack.Editable = isUnit; Defense.Editable = isUnit;
+        if(_workshopFocus&&_focusedProperties is not null)
+        {
+            foreach(var field in new Control[]{UnitType,OpCost,Attack,Defense})field.GetParent<Control>().Visible=isUnit;
+            Armor.GetParent<Control>().Visible=isUnit&&_keywords["armor"].ButtonPressed;
+        }
         foreach (var keyword in _keywords) keyword.Value.Disabled = (!isUnit&&WorkshopAuthoring.Keyword(keyword.Key)?.ProgramJson is null) || draft.DesktopCardJson is not null;
         Armor.Editable = isUnit && _keywords["armor"].ButtonPressed && draft.DesktopCardJson is null;
         _identity.Text = draft.Id; _identity.ClipText = true; _identity.TooltipText = draft.Id;
@@ -439,14 +495,15 @@ public partial class DiyEditorScreen : VBoxContainer
         MenuStyles.Clear(_preview);
         // 卡面用真实模板（AstralKards）渲染：卡框/卡图都是素材层，文字按 PSD 坐标叠加，不再用代码画牌。
         // 外面套一个定高容器：直接放进 VBox 会被拉成面板宽，(比例失衡后) 下半截就滚出可视区了。
-        var faceHolder = new CenterContainer { CustomMinimumSize = new(0, 158) };
+        var faceHolder = new CenterContainer { CustomMinimumSize = new(0, _workshopFocus ? 428 : 158) };
         var face = new CardFace();
-        face.FitTo(150);
+        face.FitTo(_workshopFocus ? 420 : 150);
         faceHolder.AddChild(face);
         _preview.AddChild(faceHolder);
         face.SetDefinition(card);
         face.SetIllustration(_textures.Get(card.ArtPath), card.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)
             ? DiyArtStore.ZoomOf(card.CardId) : 100);
+        if (!_workshopFocus) {
         var name = MenuStyles.Label(card.Name, 16); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; _preview.AddChild(name);
         var text = MenuStyles.Label(card.Text.Length == 0 ? "无附加效果" : card.Text, 13);
         text.AutowrapMode = TextServer.AutowrapMode.WordSmart; _preview.AddChild(text);
@@ -454,6 +511,7 @@ public partial class DiyEditorScreen : VBoxContainer
         {
             var flavor = MenuStyles.Label(card.Flavor, 12, MenuStyles.Dim);
             flavor.AutowrapMode = TextServer.AutowrapMode.WordSmart; _preview.AddChild(flavor);
+        }
         }
         DeleteButton.Text=_draft.SourceCardId.Length>0?"恢复原版":"删除";
         DeleteButton.Disabled = !_library.Cards.Any(c => c.Id == _draft.Id);

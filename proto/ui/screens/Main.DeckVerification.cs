@@ -18,10 +18,13 @@ public partial class Main
             if(ancestor is ScrollContainer scroll)scroll.EnsureControlVisible(control);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         var at = control.GetGlobalTransformWithCanvas() * (control.Size / 2);
-        if (control.GetWindow() != GetWindow()) at += control.GetWindow().Position;
-        GetViewport().PushInput(new InputEventMouseMotion { Position = at, GlobalPosition = at }, true);
-        GetViewport().PushInput(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = MouseButton.Left, Pressed = true }, true);
-        GetViewport().PushInput(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = MouseButton.Left, Pressed = false }, true);
+        // Account for nested embedded windows and root stretch when mapping back to root input.
+        if (control.GetWindow() != GetWindow())
+            at = GetGlobalTransformWithCanvas() * GetScreenTransform().AffineInverse() * control.GetScreenTransform() * (control.Size / 2);
+        var inputViewport = GetViewport();
+        inputViewport.PushInput(new InputEventMouseMotion { Position = at, GlobalPosition = at }, true);
+        inputViewport.PushInput(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = MouseButton.Left, Pressed = true }, true);
+        inputViewport.PushInput(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = MouseButton.Left, Pressed = false }, true);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
     }

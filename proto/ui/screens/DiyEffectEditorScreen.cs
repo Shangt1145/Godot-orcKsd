@@ -80,6 +80,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         NativeInspector=new NativeEffectInspector{Name="图形搭建"};NativeInspector.Initialize();_editorTabs.AddChild(NativeInspector);
         NativeInspector.Edited+=NativeChanged;
         NativeInspector.CountersRequested+=()=>_editorTabs.CurrentTab=3;
+        NativeInspector.UsePlayerAuthoring();
         NativeInspector.RawEdited+=()=>DraftTouched?.Invoke();
 
         var body = new HBoxContainer { Name="结构编辑", SizeFlagsVertical = SizeFlags.ExpandFill }; _editorTabs.AddChild(body);

@@ -29,6 +29,11 @@ internal partial class NativeEffectInspector : VBoxContainer
     private readonly Dictionary<string,TreeItem> _items=[];
     private readonly List<string> _opIds=[];
     private static readonly JsonSerializerOptions Pretty=new(){WriteIndented=true};
+    private Button _advancedToggle=null!;
+    private bool _playerAuthoring;
+    private bool _singleRuleAuthoring;
+    internal void UsePlayerAuthoring() { _playerAuthoring = true; _advancedToggle.Hide(); NewNativeEffectButton.Hide(); if(CountersRequested is null)_counterManager.Hide(); }
+    internal void UseSingleRuleAuthoring() { _singleRuleAuthoring = true; _friendlyRoot.GetChild<Control>(0).Hide(); }
 
     internal void Initialize()
     {
@@ -40,7 +45,7 @@ internal partial class NativeEffectInspector : VBoxContainer
         {
             if(!CommitPendingRaw())return;
             _advancedRoot.Visible=!_advancedRoot.Visible;_friendlyRoot.Visible=!_advancedRoot.Visible;
-        });tools.AddChild(advancedToggle);
+        });tools.AddChild(advancedToggle);_advancedToggle=advancedToggle;
         _advancedRoot=new VBoxContainer{Visible=false,SizeFlagsVertical=SizeFlags.ExpandFill};
         InitializeFriendly();AddChild(_advancedRoot);
         BuildComposer();
@@ -232,7 +237,7 @@ internal partial class NativeEffectInspector : VBoxContainer
         }
         else AddValue(_properties,path,path.Split('/').Last(),node);
         AddTemplates(_properties,path);
-        _status.Text="修改会保留在卡牌草稿中；点击右上角保存。";
+        _status.Text=_playerAuthoring?"编辑完成后保存；保存时会检查规则。":"修改会保留在卡牌草稿中；点击右上角保存。";
     }
     private void AddField(VBoxContainer box,string parent,string key,JsonNode? value)
     {

@@ -53,6 +53,7 @@ public static class OrcEngineHost
                 ? PackageDiscovery.Discover(baseDirectory)
                 : new PackageDiscoveryReport(Array.Empty<DiscoveredPackage>(), Array.Empty<string>());
 
+            foreach (var package in discovery.Packages) NativeWorkshop.RegisterNations(package.RootDirectory);
             _host = EngineHost.FromDiscovery(
                 discovery,
                 evaluator: null,
@@ -65,7 +66,7 @@ public static class OrcEngineHost
             var packages = _host.CreateSnapshot().CardPacks;
             var ids = packages.Select(p => p.Manifest.Id).ToHashSet(StringComparer.Ordinal);
             var parents = packages.ToDictionary(p => p.Manifest.Id,
-                p => p.Manifest.RequiredPackages.Where(ids.Contains).ToArray(), StringComparer.Ordinal);
+                p => WorkshopPackagePresentation.Parent(p.RootDirectory,p.Manifest.Id) is { } parent && ids.Contains(parent) ? new[]{parent} : Array.Empty<string>(), StringComparer.Ordinal);
             var families = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var id in ids)
             {
@@ -83,6 +84,29 @@ public static class OrcEngineHost
     /// 引擎 <c>EngineHost</c> 返回类型——否则编译器会把 Orc.Packages 记进 UI 程序集引用表，
     /// 触发 UI 边界守卫。</summary>
     public static void WarmUp(string? baseDirectory = null) => Initialize(baseDirectory);
+    public static IReadOnlyList<UiDiyChoice> NativeNations => Current?.CreateSnapshot().CardPacks
+        .SelectMany(p => NativeWorkshop.ReadNations(p.RootDirectory)).DistinctBy(n => n.Id).ToArray() ?? [];
+
+    /// <summary>Replace the effective card-pack set atomically; existing match snapshots stay frozen.</summary>
+    public static void SetWorkshopRoots(IReadOnlyList<string> roots)
+    {
+        lock (Gate)
+        {
+            var host = Current ?? Initialize();
+            if (host.CardPacksLocked) throw new InvalidOperationException("请先结束当前对局，再更改卡包。");
+            var baseline = host.CreateSnapshot();
+            try
+            {
+                foreach (var id in baseline.CardPacks.Select(p => p.Manifest.Id).Distinct()) host.UnloadCardPacks(id);
+                foreach (var root in roots)
+                {
+                    NativeWorkshop.RegisterNations(root);
+                    if (!host.TryLoadCardPack(root, out var failure)) throw new InvalidDataException(root + "：" + failure);
+                }
+            }
+            catch { host.RestoreFrom(baseline); throw; }
+        }
+    }
 
     /// <summary>冻结当前宿主的一份资产快照（未初始化＝先按"无磁盘包"初始化）。</summary>
     public static AssetCatalogSnapshot Snapshot()
@@ -177,14 +201,14 @@ public static class OrcEngineHost
                         : entry.Id;
                     cards.Add(StaticCardProjection.Project(
                         entry.Id, entry.Definition, artLookup,
-                        text: texts.TryGetValue(rawId, out var text) ? text : null));
+                        text: texts.TryGetValue(rawId, out var text) ? text : null) with { Flavor = PackPresentationData.Flavor(package.RootDirectory, rawId) });
                 }
 
                 // v1 的 dependsOn 已退役，依赖一律读 v2 的 requires（包 ID 列表）。
                 var required = package.Manifest.RequiredPackages;
                 packs.Add(new PackDescriptor(
                     package.Manifest.Id, ManifestName(package.RootDirectory, package.Manifest.Id),
-                    required.Count == 1 ? required[0] : null,
+                    WorkshopPackagePresentation.Parent(package.RootDirectory,package.Manifest.Id),
                     content.Definitions.Count));
                 Console.WriteLine($"[pack-load] {package.Manifest.Id} defs={content.Definitions.Count} root={package.RootDirectory}");
             }

@@ -66,7 +66,7 @@ if (!(Test-Path -LiteralPath (Join-Path $BuildRoot 'Kards.Ui.sln'))) { throw 'Mi
 # 2) Gate: the sync + build + unit tests + headless verify the project already trusts.
 if (!$SkipGate) {
     $testArgs = @('test', (Join-Path $sourceRoot 'tests/Kards.Ui.Tests.csproj'), '--nologo')
-    if (!$FullTests) { $testArgs += @('--filter', 'FullyQualifiedName~WorkshopTests|FullyQualifiedName~InspectorCompositionTests|FullyQualifiedName~InspectorBackendBaselineTests|FullyQualifiedName~DiyEditorUpdateTests|FullyQualifiedName~DeckPackTests|FullyQualifiedName~DeckConstructionTests|FullyQualifiedName~DiyCardTests|FullyQualifiedName~DiyInspectorTests|FullyQualifiedName~SourceEffectConverterTests|FullyQualifiedName~DesktopAuthoringTests|FullyQualifiedName~NativeScriptHostIsolationTests|FullyQualifiedName~OfficialCardExpansionTests|FullyQualifiedName~OfflineUpdateTests') }
+    if (!$FullTests) { $testArgs += @('--filter', 'FullyQualifiedName~WorkshopTests|FullyQualifiedName~IdleTurnDeliveryTests|FullyQualifiedName~TurnInputGateTests|FullyQualifiedName~InspectorCompositionTests|FullyQualifiedName~InspectorBackendBaselineTests|FullyQualifiedName~DiyEditorUpdateTests|FullyQualifiedName~DeckPackTests|FullyQualifiedName~DeckConstructionTests|FullyQualifiedName~DiyCardTests|FullyQualifiedName~DiyInspectorTests|FullyQualifiedName~SourceEffectConverterTests|FullyQualifiedName~DesktopAuthoringTests|FullyQualifiedName~NativeScriptHostIsolationTests|FullyQualifiedName~OfficialCardExpansionTests|FullyQualifiedName~OfflineUpdateTests') }
     & dotnet @testArgs
     if ($LASTEXITCODE -ne 0) { throw 'Release unit test gate failed.' }
     & (Join-Path $PSScriptRoot 'run.ps1') -BuildRoot $BuildRoot -Godot $Godot -Verify

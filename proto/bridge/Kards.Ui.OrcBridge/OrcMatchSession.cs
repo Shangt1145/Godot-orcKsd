@@ -76,6 +76,49 @@ public sealed partial class OrcMatchSession : IDisposable
 
     public void Pump() { if (!_disposed) _host.Pump(); }
 
+    public void PollEvents()
+    {
+        if (!_disposed && !IsSubmitting && !MulliganPending) _host.PollEvents();
+    }
+
+    /// <summary>Starts an idle opponent turn, including the opening turn when the viewer goes second.</summary>
+    public async Task DriveOpponentIfNeededAsync(CancellationToken ct = default)
+    {
+        if (_disposed || !DriveOpponent || MulliganPending) return;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        try { if (!await _commands.WaitAsync(0, linked.Token)) return; }
+        catch (OperationCanceledException) { return; }
+        try { await DriveOpponentTurnAsync(linked.Token); }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+        finally
+        {
+            if (!_disposed) _host.CaptureCompletedActions();
+            _commands.Release();
+        }
+    }
+
+    private async Task DriveOpponentTurnAsync(CancellationToken ct)
+    {
+        if (!DriveOpponent || Match.State != MatchState.InProgress || Match.Phase != MatchPhase.Play
+            || ReferenceEquals(Match.CurrentPlayer, _host.Viewer)) return;
+        _host.PollEvents();
+        _automaticChoice = true;
+        _activeCommandToken = ct;
+        try
+        {
+            await OrcOpponentDriver.PlayTurnAsync(_host, TargeterBridge, Match.CurrentPlayer, ct: ct,
+                actionCompleted: _host.PollEvents).WaitAsync(OpponentTurnBudget, ct);
+        }
+        catch (TimeoutException)
+        {
+            LastRejectionReason = "OpponentStalled:" + PendingSelectorName;
+            CancelTargetChoice();
+        }
+        finally { _automaticChoice = false; }
+        await ForceOpponentPassAsync(ct);
+        if (!_disposed) _host.PollEvents();
+    }
+
     /// <summary>
     /// 对手回合的兜底收尾：驱动跑完（或被超时截断）之后如果回合仍停在对手侧，强制交回玩家。
     /// 驱动内部的 EndTurn 有它自己的 try/catch，失败只会写日志，外层无从得知——
@@ -404,7 +447,7 @@ public sealed partial class OrcMatchSession : IDisposable
                     : entry.Id;
                 result.Add(StaticCardProjection.Project(
                     entry.Id, entry.Definition, artLookup,
-                    text: texts.TryGetValue(rawId, out var text) ? text : null));
+                    text: texts.TryGetValue(rawId, out var text) ? text : null) with { Flavor = PackPresentationData.Flavor(content.RootDirectory, rawId) });
             }
         }
 
@@ -661,6 +704,8 @@ public sealed partial class OrcMatchSession : IDisposable
         try
         {
             LastRejectionReason = null;
+            // Flush asynchronous arrivals before a new command can play or move the arriving card.
+            _host.PollEvents();
             ct = linked.Token;
             _activeCommandToken = ct;
             using var cancelChoice = ct.Register(CancelTargetChoice);
@@ -726,27 +771,7 @@ public sealed partial class OrcMatchSession : IDisposable
                     // EndTurn reports nothing; the segments it produces are read on the next Pump.
                     await Match.EndTurn(ct);
                     _host.CaptureCompletedActions();
-                    // The engine has no AI: passing the turn hands play to the opponent, which the
-                    // driver plays through the same engine entry points and passes straight back.
-                    if (DriveOpponent && Match.State == MatchState.InProgress && !ReferenceEquals(Match.CurrentPlayer, _host.Viewer))
-                    {
-                        _automaticChoice = true;
-                        try
-                        {
-                            // 决策走引擎的 AiPilot（HeuristicPolicy）；本类只管步进与预算。
-                            await OrcOpponentDriver.PlayTurnAsync(_host, TargeterBridge, Match.CurrentPlayer, ct: ct,
-                                actionCompleted: _host.CaptureCompletedActions).WaitAsync(OpponentTurnBudget, ct);
-                        }
-                        catch (TimeoutException)
-                        {
-                            LastRejectionReason = "OpponentStalled:" + PendingSelectorName;
-                            CancelTargetChoice();
-                        }
-                        finally { _automaticChoice = false; }
-                        // 兜底：驱动可能被超时截断，或它内部的 EndTurn 抛错只记了日志，
-                        // 这两种情况都会把回合留在对手侧，玩家点什么都无效。这里再交一次。
-                        await ForceOpponentPassAsync(ct);
-                    }
+                    await DriveOpponentTurnAsync(ct);
                     return UiSubmitOutcome.Applied;
                 case ChooseTarget:
                     // Targeting is answered through the present callback, not by a separate command.

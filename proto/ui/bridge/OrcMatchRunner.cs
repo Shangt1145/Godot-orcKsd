@@ -18,6 +18,8 @@ public sealed class OrcMatchRunner
     private OrcMatchSession? _session;
     private readonly CancellationTokenSource _lifetime = new();
     private bool _stopped;
+    private double _eventPollElapsed;
+    private Task _opponentTurn = Task.CompletedTask;
 
     public bool IsRunning => _session is not null;
     public IReadOnlyList<UiKeywordSkill> KeywordSkills(string uid)=>_session?.KeywordSkills(uid)??[];
@@ -139,16 +141,39 @@ public sealed class OrcMatchRunner
         // The opponent side is answered by the driver; the viewer either answers through the panel
         // (the request parks until ChooseMulligan arrives) or keeps everything.
         await session.SettleMulliganAsync(InteractiveMulligan, ct);
-        // Publish the settled baseline; initialization snapshots must not replay over the new phase.
         if (_stopped) return;
-        Publish();
+        session.PollEvents();
+        session.Pump();
+        ScheduleOpponent();
     }
 
     /// <summary>Frame-loop entry point. One host drains the queue for either viewpoint.</summary>
-    public void Pump()
+    public void Pump(double delta = 0)
     {
         if (_session is null) return;
+        _eventPollElapsed += Math.Max(0, delta);
+        if (_eventPollElapsed >= .2)
+        {
+            _eventPollElapsed %= .2;
+            _session.PollEvents();
+            ScheduleOpponent();
+        }
         _session.Pump();
+    }
+
+    private void ScheduleOpponent()
+    {
+        if (_stopped || !_opponentTurn.IsCompleted || _session is not { DriveOpponent: true } session
+            || session.IsViewerOnTurn || session.MulliganPending || session.View.Phase != "play") return;
+        _opponentTurn = RunOpponentAsync(session);
+    }
+
+    private async Task RunOpponentAsync(OrcMatchSession session)
+    {
+        try { await session.DriveOpponentIfNeededAsync(_lifetime.Token); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception error)
+        { if (!_stopped && _session == session) ErrorRaised?.Invoke("对手自动推进失败：" + error.Message); }
     }
 
     /// <summary>Ends the match and detaches the host so no further segments are delivered.</summary>
@@ -245,7 +270,7 @@ public sealed class OrcMatchRunner
             return;
         }
         // Answering produces a segment; the refreshed view (and the play phase) arrives on Pump.
-        if (!_stopped) Publish();
+        if (!_stopped) { session.PollEvents(); session.Pump(); ScheduleOpponent(); }
     }
 
     private void Publish()

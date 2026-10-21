@@ -36,7 +36,7 @@ public sealed class OrcUpdateTranslator
         var arrived = new HashSet<string>(StringComparer.Ordinal);
         // turn.start and turn.start.after describe one turn change the same way (TurnManager), so the
         // banner must be built once or it plays twice per turn.
-        var turnAnnounced = false;
+        var turnAnnouncements = new HashSet<(object? Player, int Turn)>();
         // unit.damage.dealt carries the attacker and the engine's own amount. Signal order is not
         // guaranteed (stat.changed may arrive first), so collect the pairing first and apply it once
         // every impact of this segment is known.
@@ -133,8 +133,8 @@ public sealed class OrcUpdateTranslator
                 case GameUpdates.TurnStartAfter:
                 case GameUpdates.TurnStart:
                     // Both signals describe one turn change; announce it once.
-                    if (turnAnnounced) break;
-                    turnAnnounced = true;
+                    var announcedNumber = payload.GetValueOrDefault(GameUpdates.PayloadTurnNumber) is int nativeTurn ? nativeTurn : after.Turn;
+                    if (!turnAnnouncements.Add((payload.GetValueOrDefault(GameUpdates.PayloadPlayer), announcedNumber))) break;
                     AddTurn(steps, payload, viewer, after);
                     break;
             }
@@ -372,7 +372,8 @@ public sealed class OrcUpdateTranslator
     {
         var player = payload.TryGetValue(GameUpdates.PayloadPlayer, out var value) ? value as Player : null;
         var side = player is null || ReferenceEquals(player, viewer) ? "self" : "enemy";
-        steps.Add(new UiTurnPresentation(side, after.Turn, UiTurnKind.TurnStarted));
+        var turn = payload.GetValueOrDefault(GameUpdates.PayloadTurnNumber) is int nativeTurn ? nativeTurn : after.Turn;
+        steps.Add(new UiTurnPresentation(side, turn, UiTurnKind.TurnStarted));
     }
 
     private UiCardView? ReadFor(Player viewer, Card card)

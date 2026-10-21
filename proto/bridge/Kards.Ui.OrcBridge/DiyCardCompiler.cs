@@ -30,7 +30,7 @@ public static class DiyCardCompiler
             Faction.Finland => "芬兰", Faction.Anzac => "澳新联军", Faction.Neutral => "中立", _ => id
         })).Concat(new UiDiyChoice[] { new("av76", "苏联（旧卡池）"), new("deran", "德国（旧卡池）"),
             new("USG", "美国（旧卡池）"), new("UN", "英国（旧卡池）") }).ToArray();
-    public static IReadOnlyList<UiDiyChoice> Nations=>BuiltInNations.Concat(WorkshopAuthoring.Nations.Select(n=>new UiDiyChoice(n.Id,n.Name))).ToArray();
+    public static IReadOnlyList<UiDiyChoice> Nations=>BuiltInNations.Concat(WorkshopAuthoring.Nations.Select(n=>new UiDiyChoice(n.Id,n.Name))).Concat(OrcEngineHost.NativeNations).DistinctBy(n=>n.Id).ToArray();
     public static IReadOnlyList<UiDiyChoice> Rarities { get; } =
         [new("iron", "基础"), new("bronze", "限定"), new("silver", "特殊"), new("gold", "精英")];
     // 引擎侧单位类型已数据化为 string 常量类（`UnitType.All` 即内置标识清单，规范小写）。

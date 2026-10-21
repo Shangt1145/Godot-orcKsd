@@ -48,7 +48,7 @@ public partial class CardControl : Control
         Visual.PivotOffset = Size / 2;
         var full = View is null || View.Visibility == Visibility.Full;
         var tex = full ? _cache.Get(Definition.ArtPath) : null;
-        var custom = full && (Definition.CardId.StartsWith("diy/", StringComparison.Ordinal)
+        var custom = full && (tex is null || WorkshopVisuals.NativeCardIds.Contains(Definition.CardId) || Definition.ArtPath.StartsWith("packart://", StringComparison.Ordinal) || Definition.CardId.StartsWith("diy/", StringComparison.Ordinal)
             || (View is null && (UseEditableFace || Kards.Ui.OrcBridge.WorkshopAuthoring.EditedCardIds.Contains(Definition.CardId))));
         if (custom)
         {

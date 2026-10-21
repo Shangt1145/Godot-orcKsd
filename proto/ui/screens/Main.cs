@@ -91,13 +91,27 @@ public partial class Main : Control
         // CardDefinition 解析装配（ResolveKeywords 对未注册标识 fail-fast）；此处一并完成卡包发现，
         // ReloadPacks 的 LoadPackCards 幂等复用同一宿主。
         OrcEngineHost.WarmUp(RuntimeGameData.Directory("kards"));
+        _nativeWorkshop = new NativeWorkshop(ProjectSettings.GlobalizePath(_verificationRun
+            ? $"res://artifacts/workshop/{Guid.NewGuid():N}" : "user://workshop"), RuntimeGameData.Directory("kards"), OrcEngineHost.SetWorkshopRoots);
+        _nativeWorkshop.Activate();
         // 卡图对齐参数（user:// 下）在宿主就绪后读回，之后所有 CardFace 都按它排布。
         if (!_verificationRun) CardFaceTuner.LoadSaved();
         _deckService = new DeckConstructionService(_catalog.Cards, RuntimeGameData.Directory("nations"));
         _diyPath = ProjectSettings.GlobalizePath(_verificationRun
             ? $"res://artifacts/diy/session-{Guid.NewGuid():N}.json" : "user://diy-cards.json");
+        if (OS.GetCmdlineUserArgs().Contains("--verify-workshop-routes"))
+        {
+            var source = ProjectSettings.GlobalizePath("user://diy-cards.json");
+            if (System.IO.File.Exists(source)) { System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_diyPath)!); System.IO.File.Copy(source, _diyPath); }
+        }
         _diy = new DiyCardLibrary(_diyPath);
-        _workshopLibrary=new DiyWorkshopLibrary(ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/diy/packs-{Guid.NewGuid():N}.json":"user://diy-packs.json"));
+        var workshopPath = ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/diy/packs-{Guid.NewGuid():N}.json":"user://diy-packs.json");
+        if (OS.GetCmdlineUserArgs().Contains("--verify-workshop-routes"))
+        {
+            var source = ProjectSettings.GlobalizePath("user://diy-packs.json");
+            if (System.IO.File.Exists(source)) System.IO.File.Copy(source, workshopPath);
+        }
+        _workshopLibrary=new DiyWorkshopLibrary(workshopPath);
         if (!_verificationRun)
             DemoMechanicsUpgrade.Apply(_workshopLibrary, ProjectSettings.GlobalizePath("user://diy-packs.json"));
         if(_diy.LoadError is null&&_workshopLibrary.LoadError is null&&_diy.Cards.Any(c=>c.PackId.Length==0))
@@ -217,6 +231,7 @@ public partial class Main : Control
         };
         _diyEditor.ConfigureWorkshop(_workshopLibrary,RefreshDiy);
         _workshop=new DiyWorkshopScreen();_workshop.Initialize(_workshopLibrary,_diy,_diyEditor,_deckService,_textures,RefreshDiy,()=>_clock.ReducedMotion);
+        _workshop.ConfigureNative(_nativeWorkshop, () => { _textures.Clear(); ReloadPacks(); RefreshDiy(); });
         AddScreen(content, "editor", _workshop);
         // 效果编辑器（独立屏幕）：主编辑器入口按钮进入，编辑实时写回草稿，完成后返回。
         _diyEffects = new DiyEffectEditorScreen(); _diyEffects.Initialize();
@@ -267,6 +282,12 @@ public partial class Main : Control
         else if (args.Contains("--verify-inflight-draw")) CallDeferred(MethodName.VerifyInFlightDrawOnly);
         else if (args.Contains("--verify-action-portals") || args.Contains("--capture-action-portals"))
             CallDeferred(MethodName.VerifyActionPortals);
+        else if (args.Contains("--verify-beta4-p0"))
+            Callable.From(VerifyBeta4P0).CallDeferred();
+        else if (args.Contains("--verify-native-workshop"))
+            Callable.From(VerifyNativeWorkshop).CallDeferred();
+        else if (args.Contains("--verify-workshop-routes"))
+            Callable.From(VerifyWorkshopRoutes).CallDeferred();
         else if (args.Contains("--verify-inspector-composition") || args.Contains("--capture-inspector-composition"))
             Callable.From(VerifyInspectorComposition).CallDeferred();
         else if (args.Contains("--verify-desktop-authoring") || args.Contains("--capture-desktop-authoring"))
@@ -426,7 +447,7 @@ public partial class Main : Control
     public override void _Process(double delta)
     {
         var runner = _runner;
-        runner?.Pump();
+        runner?.Pump(delta);
         if (_runner == runner && runner?.CurrentView is { } view)
             _battle.UpdateInputProjection(view, runner.CurrentActions);
     }
@@ -576,7 +597,9 @@ public partial class Main : Control
     private async Task VerifyMulliganPanelAsync()
     {
         Show("battle");
-        await StartRealMatchAsync(); // interactive
+        // This probe isolates one-for-one replacement. Going second also draws at turn start;
+        // that separate no-input path is covered by --verify-beta4-p0.
+        await StartRealMatchAsync(firstPlayerIndex: 0); // interactive
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (!_battle.MulliganPanelVisible && DateTime.UtcNow < deadline) await Task.Delay(50);
         if (!_battle.MulliganPanelVisible) throw new Exception("Mulligan panel never opened.");
@@ -688,6 +711,11 @@ public partial class Main : Control
         _speedLabel.Text = $"演出 {_clock.Scale:0.00}×" + (_clock.ReducedMotion ? " · 减弱动效" : "");
     }
     private void Show(string id)
+    {
+        if (_active == "editor" && id != "editor" && id != "diyfx") { _workshop.GuardLeaving(() => ShowCore(id)); return; }
+        ShowCore(id);
+    }
+    private void ShowCore(string id)
     {
         if (!_screens.ContainsKey(id))
             return;

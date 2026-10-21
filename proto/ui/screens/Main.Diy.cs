@@ -4,6 +4,7 @@ namespace Kards.Ui;
 
 public partial class Main
 {
+    private NativeWorkshop _nativeWorkshop = null!;
     private void RefreshDiy()
     {
         WorkshopAuthoring.Configure(_workshopLibrary,_diy.Cards);WorkshopVisuals.Reset();
@@ -72,9 +73,15 @@ public partial class Main
         try
         {
             var baseDirectory = RuntimeGameData.Directory("kards");
-            var (cards, failures, _) = OrcEngineHost.LoadPackCards(baseDirectory, OfficialCardArt);
+            var (cards, failures, _) = OrcEngineHost.LoadPackCards(baseDirectory, id =>
+            {
+                var imported = _nativeWorkshop?.ArtFor(id) ?? "";
+                return imported.Length > 0 ? imported : OfficialCardArt(id);
+            });
             foreach (var failure in failures)
                 Godot.GD.PushWarning($"卡包/插件装载隔离：{failure}");
+            var installed = _nativeWorkshop.Packages().Where(p => p.Installed && p.Enabled).Select(p => "pack/" + p.Id + "/").ToArray();
+            WorkshopVisuals.NativeCardIds = cards.Where(c => installed.Any(prefix => c.CardId.StartsWith(prefix,StringComparison.Ordinal))).Select(c => c.CardId).ToHashSet(StringComparer.Ordinal);
             _catalog.SetPackCards(cards);
             _deckService.UpdatePacks(cards);
             _deckService.UpdateCustom(_diy.Cards);

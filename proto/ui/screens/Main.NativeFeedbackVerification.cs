@@ -33,6 +33,9 @@ public partial class Main
         {
             await _battle.VerifyNativeHqZeroAsync(await OrcStateFeedbackVerification.RunHqZeroAsync(), NativeFeedbackCaptureAsync);
             await StartRealMatchAsync(false, manualOpponentForVerification: true, deckSeed: 17, verificationHand: ["USG/units/_4"]);
+            // Opening presentations are now preserved instead of being discarded by a full publish.
+            await Until(() => _battle.ConcedeEnabledForVerification);
+            await AwaitIdleAsync(20);
             var runner = _runner!; var hand = runner.CurrentView!.SelfHand;
             if (!_battle.ConcedeEnabledForVerification) throw new Exception("Friendly native turn has no concede entry.");
             _battle.OpenConcedeForVerification(); await DeckClickAsync(_battle.ConcedeDialogForVerification.GetCancelButton());
@@ -64,7 +67,10 @@ public partial class Main
                 || _battle.TargetChoiceVisible || _battle.PendingPresentationEffects != 0)
                 throw new Exception("Restart retained a result, old runner or old effects.");
             await fresh.SubmitAsync(new ChooseMulligan(fresh.CurrentView!.SelfHand.Select(c => c.Uid).ToArray(), fresh.MulliganRequestId));
-            fresh.Pump(); await AwaitIdleAsync(20);
+            fresh.Pump();
+            // A quiet queue alone does not prove that the phase transition has unlocked input.
+            await Until(() => fresh.ActiveSeatOnTurn && !fresh.IsSubmitting && _battle.EndTurnEnabled);
+            await AwaitIdleAsync(20);
             if (fresh.CurrentView!.Phase != "play" || !_battle.EndTurnEnabled)
                 throw new Exception("Restart failed to reach a playable friendly turn.");
             // The same restart entry must cancel a real command parked on its native option request.
@@ -83,6 +89,8 @@ public partial class Main
             await Until(() => _battle.TargetChoiceVisible);
             var nextStart = StartRealMatchAsync(false, deckSeed: 9);
             await nextStart; await pending.WaitAsync(TimeSpan.FromSeconds(3));
+            // The new match now keeps its own opening presentation; it is not stale playback.
+            await AwaitSelfTurnAsync(20); await AwaitIdleAsync(20);
             if (choiceRunner.IsRunning || _battle.TargetChoiceVisible || _battle.PendingPresentationEffects != 0
                 || oldRequest is null || oldResponder is null || oldResponder.Complete(oldRequest.RequestId,
                     new Dictionary<string, IReadOnlyList<string>> { [oldRequest.Slots[0].Name] = ["0"] }))

@@ -6,6 +6,7 @@ namespace Kards.Ui;
 
 internal static class WorkshopVisuals
 {
+    internal static IReadOnlySet<string> NativeCardIds { get; set; } = new HashSet<string>();
     private static readonly Dictionary<string,Texture2D?> Icons=new();
     public static void Reset()=>Icons.Clear();
     public static Color ColorOf(string id)=>WorkshopAuthoring.Nations.FirstOrDefault(n=>n.Id==id) is { } n?new Color(n.Color):new Color("526b61");

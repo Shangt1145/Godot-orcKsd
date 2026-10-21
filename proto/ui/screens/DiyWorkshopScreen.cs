@@ -34,7 +34,7 @@ public partial class DiyWorkshopScreen : VBoxContainer
     {
         _store=store;_cards=cards;_editor=editor;_service=service;_textures=textures;_changed=changed;_reduced=reduced;
         SizeFlagsVertical=SizeFlags.ExpandFill;AddThemeConstantOverride("separation",12);
-        var top=new HBoxContainer();AddChild(top);top.AddChild(MenuStyles.Label("DIY 工坊",32,MenuStyles.Ink));top.AddChild(new Control{SizeFlagsHorizontal=SizeFlags.ExpandFill});
+        var top=new HBoxContainer();AddChild(top);_nativeToolbar=top;top.AddChild(MenuStyles.Label("DIY 工坊",32,MenuStyles.Ink));top.AddChild(new Control{SizeFlagsHorizontal=SizeFlags.ExpandFill});
         top.AddChild(MenuStyles.Button("工坊首页",()=>_editor.GuardNavigation(ShowHome)));
         _notice=MenuStyles.Label("",13,MenuStyles.Dim);_notice.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_notice);
         _navigation=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_navigation);
@@ -43,22 +43,9 @@ public partial class DiyWorkshopScreen : VBoxContainer
     }
     internal void OpenPack(DiyPackDraft pack)
     {
-        StopChoiceMotion();Phase("workspace");
-        _navigationVersion++;
-        _pack=pack;_page=0;_navigation.Hide();_workspace.Show();
-        if(_editor.GetParent() is { } parent)parent.RemoveChild(_editor);
-        MenuStyles.Clear(_workspace);
-        var heading=new HBoxContainer();_workspace.AddChild(heading);heading.AddChild(MenuStyles.Label(pack.Name,23,MenuStyles.Gold));
-        heading.AddChild(MenuStyles.Button("修改名称 / 基础卡包",()=>_editor.GuardNavigation(()=>{_workspace.Hide();_navigation.Show();OpenSelection(pack.IsExpansion,true);DiyEditorScreen.Select(ModifyPick,pack.Id);ModifyPick.EmitSignal(OptionButton.SignalName.ItemSelected,(long)ModifyPick.Selected);})));
-        if(pack.IsExpansion)heading.AddChild(MenuStyles.Label("基于："+(BuiltInWorkshopCatalog.Packs(_store).FirstOrDefault(p=>p.Id==pack.BasePackId)?.Name??(pack.BasePackId=="source"?"太空战争":"内置原版卡包")),14,MenuStyles.Dim));
-        _tabs=new TabContainer{SizeFlagsVertical=SizeFlags.ExpandFill};_workspace.AddChild(_tabs);
-        _tabs.AddThemeStyleboxOverride("panel",MenuStyles.Box(MenuStyles.Panel,MenuStyles.Line,2,8));
-        if(!pack.IsExpansion){_keywordPane=new VBoxContainer{Name="创建词条",SizeFlagsVertical=SizeFlags.ExpandFill};_tabs.AddChild(_keywordPane);BuildKeywords();}
-        _editor.Name=pack.IsBuiltIn?"编辑卡牌":"创建卡牌";_tabs.AddChild(_editor);_editor.Show();_editor.SetPackScope(pack);
-        _poolPane=new VBoxContainer{Name="卡池预览",SizeFlagsVertical=SizeFlags.ExpandFill};_tabs.AddChild(_poolPane);
-        _tabs.TabChanged+=_=>{if(_poolPane.Visible)RefreshPool();};
-        _tabs.CurrentTab=pack.IsExpansion?0:1;
-        _notice.Text=pack.IsBuiltIn?"内置 / 自带内容：点击卡牌载入完整声明；本地修改保留原编号，校验通过后同步构筑与试打。":pack.IsExpansion?"扩展包继承基础卡包的词条与国家；这里只修改本扩展包的卡牌。":"词条、卡牌和国家保存在此卡包中。卡牌完整编译后即可用于构筑。";
+        if (IsNativePackage(pack.Id)
+            && !_cards.Cards.Any(c => c.PackId == pack.Id && c.SourceCardId.Length > 0)) { _editor.GuardNavigation(() => OpenNativePack(pack.Id[5..])); return; }
+        OpenCompatiblePack(pack);
     }
     private void BuildKeywords()
     {
@@ -100,7 +87,7 @@ public partial class DiyWorkshopScreen : VBoxContainer
             catch(Exception e){status.Text=e.Message;}
         });form.AddChild(SaveKeyword);
     }
-    public void RefreshData(){if(_pack is not null)_pack=_store.Packs.FirstOrDefault(p=>p.Id==_pack.Id);if(_pack is not null&&_poolPane is not null&&_poolPane.Visible)RefreshPool();}
+    public void RefreshData(){if(_compatiblePack is not null)return;if(_pack is not null)_pack=_store.Packs.FirstOrDefault(p=>p.Id==_pack.Id);if(_pack is not null&&_poolPane is not null&&_poolPane.Visible)RefreshPool();}
     private void RefreshPool()
     {
         if(_pack is null)return;MenuStyles.Clear(_poolPane);

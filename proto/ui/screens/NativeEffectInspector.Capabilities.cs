@@ -15,6 +15,7 @@ internal partial class NativeEffectInspector
     }
     private void CapabilityBadge(Container parent,int index,Container? detailsHost=null)
     {
+        if(_playerAuthoring)return;
         var badge=new DiyCapabilityBadge(detailsHost);parent.AddChild(badge);_capabilityBadges.Add((index,badge));
         if(_capabilities.FirstOrDefault(r=>r.EffectIndex==index) is { } row)badge.Set(row);
     }

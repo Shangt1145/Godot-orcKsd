@@ -28,14 +28,26 @@ public partial class BattleCard : Control
     private AtlasTexture? _unitIcon, _nationIcon;
     private Texture2D? _back;
     private Texture2D? _hqMap;
+    private Node2D? _faceRoot;
+    private CardFace? _generatedFace;
+    private Control? _faceOverlay;
+    internal CardFace? GeneratedFace => _generatedFace;
+    public bool UsesGeneratedFace => Mode is BattleCardMode.Hand or BattleCardMode.Inspect
+        && View is { Visibility: Visibility.Full } view && (_texture is null
+            || view.CardId.StartsWith("diy/", StringComparison.Ordinal)
+            || view.Definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)
+            || view.Definition.ArtPath.StartsWith("packart://", StringComparison.Ordinal)
+            || WorkshopVisuals.NativeCardIds.Contains(view.CardId)
+            || Kards.Ui.OrcBridge.WorkshopAuthoring.EditedCardIds.Contains(view.CardId));
     private static readonly Font Numbers = new SystemFont { FontNames = ["Impact", "Bahnschrift Condensed"], AllowSystemFallback = true };
-    public void UpdateView(UiCardView view) { View = view; QueueRedraw(); }
+    public void UpdateView(UiCardView view) { View = view; _generatedFace?.SetDefinition(view.Definition); QueueRedraw(); }
     public event Action<BattleCard, Vector2>? Pressed;
     public event Action<BattleCard, bool>? Hovered;
     private bool _hover;
     private bool _inputBound;
     public void Bind(UiCardView? view, BattleCardMode mode, TextureCache cache)
     {
+        _texture = null; _illustration = null; _unitIcon = null; _nationIcon = null;
         View = view;
         Mode = view?.Visibility != Visibility.Full ? BattleCardMode.Hidden : mode;
         MouseDefaultCursorShape = CursorShape.PointingHand;
@@ -53,6 +65,19 @@ public partial class BattleCard : Control
                 if (view.CardId.StartsWith("diy/", StringComparison.Ordinal)) { _unitIcon = null; _nationIcon = null; }
             }
         }
+        if (UsesGeneratedFace && view is not null)
+        {
+            if (_faceRoot is null)
+            {
+                _faceRoot = new Node2D(); AddChild(_faceRoot);
+                _generatedFace = new CardFace { MouseFilter = MouseFilterEnum.Ignore }; _faceRoot.AddChild(_generatedFace);
+                _faceOverlay = new Control { MouseFilter = MouseFilterEnum.Ignore }; _faceRoot.AddChild(_faceOverlay);
+                _faceOverlay.Draw += () => DrawHandOverlays(_faceOverlay);
+            }
+            _generatedFace!.SetDefinition(view.Definition);
+            _generatedFace.SetIllustration(_texture, view.Definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)
+                ? DiyArtStore.ZoomOf(view.CardId) : 100);
+        }
         if (!_inputBound)
         {
             MouseEntered += () => { _hover = true; Hovered?.Invoke(this, true); QueueRedraw(); };
@@ -69,7 +94,16 @@ public partial class BattleCard : Control
     {
         var xAxis = Vector2.FromAngle(_flightTilt);
         var yAxis = Vector2.FromAngle(_flightTilt + MathF.PI / 2 + PaperShear);
-        DrawSetTransformMatrix(new Transform2D(xAxis, yAxis, PivotOffset + FlightOffset - xAxis * PivotOffset.X - yAxis * PivotOffset.Y));
+        var faceTransform = new Transform2D(xAxis, yAxis, PivotOffset + FlightOffset - xAxis * PivotOffset.X - yAxis * PivotOffset.Y);
+        DrawSetTransformMatrix(faceTransform);
+        if (_faceRoot is not null)
+        {
+            _faceRoot.Visible = UsesGeneratedFace && !DrawFaceDown;
+            _faceRoot.Transform = faceTransform;
+            _generatedFace!.Size = Size;
+            _faceOverlay!.Size = Size;
+            _faceOverlay.QueueRedraw();
+        }
         var bounds = new Rect2(Vector2.Zero, Size);
         var elevation = Math.Clamp(DeploymentElevation, 0, 1);
         DrawStyleBox(UiStyles.Box(new Color(0, 0, 0, .36f + elevation * .12f), Colors.Transparent, 4, 0),
@@ -90,46 +124,54 @@ public partial class BattleCard : Control
         }
         if (Mode is BattleCardMode.Hand or BattleCardMode.Inspect)
         {
-            if (View is { } custom && custom.CardId.StartsWith("diy/", StringComparison.Ordinal))
-                DiyCardFace.Paint(this, custom.Definition, custom, _texture);
-            else if (_texture is not null) DrawTextureRect(_texture, bounds.Grow(-3), false);
-            else
-            {
-                DrawRect(new Rect2(5, 5, Size.X - 10, 28), NationColor);
-                Text(View?.Definition.Name ?? "卡牌", new Rect2(9, 9, Size.X - 18, 22), 15, new Color("eee7ce"));
-                Text(View?.Definition.Text ?? "", new Rect2(10, 60, Size.X - 20, 30), 11, new Color("373b32"));
-            }
-            if (Available) DrawRect(new Rect2(5, 5, 31, 31), new Color("9c873a"), false, 2);
-            if (View is { } face && ((face.IsCounterArmed && face.OwnerSide == "self") || face.EffectiveCost != face.Definition.Cost))
-            {
-                var cost = new Rect2(5, 5, Size.X * .17f, Size.Y * .13f);
-                var armed = face.IsCounterArmed && face.OwnerSide == "self";
-                DrawRect(cost, new Color(armed ? "d5b54b" : "353b31"));
-                Text(face.EffectiveCost?.ToString() ?? "—", cost, (int)(Size.X * .13f), new Color(armed ? "343a30" : "dec775"));
-            }
-            if (ChoiceCaption is { } caption)
-            {
-                var box = new Rect2(7, Size.Y * .76f, Size.X - 14, Size.Y * .24f - 7);
-                DrawRect(box, new Color("d4ccb2"));
-                // Draw the branch text on the paper, including during horizontal flips.
-                var font = GetThemeDefaultFont();
-                var textSize = (int)Math.Clamp(Size.X * .065f, 11, 17);
-                var y = box.Position.Y + textSize + 2; var line = "";
-                foreach (var ch in caption)
-                {
-                    if (ch == '\n' || font.GetStringSize(line + ch, fontSize: textSize).X > box.Size.X - 8)
-                    {
-                        DrawString(font, new(box.Position.X + 4, y), line, fontSize: textSize, modulate: new("34392e"));
-                        line = ""; y += textSize + 3;
-                    }
-                    if (ch != '\n') line += ch;
-                    if (y > box.End.Y) break;
-                }
-                if (line.Length > 0 && y <= box.End.Y)
-                    DrawString(font, new(box.Position.X + 4, y), line, fontSize: textSize, modulate: new("34392e"));
-            }
+            if (UsesGeneratedFace) return;
+            if (_texture is not null) DrawTextureRect(_texture, bounds.Grow(-3), false);
+            DrawHandOverlays(this);
             return;
         }
+        DrawFieldOrHq(bounds);
+    }
+
+    private void DrawHandOverlays(Control canvas)
+    {
+        if (UsesGeneratedFace)
+        {
+            var edge = Selected || Targeted ? new Color("d9c281") : _hover ? new Color("e0dcc5") : new Color("a9a186");
+            canvas.DrawRect(new Rect2(Vector2.Zero, Size), edge, false, Selected || Targeted ? 3 : 1);
+        }
+        if (Available) canvas.DrawRect(new Rect2(5, 5, 31, 31), new Color("9c873a"), false, 2);
+        if (View is { } face && ((face.IsCounterArmed && face.OwnerSide == "self") || face.EffectiveCost != face.Definition.Cost))
+        {
+            var cost = new Rect2(5, 5, Size.X * .17f, Size.Y * .13f);
+            var armed = face.IsCounterArmed && face.OwnerSide == "self";
+            canvas.DrawRect(cost, new Color(armed ? "d5b54b" : "353b31"));
+            TextOn(canvas, face.EffectiveCost?.ToString() ?? "—", cost, (int)(Size.X * .13f), new Color(armed ? "343a30" : "dec775"));
+        }
+        if (ChoiceCaption is { } caption)
+        {
+            var box = new Rect2(7, Size.Y * .76f, Size.X - 14, Size.Y * .24f - 7);
+            canvas.DrawRect(box, new Color("d4ccb2"));
+            // Draw the branch text on the paper, including during horizontal flips.
+            var font = GetThemeDefaultFont();
+            var textSize = (int)Math.Clamp(Size.X * .065f, 11, 17);
+            var y = box.Position.Y + textSize + 2; var line = "";
+            foreach (var ch in caption)
+            {
+                if (ch == '\n' || font.GetStringSize(line + ch, fontSize: textSize).X > box.Size.X - 8)
+                {
+                    canvas.DrawString(font, new(box.Position.X + 4, y), line, fontSize: textSize, modulate: new("34392e"));
+                    line = ""; y += textSize + 3;
+                }
+                if (ch != '\n') line += ch;
+                if (y > box.End.Y) break;
+            }
+            if (line.Length > 0 && y <= box.End.Y)
+                canvas.DrawString(font, new(box.Position.X + 4, y), line, fontSize: textSize, modulate: new("34392e"));
+        }
+    }
+
+    private void DrawFieldOrHq(Rect2 bounds)
+    {
         if (Mode == BattleCardMode.Hq)
         {
             DrawRect(bounds.Grow(-5), new Color("b8b298"));
@@ -192,10 +234,13 @@ public partial class BattleCard : Control
         Text(value?.ToString() ?? "—", new Rect2(x - r, y - r - 2, r * 2, r * 2 + 4), (int)r + 5, tint);
     }
     private void Text(string text, Rect2 box, int size, Color color)
+        => TextOn(this, text, box, size, color);
+
+    private static void TextOn(Control canvas, string text, Rect2 box, int size, Color color)
     {
-        var font = text.All(c => char.IsDigit(c) || c is '—') ? Numbers : GetThemeDefaultFont();
+        var font = text.All(c => char.IsDigit(c) || c is '—') ? Numbers : canvas.GetThemeDefaultFont();
         var width = font.GetStringSize(text, HorizontalAlignment.Left, -1, size).X;
-        DrawString(font, new Vector2(box.Position.X + Math.Max(0, (box.Size.X - width) / 2), box.Position.Y + size), text, HorizontalAlignment.Left, box.Size.X, size, color);
+        canvas.DrawString(font, new Vector2(box.Position.X + Math.Max(0, (box.Size.X - width) / 2), box.Position.Y + size), text, HorizontalAlignment.Left, box.Size.X, size, color);
     }
     public override void _GuiInput(InputEvent e)
     {

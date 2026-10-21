@@ -36,6 +36,9 @@ public sealed class OrcMatchHost
     private bool _detached;
     private bool _observer;
     private long _lastSequence;
+    private int _polledEntryCount;
+    private readonly HashSet<LogEntry> _consumedEntries = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<(string Side, int Turn)> _announcedTurns = [];
     private readonly Func<string, string>? _artLookup;
     private IReadOnlyDictionary<string, UiCardDefinition> _sourceDefinitions =
         new Dictionary<string, UiCardDefinition>(StringComparer.Ordinal);
@@ -198,6 +201,7 @@ public sealed class OrcMatchHost
         _viewerIndex = index;
         _viewer = _match.Players[index];
         _captured.Clear(); // a viewpoint switch settles the board, not the previous seat's animation
+        _announcedTurns.Clear();
         Refresh();
     }
 
@@ -224,6 +228,9 @@ public sealed class OrcMatchHost
         foreach (var item in _captured)
             foreach (var error in item.Errors) ErrorRaised?.Invoke(error);
         _captured.Clear();
+        // A settled baseline owns everything emitted so far, including unscoped startup updates.
+        _consumedEntries.UnionWith(_match.Engine.RootStream.Entries);
+        _polledEntryCount = _match.Engine.RootStream.Entries.Count;
         Refresh();
     }
 
@@ -244,11 +251,16 @@ public sealed class OrcMatchHost
 
     /// <summary>
     /// Freeze at the end of each adapter-driven engine action, before another action can mutate it.
-    /// There is no engine segment-completed callback in this version. Multiple segments collected
-    /// after external calls cannot recover their individual historical boards; expose that limitation.
+    /// Multiple segments collected after external calls cannot recover their individual historical
+    /// boards; expose that limitation. Unscoped updates are drained by the timed fallback.
     /// This is the sole engine-queue consumer. Delivery to the scene happens later in Pump.
     /// </summary>
-    public void CaptureCompletedActions()
+    public void CaptureCompletedActions() => CaptureCompletedActions(false);
+
+    /// <summary>Fallback for updates emitted outside an action scope; never replay entries later sealed into a segment.</summary>
+    public void PollEvents() => CaptureCompletedActions(true);
+
+    private void CaptureCompletedActions(bool includeUnsegmented)
     {
         if (_detached || _observer || _view is null || _viewer is null) return;
         EnsureTranslator();
@@ -256,26 +268,23 @@ public sealed class OrcMatchHost
         if (segments.Count > 1) HistoricalStatesVerified = false;
         foreach (var segment in segments)
         {
+            var entries = segment.Entries.Where(e => _consumedEntries.Add(e)).ToArray();
+            if (entries.Length == 0) continue;
             _lastSequence = Math.Max(_lastSequence + 1, segment.Sequence);
-            var updates = segment.Entries
-                .Where(e => e.Kind == LogEntryKind.Update)
-                .Select(e => (Update: e.Message, Payload: e.Data))
-                .ToArray();
-            // 引擎隔离订阅者异常时只把 message 写进流；data["stack"] 才是带调用栈的完整形态。
-            // 诊断靠栈、不靠猜，故优先取栈。
-            var errors = segment.Entries.Where(e => e.Level == LogLevel.Error)
-                .Select(e => e.Data is { } data && data.TryGetValue("stack", out var stack) && stack is string text
-                    ? text : e.Message)
-                .ToArray();
-            // 先冻结 before 再拉取 after：Refresh() 有副作用（写 _view），若先取 after，
-            // before 会被覆盖成事后状态——段差异恒为零，部署/扣费在演出链上彻底不可见。
-            var before = _view;
-            var after = UiSnapshots.Freeze(ProjectRequired());
-            var translation = _translator!.Translate(updates, _viewer, before, after);
-            _view = after;
-            var resolution = UiSnapshots.Freeze(new UiPresentationResolution(_matchId, translation.Steps, after)
-                { Sequence = _lastSequence, Before = before });
-            _captured.Enqueue((resolution, UiSnapshots.Freeze(Actions), translation.Impacts, errors));
+            CaptureEntries(entries);
+        }
+        if (includeUnsegmented)
+        {
+            var stream = _match.Engine.RootStream;
+            var end = stream.Entries.Count;
+            var entries = stream.Entries.Skip(_polledEntryCount).Take(end - _polledEntryCount)
+                .Where(e => _consumedEntries.Add(e)).ToArray();
+            _polledEntryCount = end;
+            if (entries.Length > 0)
+            {
+                ++_lastSequence;
+                CaptureEntries(entries);
+            }
         }
         // Phase changes and mulligan replacements can be silent in the current engine.
         // Keep the live projection fresh without changing already frozen action snapshots.
@@ -283,18 +292,38 @@ public sealed class OrcMatchHost
         {
             var before = _view;
             var after = UiSnapshots.Freeze(Refresh());
-            // Concede intentionally emits no engine update. Deliver its authoritative phase
-            // change once through the same presentation lane, without fabricating a game event.
             var silent = _translator!.Translate([], _viewer, before, after);
-            // 资产化引擎的部分规则效果（如部署扣费）不产生引擎 update 段，只体现为视图差异。
-            // 这类差异若不入队演出，PresentationPlayer 的状态基线会停在付款前，UI 资源显示失真。
             var material = before.SelfKredits != after.SelfKredits || before.EnemyKredits != after.EnemyKredits
                 || before.SelfLine.Count != after.SelfLine.Count || before.EnemyLine.Count != after.EnemyLine.Count;
-            if (silent.Steps.Count > 0 || material
-                || before.Phase != "over" && after.Phase == "over" && after.ResultTitle is not null)
+            if (silent.Steps.Count > 0 || material || before.Phase != after.Phase)
                 _captured.Enqueue((UiSnapshots.Freeze(new UiPresentationResolution(_matchId, silent.Steps, after)
                     { Before = before, Sequence = ++_lastSequence }), UiSnapshots.Freeze(Actions), [], []));
         }
+    }
+
+    private void CaptureEntries(IReadOnlyList<LogEntry> entries)
+    {
+        var updates = entries
+            .Where(e => e.Kind == LogEntryKind.Update)
+            .Select(e => (Update: e.Message, Payload: e.Data))
+            .ToArray();
+        // 引擎隔离订阅者异常时只把 message 写进流；data["stack"] 才是带调用栈的完整形态。
+        // 诊断靠栈、不靠猜，故优先取栈。
+        var errors = entries.Where(e => e.Level == LogLevel.Error)
+            .Select(e => e.Data is { } data && data.TryGetValue("stack", out var stack) && stack is string text
+                ? text : e.Message)
+            .ToArray();
+        // 先冻结 before 再拉取 after：Refresh() 有副作用（写 _view），若先取 after，
+        // before 会被覆盖成事后状态——段差异恒为零，部署/扣费在演出链上彻底不可见。
+        var before = View;
+        var after = UiSnapshots.Freeze(ProjectRequired());
+        var translation = _translator!.Translate(updates, _viewer, before, after);
+        var steps = translation.Steps.Where(step => step is not UiTurnPresentation { Kind: UiTurnKind.TurnStarted } turn
+            || _announcedTurns.Add((turn.Side, turn.Turn))).ToArray();
+        _view = after;
+        var resolution = UiSnapshots.Freeze(new UiPresentationResolution(_matchId, steps, after)
+            { Sequence = _lastSequence, Before = before });
+        _captured.Enqueue((resolution, UiSnapshots.Freeze(Actions), translation.Impacts, errors));
     }
 
     /// <summary>
@@ -336,6 +365,8 @@ public sealed class OrcMatchHost
     {
         _detached = true;
         _captured.Clear();
+        _consumedEntries.Clear();
+        _announcedTurns.Clear();
         _immediate?.Dispose();
         _immediate = null;
     }

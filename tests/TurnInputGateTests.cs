@@ -10,6 +10,19 @@ public sealed class TurnInputGateTests
     { MatchId = "turn-input", Phase = "play", ActivePlayerSide = side, Turn = turn };
 
     [Fact]
+    public void DelayedEnemySnapshotsCannotRelockAnAlreadyPresentedFriendlyTurn()
+    {
+        var gate = new TurnInputGate(); gate.Reset(View("enemy", 1));
+        gate.Present(new("self", 2));
+        var friendly = View("self", 2);
+        gate.Observe(new UiPresentationResolution(friendly.MatchId, [], friendly) { Before = View("enemy", 1) });
+        gate.Observe(View("enemy", 1));
+        Assert.True(gate.AllowsInput(friendly));
+        gate.EndTurnRequested(friendly);
+        Assert.False(gate.AllowsInput(friendly));
+    }
+
+    [Fact]
     public void EngineReturningToSelfDoesNotUnlockPendingEnemyPlayback()
     {
         var gate = new TurnInputGate(); gate.Reset(View());

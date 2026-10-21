@@ -38,7 +38,8 @@ public partial class DiyWorkshopScreen
     }
     internal void ShowHome()
     {
-        _navigationVersion++; _workspace.Hide(); _editor.Hide(); _navigation.Show(); _pack = null;
+        if (_nativeDirty) { GuardNative(ShowHome); return; }
+        _navigationVersion++; _workspace.Hide(); _editor.Hide(); _navigation.Show(); _pack = null; _compatiblePack = null;
         _notice.Text = _store.LoadError ?? "选择制作卡包或扩展包，再选择创建或修改。";
         var row = ChoiceRow("选择你要制作的内容");
         PackChoice = Choice(row, "卡包", "定义自己的国家、词条与卡牌。", "独立内容");
@@ -177,6 +178,8 @@ public partial class DiyWorkshopScreen
                 var parent = expansion ? DiyEditorScreen.Value(BaseChoice) : null;
                 if (expansion && string.IsNullOrEmpty(parent)) throw new InvalidDataException("请先选择基础卡包");
                 if (modifying && DiyEditorScreen.Value(ModifyPick).Length == 0) throw new InvalidDataException("请选择要修改的内容");
+                if (modifying && IsNativePackage(draft.Id) && !_cards.Cards.Any(c => c.PackId == draft.Id && c.SourceCardId.Length > 0))
+                { OpenNativePack(draft.Id[5..]); return; }
                 var pack = draft with { Name = PackName.Text.Trim(), BasePackId = parent };
                 _store.Save(pack); _changed(); OpenPack(_store.Packs.Single(p => p.Id == pack.Id));
             }
@@ -188,7 +191,7 @@ public partial class DiyWorkshopScreen
         {
             var saved = BuiltInWorkshopCatalog.Packs(_store).FirstOrDefault(p => p.Id == DiyEditorScreen.Value(ModifyPick));
             if (saved is null) return;
-            draft = saved.Snapshot(); PackName.Editable = true; PackName.Text = saved.Name;
+            draft = saved.Snapshot(); PackName.Editable = !IsNativePackage(saved.Id); PackName.Text = saved.Name;
             selectedTitle.Text = saved.Name; summary.Text = PackSummary(saved);
             if (expansion) DiyEditorScreen.Select(BaseChoice,saved.BasePackId!);
             BaseChoice.Disabled=saved.IsBuiltIn;

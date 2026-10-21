@@ -35,7 +35,7 @@ internal static class RuntimeGameData
     }
     private static IEnumerable<(string Path, byte[] Bytes)> ReadTree(string source, string relative)
     {
-        foreach (var file in DirAccess.GetFilesAt(source).Where(f => f.EndsWith(".json", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f, StringComparer.Ordinal))
+        foreach (var file in DirAccess.GetFilesAt(source).Where(f => !f.EndsWith(".import", StringComparison.OrdinalIgnoreCase) && !f.EndsWith(".uid", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f, StringComparer.Ordinal))
         {
             var bytes = Godot.FileAccess.GetFileAsBytes(source + "/" + file);
             if (bytes.Length == 0) throw new InvalidDataException("游戏数据读取失败：" + file);

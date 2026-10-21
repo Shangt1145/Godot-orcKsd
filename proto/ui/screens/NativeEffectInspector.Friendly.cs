@@ -30,6 +30,7 @@ internal partial class NativeEffectInspector
     private string _addActionsPath="";
     private AcceptDialog _keywordDialog=null!;
     private VBoxContainer _keywordRows=null!;
+    private Button _counterManager=null!;
     internal readonly Dictionary<string,CheckBox> KeywordControls=[];
 
     private void InitializeFriendly()
@@ -38,7 +39,7 @@ internal partial class NativeEffectInspector
         var left=Card(_friendlyRoot);left.CustomMinimumSize=new(200,0);
         left.GetParent<PanelContainer>().SizeFlagsHorizontal=SizeFlags.Fill;
         _friendlyRoot.Resized+=()=>_friendlyRoot.SplitOffsets=[Math.Clamp((int)_friendlyRoot.Size.X/5,190,240)];
-        left.AddChild(MenuStyles.Label("这张牌的效果",18,MenuStyles.Gold));
+        left.AddChild(MenuStyles.Label("规则列表",18,MenuStyles.Gold));
         left.AddChild(Note("选一条效果，再设置何时发生、\n做什么，以及作用于谁。"));
         var scroll=new ScrollContainer{SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled};left.AddChild(scroll);
         _effectList=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};scroll.AddChild(_effectList);
@@ -54,7 +55,7 @@ internal partial class NativeEffectInspector
             _selectedEffect=Document.At("/effects")!.AsArray().Count-1;
         }));left.AddChild(NewNativeEffectButton);
         CardKeywordsButton=MenuStyles.Button("卡牌自带的词条",OpenCardKeywords);left.AddChild(CardKeywordsButton);
-        left.AddChild(MenuStyles.Button("管理本卡计数器",()=>CountersRequested?.Invoke()));
+        _counterManager=MenuStyles.Button("管理本卡计数器",()=>CountersRequested?.Invoke());left.AddChild(_counterManager);
         var right=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};_friendlyRoot.AddChild(right);
         _sentence=MenuStyles.Label("",17,MenuStyles.Gold);_sentence.AutowrapMode=TextServer.AutowrapMode.WordSmart;right.AddChild(_sentence);
         _friendlyScroll=new ScrollContainer{SizeFlagsVertical=SizeFlags.ExpandFill,HorizontalScrollMode=ScrollContainer.ScrollMode.Disabled};right.AddChild(_friendlyScroll);
@@ -146,7 +147,7 @@ internal partial class NativeEffectInspector
             }
             var path="/effects/"+_selectedEffect;
             if(effects[_selectedEffect] is not JsonObject effect){_effectForm.AddChild(Note("这一条是自定义结构，已保留。可以通过高级工具继续编辑。"));return;}
-            var top=new HFlowContainer();_effectForm.AddChild(top);
+            var top=new HFlowContainer{Visible=!_singleRuleAuthoring};_effectForm.AddChild(top);
             top.AddChild(MenuStyles.Label("正在编辑：效果 "+(_selectedEffect+1),15,MenuStyles.Dim));CapabilityBadge(top,_selectedEffect,_effectForm);
             top.AddChild(MenuStyles.Button("复制这条",()=>Structural(()=>Document.Duplicate(path))));
             top.AddChild(MenuStyles.Button("上移",()=>{Structural(()=>Document.Move(path,-1));_expanded.Clear();_selectedEffect=Math.Max(0,_selectedEffect-1);}));

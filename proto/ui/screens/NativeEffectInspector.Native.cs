@@ -9,6 +9,7 @@ internal partial class NativeEffectInspector
     private void FriendlyNativeEffect(VBoxContainer parent,string effectPath,JsonObject envelope)
     {
         var path=effectPath+"/"+InspectorCardRecord.NativeKey;var native=envelope[InspectorCardRecord.NativeKey]!.AsObject();
+        if(_playerAuthoring&&native["PrefabJson"] is not null){parent.AddChild(Note("这条导入效果会保持原样，目前不能可靠地转换为图形规则。"));return;}
         var timing=Card(parent);timing.AddChild(MenuStyles.Label("① 何时发生",18,MenuStyles.Gold));
         CompositionSlot(timing,path,native,InspectorPart.NativeEffect,native["PrefabJson"] is null?"事件与范围":"原生预制体",0);
         if(native["PrefabJson"] is not null)return;

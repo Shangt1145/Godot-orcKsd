@@ -234,6 +234,7 @@ public partial class BattleScreen : Control
     }
     private void Render(UiMatchView state, UiBattleActions actions, bool animate, string? deploymentActorUid = null)
     {
+        MulliganProjection(state.Phase);
         _generation++;
         var previous = _cards.ToDictionary(p => p.Key, p => (RestPosition: p.Value.Position, p.Value.Size, RestRotation: p.Value.Rotation, p.Value.Mode, p.Value.View));
         FinishMotion();

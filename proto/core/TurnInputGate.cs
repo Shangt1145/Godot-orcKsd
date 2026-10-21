@@ -7,6 +7,7 @@ public sealed class TurnInputGate
 {
     private bool _waitingForFriendlyTurn;
     private int _lastEnemyOrEndedTurn;
+    private int _lastPresentedFriendlyTurn;
 
     public bool AllowsInput(UiMatchView view) => view.Phase == "play"
         && view.ActivePlayerSide == "self" && !_waitingForFriendlyTurn;
@@ -15,6 +16,7 @@ public sealed class TurnInputGate
     {
         _waitingForFriendlyTurn = false;
         _lastEnemyOrEndedTurn = 0;
+        _lastPresentedFriendlyTurn = view.Phase == "play" && view.ActivePlayerSide == "self" ? view.Turn : 0;
         Observe(view);
     }
 
@@ -36,8 +38,11 @@ public sealed class TurnInputGate
     public void Present(UiTurnPresentation turn)
     {
         if (turn.Side == "enemy") HoldThrough(turn.Turn);
-        else if (turn.Side == "self" && turn.Turn > _lastEnemyOrEndedTurn)
-            _waitingForFriendlyTurn = false;
+        else if (turn.Side == "self")
+        {
+            _lastPresentedFriendlyTurn = Math.Max(_lastPresentedFriendlyTurn, turn.Turn);
+            if (turn.Turn > _lastEnemyOrEndedTurn) _waitingForFriendlyTurn = false;
+        }
     }
 
     public void RefuseEndTurn(UiMatchView view)
@@ -49,6 +54,9 @@ public sealed class TurnInputGate
 
     private void HoldThrough(int turn)
     {
+        // A delayed segment may still carry the previous enemy Before snapshot. It cannot
+        // relock a friendly turn whose banner has already finished playing.
+        if (turn < _lastPresentedFriendlyTurn) return;
         _waitingForFriendlyTurn = true;
         _lastEnemyOrEndedTurn = Math.Max(_lastEnemyOrEndedTurn, turn);
     }
