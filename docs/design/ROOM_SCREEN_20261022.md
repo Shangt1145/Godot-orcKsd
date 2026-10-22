@@ -123,14 +123,41 @@
 
 | # | 缺口 | 影响 |
 |---|---|---|
-| 1 | **指令卡 / 移动 / 攻击缺 target responder** | 只能出单位牌；`command.begin` 之后无人应答 `target.request` |
+| 1 | **指令卡的效果脚本依赖 UI 层桥** | responder 已实现，但 `eagle_claws` 等 16 张指令卡的 csx 调 `Kards.Ui.OrcBridge.DesktopTargetContext.SelectAsync`（UI 程序集），服务端没有这个类型 → 效果静默不执行、永远不产生 pending。要打通得把 csx 改成调引擎侧 targeter |
 | 2 | 玩家卡组 id 映射缺失 | 只能用 `LobbyDeck` 现组，不能用自己构筑的卡组 |
 | 3 | `notify/segment` 演出翻译未经真实双机验证 | 单机零回归已验证，联机演出只验证到"能收到视图" |
 | 4 | Agent 控制面未开放 | 协议 2.0 预定稿里的 `seat.request` 等尚未实现 |
 | 5 | 客人没有"断线重连"入口 | `seatToken` 已持久化在 feed 内，但没有 UI 让玩家重新接回 |
 
-> 已解决：远端玩家的独立入口 —— 房间屏左栏内建"加入别人的房间"（地址 + 加入），
-> 不必再靠探针手动连。
+> 已解决：远端玩家的独立入口 —— 房间屏左栏内建"加入别人的房间"（地址 + 加入）。
+> 已解决：出牌按卡型分流（见下节）。
+
+## 5.1 出牌工具必须按卡型分流
+
+`PlayCard` 不能一律映射成 `play.unit`：
+
+| 卡型 | 工具 | 参数 |
+|---|---|---|
+| `unit` | `play.unit` | `{ref, owner, slot}` |
+| `order` | `play.command` | `{ref}` |
+| `counter` | `play.counter` | `{ref}` |
+
+指令卡走 `play.unit` 会被服务端**静默忽略**——手牌不减、费用不扣、没有错误码。
+实测症状是 `hand 6→6 kredits 3→3`，看起来像"没打出去"，很容易被误判成选靶链路的问题。
+分流后鹰爪正常打出：`hand 6→5 kredits 3→0`。
+
+## 5.2 选靶链路（已实现，端到端待引擎侧修复）
+
+| 环节 | 实现 |
+|---|---|
+| 收请求 | `notify/target.request` → `UiTargetRequest`，候选 `UiChoice.Id` 直接用序号（1 起） |
+| 认领 | `target.claim{sessionId, claimant:"host"}`，先到先服务，不认领会被同机 agent 抢答 |
+| 提交 | `target.submit{sessionId, picks:[序号]}` |
+| 取消 | `target.cancel{sessionId}`；空选择（拖拽落空）也走这里 |
+
+验证通道 `tools\run.ps1 -VerifyTarget` 现在**故意是红的**：它会证明指令卡能打出去，
+然后停在"没有 pending"——因为效果脚本在服务端跑不了。报错信息里写明了原因，
+不要把它当成"选靶已通"。
 
 ## 9. 验证通道
 
@@ -143,6 +170,9 @@ tools\run.ps1 -VerifyRoomRemote    # ROOM_REMOTE_VERIFY_OK
 
 # 无头：走**界面路径**加入（第二个 RoomScreen 填地址点加入），验玩家真正会走的流程
 tools\run.ps1 -VerifyRoomJoin      # ROOM_JOIN_VERIFY_OK
+
+# 无头：选靶链路。**当前故意红**（效果脚本依赖 UI 桥，见 §5.2）
+tools\run.ps1 -VerifyTarget
 
 # 图形：拍真实布局（等 seatToken 再拉 AI，主动刷快照后按快门）
 tools\run.ps1 -CaptureRoom         # ROOM_CAPTURE_OK → artifacts/menu/room-1600.png
