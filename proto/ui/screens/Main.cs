@@ -210,6 +210,8 @@ public partial class Main : Control
         _room = new RoomScreen();
         _room.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
             ProjectSettings.GlobalizePath("user://net-room"));
+        // 联机优先用玩家自己在卡组库里选的构筑卡组（全部为 pack/ 应用层 id 时才采用）。
+        _room.ActiveDeckSource = () => _decks.ActiveDeck?.CardIds;
         _room.BackRequested += () => { _room.Close(); Show("setup"); };
         _room.MatchStarted += () => _ = EnterRemoteMatchAsync();
         AddScreen(content, "room", _room);
@@ -297,6 +299,7 @@ public partial class Main : Control
         else if (args.Contains("--verify-room-join")) Callable.From(VerifyRoomJoin).CallDeferred();
         else if (args.Contains("--verify-target")) Callable.From(VerifyTarget).CallDeferred();
         else if (args.Contains("--verify-combat")) Callable.From(VerifyCombat).CallDeferred();
+        else if (args.Contains("--verify-deck")) Callable.From(VerifyDeck).CallDeferred();
         else if (args.Contains("--capture-room")) Callable.From(CaptureRoom).CallDeferred();
         else if (args.Contains("--verify-menu") || args.Contains("--capture-menu")) CallDeferred(MethodName.VerifyMenu);
         else if (args.Contains("--capture-setup")) Callable.From(CaptureSetup).CallDeferred();

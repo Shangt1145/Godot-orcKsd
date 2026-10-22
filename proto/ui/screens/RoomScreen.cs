@@ -227,7 +227,9 @@ public partial class RoomScreen : VBoxContainer
         try
         {
             Ui(() => Say("○ 组装卡组…"));
-            _deck = LobbyDeck.Build(_packsRoot, requiredLocalId: _requiredCard);
+            // 有必带卡（验证探针）时强制走自动组牌，否则优先用玩家自己构筑的卡组。
+            _deck = (string.IsNullOrEmpty(_requiredCard) ? TryActiveDeck() : null)
+                    ?? LobbyDeck.Build(_packsRoot, requiredLocalId: _requiredCard);
 
             Ui(() => Say("○ 启动服务器实例…"));
             var packs = Directory.EnumerateDirectories(_packsRoot)
@@ -334,8 +336,9 @@ public partial class RoomScreen : VBoxContainer
     private void Apply(RoomSnapshot snapshot)
     {
         _room.Text = $"房间 {snapshot.RoomId}";
-        _pool.Text = $"卡池 {_deck?.PackageId ?? "—"} · {snapshot.Policy}" +
-                     (snapshot.Fingerprint.Length >= 8 ? $" · {snapshot.Fingerprint[..8]}" : "");
+        _pool.Text = $"卡池 {_deck?.PackageId ?? "—"} · {snapshot.Policy}"
+                     + (snapshot.Fingerprint.Length >= 8 ? $" · {snapshot.Fingerprint[..8]}" : "")
+                     + (_deckNote is { Length: > 0 } note ? $" · {note}" : "");
         // 客人（房主＝false）看不到对方网卡列表——那对"加入方"没意义，显示自己连的是哪。
         _endpoint.Text = _guest
             ? $"已连接 {_joinField.Text.Trim()}"
@@ -402,7 +405,7 @@ public partial class RoomScreen : VBoxContainer
         try
         {
             Ui(() => Say("○ 组装卡组…"));
-            _deck ??= LobbyDeck.Build(_packsRoot);
+            _deck ??= TryActiveDeck() ?? LobbyDeck.Build(_packsRoot);
 
             Ui(() => Say($"○ 连接 {host}:{port}…"));
             _guestPort = port;
@@ -497,6 +500,44 @@ public partial class RoomScreen : VBoxContainer
 
     /// <summary>卡组构建结果（验证探针用来核对张数与包名）。</summary>
     internal LobbyDeck.Result? Deck => _deck;
+
+    /// <summary>
+    /// 玩家当前构筑卡组（<c>DeckLibrary.ActiveDeck.CardIds</c>）。返回 null 表示没有可用卡组。
+    ///
+    /// <para>
+    /// 联机只认应用层 id（<c>pack/{包}/{局部id}</c>）。卡库分两套 id：原始 catalog（<c>av76/...</c>）
+    /// 与卡包投影（<c>pack/...</c>），而**两者之间没有任何溯源字段**——不是"还没打通映射"，
+    /// 是数据本身毫无关联（实测 219 张包卡按国别+卡名只能对上 2 张）。所以这里只接受 <c>pack/</c> 前缀，
+    /// 混进源卡就退回自动组牌，并在卡池标签上写明原因。
+    /// </para>
+    /// </summary>
+    internal Func<IReadOnlyList<string>?>? ActiveDeckSource { get; set; }
+
+    /// <summary>卡组来源说明（自建卡组 / 为什么要退回自动组牌）。</summary>
+    private string? _deckNote;
+
+    /// <summary>尝试用玩家自己的卡组；不可用返回 null 并记下原因。</summary>
+    private LobbyDeck.Result? TryActiveDeck()
+    {
+        var ids = ActiveDeckSource?.Invoke();
+        if (ids is null || ids.Count == 0) return null;
+
+        var invalid = ids.FirstOrDefault(id => !id.StartsWith("pack/", StringComparison.Ordinal));
+        if (invalid is not null)
+        {
+            _deckNote = $"卡组含联机不支持的卡（{invalid}）";
+            return null;
+        }
+
+        if (ids.Count != LobbyDeck.DefaultSize)
+        {
+            _deckNote = $"卡组 {ids.Count} 张（联机要求 {LobbyDeck.DefaultSize} 张）";
+            return null;
+        }
+
+        _deckNote = "你的构筑卡组";
+        return new LobbyDeck.Result("player", "自建", ids.ToArray());
+    }
 
     /// <summary>最后一条服务端错误（验证探针用来报告占座/开局失败的真实原因）。</summary>
     internal string? LastError => _lastError;

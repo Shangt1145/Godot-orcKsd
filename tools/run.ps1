@@ -12,6 +12,7 @@
     [switch]$VerifyRoomJoin,
     [switch]$VerifyTarget,
     [switch]$VerifyCombat,
+    [switch]$VerifyDeck,
     [switch]$CaptureRoom,
     [switch]$Capture
 )
@@ -51,6 +52,7 @@ try {
     elseif ($VerifyRoomJoin) { & $Godot --headless --path $BuildRoot '--' --verify-room-join }
     elseif ($VerifyTarget) { & $Godot --headless --path $BuildRoot '--' --verify-target }
     elseif ($VerifyCombat) { & $Godot --headless --path $BuildRoot '--' --verify-combat }
+    elseif ($VerifyDeck) { & $Godot --headless --path $BuildRoot '--' --verify-deck }
     elseif ($CaptureRoom) { & $Godot --path $BuildRoot '--' --capture-room }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }

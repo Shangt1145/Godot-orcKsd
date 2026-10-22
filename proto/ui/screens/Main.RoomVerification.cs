@@ -170,6 +170,58 @@ public partial class Main
     }
 
     /// <summary>
+    /// <c>--verify-deck</c>：玩家卡组直通联机（M2 验收）。
+    ///
+    /// <para>
+    /// 两条路径都要证：
+    /// ① 全 <c>pack/</c> id 且 39 张 → 房间用它（PackageId=player），占座成功；
+    /// ② 混进源卡（<c>av76/...</c>）→ 必须**退回**自动组牌，而不是拿一副打不出去的卡组去占座。
+    /// </para>
+    /// </summary>
+    private async void VerifyDeck()
+    {
+        var packsRoot = Path.Combine(RuntimeGameData.Directory("kards"), "packs");
+        try
+        {
+            Show("room");
+
+            // ① 合法玩家卡组：借自动组牌拿一副 pack 卡组，再当作"玩家自己的"喂回去。
+            var reference = LobbyDeck.Build(packsRoot);
+            _room.ActiveDeckSource = () => reference.CardIds;
+            await _room.OpenAsync();
+
+            var feed = _room.Feed ?? throw new Exception("房主没有连上");
+            GD.Print($"[deck] 合法卡组：package={_room.Deck?.PackageId} " +
+                     $"size={_room.Deck?.CardIds.Count} token={(feed.SeatToken is { Length: > 0 } ? "ok" : "missing")}");
+            Require(_room.Deck?.PackageId == "player", "全 pack/ 卡组没有被房间采用");
+            Require(feed.SeatToken is { Length: > 0 }, "用玩家卡组占座失败" +
+                (_room.LastError is { } reason ? $"：{reason}" : ""));
+            _room.Close();
+
+            // ② 非法卡组：混一张源卡，必须退回自动组牌。
+            _room.ActiveDeckSource = () => ["av76/command/-1"];
+            await _room.OpenAsync();
+
+            GD.Print($"[deck] 非法卡组：package={_room.Deck?.PackageId}");
+            Require(_room.Deck?.PackageId != "player", "含源卡的卡组居然被当成可用卡组");
+            Require(_room.Feed?.SeatToken is { Length: > 0 }, "退回自动组牌后占座失败");
+
+            GD.Print("DECK_VERIFY_OK player-deck-wired invalid-falls-back");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("DECK_VERIFY_FAILED " + error.Message);
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        _room.Close();
+        GetTree().Quit();
+    }
+
+    /// <summary>
     /// <c>--verify-combat</c>：**能不能真打完一局**。
     ///
     /// <para>
