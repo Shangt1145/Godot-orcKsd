@@ -679,4 +679,88 @@ public partial class Main
         _room.Close();
         GetTree().Quit();
     }
+
+    /// <summary>
+    /// <c>--verify-room-reconnect</c>：M3 断线重连验收。
+    ///
+    /// <para>
+    /// 房主＋客人同进程开局后，**分别**强制断开两端连接，走界面同一条
+    /// BeginReconnect → room.resume → RefreshView 链路，验证：
+    /// ① 自动重连成功（对局态座位不因断线释放）；② 座位令牌不变；
+    /// ③ 视角不变（重连前后 SelfHq 一致）；④ 重连后对局仍然活着（room.info 可用）。
+    /// </para>
+    /// </summary>
+    private async void VerifyRoomReconnect()
+    {
+        RoomScreen? guestScreen = null;
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+            var host = _room.Feed ?? throw new Exception("房主没有连上：LastError=" + (_room.LastError ?? "（无）"));
+            Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
+
+            // 第二个房间屏：同一个进程里模拟另一台机器。
+            guestScreen = new RoomScreen();
+            guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
+                ProjectSettings.GlobalizePath("user://net-room-guest"));
+            _room.GetParent().AddChild(guestScreen);
+            guestScreen.Visible = false;
+
+            Require(await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port), "客人加入失败");
+            Require(await _room.StartForVerificationAsync(), "开局失败");
+
+            await host.RefreshViewAsync();
+            await guestScreen.Feed!.RefreshViewAsync();
+            for (var i = 0; i < 100 && guestScreen.Feed?.CurrentView is null; i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(guestScreen.Feed?.CurrentView is not null, "客人没有收到视图");
+
+            var guestHqBefore = guestScreen.Feed!.CurrentView!.SelfHq?.Uid;
+            var hostHqBefore = host.CurrentView?.SelfHq?.Uid;
+            Require(guestHqBefore is not null && guestHqBefore != hostHqBefore, "基线视角异常");
+
+            // ── 客人断线 → 自动重连 ──
+            var guestToken = guestScreen.Feed.SeatToken;
+            await guestScreen.SimulateConnectionLossForVerificationAsync();
+            for (var i = 0; i < 100 && (guestScreen.IsReconnecting || guestScreen.Feed?.CurrentView is null); i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(!guestScreen.IsReconnecting && guestScreen.Feed is not null, "客人没有重连成功");
+            Require(guestScreen.Feed!.SeatToken == guestToken, "客人重连后令牌不一致");
+            Require(guestScreen.Feed.CurrentView?.SelfHq?.Uid == guestHqBefore, "客人重连后视角变了");
+            GD.Print("[reconnect] guest resumed: token preserved, view per seat intact");
+
+            // ── 房主断线 → 自动重连（服务器实例保留）──
+            var hostToken = host.SeatToken;
+            await _room.SimulateConnectionLossForVerificationAsync();
+            for (var i = 0; i < 100 && (_room.IsReconnecting || _room.Feed is null); i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(!_room.IsReconnecting && _room.Feed is not null, "房主没有重连成功");
+            Require(_room.Feed!.SeatToken == hostToken, "房主重连后令牌不一致");
+            await _room.Feed.RefreshViewAsync();
+            Require(_room.Feed.CurrentView?.SelfHq?.Uid == hostHqBefore, "房主重连后视角变了");
+            GD.Print("[reconnect] host resumed: server instance kept alive");
+
+            // ── 重连后对局仍然活着 ──
+            var info = await _room.Feed.RoomInfoAsync();
+            Require(info.Ok, "重连后 room.info 不可用：" + info.Code);
+            var guestInfo = await guestScreen.Feed.RoomInfoAsync();
+            Require(guestInfo.Ok, "客人重连后 room.info 不可用：" + guestInfo.Code);
+
+            GD.Print("ROOM_RECONNECT_VERIFY_OK guest-resume host-resume token-preserved view-per-seat match-alive");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("ROOM_RECONNECT_VERIFY_FAILED " + error.Message);
+            if (guestScreen is not null) guestScreen.Close();
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        guestScreen?.Close();
+        _room.Close();
+        GetTree().Quit();
+    }
 }

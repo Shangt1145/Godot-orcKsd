@@ -182,6 +182,32 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public string? SeatToken => _seatToken;
 
     /// <summary>
+    /// 凭座位令牌重连（M3）。服务端 <c>room.resume</c> 房间态/对局态均可、凭令牌不看来源，
+    /// 对局态座位不会因断线被释放。重连后的 feed 是全新实例（没有 claim 过），令牌必须由调用方传入；
+    /// 成功后本 feed 即持有该令牌，后续 room.start 等照常可用。
+    /// </summary>
+    public async Task<bool> ResumeSeatAsync(string? seatToken = null, CancellationToken ct = default)
+    {
+        var token = seatToken ?? _seatToken;
+        if (string.IsNullOrEmpty(token))
+        {
+            ErrorRaised?.Invoke("room.resume: 没有 seatToken（从未占座），无法重连。");
+            return false;
+        }
+
+        var arguments = new JsonObject { ["seatToken"] = token };
+        var result = await _client.CallAsync("room.resume", arguments, ct).ConfigureAwait(false);
+        if (!result.Ok)
+        {
+            ErrorRaised?.Invoke(result.Message ?? result.Code);
+            return false;
+        }
+
+        _seatToken = token;
+        return true;
+    }
+
+    /// <summary>
     /// 结束换牌相位（不换＝直接确认）。参数面只有 <c>owner</c>——服务端的换牌应答
     /// 不接受 keep 列表，要保留哪几张由协议外的 <c>mulligan.*</c> 其余工具决定。
     /// </summary>

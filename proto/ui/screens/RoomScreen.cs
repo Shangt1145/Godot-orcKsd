@@ -28,6 +28,19 @@ public partial class RoomScreen : VBoxContainer
     private int _guestPort;
     private bool _guest;
     private string? _lastError;
+
+    // ── 断线重连（M3）──────────────────────────────────────────────
+    // 服务端语义：对局态座位不因断线释放（MarkDisconnected 只翻 Connected），
+    // room.resume 凭令牌重挂、不限来源；同令牌重复 room.claim 也幂等。
+    // 所以 UI 只需记住 {地址, 座位, seatToken}，断线后循环 重连→resume→RefreshView。
+    private bool _reconnecting;
+    private bool _closing;
+    private string _reconnectHost = "";
+    private int _reconnectPort, _reconnectSeat;
+    private string? _reconnectToken;
+    private int _reconnectAttempts;
+    private double _retryClock;
+
     /// <summary>验证用：保证这张卡在卡组里（等随机发牌等到天荒地老时可预期地触发选靶）。</summary>
     private string? _requiredCard;
     /// <summary>座位占用（由快照更新；读它的地方可能在非主线程，别直接问控件）。</summary>
@@ -241,16 +254,18 @@ public partial class RoomScreen : VBoxContainer
 
             _feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _server.Port);
             // 回调来自协议线程，控件只能主线程写——统一 marshal。
-            _feed.ErrorRaised += message => { _lastError = message; Ui(() => Say("✗ " + message)); };
+            _feed.ErrorRaised += message => { _lastError = message; Ui(() => NoteError(message)); };
 
             // 房主＝local 座位；服务端只认 Kind==Local 的房间主人，否则开局被拒。
             var token = await _feed.ClaimSeatAsync(0, "local", "房主", _deck.CardIds);
             if (token is null) { Ui(() => Say("✗ 占座失败（见上方错误）")); return; }
 
+            RememberSession("127.0.0.1", _server.Port, 0, token);
             await RefreshAsync();
         }
         catch (Exception error)
         {
+            GD.PushError("[room] 进入房间失败：" + error.Message);
             Ui(() => { Say("✗ " + error.Message); _hint.Text = error.Message; });
         }
     }
@@ -258,15 +273,27 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>离开房间：释放连接与实例（终局后服务器不会自己退出）。</summary>
     public async void Close()
     {
+        _closing = true;
+        _reconnecting = false;
         var feed = _feed; _feed = null;
         var server = _server; _server = null;
         if (feed is not null) { try { await feed.DisposeAsync(); } catch (Exception) { } }
         if (server is not null) { try { await server.DisposeAsync(); } catch (Exception) { } }
+        _closing = false;
         Ui(() => Say("○ 已停止"));
     }
 
     public override void _Process(double delta)
     {
+        if (_reconnecting)
+        {
+            _retryClock += delta;
+            if (_retryClock < 2.5) return;
+            _retryClock = 0;
+            _ = TryReconnectAsync();
+            return;
+        }
+
         if (_feed is null) return;
         _poll += delta;
         if (_poll < 1.5) return;
@@ -302,6 +329,13 @@ public partial class RoomScreen : VBoxContainer
         }
         catch (Exception error)
         {
+            // 轮询异常＝连接层问题（服务端错误走 result.Ok=false 分支），转入自动重连。
+            if (OnConnectionIssue(error.Message))
+            {
+                Ui(() => Say("✗ 连接断开 · 正在自动重连…"));
+                return;
+            }
+
             Ui(() => Say("✗ " + error.Message));
         }
     }
@@ -410,7 +444,7 @@ public partial class RoomScreen : VBoxContainer
             Ui(() => Say($"○ 连接 {host}:{port}…"));
             _guestPort = port;
             var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
-            feed.ErrorRaised += message => Ui(() => Say("✗ " + message));
+            feed.ErrorRaised += message => Ui(() => NoteError(message));
 
             // 两个座位都可能被占：房主通常坐 0，所以先试 1 再试 0。
             string? token = null;
@@ -429,16 +463,10 @@ public partial class RoomScreen : VBoxContainer
 
             _feed = feed;
             _guest = true;
+            RememberSession(host, port, feed.Seat, token);
 
             // 房主开局后服务端会推视图；客人在这一刻自动切战场。
-            // 房主自己走"开始对局"按钮，不依赖这条。
-            var fired = false;
-            feed.ProjectionReady += (_, _) =>
-            {
-                if (fired) return;
-                fired = true;
-                Ui(() => MatchStarted?.Invoke());
-            };
+            HookGuestAutoEnter(feed);
 
             // 客人不能添 AI、也不能开局——那是房主的权限。
             Ui(() => { _join.Disabled = true; _addAi.Disabled = true; _joinField.Editable = false; });
@@ -553,6 +581,20 @@ public partial class RoomScreen : VBoxContainer
         return _feed is not null;
     }
 
+    /// <summary>重连状态（验证探针用）。</summary>
+    internal bool IsReconnecting => _reconnecting;
+
+    /// <summary>
+    /// 验证用：模拟连接层故障。真实断线（心跳判死/传输硬断）走同一个入口
+    /// <see cref="BeginReconnect"/>，这里只是把"等心跳"换成"立刻触发"。
+    /// 返回前完成一次重连尝试；调用方随后轮询 <see cref="Feed"/> 是否恢复。
+    /// </summary>
+    internal async Task SimulateConnectionLossForVerificationAsync()
+    {
+        BeginReconnect();
+        await TryReconnectAsync();
+    }
+
     /// <summary>验证用：指定必须出现在卡组里的一张卡（须在 <see cref="OpenAsync"/> 之前调用）。</summary>
     internal void RequireCardForVerification(string localId) => _requiredCard = localId;
 
@@ -580,6 +622,98 @@ public partial class RoomScreen : VBoxContainer
         DisplayServer.ClipboardSet(text);
         _hint.Text = $"已复制 {text}，发给对方后在联机页填入。";
     }
+
+    // ── 断线重连（M3）──────────────────────────────────────────────
+
+    /// <summary>统一错误入口：连接层故障触发自动重连，其余只展示。</summary>
+    private void NoteError(string message)
+    {
+        if (OnConnectionIssue(message)) Say("✗ 连接断开 · 正在自动重连…");
+        else Say("✗ " + message);
+    }
+
+    /// <summary>判定是否连接层故障；是则转入重连状态（幂等）。返回 false 表示普通业务错误。</summary>
+    private bool OnConnectionIssue(string message)
+    {
+        if (_closing || _reconnecting || _feed is null) return false;
+        // OrcClient 心跳判死/传输硬断时，挂起请求统一以该文案失败。
+        if (!message.Contains("连接已关闭")) return false;
+        BeginReconnect();
+        return true;
+    }
+
+    /// <summary>
+    /// 进入重连状态：丢掉旧传输（房主的服务器实例**留着**），记住凭据，
+    /// 由 <see cref="_Process"/> 每 2.5 秒驱动 <see cref="TryReconnectAsync"/>。
+    /// </summary>
+    private void BeginReconnect()
+    {
+        if (_reconnecting || _closing || _feed is null) return;
+        _reconnectToken ??= _feed.SeatToken;
+        _reconnectSeat = _feed.Seat;
+        if (_reconnectPort == 0 && !_guest) { _reconnectHost = "127.0.0.1"; _reconnectPort = _server?.Port ?? 0; }
+        var feed = _feed; _feed = null;
+        _ = feed.DisposeAsync();
+        _reconnecting = true;
+        _reconnectAttempts = 0;
+        _retryClock = 2.5; // 下一帧立刻试第一次
+    }
+
+    /// <summary>重连＝连接 → room.resume →（对局态）RefreshView 补投影。失败自动重试，直到成功或用户返回。</summary>
+    private async Task TryReconnectAsync()
+    {
+        _reconnectAttempts++;
+        try
+        {
+            var feed = await RemoteMatchFeed.ConnectAsync(_reconnectHost, _reconnectPort, seat: _reconnectSeat);
+            feed.ErrorRaised += message => { _lastError = message; Ui(() => NoteError(message)); };
+            var resumed = !string.IsNullOrEmpty(_reconnectToken) && await feed.ResumeSeatAsync(_reconnectToken);
+            if (!resumed)
+            {
+                await feed.DisposeAsync();
+                Say($"✗ 重连失败（第 {_reconnectAttempts} 次）· 令牌无效或座位已释放");
+                return;
+            }
+
+            _feed = feed;
+            _reconnecting = false;
+            if (_guest) HookGuestAutoEnter(feed);
+            Say("● 重连成功 · 座位已恢复");
+            try { await feed.RefreshViewAsync(); } catch (Exception) { /* 房间态没有对局视图，可忽略 */ }
+            await RefreshAsync();
+        }
+        catch (Exception)
+        {
+            Say($"✗ 重连失败（第 {_reconnectAttempts} 次）· 2.5 秒后再试");
+        }
+    }
+
+    /// <summary>客人：房主开局（或重连后补到投影）自动切战场。每条连接只触发一次。</summary>
+    private void HookGuestAutoEnter(RemoteMatchFeed feed)
+    {
+        var fired = false;
+        feed.ProjectionReady += (_, _) =>
+        {
+            if (fired) return;
+            fired = true;
+            Ui(() => MatchStarted?.Invoke());
+        };
+    }
+
+    /// <summary>记住本端会话凭据（重连的唯一依据），并落盘 user://net-room/last-session.json。</summary>
+    private void RememberSession(string host, int port, int seat, string? token)
+    {
+        _reconnectHost = host; _reconnectPort = port; _reconnectSeat = seat; _reconnectToken = token;
+        try
+        {
+            Directory.CreateDirectory(_sandbox);
+            var payload = System.Text.Json.JsonSerializer.Serialize(new SessionRecord(host, port, seat, token));
+            File.WriteAllText(Path.Combine(_sandbox, "last-session.json"), payload, new System.Text.UTF8Encoding(false));
+        }
+        catch (Exception) { /* 落盘失败只影响"下次还能不能续"，不影响本局 */ }
+    }
+
+    private sealed record SessionRecord(string Host, int Port, int Seat, string? SeatToken);
 
     // ── 渲染 ─────────────────────────────────────────────────────────
 
