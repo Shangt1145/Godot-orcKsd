@@ -49,8 +49,9 @@ public class OfficialCardExpansionTests(OfficialPackagesFixture fixture)
         // 不变式：卡池数 + 被过滤数 == 文件数。待给这批卡补真实效果快照后恢复 ==expected。
         var rejected=Kards.Ui.OrcBridge.OrcEngineHost.RejectedPackCards.Count;
         Assert.Equal(expected-rejected,await PackPlayabilityVerification.VerifyAsync(fixture.Catalog.Cards,fixture.Source));
-        // 顶层包＝source + builtin + 铜墙铁壁（orc.bulwark，独立包）；扩展包折进父包不出现在这里。
-        Assert.Equal(["source","pack/builtin","pack/orc.bulwark"],fixture.Service.Packs.Select(p=>p.Id));
+        // 顶层可选包＝builtin + 铜墙铁壁（orc.bulwark，独立包）；source（原始卡）打不了联机，已从可选列表移除；
+        // 扩展包折进父包不出现在这里。旧卡组仍可带 source（Validate 豁免），但不再开放新选。
+        Assert.Equal(["pack/builtin","pack/orc.bulwark"],fixture.Service.Packs.Select(p=>p.Id));
         var deck=new ConstructedDeck{PackIds=["pack/builtin"]};
         // builtin 家族池＝builtin + 全部扩展包（不含独立包 bulwark），扣除被引擎过滤的空壳卡。
         var builtinFamily=fixture.Service.PackCards.Where(c=>{var raw=DeckCardPacks.RawOf(c.CardId);return raw=="pack/builtin"||raw.StartsWith("pack/exp-");}).ToArray();

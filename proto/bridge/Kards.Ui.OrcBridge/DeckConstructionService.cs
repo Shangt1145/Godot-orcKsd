@@ -18,7 +18,12 @@ public sealed class DeckConstructionService
         && !c.IsToken && ConstructionRules.CopyLimit(c.Rarity) > 0).ToArray();
     public IReadOnlyList<UiCardDefinition> Pool(ConstructedDeck deck) => PlayableCards
         .Where(c => DeckCardPacks.Allows(deck, c.CardId)).ToArray();
+    /// <summary>
+    /// 玩家可选的卡包列表。<c>source</c>（原始卡）池**刻意不列出**：引擎联机只认 <c>pack/</c> 应用层 id，
+    /// 用原始卡组出来的卡组进房间必然退回自动组牌。旧卡组里已选 source 的仍按 legacy 放行（见 Validate），可继续单机。
+    /// </summary>
     public IReadOnlyList<DeckPackChoice> Packs => PlayableCards.GroupBy(c => DeckCardPacks.Of(c.CardId))
+        .Where(g => g.Key != "source")
         .Select(g => new DeckPackChoice(g.Key, g.Key switch { "source" => WorkshopAuthoring.PackNames.GetValueOrDefault("source")??"太空战争", "diy" => "我的 DIY 卡牌", "orc" => "已导入卡牌",
             _ => WorkshopAuthoring.PackNames.GetValueOrDefault(g.Key)??OrcEngineHost.PackDescriptors.FirstOrDefault(p => "pack/" + p.Id == g.Key)?.Name ?? g.Key[5..] }, g.Count()))
         .OrderBy(p => p.Id == "source" ? 0 : p.Id.StartsWith("pack/") ? 1 : 2).ThenBy(p => p.Name).ToArray();
@@ -70,7 +75,8 @@ public sealed class DeckConstructionService
             .ToHashSet(StringComparer.Ordinal);
     }
     public IReadOnlyList<string> Validate(ConstructedDeck deck) => ConstructionRules.Validate(deck, Cards, PlayableIds)
-        .Concat(DeckCardPacks.Selected(deck).Where(p => !Packs.Any(available => available.Id == p))
+        // source 是 legacy 卡池：旧卡组仍合法（单机照打），只是不再开放新选，故不算"已不可用"。
+        .Concat(DeckCardPacks.Selected(deck).Where(p => p != "source" && !Packs.Any(available => available.Id == p))
             .Select(p => "所选卡包已不可用：" + p)).ToArray();
     public ConstructedDeck Starter(int size = 39, int seed = 20261009)
     {
