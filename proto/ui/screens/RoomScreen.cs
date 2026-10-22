@@ -41,6 +41,15 @@ public partial class RoomScreen : VBoxContainer
     private int _reconnectAttempts;
     private double _retryClock;
 
+    // ── 大厅发现（M4）──────────────────────────────────────────────
+    // 房主起服后宣告（RoomAnnouncer），客人监听 UDP 去重渲染（RoomListener）。
+    private RoomListener? _listener;
+    private RoomAnnouncer? _announcer;
+    private string? _ownRoomId;
+    private readonly Dictionary<string, DiscoveredRoom> _discovered = new(StringComparer.Ordinal);
+    private VBoxContainer _discoveredBox = null!;
+    private double _discoveryClock;
+
     /// <summary>验证用：保证这张卡在卡组里（等随机发牌等到天荒地老时可预期地触发选靶）。</summary>
     private string? _requiredCard;
     /// <summary>座位占用（由快照更新；读它的地方可能在非主线程，别直接问控件）。</summary>
@@ -71,6 +80,11 @@ public partial class RoomScreen : VBoxContainer
     {
         _packsRoot = packsRoot;
         _sandbox = sandboxDirectory;
+
+        // 大厅发现（M4）：监听只要进屏就一直开着——浏览房间不依赖自己先起服务器。
+        _listener = new RoomListener();
+        _listener.Received += room => Ui(() => NoteDiscovered(room));
+        _listener.Start();
 
         AddThemeConstantOverride("separation", 14);
         BuildHeader();
@@ -161,6 +175,15 @@ public partial class RoomScreen : VBoxContainer
         _join = UiStyles.Button("加入  →", () => _ = JoinAsync());
         _join.CustomMinimumSize = new(0, 36);
         column.AddChild(_join);
+
+        column.AddChild(new HSeparator());
+        column.AddChild(UiStyles.Label("发现的房间", 12, UiStyles.Accent));
+        _discoveredBox = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _discoveredBox.AddThemeConstantOverride("separation", 4);
+        column.AddChild(_discoveredBox);
+        var discoveryNote = UiStyles.Label("同一局域网（Radmin 亦可）内开过房间的会自动出现在这里。", 11, UiStyles.MenuDim);
+        discoveryNote.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        column.AddChild(discoveryNote);
 
         column.AddChild(new HSeparator());
         column.AddChild(UiStyles.Label("拉入", 12, UiStyles.Accent));
@@ -275,6 +298,9 @@ public partial class RoomScreen : VBoxContainer
     {
         _closing = true;
         _reconnecting = false;
+        _announcer?.Dispose();
+        _announcer = null;
+        _ownRoomId = null;
         var feed = _feed; _feed = null;
         var server = _server; _server = null;
         if (feed is not null) { try { await feed.DisposeAsync(); } catch (Exception) { } }
@@ -294,8 +320,15 @@ public partial class RoomScreen : VBoxContainer
             return;
         }
 
-        if (_feed is null) return;
+        if (_feed is null)
+        {
+            _discoveryClock += delta;
+            if (_discoveryClock >= 1.0) { _discoveryClock = 0; PruneDiscovery(); RenderDiscovery(); }
+            return;
+        }
         _poll += delta;
+        _discoveryClock += delta;
+        if (_discoveryClock >= 1.0) { _discoveryClock = 0; PruneDiscovery(); RenderDiscovery(); }
         if (_poll < 1.5) return;
         _poll = 0;
         _ = RefreshAsync();
@@ -370,6 +403,18 @@ public partial class RoomScreen : VBoxContainer
     private void Apply(RoomSnapshot snapshot)
     {
         _room.Text = $"房间 {snapshot.RoomId}";
+        // 房主：把"我这有房间"广播出去（M4）；座位占用随快照刷新。
+        if (!_guest && snapshot.RoomId.Length > 0 && snapshot.RoomId != "—")
+        {
+            if (_ownRoomId != snapshot.RoomId)
+            {
+                _ownRoomId = snapshot.RoomId;
+                _announcer?.Dispose();
+                _announcer = new RoomAnnouncer(snapshot.RoomId, _server?.Port ?? Port, "OrC 作战房间");
+            }
+            _announcer.UpdateSeats(snapshot.Seats.Count(s => s.Kind.Length > 0), 2);
+        }
+
         _pool.Text = $"卡池 {_deck?.PackageId ?? "—"} · {snapshot.Policy}"
                      + (snapshot.Fingerprint.Length >= 8 ? $" · {snapshot.Fingerprint[..8]}" : "")
                      + (_deckNote is { Length: > 0 } note ? $" · {note}" : "");
@@ -622,6 +667,55 @@ public partial class RoomScreen : VBoxContainer
         DisplayServer.ClipboardSet(text);
         _hint.Text = $"已复制 {text}，发给对方后在联机页填入。";
     }
+
+    // ── 大厅发现（M4）──────────────────────────────────────────────
+
+    /// <summary>看到一条房间宣告（协议线程回调经 Ui 投递到主线程）。自己的房间不进列表。</summary>
+    private void NoteDiscovered(DiscoveredRoom room)
+    {
+        if (room.RoomId == _ownRoomId) return;
+        _discovered[room.RoomId] = room;
+        RenderDiscovery();
+    }
+
+    /// <summary>超过 <see cref="RoomDiscovery.Expiry"/> 没听到的房间从列表剔除。</summary>
+    private void PruneDiscovery()
+    {
+        var now = System.Environment.TickCount64;
+        var expired = _discovered.Values
+            .Where(room => now - room.SeenMilliseconds > RoomDiscovery.Expiry.TotalMilliseconds)
+            .Select(room => room.RoomId).ToArray();
+        foreach (var id in expired) _discovered.Remove(id);
+        if (expired.Length > 0) RenderDiscovery();
+    }
+
+    private void RenderDiscovery()
+    {
+        if (_discoveredBox is null) return;
+        UiStyles.Clear(_discoveredBox);
+        foreach (var room in _discovered.Values.OrderByDescending(room => room.SeenMilliseconds))
+        {
+            var row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 8);
+            var label = UiStyles.Label(
+                $"{room.Host}:{room.Port} · 座位 {room.SeatsTaken}/{room.SeatsTotal}", 13, UiStyles.MenuInk);
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            label.VerticalAlignment = VerticalAlignment.Center;
+            label.ClipText = true;
+            row.AddChild(label);
+            var join = UiStyles.Button("加入", () =>
+            {
+                _joinField.Text = $"{room.Host}:{room.Port}";
+                _ = JoinAsync();
+            });
+            join.CustomMinimumSize = new(64, 30);
+            row.AddChild(join);
+            _discoveredBox.AddChild(row);
+        }
+    }
+
+    /// <summary>当前发现列表（验证探针用）。</summary>
+    internal DiscoveredRoom[] DiscoveredRooms => [.. _discovered.Values];
 
     // ── 断线重连（M3）──────────────────────────────────────────────
 

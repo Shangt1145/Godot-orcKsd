@@ -298,6 +298,7 @@ public partial class Main : Control
         else if (args.Contains("--verify-room-remote")) Callable.From(VerifyRoomRemote).CallDeferred();
         else if (args.Contains("--verify-room-join")) Callable.From(VerifyRoomJoin).CallDeferred();
         else if (args.Contains("--verify-room-reconnect")) Callable.From(VerifyRoomReconnect).CallDeferred();
+        else if (args.Contains("--verify-room-discovery")) Callable.From(VerifyRoomDiscovery).CallDeferred();
         else if (args.Contains("--verify-target")) Callable.From(VerifyTarget).CallDeferred();
         else if (args.Contains("--verify-combat")) Callable.From(VerifyCombat).CallDeferred();
         else if (args.Contains("--verify-deck")) Callable.From(VerifyDeck).CallDeferred();

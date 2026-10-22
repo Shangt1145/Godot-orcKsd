@@ -727,7 +727,9 @@ public partial class Main
                 await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
             Require(!guestScreen.IsReconnecting && guestScreen.Feed is not null, "客人没有重连成功");
             Require(guestScreen.Feed!.SeatToken == guestToken, "客人重连后令牌不一致");
-            Require(guestScreen.Feed.CurrentView?.SelfHq?.Uid == guestHqBefore, "客人重连后视角变了");
+            await guestScreen.Feed.RefreshViewAsync();
+            var guestHqAfter = guestScreen.Feed.CurrentView?.SelfHq?.Uid;
+            Require(guestHqAfter == guestHqBefore, $"客人重连后视角变了（before={guestHqBefore} after={guestHqAfter}）");
             GD.Print("[reconnect] guest resumed: token preserved, view per seat intact");
 
             // ── 房主断线 → 自动重连（服务器实例保留）──
@@ -753,6 +755,75 @@ public partial class Main
         {
             GD.PushError(error.ToString());
             GD.Print("ROOM_RECONNECT_VERIFY_FAILED " + error.Message);
+            if (guestScreen is not null) guestScreen.Close();
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        guestScreen?.Close();
+        _room.Close();
+        GetTree().Quit();
+    }
+
+    /// <summary>
+    /// <c>--verify-room-discovery</c>：M4 大厅·房间发现验收。
+    ///
+    /// <para>
+    /// 房主起服（宣告器随快照启动）→ 第二个房间屏的监听器在**环回广播**上收到宣告 →
+    /// 校验载荷（端口/座位数/房间号）→ 用发现到的地址走界面路径加入 →
+    /// 房主看到座位 1 变 remote。同时断言：房主自己的房间不进自己的发现列表。
+    /// </para>
+    /// </summary>
+    private async void VerifyRoomDiscovery()
+    {
+        RoomScreen? guestScreen = null;
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+            var host = _room.Feed ?? throw new Exception("房主没有连上：LastError=" + (_room.LastError ?? "（无）"));
+            Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
+
+            // 客人侧房间屏（隐藏）：它的监听器负责"看到"房主的宣告。
+            guestScreen = new RoomScreen();
+            guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
+                ProjectSettings.GlobalizePath("user://net-room-guest"));
+            _room.GetParent().AddChild(guestScreen);
+            guestScreen.Visible = false;
+
+            // 宣告是 2 秒一发；等监听端看到（上限 15 秒）。
+            DiscoveredRoom? seen = null;
+            for (var i = 0; i < 150 && seen is null; i++)
+            {
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+                seen = guestScreen.DiscoveredRooms.FirstOrDefault(room => room.Port == _room.Port);
+            }
+
+            Require(seen is not null, "客人侧没有发现房主的房间（宣告/监听/环回广播任一环断了）");
+            Require(seen!.RoomId.Length > 0, "宣告缺房间号");
+            Require(seen.SeatsTaken >= 1 && seen.SeatsTotal == 2, $"座位占用不对：{seen.SeatsTaken}/{seen.SeatsTotal}");
+            Require(_room.DiscoveredRooms.Length == 0, "房主把自己的房间列进了发现列表");
+            GD.Print($"[discovery] room={seen.RoomId[..Math.Min(8, seen.RoomId.Length)]}… " +
+                     $"endpoint={seen.Host}:{seen.Port} seats={seen.SeatsTaken}/{seen.SeatsTotal}");
+
+            // 用发现到的地址走界面加入路径。
+            var joined = await guestScreen.JoinForVerificationAsync(seen.Host, seen.Port);
+            Require(joined && guestScreen.IsGuest, "从发现列表加入失败");
+            await _room.RefreshForVerificationAsync();
+            var info = await host.RoomInfoAsync();
+            var seatOne = ((info.Details as System.Text.Json.Nodes.JsonObject)?["seats"]
+                    as System.Text.Json.Nodes.JsonArray)?
+                .FirstOrDefault(node => node?["seat"]?.GetValue<int>() == 1);
+            Require(seatOne?["controllerKind"]?.GetValue<string>() == "remote",
+                "房主侧没有看到座位 1 变成 remote");
+
+            GD.Print("ROOM_DISCOVERY_VERIFY_OK announce listen loopback seats-payload join-from-list own-room-filtered");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("ROOM_DISCOVERY_VERIFY_FAILED " + error.Message);
             if (guestScreen is not null) guestScreen.Close();
             _room.Close();
             GetTree().Quit(1);

@@ -13,6 +13,7 @@
     [switch]$VerifyRoomRemote,
     [switch]$VerifyRoomJoin,
     [switch]$VerifyRoomReconnect,
+    [switch]$VerifyRoomDiscovery,
     [switch]$VerifyTarget,
     [switch]$VerifyCombat,
     [switch]$VerifyDeck,
@@ -55,6 +56,7 @@ try {
     elseif ($VerifyRoomRemote) { & $Godot --headless --path $BuildRoot '--' --verify-room-remote }
     elseif ($VerifyRoomJoin) { & $Godot --headless --path $BuildRoot '--' --verify-room-join }
     elseif ($VerifyRoomReconnect) { & $Godot --headless --path $BuildRoot '--' --verify-room-reconnect }
+    elseif ($VerifyRoomDiscovery) { & $Godot --headless --path $BuildRoot '--' --verify-room-discovery }
     elseif ($VerifyTarget) { & $Godot --headless --path $BuildRoot '--' --verify-target }
     elseif ($VerifyCombat) { & $Godot --headless --path $BuildRoot '--' --verify-combat }
     elseif ($VerifyDeck) { & $Godot --headless --path $BuildRoot '--' --verify-deck }
