@@ -834,4 +834,115 @@ public partial class Main
         _room.Close();
         GetTree().Quit();
     }
+
+    /// <summary>
+    /// <c>--verify-room-segments</c>：M3 遗留——双机 <c>notify/segment</c> 演出验证。
+    ///
+    /// <para>
+    /// 房主＋客人两个真人 feed 同进程对打（探针代打双方），断言：
+    /// ① 双方都收到演出段并被 <c>RemotePresentationTranslator</c> 翻译出步骤（PresentationReady）；
+    /// ② 段序号单调不减；③ 部署类演出真实出现。这是"远端打起来像本地"的验收依据。
+    /// </para>
+    /// </summary>
+    private async void VerifyRoomSegments()
+    {
+        RoomScreen? guestScreen = null;
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+            var host = _room.Feed ?? throw new Exception("房主没有连上：LastError=" + (_room.LastError ?? "（无）"));
+
+            guestScreen = new RoomScreen();
+            guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
+                ProjectSettings.GlobalizePath("user://net-room-guest"));
+            _room.GetParent().AddChild(guestScreen);
+            guestScreen.Visible = false;
+            Require(await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port), "客人加入失败");
+            Require(await _room.StartForVerificationAsync(), "开局失败");
+
+            var hostFeed = host;
+            var guestFeed = guestScreen.Feed!;
+            await hostFeed.RefreshViewAsync();
+            await guestFeed.RefreshViewAsync();
+            for (var i = 0; i < 100 && (hostFeed.CurrentView is null || guestFeed.CurrentView is null); i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(hostFeed.CurrentView is not null && guestFeed.CurrentView is not null, "有端没拿到视图");
+
+            // 演出段收集（回调来自协议线程，只做计数、断言放主线程）。
+            var hostSteps = 0;
+            var guestSteps = 0;
+            var hostSequences = new List<long>();
+            var guestSequences = new List<long>();
+            var deployments = 0;
+            hostFeed.PresentationReady += (resolution, _) => { hostSteps += resolution.Steps.Count; lock (hostSequences) hostSequences.Add(resolution.Sequence); deployments += resolution.Steps.Count(s => s is Kards.Ui.Contracts.UiDeploymentPresentation); };
+            guestFeed.PresentationReady += (resolution, _) => { guestSteps += resolution.Steps.Count; lock (guestSequences) guestSequences.Add(resolution.Sequence); deployments += resolution.Steps.Count(s => s is Kards.Ui.Contracts.UiDeploymentPresentation); };
+            hostFeed.AutoResolveTargets = true;
+            guestFeed.AutoResolveTargets = true;
+
+            if (hostFeed.CurrentView.Phase == "mulligan") await hostFeed.MulliganDoneAsync(0);
+            if (guestFeed.CurrentView.Phase == "mulligan") await guestFeed.MulliganDoneAsync(1);
+            await WaitUntil(() => hostFeed.CurrentView?.Phase != "mulligan" && guestFeed.CurrentView?.Phase != "mulligan", 10);
+
+            // 代打双方：自己回合→铺最便宜的单位，没得铺就过回合；最多跑 6 个回合。
+            async Task DriveAsync(RemoteMatchFeed side, string who)
+            {
+                var view = side.CurrentView;
+                if (view is null || view.Outcome != UiMatchOutcome.None || view.Phase != "play") return;
+                if (view.ActivePlayerSide != "self") return;
+                var unit = view.SelfHand
+                    .Where(card => card.Definition.CardType is not ("order" or "counter"))
+                    .Where(card => (card.EffectiveCost ?? int.MaxValue) <= view.SelfKredits)
+                    .Where(card => view.SelfLine.Count(line => line.CardId == card.CardId) < 2)
+                    .OrderBy(card => card.EffectiveCost ?? int.MaxValue)
+                    .FirstOrDefault();
+                if (unit is not null)
+                {
+                    var changed = await SubmitAndWait(side, new Kards.Ui.Contracts.PlayCard(unit.Uid));
+                    GD.Print($"[segments] {who} play {unit.CardId} changed={changed}");
+                    return;
+                }
+
+                var turnNow = view.Turn;
+                await side.SubmitAsync(new Kards.Ui.Contracts.EndTurn());
+                GD.Print($"[segments] {who} endturn turn={turnNow}");
+                await WaitUntil(() => side.CurrentView?.Turn != turnNow
+                                     || side.CurrentView?.Outcome != UiMatchOutcome.None, 15);
+            }
+
+            var turns = 0;
+            for (var step = 0; step < 120 && turns < 6; step++)
+            {
+                var turnBefore = hostFeed.CurrentView?.Turn;
+                await DriveAsync(hostFeed, "host");
+                await DriveAsync(guestFeed, "guest");
+                await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+                if (hostFeed.CurrentView?.Turn != turnBefore) turns++;
+                if (hostFeed.CurrentView?.Outcome != UiMatchOutcome.None) break;
+            }
+
+            lock (hostSequences) GD.Print($"[segments] host: segments={hostSequences.Count} steps={hostSteps}");
+            lock (guestSequences) GD.Print($"[segments] guest: segments={guestSequences.Count} steps={guestSteps}");
+            Require(hostSteps > 0, "房主侧没有收到任何演出段");
+            Require(guestSteps > 0, "客人侧没有收到任何演出段——notify/segment 在远端没落地");
+            Require(deployments > 0, "没有翻译出任何部署演出——出牌在远端只是数据变化，没有演出");
+            lock (guestSequences) Require(guestSequences.Zip(guestSequences.Skip(1)).All(pair => pair.First <= pair.Second),
+                "客人侧段序号倒退");
+
+            GD.Print("ROOM_SEGMENTS_VERIFY_OK both-sides-translated deployment-present monotonic-sequence");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("ROOM_SEGMENTS_VERIFY_FAILED " + error.Message);
+            if (guestScreen is not null) guestScreen.Close();
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        guestScreen?.Close();
+        _room.Close();
+        GetTree().Quit();
+    }
 }
