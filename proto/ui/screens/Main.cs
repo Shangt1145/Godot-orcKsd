@@ -216,6 +216,12 @@ public partial class Main : Control
         _room.MatchStarted += () => _ = EnterRemoteMatchAsync();
         AddScreen(content, "room", _room);
         _setup.RoomRequested += () => { Show("room"); _room.Open(); };
+        // 局域网房间列表一键加入（M4 主流程入口）：跳房间屏并直接连对方地址。
+        _setup.RoomJoinRequested += (host, port) =>
+        {
+            Show("room");
+            _ = _room.JoinAsync(host, port);
+        };
         _diyEditor = new DiyEditorScreen();
         _diyEditor.Initialize(_diy, () => _catalog.Cards, _textures, id => _decks.Decks.Count(d => d.CardIds.Contains(id)),
             id => _deckService.CustomErrors.GetValueOrDefault(id), _orcImports, () => _importedOutcomes);

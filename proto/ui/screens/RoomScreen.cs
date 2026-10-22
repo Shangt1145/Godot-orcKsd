@@ -529,6 +529,13 @@ public partial class RoomScreen : VBoxContainer
         }
     }
 
+    /// <summary>从主流程入口（作战配置页的房间列表）直接加入：填地址走同一条界面路径（M4）。</summary>
+    public Task JoinAsync(string host, int port)
+    {
+        _joinField.Text = $"{host}:{port}";
+        return JoinAsync();
+    }
+
     /// <summary>解析 "IP:端口"（也接受只给 IP，默认端口见调用处提示）。</summary>
     private static bool TryParseEndpoint(string text, out string host, out int port)
     {

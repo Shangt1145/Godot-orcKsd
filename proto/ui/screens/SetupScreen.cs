@@ -22,8 +22,17 @@ public partial class SetupScreen : VBoxContainer
 
     /// <summary>进入作战房间（拉起服务器实例，拉人分配座位）。</summary>
     public event Action? RoomRequested;
+
+    /// <summary>从局域网房间列表点「加入」（M4 主流程入口）。</summary>
+    public event Action<string, int>? RoomJoinRequested;
     private static readonly Color Paper = new("dbd2bb"), PaperInk = new("30382f"), PaperDim = new("58604e");
     private bool ReadyToPlay => _library.ActiveDeck is { } deck && _library.LoadError is null && _service.Validate(deck).Count == 0;
+
+    // ── 局域网房间发现（M4）：监听常开，列表实时刷新 ──────────────
+    private RoomListener? _listener;
+    private readonly Dictionary<string, DiscoveredRoom> _discovered = new(StringComparer.Ordinal);
+    private VBoxContainer _roomList = null!;
+    private double _roomClock;
 
     public void Initialize(DeckLibrary library, DeckConstructionService service, TextureCache textures)
     {
@@ -90,8 +99,85 @@ public partial class SetupScreen : VBoxContainer
         RoomButton.CustomMinimumSize = new(0, 38);
         RoomButton.AddThemeStyleboxOverride("normal", UiStyles.Box(new("2b3229"), UiStyles.Accent, 12, 10));
         actions.AddChild(RoomButton);
+        BuildRoomBrowser();
         Refresh();
     }
+
+    /// <summary>
+    /// 局域网房间列表（M4 主流程入口）：监听在进屏起就常开，
+    /// 有房就显示"谁开了房、还剩几个座"，点「加入」直接跳房间屏并进房——
+    /// 不必先知道 IP，也不必先进房间屏。
+    /// </summary>
+    private void BuildRoomBrowser()
+    {
+        _listener = new RoomListener();
+        _listener.Received += room => Callable.From(() => NoteDiscoveredRoom(room)).CallDeferred();
+        _listener.Start();
+
+        var panel = new PanelContainer();
+        panel.AddThemeStyleboxOverride("panel", UiStyles.Box(new Color("232b23"), UiStyles.MenuLine, 10, 14));
+        AddChild(panel);
+        var column = new VBoxContainer();
+        column.AddThemeConstantOverride("separation", 6);
+        panel.AddChild(column);
+        column.AddChild(UiStyles.Label("//  LAN  ·  局域网房间", 12, UiStyles.Accent));
+        _roomList = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _roomList.AddThemeConstantOverride("separation", 4);
+        column.AddChild(_roomList);
+        var note = UiStyles.Label("同一网络（Radmin 亦可）里开着的房间会自动出现；也可以进房间后手填地址。", 11, UiStyles.MenuDim);
+        note.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        column.AddChild(note);
+        RenderRoomList();
+    }
+
+    private void NoteDiscoveredRoom(DiscoveredRoom room)
+    {
+        _discovered[room.RoomId] = room;
+        RenderRoomList();
+    }
+
+    public override void _Process(double delta)
+    {
+        _roomClock += delta;
+        if (_roomClock < 1.0) return;
+        _roomClock = 0;
+        var now = System.Environment.TickCount64;
+        var expired = _discovered.Values
+            .Where(room => now - room.SeenMilliseconds > RoomDiscovery.Expiry.TotalMilliseconds)
+            .Select(room => room.RoomId).ToArray();
+        foreach (var id in expired) _discovered.Remove(id);
+        if (expired.Length > 0) RenderRoomList();
+    }
+
+    private void RenderRoomList()
+    {
+        if (_roomList is null) return;
+        UiStyles.Clear(_roomList);
+        if (_discovered.Count == 0)
+        {
+            _roomList.AddChild(UiStyles.Label("暂时没有发现的房间——让房主先进「作战房间」。", 12, UiStyles.MenuDim));
+            return;
+        }
+
+        foreach (var room in _discovered.Values.OrderByDescending(room => room.SeenMilliseconds))
+        {
+            var row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 10);
+            var label = UiStyles.Label(
+                $"{room.Host}:{room.Port} · 座位 {room.SeatsTaken}/{room.SeatsTotal}", 13, UiStyles.MenuInk);
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            label.VerticalAlignment = VerticalAlignment.Center;
+            label.ClipText = true;
+            row.AddChild(label);
+            var join = UiStyles.Button("加入  →", () => RoomJoinRequested?.Invoke(room.Host, room.Port));
+            join.CustomMinimumSize = new(84, 30);
+            row.AddChild(join);
+            _roomList.AddChild(row);
+        }
+    }
+
+    /// <summary>当前发现列表（验证探针用）。</summary>
+    internal DiscoveredRoom[] DiscoveredRooms => [.. _discovered.Values];
     private VBoxContainer CardColumn(HBoxContainer row, string heading, bool enemy, out SetupDeckArtwork art)
     {
         var column = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };

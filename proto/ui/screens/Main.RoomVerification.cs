@@ -822,6 +822,10 @@ public partial class Main
             Require(seen!.RoomId.Length > 0, "宣告缺房间号");
             Require(seen.SeatsTaken >= 1 && seen.SeatsTotal == 2, $"座位占用不对：{seen.SeatsTaken}/{seen.SeatsTotal}");
             Require(_room.DiscoveredRooms.Length == 0, "房主把自己的房间列进了发现列表");
+            // M4 主流程入口：作战配置页的"局域网房间"列表也必须看到这个房间。
+            var setupSeen = await WaitUntil(() => _setup.DiscoveredRooms.Any(room => room.Port == _room.Port), 10);
+            Require(setupSeen, "作战配置页的房间列表没有发现房主（M4 主流程入口断了）");
+            GD.Print($"[discovery] setup entry sees room: {_setup.DiscoveredRooms.First(room => room.Port == _room.Port).Host}:{_room.Port}");
             GD.Print($"[discovery] room={seen.RoomId[..Math.Min(8, seen.RoomId.Length)]}… " +
                      $"endpoint={seen.Host}:{seen.Port} seats={seen.SeatsTaken}/{seen.SeatsTotal}");
 
