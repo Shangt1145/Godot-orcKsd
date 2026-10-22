@@ -300,6 +300,7 @@ public partial class Main : Control
         else if (args.Contains("--verify-room-reconnect")) Callable.From(VerifyRoomReconnect).CallDeferred();
         else if (args.Contains("--verify-room-discovery")) Callable.From(VerifyRoomDiscovery).CallDeferred();
         else if (args.Contains("--verify-room-segments")) Callable.From(VerifyRoomSegments).CallDeferred();
+        else if (args.Contains("--verify-room-ping")) Callable.From(VerifyRoomPing).CallDeferred();
         else if (args.Contains("--verify-target")) Callable.From(VerifyTarget).CallDeferred();
         else if (args.Contains("--verify-combat")) Callable.From(VerifyCombat).CallDeferred();
         else if (args.Contains("--verify-deck")) Callable.From(VerifyDeck).CallDeferred();
@@ -512,6 +513,13 @@ public partial class Main : Control
         if (_room.Feed is not { } feed) return;
         StopRealMatch();
         BindFeed(feed);
+        // 联机延迟角标（M5）：ping 循环随 feed 走，重连后的新 feed 由房间屏再挂一次，
+        // 这里按当前引用显示——feed 换人后旧句柄事件自然失效。
+        if (feed is RemoteMatchFeed remote)
+        {
+            remote.StartPingLoop();
+            remote.PingUpdated += ms => Callable.From(() => _battle?.SetNetworkPing(ms)).CallDeferred();
+        }
         Show("battle");
         try { await feed.RefreshViewAsync(); }
         catch (Exception error) { GD.PushError($"[remote] 拉取首帧视图失败：{error}"); }

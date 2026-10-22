@@ -67,6 +67,48 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private string? _mulliganRequestId;
     private bool _targetPending;
     private bool _disposed;
+    private Task? _pingLoop;
+
+    /// <summary>最近一次往返延迟（毫秒）；null＝尚未测到或连接不可用（M5 延迟显示）。</summary>
+    public int? LastPingMs { get; private set; }
+
+    /// <summary>每次测得新延迟时触发（null＝连接不可用）。协议线程回调，UI 使用处自行 marshal。</summary>
+    public event Action<int?>? PingUpdated;
+
+    /// <summary>启动延迟测量循环：每 3 秒发一次 <c>ping</c> 测 RTT。重连后对新 feed 再调一次即可。</summary>
+    public void StartPingLoop()
+    {
+        if (_pingLoop is not null) return;
+        _pingLoop = Task.Run(PingLoopAsync);
+    }
+
+    private async Task PingLoopAsync()
+    {
+        var first = true;
+        while (true)
+        {
+            if (!first)
+            {
+                try { await Task.Delay(3000).ConfigureAwait(false); }
+                catch (Exception) { return; }
+            }
+            first = false;
+            if (_disposed) return;
+            try
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                await _client.CallAsync("ping", new JsonObject(), CancellationToken.None).ConfigureAwait(false);
+                LastPingMs = (int)clock.ElapsedMilliseconds;
+                PingUpdated?.Invoke(LastPingMs);
+            }
+            catch (Exception)
+            {
+                LastPingMs = null;
+                PingUpdated?.Invoke(null);
+                return; // 传输已断，重连由 RoomScreen 的重连状态机负责
+            }
+        }
+    }
 
     private RemoteMatchFeed(OrcClient client, int seat)
     {
@@ -406,10 +448,21 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 
     private void ApplyViewPayload(JsonNode? payload)
     {
-        if (payload is null) return;
+        if (payload is null)
+        {
+            ErrorRaised?.Invoke("视图载荷为空（服务端应答没有 details）。");
+            return;
+        }
+
         var viewNode = payload["view"];
         var actionsNode = payload["actions"];
-        if (viewNode is null) return;
+        if (viewNode is null)
+        {
+            // 静默吞掉等于"重连后画面空白但没有任何报错"——必须响（M3 排障教训）。
+            var snippet = payload.ToJsonString();
+            ErrorRaised?.Invoke("视图载荷缺 view 字段：" + snippet[..Math.Min(240, snippet.Length)]);
+            return;
+        }
 
         UiMatchView view;
         UiBattleActions actions;

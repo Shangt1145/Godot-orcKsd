@@ -37,7 +37,7 @@ public partial class BattleScreen : Control
     private SfxPlayer _sfx = null!;
     private UiCombatResolution? _pendingCombat;
     private UiBattleActions? _pendingActions;
-    private Label _deckCount = null!, _inspectStats = null!;
+    private Label _deckCount = null!, _inspectStats = null!, _netTag = null!;
     private Button _endTurn = null!;
     private PopupMenu _menu = null!;
     private ConfirmationDialog _concedeDialog = null!;
@@ -145,6 +145,8 @@ public partial class BattleScreen : Control
             deck.PivotOffset = deck.Size / 2; deck.Bind(null, BattleCardMode.Hidden, textures); _canvas.AddChild(deck);
         }
         _deckCount = Text("", new(1235, 651), new(38, 28), 17, "e9e4d0"); _canvas.AddChild(_deckCount);
+        _netTag = Text("", new(1160, 62), new(96, 22), 12, "c7c1ad");
+        _netTag.HorizontalAlignment = HorizontalAlignment.Right; _netTag.Visible = false; _canvas.AddChild(_netTag);
         _hint = Text("", new(430, 594), new(420, 26), 14, "ece5ce");
         _hint.HorizontalAlignment = HorizontalAlignment.Center; _hint.Visible = false; _canvas.AddChild(_hint);
         _cardLayer = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore }; _canvas.AddChild(_cardLayer);
@@ -536,6 +538,21 @@ public partial class BattleScreen : Control
         _paper.MoveHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "frontline");
         _paper.RetreatHint = _selected is not null && InteractionActions.Moves.Any(m => m.Uid == _selected && m.ToZone == "support"); _paper.QueueRedraw();
     }
+    /// <summary>联机延迟角标（M5）。null＝不显示（单机或连接不可用）。颜色跟延迟分档：绿/金/红。</summary>
+    public void SetNetworkPing(int? ms)
+    {
+        if (_netTag is null) return;
+        _netTag.Visible = ms is not null;
+        if (ms is not { } value) return;
+        _netTag.Text = $"{value} ms";
+        _netTag.AddThemeColorOverride("font_color", value switch
+        {
+            < 80 => new("a8c08a"),
+            < 200 => new("c7aa71"),
+            _ => new("c96f4a"),
+        });
+    }
+
     public void CancelSelection()
     {
         if (_canvas is null) return;

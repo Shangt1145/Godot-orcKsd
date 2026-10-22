@@ -722,14 +722,25 @@ public partial class Main
 
             // ── 客人断线 → 自动重连 ──
             var guestToken = guestScreen.Feed.SeatToken;
+            guestScreen.Feed.ErrorRaised += message => GD.Print("[reconnect] guest error: " + message);
             await guestScreen.SimulateConnectionLossForVerificationAsync();
             for (var i = 0; i < 100 && (guestScreen.IsReconnecting || guestScreen.Feed?.CurrentView is null); i++)
                 await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
             Require(!guestScreen.IsReconnecting && guestScreen.Feed is not null, "客人没有重连成功");
             Require(guestScreen.Feed!.SeatToken == guestToken, "客人重连后令牌不一致");
-            await guestScreen.Feed.RefreshViewAsync();
+            guestScreen.Feed.ErrorRaised += message => GD.Print("[reconnect] guest-new error: " + message);
+            // 视图拉取有偶发失败（服务端瞬时态），拉不到就重试——与真实 UI 的 _Process 轮询同语义。
+            for (var i = 0; i < 50 && guestScreen.Feed.CurrentView is null; i++)
+            {
+                try { await guestScreen.Feed.RefreshViewAsync(); }
+                catch (Exception error) { GD.Print("[reconnect] guest refresh retry: " + error.Message); }
+                if (guestScreen.Feed.CurrentView is not null) break;
+                await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            }
             var guestHqAfter = guestScreen.Feed.CurrentView?.SelfHq?.Uid;
-            Require(guestHqAfter == guestHqBefore, $"客人重连后视角变了（before={guestHqBefore} after={guestHqAfter}）");
+            GD.Print($"[reconnect] guest feed#{guestScreen.Feed.GetHashCode():x} view={(guestScreen.Feed.CurrentView is null ? "null" : "ok")} hq={guestHqAfter ?? "null"}");
+            Require(guestHqAfter == guestHqBefore,
+                $"客人重连后视角变了（before={guestHqBefore} after={(guestScreen.Feed.CurrentView is null ? "view-null" : guestHqAfter ?? "selfhq-null")}）");
             GD.Print("[reconnect] guest resumed: token preserved, view per seat intact");
 
             // ── 房主断线 → 自动重连（服务器实例保留）──
@@ -739,8 +750,15 @@ public partial class Main
                 await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
             Require(!_room.IsReconnecting && _room.Feed is not null, "房主没有重连成功");
             Require(_room.Feed!.SeatToken == hostToken, "房主重连后令牌不一致");
-            await _room.Feed.RefreshViewAsync();
-            Require(_room.Feed.CurrentView?.SelfHq?.Uid == hostHqBefore, "房主重连后视角变了");
+            for (var i = 0; i < 50 && _room.Feed.CurrentView is null; i++)
+            {
+                try { await _room.Feed.RefreshViewAsync(); }
+                catch (Exception error) { GD.Print("[reconnect] host refresh retry: " + error.Message); }
+                if (_room.Feed.CurrentView is not null) break;
+                await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            }
+            var hostHqAfter = _room.Feed.CurrentView?.SelfHq?.Uid;
+            Require(hostHqAfter == hostHqBefore, $"房主重连后视角变了（before={hostHqBefore} after={(hostHqAfter ?? "null")}）");
             GD.Print("[reconnect] host resumed: server instance kept alive");
 
             // ── 重连后对局仍然活着 ──
@@ -942,6 +960,39 @@ public partial class Main
         }
 
         guestScreen?.Close();
+        _room.Close();
+        GetTree().Quit();
+    }
+
+    /// <summary>
+    /// <c>--verify-room-ping</c>：M5 延迟显示验收。
+    /// 房主连上自己的服务器实例，ping 循环必须测到 RTT 并写进房间屏状态栏；
+    /// 本地环回应当是毫秒级（上限放宽到 2 秒防 CI 抖动）。
+    /// </summary>
+    private async void VerifyRoomPing()
+    {
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+            Require(_room.Feed is not null, "房主没有连上：LastError=" + (_room.LastError ?? "（无）"));
+            var ok = await WaitUntil(() => _room.Feed!.LastPingMs is not null, 10);
+            Require(ok, "10 秒内没有测到任何 ping——循环没跑或 ping 工具不可用");
+            var ms = _room.Feed!.LastPingMs!.Value;
+            Require(ms < 2000, $"本地环回延迟异常：{ms} ms");
+            GD.Print($"[ping] rtt={ms} ms");
+            Require(_room.PingText.Contains("ms"), "房间屏没有显示延迟：" + _room.PingText);
+            GD.Print("ROOM_PING_VERIFY_OK loop-running local-rtt status-shown");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("ROOM_PING_VERIFY_FAILED " + error.Message);
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
         _room.Close();
         GetTree().Quit();
     }

@@ -40,6 +40,8 @@ public partial class RoomScreen : VBoxContainer
     private string? _reconnectToken;
     private int _reconnectAttempts;
     private double _retryClock;
+    /// <summary>重连单飞守卫：探针 await 一次 + _Process 定时器一次会并发进来，后写的 feed 会覆盖先写的（M3 flake 真凶）。</summary>
+    private int _reconnectInFlight;
 
     // ── 大厅发现（M4）──────────────────────────────────────────────
     // 房主起服后宣告（RoomAnnouncer），客人监听 UDP 去重渲染（RoomListener）。
@@ -55,7 +57,7 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>座位占用（由快照更新；读它的地方可能在非主线程，别直接问控件）。</summary>
     private readonly bool[] _occupied = new bool[2];
 
-    private Label _status = null!, _endpoint = null!, _pool = null!, _room = null!;
+    private Label _status = null!, _endpoint = null!, _pool = null!, _room = null!, _ping = null!;
     private Label _checkSeat0 = null!, _checkSeat1 = null!, _checkPool = null!, _hint = null!;
     private RoomSeatCard _seat0 = null!, _seat1 = null!;
     private Button _addAi = null!, _invite = null!, _addAgent = null!, _start = null!, _back = null!, _join = null!;
@@ -154,6 +156,8 @@ public partial class RoomScreen : VBoxContainer
         column.AddChild(UiStyles.Label("本机服务器", 18, UiStyles.MenuInk));
         _status = UiStyles.Label("○ 启动中…", 14, UiStyles.Accent);
         column.AddChild(_status);
+        _ping = UiStyles.Label("延迟 —", 12, UiStyles.MenuDim);
+        column.AddChild(_ping);
 
         column.AddChild(UiStyles.Label("发给对方", 12, UiStyles.Accent));
         _endpoint = UiStyles.Label("—", 15, UiStyles.MenuInk);
@@ -278,6 +282,7 @@ public partial class RoomScreen : VBoxContainer
             _feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _server.Port);
             // 回调来自协议线程，控件只能主线程写——统一 marshal。
             _feed.ErrorRaised += message => { _lastError = message; Ui(() => NoteError(message)); };
+            HookPing(_feed);
 
             // 房主＝local 座位；服务端只认 Kind==Local 的房间主人，否则开局被拒。
             var token = await _feed.ClaimSeatAsync(0, "local", "房主", _deck.CardIds);
@@ -490,6 +495,7 @@ public partial class RoomScreen : VBoxContainer
             _guestPort = port;
             var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
             feed.ErrorRaised += message => Ui(() => NoteError(message));
+            HookPing(feed);
 
             // 两个座位都可能被占：房主通常坐 0，所以先试 1 再试 0。
             string? token = null;
@@ -717,6 +723,9 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>当前发现列表（验证探针用）。</summary>
     internal DiscoveredRoom[] DiscoveredRooms => [.. _discovered.Values];
 
+    /// <summary>延迟显示文本（验证探针用）。</summary>
+    internal string PingText => _ping.Text;
+
     // ── 断线重连（M3）──────────────────────────────────────────────
 
     /// <summary>统一错误入口：连接层故障触发自动重连，其余只展示。</summary>
@@ -743,6 +752,7 @@ public partial class RoomScreen : VBoxContainer
     private void BeginReconnect()
     {
         if (_reconnecting || _closing || _feed is null) return;
+        GD.Print($"[room] reconnect begin (guest={_guest}, port={(_guest ? _guestPort : _server?.Port ?? 0)})");
         _reconnectToken ??= _feed.SeatToken;
         _reconnectSeat = _feed.Seat;
         if (_reconnectPort == 0 && !_guest) { _reconnectHost = "127.0.0.1"; _reconnectPort = _server?.Port ?? 0; }
@@ -753,14 +763,29 @@ public partial class RoomScreen : VBoxContainer
         _retryClock = 2.5; // 下一帧立刻试第一次
     }
 
-    /// <summary>重连＝连接 → room.resume →（对局态）RefreshView 补投影。失败自动重试，直到成功或用户返回。</summary>
+    /// <summary>重连＝连接 → room.resume →（对局态）RefreshView 补投影。失败自动重试，直到成功或用户返回。
+    /// **单飞**：同时只允许一个尝试在跑（探针直调与 _Process 定时器会并发）。</summary>
     private async Task TryReconnectAsync()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _reconnectInFlight, 1) == 1) return;
+        try
+        {
+            await TryReconnectCoreAsync();
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref _reconnectInFlight, 0);
+        }
+    }
+
+    private async Task TryReconnectCoreAsync()
     {
         _reconnectAttempts++;
         try
         {
             var feed = await RemoteMatchFeed.ConnectAsync(_reconnectHost, _reconnectPort, seat: _reconnectSeat);
             feed.ErrorRaised += message => { _lastError = message; Ui(() => NoteError(message)); };
+            HookPing(feed);
             var resumed = !string.IsNullOrEmpty(_reconnectToken) && await feed.ResumeSeatAsync(_reconnectToken);
             if (!resumed)
             {
@@ -772,8 +797,19 @@ public partial class RoomScreen : VBoxContainer
             _feed = feed;
             _reconnecting = false;
             if (_guest) HookGuestAutoEnter(feed);
+            GD.Print($"[room] reconnect success (attempt {_reconnectAttempts}, feed#{feed.GetHashCode():x})");
             Say("● 重连成功 · 座位已恢复");
-            try { await feed.RefreshViewAsync(); } catch (Exception) { /* 房间态没有对局视图，可忽略 */ }
+            // 补投影：服务端瞬时态可能拒一两次，拉不到就重试（M3 排障教训：一次失败不该留白屏）。
+            try
+            {
+                for (var i = 0; i < 3 && feed.CurrentView is null; i++)
+                {
+                    await feed.RefreshViewAsync();
+                    if (feed.CurrentView is not null) break;
+                    await Task.Delay(500);
+                }
+            }
+            catch (Exception) { /* 房间态没有对局视图，可忽略 */ }
             await RefreshAsync();
         }
         catch (Exception)
@@ -792,6 +828,14 @@ public partial class RoomScreen : VBoxContainer
             fired = true;
             Ui(() => MatchStarted?.Invoke());
         };
+    }
+
+    /// <summary>挂延迟显示（M5）：启动 ping 循环并把结果写进状态栏。</summary>
+    private void HookPing(RemoteMatchFeed feed)
+    {
+        feed.StartPingLoop();
+        feed.PingUpdated += ms => Ui(() => _ping.Text = ms is null ? "延迟 —"
+            : $"延迟 {ms} ms" + (ms > 250 ? "（高）" : ""));
     }
 
     /// <summary>记住本端会话凭据（重连的唯一依据），并落盘 user://net-room/last-session.json。</summary>
