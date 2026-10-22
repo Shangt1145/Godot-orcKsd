@@ -47,7 +47,9 @@ public partial class Main
         if (id is "decklib" or "collection") _deckLibrary.SetPlaySelection(false);
         Show(id);
     }
-    private void OpenPlaySelection() { _deckLibrary.SetPlaySelection(true); Show("decklib"); }
+    // 首页「出击」＝作战准备页：卡组就绪状态、组建房间、局域网房间列表（M4）都在这，
+    // 它是开战前的唯一枢纽——此前直接跳 decklib，把作战准备页绕成了孤岛（用户找不到）。
+    private void OpenPlaySelection() { _setup.Refresh(); Show("setup"); }
     private void RefreshMenuData() { _deckLibrary.Refresh(); _home?.Refresh(); UpdateMenuNavigation(); }
     private void UpdateMenuNavigation()
     {

@@ -144,7 +144,10 @@ public partial class Main
             Check(!_shellBar.Visible && !_menuBackdrop.Visible, "Menu chrome leaked into battle.");
             StopRealMatch(); _battle.ResetDemo(); Show("home"); await MenuSettledAsync();
             await DeckClickAsync(_home.PlayButton);
-            Check(_active == "battle", "Home action did not enter battle directly.");
+            // 首页出击＝先进作战准备页（卡组/房间枢纽），再从那里进战场。
+            Check(_active == "setup", "Home action did not route to the setup hub.");
+            Check(_setup.StartButton.Disabled == false, "Setup hub did not see the ready deck.");
+            await DeckClickAsync(_setup.StartButton);
             deadline = Time.GetTicksMsec() + 20_000;
             while (!_battle.MulliganPanelVisible && Time.GetTicksMsec() < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             Check(_active == "battle" && _battle.MulliganPanelVisible && _runner?.CurrentView is { } homeOpening

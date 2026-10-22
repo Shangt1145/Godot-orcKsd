@@ -51,7 +51,8 @@ public partial class HomeScreen : VBoxContainer
         button.Alignment = HorizontalAlignment.Left; button.AddThemeFontSizeOverride("font_size", 18); row.AddChild(button); return button;
     }
     private bool ReadyToPlay => _library.ActiveDeck is { } deck && _library.LoadError is null && _service.Validate(deck).Count == 0;
-    private void Play() { if (ReadyToPlay) StartRequested?.Invoke(); else PlayRequested?.Invoke(); }
+    // 首页出击一律先进作战准备页（选卡组/组建房间/加入局域网房间的枢纽），不再直接开战。
+    private void Play() => PlayRequested?.Invoke();
     public void Refresh()
     {
         MenuStyles.Clear(_deckDetail);
