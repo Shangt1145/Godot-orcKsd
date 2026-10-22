@@ -200,6 +200,69 @@ await Kards.Ui.OrcBridge.DesktopTargetContext.SelectAsync(orcSelf, "{json}", "{h
 所以这 16 张卡的修改是本地状态。换机器/重装卡包后要重跑迁移脚本——
 这就是把它做成工具而不是手改的原因。
 
+## 5.4 指挥命令：移动 / 攻击 / 撤退（M1）
+
+`RemoteMatchFeed.Map` 现在接 5 类命令（原来只有 PlayCard/EndTurn/Concede）：
+
+| 前端命令 | 服务端工具 | 说明 |
+|---|---|---|
+| `CommandUnit` | `command.begin{ref}` | 发起指挥，之后走选靶 |
+| `MoveUnit` | `command.move{ref}` | 发起移动，落点由选靶/引擎决定 |
+| `AttackUnit` | `command.attack{ref}` | **只传攻击者**；目标由引擎裁定 |
+| `RetreatUnit` | `command.leave{ref}` | 直接完成 |
+| `PlayCard`（单位） | `play.unit` / `play.unit_pre` | 见下 |
+
+### 🔴 三个"静默失败"级的坑
+
+**① 出牌槽位不能由前端猜。**
+`UiMatchView.SelfLine` 把**前线与支援线合并**，两条线的 `SlotIndex` 互相覆盖。
+按它推"空槽"会算出已被占的位置，实测 **40+ 次 `TargetSlotOccupied`**，
+症状是出牌永远失败（手牌不减、费用不扣、没有报错）。
+
+正确做法：玩家指定了槽位（拖到具体位置）才走 `play.unit{ref,slot}`；
+没指定就走 `play.unit_pre{ref}` 进部署选位交互，由 targeter 决定落点。
+
+**② `targeting` 不是失败。**
+指挥动作是两段式：工具只吃 `{ref}`，第一段结束服务端必回 `targeting`。
+如果这时触发 `CommandRefused`，UI 会把刚发起的动作当场回滚——看起来像"点了没反应"。
+
+**③ 指定目标不在候选里，必须主动 `target.cancel`。**
+典型场景：敌方前线还有单位时想打 HQ，HQ 根本不在候选里。
+把请求挂在服务端等超时会**死锁**：之后每条命令都吃
+"当前有未应答的选靶请求"——连出牌都被堵死（实测出牌全失败就是这条）。
+
+### AutoResolveTargets（无人值守）
+
+```csharp
+feed.AutoResolveTargets = true;   // 探针 / 自动对战
+```
+
+自动应答所有选靶（选第一个候选），且**不触发** `TargetRequested` 面板。
+正常对局必须为 `false`。
+存在的理由：部署类效果也会走选靶（`play.unit` 返回 `targeting`），
+无人值守时不自动应答就会挂到超时。
+
+### 现状与不足
+
+实测（`-VerifyCombat`）：
+
+```
+attacks=37  enemyHq 20→16  turn=21
+COMBAT_VERIFY_OK command-chain-attack-effective
+```
+
+历史上曾完整推到终局：`outcome=Lose turn=20 ownHq=0 enemyHq=7`。
+
+**还没做到的**：
+
+- `command.move` 发得出，但引擎多回 `NoActionAvailable`（单位当回合部署 / 本回合已行动），
+  探针 `moves=0`。机制在，策略不够聪明。
+- 移动目标是槽位、只能由面板应答；探针不抢应答权，所以移动链尚未端到端验证。
+- 铺场因此受限：支援线塞满后一直吃 `PrePlayNoAvailableSlots`。
+
+> 判「能打完」的标准仍是一局打到结算面板。现在**机制上通了**（跑到过一次 Lose），
+> 但探针策略不足以稳定复现——那属于自动对战 AI 的活，不是命令链的活。
+
 ## 9. 验证通道
 
 ```powershell
@@ -214,6 +277,9 @@ tools\run.ps1 -VerifyRoomJoin      # ROOM_JOIN_VERIFY_OK
 
 # 无头：选靶链路（收到 pending → 提交 → 效果生效）
 tools\run.ps1 -VerifyTarget          # TARGET_VERIFY_OK
+
+# 无头：指挥命令链（攻击真的造成伤害）
+tools\run.ps1 -VerifyCombat          # COMBAT_VERIFY_OK command-chain-attack-effective
 
 # 图形：拍真实布局（等 seatToken 再拉 AI，主动刷快照后按快门）
 tools\run.ps1 -CaptureRoom         # ROOM_CAPTURE_OK → artifacts/menu/room-1600.png
