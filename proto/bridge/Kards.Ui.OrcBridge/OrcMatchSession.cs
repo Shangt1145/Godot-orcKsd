@@ -571,7 +571,10 @@ public sealed partial class OrcMatchSession : IDisposable
         }
         if ((_pendingSupportIndex is not null || _pendingSlot is not null) && (selector.SelectorName == SelectorNames.Slot || allowed.Any(r => r.Value is FormationGap)))
         {
-            var wanted = SlotAt();
+            // 关键：**优先在引擎给出的候选里按（线＋序号）找同一个 gap 实例**。
+            // FormationGap 是临时快照对象（战线上占用一变就整批重建）——自己 GetInsertionGaps()
+            // 再算一遍可能拿到"同序号但不同实例"或已失效的 gap，执行复验就会 ExecutionRejected。
+            var wanted = SlotAt(allowed);
             ClearIntent();
             if (wanted is not null && allowed.Any(r => ReferenceEquals(r.Value, wanted.Value)))
                 selector.Submit(selector.Mode == SelectorInteractionMode.Drag ? new DropEvent(wanted) : new PickEvent([wanted]));
@@ -583,16 +586,22 @@ public sealed partial class OrcMatchSession : IDisposable
         else { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); }
     }
 
-    private Ref<Entity>? SlotAt()
+    private Ref<Entity>? SlotAt(IReadOnlyList<Ref<Entity>>? candidates = null)
     {
+        FormationGap? FromCandidates(BattleLine line, int ordinal) => candidates?
+            .Select(r => r.Value).OfType<FormationGap>()
+            .FirstOrDefault(g => ReferenceEquals(g.Line, line) && g.Ordinal == ordinal);
+
         if (_pendingSupportIndex is { } support)
         {
             var line = Match.Battlefield.GetSupportLine(_host.Viewer.Index);
-            return line.GetInsertionGaps().FirstOrDefault(g=>g.Ordinal==support)?.Ref;
+            return (FromCandidates(line, support)
+                    ?? line.GetInsertionGaps().FirstOrDefault(g => g.Ordinal == support))?.Ref;
         }
         if (_pendingSlot is not { } front) return null;
         var frontline = Match.Battlefield.FrontLine;
-        return frontline.GetInsertionGaps().FirstOrDefault(g=>g.Ordinal==front)?.Ref;
+        return (FromCandidates(frontline, front)
+                ?? frontline.GetInsertionGaps().FirstOrDefault(g => g.Ordinal == front))?.Ref;
     }
 
     /// <summary>

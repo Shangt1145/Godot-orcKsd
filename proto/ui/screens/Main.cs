@@ -647,26 +647,26 @@ public partial class Main : Control
                 throw new Exception("Two deployments landed on the same slot.");
         }
 
-        // Real movement: advance a unit to a front slot the board says is free, and require it to land
-        // there. The slot is chosen from the projection, not assumed, because the front line is shared.
+        // Real movement: take a move the engine actually offers (new board model: a support unit may
+        // advance to a front gap, but a front unit can only retreat — forcing "frontline" on a retreat
+        // move lands it on the support line). Ask for the offered zone + slot, and require that landing.
         await _runner!.SubmitAsync(new EndTurn());
         await SettlePlayback();
-        var mover = _runner!.CurrentActions.Moves.Select(m => m.Uid).FirstOrDefault();
-        if (mover is not null)
+        var offer = _runner!.CurrentActions.Moves.FirstOrDefault();
+        if (offer is not null)
         {
-            var board = _runner!.CurrentView!;
-            var occupied = board.SelfLine.Concat(board.EnemyLine)
-                .Where(c => c.Zone == "frontline").Select(c => c.SlotIndex).ToHashSet();
-            var free = Enumerable.Range(0, board.FrontLineSlotCount).Where(i => !occupied.Contains(i)).ToArray();
-            if (free.Length > 0)
+            await _runner!.SubmitAsync(new MoveUnit(offer.Uid, offer.ToZone, offer.SlotIndex));
+            await SettlePlayback();
+            var moved = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => c.Uid == offer.Uid);
+            if (moved is null || moved.Zone != offer.ToZone || moved.SlotIndex != offer.SlotIndex)
             {
-                var wanted = free[0];
-                await _runner!.SubmitAsync(new MoveUnit(mover, "frontline", wanted));
-                await SettlePlayback();
-                var moved = _runner!.CurrentView!.SelfLine.FirstOrDefault(c => c.Uid == mover);
-                if (moved is null || moved.Zone != "frontline" || moved.SlotIndex != wanted)
-                    throw new Exception($"Real move asked for front slot {wanted} but landed on " +
-                        $"{(moved is null ? "<gone>" : $"{moved.Zone}[{moved.SlotIndex}]")}.");
+                // 新棋盘模型下"前线有敌方存活单位就禁止推进"是**合法拒绝**（引擎复验规则），
+                // 不能当成 UI 映射错误。真正要抓的是"没理由却落错位"。
+                var reason = _runner.LastRejectionReason;
+                if (reason is null)
+                    throw new Exception($"Real move asked for {offer.ToZone}[{offer.SlotIndex}] but landed on " +
+                        $"{(moved is null ? "<gone>" : $"{moved.Zone}[{moved.SlotIndex}]")} (no rejection reason)");
+                GD.Print($"[move] engine refused {offer.ToZone}[{offer.SlotIndex}]: {reason}（合法拒绝）");
             }
         }
 
