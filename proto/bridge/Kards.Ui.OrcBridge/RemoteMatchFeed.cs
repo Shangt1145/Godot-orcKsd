@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -38,6 +39,9 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private readonly OrcClient _client;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _seatToken;
+    private string? _targetSessionId;
+    /// <summary>选靶候选：UI 侧的 choice id（序号字符串）→ 引擎要的 picks 序号。</summary>
+    private readonly Dictionary<string, int> _picksByChoiceId = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 视图反序列化专用配置：服务端把枚举写成**字符串**（<c>"None"</c>、<c>"Mulligan"</c>…），
@@ -254,18 +258,37 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     /// </summary>
     private (string? Tool, JsonNode? Arguments) Map(UiCommand command) => command switch
     {
-        // slot 缺省取 0：指挥总部固定在支援线居中槽，槽 0 通常空闲。
-        // 取错只会被服务端拒绝并回业务码，不会写坏状态。
-        PlayCard play => ("play.unit", new JsonObject
-        {
-            ["ref"] = play.Uid,
-            ["owner"] = Seat,
-            ["slot"] = play.SupportIndex ?? 0,
-        }),
+        PlayCard play => RoutePlay(play),
         EndTurn => ("match.end_turn", new JsonObject()),
         Concede => ("match.concede", new JsonObject()),
         _ => (null, null),
     };
+
+    /// <summary>
+    /// 出牌按卡型分流：<c>play.unit{ref,owner,slot}</c> / <c>play.command{ref}</c> / <c>play.counter{ref}</c>。
+    ///
+    /// <para>
+    /// **别全塞 play.unit**：指令卡走 play.unit 会被服务端静默忽略——手牌不减、费用不扣、
+    /// 连错误码都不给（实测 `hand 6→6 kredits 3→3`），排查时很容易误判成"选靶链路没通"。
+    /// </para>
+    /// </summary>
+    private (string? Tool, JsonNode? Arguments) RoutePlay(PlayCard play)
+    {
+        var type = _view?.SelfHand.FirstOrDefault(card => card.Uid == play.Uid)?.Definition.CardType;
+        return type switch
+        {
+            "order" => ("play.command", new JsonObject { ["ref"] = play.Uid }),
+            "counter" => ("play.counter", new JsonObject { ["ref"] = play.Uid }),
+            _ => ("play.unit", new JsonObject
+            {
+                // slot 缺省取 0：指挥总部固定在支援线居中槽，槽 0 通常空闲。
+                // 取错只会被服务端拒绝并回业务码，不会写坏状态。
+                ["ref"] = play.Uid,
+                ["owner"] = Seat,
+                ["slot"] = play.SupportIndex ?? 0,
+            }),
+        };
+    }
 
     private void OnNotification(RpcNotification notification)
     {
@@ -279,6 +302,9 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 break;
             case "notify/segment":
                 ApplySegments(notification.Params);
+                break;
+            case "notify/target.request":
+                ApplyTargetRequest(notification.Params);
                 break;
             case "notify/target.expired":
                 _targetPending = false;
@@ -348,6 +374,160 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         // 上升沿触发一次：换牌面板只在"刚进入 mulligan"时弹，不能每帧重弹。
         // 必须在 ProjectionReady 之后——面板要用 CurrentView 渲染。
         if (_mulliganPending && !wasPending) MulliganRequested?.Invoke();
+    }
+
+    /// <summary>
+    /// 选靶请求（<c>notify/target.request</c>）。
+    ///
+    /// <para>
+    /// 载荷是服务端 <c>McpService.PendingJson</c> 的形状：单槽（<c>selector/min/max/candidates</c>），
+    /// 每个候选带**1 起的序号** <c>index</c>——<c>target.submit</c> 要的正是这组序号。
+    /// 所以 <see cref="UiChoice.Id"/> 直接用序号字符串，提交时原样回传，
+    /// 不需要维护 uid ↔ 引擎 ref 的反查表。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>先认领再上屏</b>：应答是"先到先服务"，不 <c>target.claim</c> 就可能被同机的 agent 抢先提交，
+    /// 玩家点下去只会收到"已被应答"。
+    /// </para>
+    /// </summary>
+    private void ApplyTargetRequest(JsonNode? payload)
+    {
+        if (payload is not JsonObject body) return;
+
+        var sessionId = body["sessionId"]?.GetValue<string>() ?? "";
+        if (sessionId.Length == 0) return;
+
+        var allowed = new List<UiChoice>();
+        _picksByChoiceId.Clear();
+        if (body["candidates"] is JsonArray candidates)
+            foreach (var node in candidates)
+            {
+                if (node?["alive"]?.GetValue<bool>() is false) continue;
+                var index = node?["index"]?.GetValue<int>() ?? 0;
+                if (index <= 0) continue;
+
+                var kind = node?["kind"]?.GetValue<string>() ?? "entity";
+                var reference = node?["ref"]?.GetValue<string>() ?? "";
+                var name = node?["name"]?.GetValue<string>();
+                var id = index.ToString(CultureInfo.InvariantCulture);
+
+                _picksByChoiceId[id] = index;
+                allowed.Add(new UiChoice(
+                    id,
+                    string.IsNullOrWhiteSpace(name) ? (reference.Length > 0 ? reference : id) : name,
+                    kind is "card" or "unit" ? ChoiceKind.CardDefinition : ChoiceKind.Reference));
+            }
+
+        var selector = body["selector"]?.GetValue<string>() ?? "";
+        var isDrag = string.Equals(body["mode"]?.GetValue<string>(), "Drag", StringComparison.OrdinalIgnoreCase);
+        var slotKind = allowed.Count > 0 && allowed.All(choice => choice.Kind == ChoiceKind.CardDefinition)
+            ? ChoiceKind.CardDefinition
+            : ChoiceKind.Reference;
+
+        var slot = new UiChoiceSlot(
+            selector, slotKind,
+            body["min"]?.GetValue<int>() ?? 0,
+            body["max"]?.GetValue<int>() ?? 1,
+            allowed)
+        {
+            // 拖拽，或候选本身就是棋盘实体／总部 → 走拖箭头那条交互。
+            BoardTargets = isDrag || allowed.Any(choice => choice.Kind == ChoiceKind.Reference),
+        };
+
+        _targetSessionId = sessionId;
+        _targetPending = true;
+        var request = new UiTargetRequest(sessionId, [slot])
+        {
+            SelectorName = selector,
+            IsDrag = isDrag,
+        };
+
+        _ = ClaimTargetAsync(sessionId);
+        TargetRequested?.Invoke(request, new RemoteTargetResponder(this, sessionId));
+    }
+
+    private async Task ClaimTargetAsync(string sessionId)
+    {
+        try
+        {
+            var result = await _client.CallAsync("target.claim",
+                new JsonObject { ["sessionId"] = sessionId, ["claimant"] = "host" }).ConfigureAwait(false);
+            if (!result.Ok) ErrorRaised?.Invoke($"target.claim: {result.Code} {result.Message}");
+        }
+        catch (Exception error)
+        {
+            ErrorRaised?.Invoke("target.claim: " + error.Message);
+        }
+    }
+
+    private async Task SubmitTargetAsync(string sessionId, IReadOnlyList<int> picks)
+    {
+        try
+        {
+            var result = await _client.CallAsync("target.submit", new JsonObject
+            {
+                ["sessionId"] = sessionId,
+                ["picks"] = new JsonArray([.. picks.Select(pick => (JsonNode)JsonValue.Create(pick)!)]),
+            }).ConfigureAwait(false);
+            if (!result.Ok) ErrorRaised?.Invoke($"target.submit: {result.Code} {result.Message}");
+        }
+        catch (Exception error)
+        {
+            ErrorRaised?.Invoke("target.submit: " + error.Message);
+        }
+    }
+
+    private async Task CancelTargetAsync(string sessionId)
+    {
+        try
+        {
+            var result = await _client.CallAsync("target.cancel",
+                new JsonObject { ["sessionId"] = sessionId }).ConfigureAwait(false);
+            if (!result.Ok) ErrorRaised?.Invoke($"target.cancel: {result.Code} {result.Message}");
+        }
+        catch (Exception error)
+        {
+            ErrorRaised?.Invoke("target.cancel: " + error.Message);
+        }
+    }
+
+    /// <summary>把 UI 的选择（序号字符串）翻译成引擎要的 picks。</summary>
+    private sealed class RemoteTargetResponder : IUiTargetResponder
+    {
+        private readonly RemoteMatchFeed _feed;
+        private readonly string _sessionId;
+
+        public RemoteTargetResponder(RemoteMatchFeed feed, string sessionId)
+        {
+            _feed = feed;
+            _sessionId = sessionId;
+        }
+
+        public bool Complete(string requestId, IReadOnlyDictionary<string, IReadOnlyList<string>> selectionsBySlot)
+        {
+            var id = requestId.Length > 0 ? requestId : _sessionId;
+            var picks = new List<int>();
+            foreach (var selection in selectionsBySlot.Values)
+                foreach (var choiceId in selection)
+                    if (_feed._picksByChoiceId.TryGetValue(choiceId, out var index))
+                        picks.Add(index);
+
+            // 空选择＝取消：拖拽松手落在没有目标的地方就是这条路径。
+            if (picks.Count == 0) return Cancel(id);
+
+            _feed._targetPending = false;
+            _ = _feed.SubmitTargetAsync(id, picks);
+            return true;
+        }
+
+        public bool Cancel(string requestId)
+        {
+            var id = requestId.Length > 0 ? requestId : _sessionId;
+            _feed._targetPending = false;
+            _ = _feed.CancelTargetAsync(id);
+            return true;
+        }
     }
 
     public async ValueTask DisposeAsync()

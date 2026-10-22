@@ -27,6 +27,8 @@ public partial class RoomScreen : VBoxContainer
     private double _poll;
     private int _guestPort;
     private bool _guest;
+    /// <summary>验证用：保证这张卡在卡组里（等随机发牌等到天荒地老时可预期地触发选靶）。</summary>
+    private string? _requiredCard;
     /// <summary>座位占用（由快照更新；读它的地方可能在非主线程，别直接问控件）。</summary>
     private readonly bool[] _occupied = new bool[2];
 
@@ -224,7 +226,7 @@ public partial class RoomScreen : VBoxContainer
         try
         {
             Ui(() => Say("○ 组装卡组…"));
-            _deck = LobbyDeck.Build(_packsRoot);
+            _deck = LobbyDeck.Build(_packsRoot, requiredLocalId: _requiredCard);
 
             Ui(() => Say("○ 启动服务器实例…"));
             var packs = Directory.EnumerateDirectories(_packsRoot)
@@ -505,6 +507,9 @@ public partial class RoomScreen : VBoxContainer
         await JoinAsync();
         return _feed is not null;
     }
+
+    /// <summary>验证用：指定必须出现在卡组里的一张卡（须在 <see cref="OpenAsync"/> 之前调用）。</summary>
+    internal void RequireCardForVerification(string localId) => _requiredCard = localId;
 
     private async Task StartAsync()
     {

@@ -26,8 +26,12 @@ public static class LobbyDeck
     public sealed record Result(string PackageId, string Faction, IReadOnlyList<string> CardIds);
 
     /// <summary>从 <paramref name="packsRoot"/> 下挑一个包组卡（优先 <c>builtin</c>，其次按目录名序）。</summary>
+    /// <param name="requiredLocalId">
+    /// 保证这张卡在卡组里（验证探针用：某些卡要特定手牌才能触发选靶/多步选择，随机发牌等不到）。
+    /// 卡池里没有就忽略；有但没被选中，就替换掉最后一张（张数与国籍都不变）。
+    /// </param>
     /// <exception cref="InvalidOperationException">没有任何包能凑出合法卡组；消息含逐包原因。</exception>
-    public static Result Build(string packsRoot, int size = DefaultSize)
+    public static Result Build(string packsRoot, int size = DefaultSize, string? requiredLocalId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(packsRoot);
         if (!Directory.Exists(packsRoot))
@@ -54,6 +58,15 @@ public static class LobbyDeck
             if (cards.Count == 0) { failures.Add($"{packageId}: 无可组卡的卡定义"); continue; }
 
             if (Compose(cards, size) is not { } composed) { failures.Add($"{packageId}: 同国卡池凑不满 {size} 张"); continue; }
+
+            if (!string.IsNullOrEmpty(requiredLocalId)
+                && cards.FirstOrDefault(card => card.LocalId == requiredLocalId) is { LocalId: not null } required)
+            {
+                // 放满同名上限：只放 1 张时"等它上手"要抽 30 多张，验证会变成赌运气。
+                var copies = Math.Clamp(required.CopyLimit, 1, size);
+                for (var i = 0; i < copies; i++)
+                    composed.CardIds[size - 1 - i] = requiredLocalId;
+            }
 
             // 服务端卡池的键是应用层 ID，房间填充不做裸 id 解析，必须补前缀。
             var cardIds = composed.CardIds.Select(localId => $"pack/{packageId}/{localId}").ToArray();

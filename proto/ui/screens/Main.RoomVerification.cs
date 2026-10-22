@@ -1,4 +1,5 @@
 using Godot;
+using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
 
 namespace Kards.Ui;
@@ -164,6 +165,132 @@ public partial class Main
         }
 
         guestScreen?.Close();
+        _room.Close();
+        GetTree().Quit();
+    }
+
+    /// <summary>
+    /// <c>--verify-target</c>：联机选靶链路。
+    ///
+    /// <para>
+    /// 不赌随机：卡组里塞满"鹰爪"（德国 3 费指令卡，效果里调 <c>DesktopTargetContext.SelectAsync</c>），
+    /// 攒够费打出去，等服务端推 <c>notify/target.request</c>，再用 responder 提交第一个候选。
+    /// 没有这一步，"只能出单位牌"就永远是个说法。
+    /// </para>
+    /// </summary>
+    private async void VerifyTarget()
+    {
+        try
+        {
+            _room.RequireCardForVerification("eagle_claws");
+            Show("room");
+            await _room.OpenAsync();
+
+            var feed = _room.Feed ?? throw new Exception("房主没有连上");
+            Require(feed.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
+            Require(await _room.AddAiToSeatAsync(1), "座位 1 添加 AI 失败");
+            Require(await _room.StartForVerificationAsync(), "开局失败");
+            await EnterRemoteMatchAsync();
+            Require(_active == "battle", "开局后没有切到战场");
+
+            if (feed.CurrentView?.Phase == "mulligan")
+            {
+                await feed.MulliganDoneAsync(0);
+                for (var i = 0; i < 100 && feed.CurrentView?.Phase == "mulligan"; i++)
+                    await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            }
+
+            // 事件在协议线程，这里只做记录（不碰控件）。
+            UiTargetRequest? request = null;
+            IUiTargetResponder? responder = null;
+            feed.TargetRequested += (incoming, reply) => { request = incoming; responder = reply; };
+
+            // 攒费：首回合只有 1 点，鹰爪要 3 点。
+            // 顺带先铺一个己方单位——选靶候选是"场上单位"，双方都空时请求根本不会产生。
+            for (var round = 0; round < 12 && request is null; round++)
+            {
+                var view = feed.CurrentView;
+                if (view is null) break;
+
+                var kredits = view.SelfKredits;
+                var hasUnit = view.SelfLine.Count > 0;
+                var eagle = view.SelfHand.FirstOrDefault(candidate =>
+                    candidate.CardId.EndsWith("/eagle_claws", StringComparison.Ordinal));
+
+                if (!hasUnit)
+                {
+                    var unit = view.SelfHand
+                        .Where(candidate => candidate.Definition.CardType is not ("order" or "counter"))
+                        .Where(candidate => (candidate.EffectiveCost ?? int.MaxValue) <= kredits)
+                        .OrderBy(candidate => candidate.EffectiveCost ?? int.MaxValue)
+                        .FirstOrDefault();
+                    if (unit is not null)
+                    {
+                        GD.Print($"[target] round {round}: 先铺单位 {unit.CardId} cost={unit.EffectiveCost} kredits={kredits}");
+                        await feed.SubmitAsync(new Kards.Ui.Contracts.PlayCard(unit.Uid, 0));
+                        for (var i = 0; i < 50; i++)
+                            await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+                        continue;
+                    }
+                }
+
+                if (eagle is not null && hasUnit && (eagle.EffectiveCost ?? int.MaxValue) <= kredits)
+                {
+                    GD.Print($"[target] play eagle_claws turn={view.Turn} cost={eagle.EffectiveCost} " +
+                             $"kredits={kredits} ownLine={view.SelfLine.Count}");
+                    var enemyBefore = view.EnemyLine.Count;
+                    await feed.SubmitAsync(new Kards.Ui.Contracts.PlayCard(eagle.Uid, 0));
+
+                    // 先给效果一点时间跑：扣费说明脚本进了执行期，没扣费说明连打都没打出去。
+                    for (var i = 0; i < 30; i++)
+                        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+                    var after = feed.CurrentView;
+                    GD.Print($"[target] after play: hand {view.SelfHand.Count}->{after?.SelfHand.Count} " +
+                             $"kredits {kredits}->{after?.SelfKredits} " +
+                             $"enemyLine {enemyBefore}->{after?.EnemyLine.Count} " +
+                             $"ownLine={after?.SelfLine.Count} " +
+                             $"enemyHq {after?.EnemyHq?.EffectiveDefense}");
+
+                    for (var i = 0; i < 150 && request is null; i++)
+                        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+                    break;
+                }
+
+                GD.Print($"[target] round {round}: 手牌 {view.SelfHand.Count} 张、kredits={kredits}、场上 {view.SelfLine.Count}，过回合攒费");
+                await feed.SubmitAsync(new Kards.Ui.Contracts.EndTurn());
+                for (var i = 0; i < 150 && feed.CurrentView?.Turn == view.Turn; i++)
+                    await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            }
+
+            Require(request is not null,
+                "没有收到 notify/target.request。注意：这不是 UI 的问题——鹰爪的效果脚本调的是 " +
+                "Kards.Ui.OrcBridge.DesktopTargetContext.SelectAsync（UI 层程序集），服务端进程里没有这个类型， " +
+                "所以效果静默不执行、也就不会有 pending。要打通得把这类 csx 改成调引擎侧 targeter。");
+            var slot = request!.Slots.FirstOrDefault() ?? throw new Exception("选靶请求没有槽");
+            GD.Print($"[target] request selector={request.SelectorName} drag={request.IsDrag} " +
+                     $"slots={request.Slots.Count} candidates={slot.Allowed.Count}");
+
+            var pick = slot.Allowed.FirstOrDefault() ?? throw new Exception("选靶请求没有候选");
+            var accepted = responder!.Complete(request.RequestId,
+                new Dictionary<string, IReadOnlyList<string>> { [slot.Name] = [pick.Id] });
+            Require(accepted, "responder.Complete 返回 false（UI 会以为没提交）");
+            GD.Print($"[target] submitted pick={pick.Id} label={pick.Label} kind={pick.Kind}");
+
+            for (var i = 0; i < 100 && feed.TargetPending; i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(!feed.TargetPending, "提交后仍处于选靶待决状态");
+
+            GD.Print("TARGET_VERIFY_OK request-received candidate-submitted pending-cleared");
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("TARGET_VERIFY_FAILED " + error.Message);
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
         _room.Close();
         GetTree().Quit();
     }
