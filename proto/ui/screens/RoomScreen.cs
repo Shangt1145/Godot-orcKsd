@@ -27,6 +27,7 @@ public partial class RoomScreen : VBoxContainer
     private double _poll;
     private int _guestPort;
     private bool _guest;
+    private string? _lastError;
     /// <summary>验证用：保证这张卡在卡组里（等随机发牌等到天荒地老时可预期地触发选靶）。</summary>
     private string? _requiredCard;
     /// <summary>座位占用（由快照更新；读它的地方可能在非主线程，别直接问控件）。</summary>
@@ -238,7 +239,7 @@ public partial class RoomScreen : VBoxContainer
 
             _feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _server.Port);
             // 回调来自协议线程，控件只能主线程写——统一 marshal。
-            _feed.ErrorRaised += message => Ui(() => Say("✗ " + message));
+            _feed.ErrorRaised += message => { _lastError = message; Ui(() => Say("✗ " + message)); };
 
             // 房主＝local 座位；服务端只认 Kind==Local 的房间主人，否则开局被拒。
             var token = await _feed.ClaimSeatAsync(0, "local", "房主", _deck.CardIds);
@@ -496,6 +497,9 @@ public partial class RoomScreen : VBoxContainer
 
     /// <summary>卡组构建结果（验证探针用来核对张数与包名）。</summary>
     internal LobbyDeck.Result? Deck => _deck;
+
+    /// <summary>最后一条服务端错误（验证探针用来报告占座/开局失败的真实原因）。</summary>
+    internal string? LastError => _lastError;
 
     /// <summary>立刻拉一次快照（验证/截图用；平时靠 _Process 每 1.5 秒轮询）。</summary>
     internal Task RefreshForVerificationAsync() => RefreshAsync();

@@ -443,22 +443,10 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             IsDrag = isDrag,
         };
 
-        _ = ClaimTargetAsync(sessionId);
+        // 🔴 不要 target.claim：服务端 TargetTools.SubmitAsync 把 claimant 写死成
+        // TargeterBridgeAdapter.ClaimantService，认领成 "host" 之后提交会被判
+        // "会话与请求不符（先到先服务）"。想做 host 优先，得引擎先给 target.submit 加 claimant 参数。
         TargetRequested?.Invoke(request, new RemoteTargetResponder(this, sessionId));
-    }
-
-    private async Task ClaimTargetAsync(string sessionId)
-    {
-        try
-        {
-            var result = await _client.CallAsync("target.claim",
-                new JsonObject { ["sessionId"] = sessionId, ["claimant"] = "host" }).ConfigureAwait(false);
-            if (!result.Ok) ErrorRaised?.Invoke($"target.claim: {result.Code} {result.Message}");
-        }
-        catch (Exception error)
-        {
-            ErrorRaised?.Invoke("target.claim: " + error.Message);
-        }
     }
 
     private async Task SubmitTargetAsync(string sessionId, IReadOnlyList<int> picks)

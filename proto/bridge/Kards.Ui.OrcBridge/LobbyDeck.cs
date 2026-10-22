@@ -57,15 +57,48 @@ public static class LobbyDeck
             var cards = ReadCards(directory);
             if (cards.Count == 0) { failures.Add($"{packageId}: 无可组卡的卡定义"); continue; }
 
-            if (Compose(cards, size) is not { } composed) { failures.Add($"{packageId}: 同国卡池凑不满 {size} 张"); continue; }
+            // 指定了必带卡就以它所在国为主国——否则"想要这张卡"和"单一主国"会打架
+            // （16 张选靶卡分散在苏/美/英/日，德国一张都没有）。
+            var requiredFaction = string.IsNullOrEmpty(requiredLocalId)
+                ? null
+                : cards.Where(card => card.LocalId == requiredLocalId)
+                    .Select(card => card.Faction)
+                    .FirstOrDefault();
+
+            // 直接按国籍收窄卡池，而不是只在排序里给个"优先"——
+            // 后者会在主国卡池凑不满时静默回落，产出"Germany + 苏联卡"这种混编卡组。
+            Composed? composed = null;
+            if (!string.IsNullOrEmpty(requiredFaction))
+            {
+                // 国籍比较必须忽略大小写：卡包里 Germany/germany、Soviet/soviet 是混着写的，
+                // 严格比较会把同一国拆成两个不足 39 张的池子，逼出混编卡组。
+                var scoped = cards
+                    .Where(card => string.Equals(card.Faction, requiredFaction, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                composed = Compose(scoped, size);
+            }
+            composed ??= Compose(cards, size, requiredFaction);
+
+            if (composed is null)
+            {
+                failures.Add($"{packageId}: {(requiredFaction is null ? "" : $"{requiredFaction} ")}卡池凑不满 {size} 张");
+                continue;
+            }
 
             if (!string.IsNullOrEmpty(requiredLocalId)
                 && cards.FirstOrDefault(card => card.LocalId == requiredLocalId) is { LocalId: not null } required)
             {
-                // 放满同名上限：只放 1 张时"等它上手"要抽 30 多张，验证会变成赌运气。
-                var copies = Math.Clamp(required.CopyLimit, 1, size);
-                for (var i = 0; i < copies; i++)
-                    composed.CardIds[size - 1 - i] = requiredLocalId;
+                // 补足到同名上限，而不是无脑放满：卡池里本来就可能已经入选了这张卡，
+                // 直接覆盖末尾 N 张会变成 6 张（服务端会以"超过上限"拒收整个卡组）。
+                var allowed = Math.Min(required.CopyLimit, size);
+                var existing = composed.CardIds.Count(id => id == requiredLocalId);
+                var missing = Math.Max(0, allowed - existing);
+                for (var i = size - 1; i >= 0 && missing > 0; i--)
+                {
+                    if (composed.CardIds[i] == requiredLocalId) continue;
+                    composed.CardIds[i] = requiredLocalId;
+                    missing--;
+                }
             }
 
             // 服务端卡池的键是应用层 ID，房间填充不做裸 id 解析，必须补前缀。
@@ -158,10 +191,12 @@ public static class LobbyDeck
     private sealed record Composed(string Faction, List<string> CardIds);
 
     /// <summary>选一国凑 <paramref name="size"/> 张；凑不满返回 null。</summary>
-    private static Composed? Compose(List<LobbyCard> cards, int size)
+    /// <param name="preferredFaction">优先尝试的国家（调用方指定必带卡时用它的国籍）。</param>
+    private static Composed? Compose(List<LobbyCard> cards, int size, string? preferredFaction = null)
     {
-        var factions = cards.GroupBy(card => card.Faction)
-            .OrderByDescending(group => group.Count())
+        var factions = cards.GroupBy(card => card.Faction, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(group => string.Equals(group.Key, preferredFaction, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(group => group.Count())
             .ThenBy(group => group.Key, StringComparer.Ordinal);
 
         foreach (var faction in factions)

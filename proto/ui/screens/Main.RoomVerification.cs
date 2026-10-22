@@ -182,12 +182,19 @@ public partial class Main
     {
         try
         {
-            _room.RequireCardForVerification("eagle_claws");
+            _room.RequireCardForVerification("bloody_sickle");
             Show("room");
             await _room.OpenAsync();
 
             var feed = _room.Feed ?? throw new Exception("房主没有连上");
-            Require(feed.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
+            var deck = _room.Deck ?? throw new Exception("卡组没组出来");
+            GD.Print($"[target] deck pack={deck.PackageId} faction={deck.Faction} " +
+                     $"size={deck.CardIds.Count} " +
+                     $"slaughter={deck.CardIds.Count(id => id.EndsWith("/bloody_sickle", StringComparison.Ordinal))} 张");
+            Require(feed.SeatToken is { Length: > 0 },
+                "房主没有拿到 seatToken" + (_room.LastError is { } reason ? $"：{reason}" : "（没有错误信息）"));
+            Require(deck.CardIds.Any(id => id.EndsWith("/bloody_sickle", StringComparison.Ordinal)),
+                "卡组里没有血红镰刀，选靶无从触发（LobbyDeck 主国没跟着必带卡走）");
             Require(await _room.AddAiToSeatAsync(1), "座位 1 添加 AI 失败");
             Require(await _room.StartForVerificationAsync(), "开局失败");
             await EnterRemoteMatchAsync();
@@ -207,7 +214,7 @@ public partial class Main
 
             // 攒费：首回合只有 1 点，鹰爪要 3 点。
             // 顺带先铺一个己方单位——选靶候选是"场上单位"，双方都空时请求根本不会产生。
-            for (var round = 0; round < 12 && request is null; round++)
+            for (var round = 0; round < 18 && request is null; round++)
             {
                 var view = feed.CurrentView;
                 if (view is null) break;
@@ -215,7 +222,7 @@ public partial class Main
                 var kredits = view.SelfKredits;
                 var hasUnit = view.SelfLine.Count > 0;
                 var eagle = view.SelfHand.FirstOrDefault(candidate =>
-                    candidate.CardId.EndsWith("/eagle_claws", StringComparison.Ordinal));
+                    candidate.CardId.EndsWith("/bloody_sickle", StringComparison.Ordinal));
 
                 if (!hasUnit)
                 {
@@ -236,7 +243,7 @@ public partial class Main
 
                 if (eagle is not null && hasUnit && (eagle.EffectiveCost ?? int.MaxValue) <= kredits)
                 {
-                    GD.Print($"[target] play eagle_claws turn={view.Turn} cost={eagle.EffectiveCost} " +
+                    GD.Print($"[target] play bloody_sickle turn={view.Turn} cost={eagle.EffectiveCost} " +
                              $"kredits={kredits} ownLine={view.SelfLine.Count}");
                     var enemyBefore = view.EnemyLine.Count;
                     await feed.SubmitAsync(new Kards.Ui.Contracts.PlayCard(eagle.Uid, 0));
@@ -263,24 +270,38 @@ public partial class Main
             }
 
             Require(request is not null,
-                "没有收到 notify/target.request。注意：这不是 UI 的问题——鹰爪的效果脚本调的是 " +
-                "Kards.Ui.OrcBridge.DesktopTargetContext.SelectAsync（UI 层程序集），服务端进程里没有这个类型， " +
-                "所以效果静默不执行、也就不会有 pending。要打通得把这类 csx 改成调引擎侧 targeter。");
+                "没有收到 notify/target.request。常见原因：18 回合内没抽到血红镰刀（随机发牌），" +
+                "或选靶候选为 0（场上没有任何单位）。先看上面的 [target] 轨迹再判断，别直接怀疑链路。");
             var slot = request!.Slots.FirstOrDefault() ?? throw new Exception("选靶请求没有槽");
             GD.Print($"[target] request selector={request.SelectorName} drag={request.IsDrag} " +
                      $"slots={request.Slots.Count} candidates={slot.Allowed.Count}");
 
             var pick = slot.Allowed.FirstOrDefault() ?? throw new Exception("选靶请求没有候选");
+            var hqBefore = feed.CurrentView?.SelfHq?.EffectiveDefense;
+            var lineBefore = feed.CurrentView?.SelfLine.Count ?? 0;
             var accepted = responder!.Complete(request.RequestId,
                 new Dictionary<string, IReadOnlyList<string>> { [slot.Name] = [pick.Id] });
             Require(accepted, "responder.Complete 返回 false（UI 会以为没提交）");
             GD.Print($"[target] submitted pick={pick.Id} label={pick.Label} kind={pick.Kind}");
 
-            for (var i = 0; i < 100 && feed.TargetPending; i++)
+            // 提交是异步 RPC：等它落地，别急着 close（否则报 "disposed object"，看起来像功能坏了）。
+            for (var i = 0; i < 40; i++)
                 await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
-            Require(!feed.TargetPending, "提交后仍处于选靶待决状态");
 
-            GD.Print("TARGET_VERIFY_OK request-received candidate-submitted pending-cleared");
+            var afterSubmit = feed.CurrentView;
+            GD.Print($"[target] after submit: ownHq {hqBefore}->{afterSubmit?.SelfHq?.EffectiveDefense} " +
+                     $"ownLine {lineBefore}->{afterSubmit?.SelfLine.Count} pending={feed.TargetPending}");
+
+            Require(!feed.TargetPending, "提交后仍处于选靶待决状态");
+            // 血红镰刀：对选中单位 1 伤 + 己方总部 1 伤。单位被打死时脚本会在死亡结算处中断，
+            // 总部那 1 点不一定落到——所以"单位减少"和"总部掉血"任一发生都算效果生效。
+            var hqDropped = (afterSubmit?.SelfHq?.EffectiveDefense ?? 0) < (hqBefore ?? 0);
+            var lineDropped = (afterSubmit?.SelfLine.Count ?? 0) < lineBefore;
+            Require(hqDropped || lineDropped,
+                $"提交后没有任何效果迹象（总部 {hqBefore}->{afterSubmit?.SelfHq?.EffectiveDefense}、" +
+                $"场上 {lineBefore}->{afterSubmit?.SelfLine.Count}）");
+
+            GD.Print("TARGET_VERIFY_OK request-received targeter-submitted effect-applied");
         }
         catch (Exception error)
         {
