@@ -27,11 +27,12 @@ public partial class Main
                      $"faction={_room.Deck.Faction} deck={_room.Deck.CardIds.Count}");
 
             var feed = _room.Feed!;
-            await feed.RefreshViewAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
             Require(feed.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
 
             var ai = await _room.AddAiToSeatAsync(1);
             Require(ai, "座位 1 添加 AI 失败");
+            feed = _room.Feed!;
 
             var started = await _room.StartForVerificationAsync();
             Require(started, "开局失败");
@@ -51,12 +52,21 @@ public partial class Main
             Require(_battle.Visible, "战场屏没有显示");
 
             // 换牌确认 + 出牌：证明战场侧的输入确实能走到服务端。
+            string? replacedUid = null;
             if (feed.CurrentView?.Phase == "mulligan")
             {
-                await feed.MulliganDoneAsync(0);
+                Require(feed.CurrentView.SelfHand.All(c => c.Definition.ArtPath.Length > 0 && _textures.Get(c.Definition.ArtPath) is not null), "联机手牌卡图未解析到本地资源");
+                if (OS.GetCmdlineUserArgs().Contains("--replace-opening"))
+                { replacedUid = feed.CurrentView.SelfHand[0].Uid; _battle.MarkMulliganReplacement(replacedUid); }
+                _battle.ConfirmMulligan();
                 for (var i = 0; i < 100 && feed.CurrentView?.Phase == "mulligan"; i++)
                     await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
             }
+            Require(feed.CurrentView?.Phase != "mulligan", "界面确认换牌后仍停在换牌阶段");
+            Require(replacedUid is null || !feed.CurrentView!.SelfHand.Any(c => c.Uid == replacedUid), "标记替换的卡仍在手牌中");
+            for (var i = 0; i < 200 && feed.CurrentView?.ActivePlayerSide != "self"; i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(feed.CurrentView?.ActivePlayerSide == "self", "引擎 AI 未交回回合");
 
             var playable = feed.CurrentView?.SelfHand
                 .Where(card => (card.EffectiveCost ?? int.MaxValue) <= (feed.CurrentView?.SelfKredits ?? 0))
@@ -77,7 +87,18 @@ public partial class Main
                 GD.Print("[room] 首回合没有负担得起的牌，跳过出牌检查");
             }
 
-            GD.Print("ROOM_VERIFY_OK server claim ai start view battle play");
+            var turn = feed.CurrentView!.Turn;
+            await feed.SubmitAsync(new EndTurn());
+            for (var i = 0; i < 300 && (feed.CurrentView!.Turn <= turn || feed.CurrentView.ActivePlayerSide != "self"); i++)
+                await ToSignal(GetTree().CreateTimer(.1), SceneTreeTimer.SignalName.Timeout);
+            Require(feed.CurrentView!.Turn > turn && feed.CurrentView.ActivePlayerSide == "self", "结束回合后 AI 没有行动并交回回合");
+            if(DisplayServer.GetName() != "headless")
+            {
+                await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+                var folder = ProjectSettings.GlobalizePath("res://artifacts/setup-selection-20261022"); System.IO.Directory.CreateDirectory(folder);
+                GetViewport().GetTexture().GetImage().SavePng(folder + "/room-ai-fixed.png");
+            }
+            GD.Print("ROOM_VERIFY_OK server claim ai start local-art ui-mulligan battle play ai-turn-return");
         }
         catch (Exception error)
         {
@@ -123,6 +144,9 @@ public partial class Main
             var joined = await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port);
             Require(joined, "客人加入失败");
             Require(guestScreen.IsGuest, "客人模式没有正确标记");
+            Require(guestScreen.Feed!.AdmissionState == "pending", "客人未等待批准");
+            Require((await _room.AdmitForVerificationAsync(guestScreen.Feed.ConnectionId)).Ok, "批准客人失败");
+            Require(await guestScreen.Feed.WaitForAdmissionAsync(), "客人未收到许可");
             guestScreen.Feed!.ErrorRaised += message => GD.Print("[room-join] guest error: " + message);
 
             await _room.RefreshForVerificationAsync();
@@ -130,7 +154,7 @@ public partial class Main
             var seatOne = ((info.Details as System.Text.Json.Nodes.JsonObject)?["seats"]
                     as System.Text.Json.Nodes.JsonArray)?
                 .FirstOrDefault(node => node?["seat"]?.GetValue<int>() == 1);
-            Require(seatOne?["controllerKind"]?.GetValue<string>() == "remote",
+            Require(seatOne?["kind"]?.GetValue<string>() == "remote",
                 "房主侧没有看到座位 1 变成 remote");
             GD.Print("[room-join] guest joined via UI path, host sees seat1=remote");
 
@@ -241,6 +265,7 @@ public partial class Main
             Require(feed.SeatToken is { Length: > 0 }, "占座失败" +
                 (_room.LastError is { } reason ? $"：{reason}" : ""));
             Require(await _room.AddAiToSeatAsync(1), "座位 1 添加 AI 失败");
+            feed = _room.Feed!;
             Require(await _room.StartForVerificationAsync(), "开局失败");
             await EnterRemoteMatchAsync();
 
@@ -449,6 +474,7 @@ public partial class Main
             Require(deck.CardIds.Any(id => id.EndsWith("/bloody_sickle", StringComparison.Ordinal)),
                 "卡组里没有血红镰刀，选靶无从触发（LobbyDeck 主国没跟着必带卡走）");
             Require(await _room.AddAiToSeatAsync(1), "座位 1 添加 AI 失败");
+            feed = _room.Feed!;
             Require(await _room.StartForVerificationAsync(), "开局失败");
             await EnterRemoteMatchAsync();
             Require(_active == "battle", "开局后没有切到战场");
@@ -588,6 +614,7 @@ public partial class Main
             guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _room.Port, seat: 1);
             var guestToken = await guest.ClaimSeatAsync(1, "remote", "远端玩家", _room.Deck!.CardIds);
             Require(guestToken is not null, "远端玩家占座失败");
+            Require((await _room.AdmitForVerificationAsync(guest.ConnectionId)).Ok && await guest.WaitForAdmissionAsync(), "批准远端玩家失败");
             GD.Print("[room-remote] guest joined seat=1");
 
             // 房主侧快照应看到座位 1 是 remote 玩家，而不是空座。
@@ -596,7 +623,7 @@ public partial class Main
             var seats = (info.Details as System.Text.Json.Nodes.JsonObject)?["seats"];
             var seatOne = (seats as System.Text.Json.Nodes.JsonArray)?
                 .FirstOrDefault(node => node?["seat"]?.GetValue<int>() == 1);
-            var kind = seatOne?["controllerKind"]?.GetValue<string>() ?? "";
+            var kind = seatOne?["kind"]?.GetValue<string>() ?? "";
             Require(kind == "remote", $"座位 1 的 controllerKind 应为 remote，实际 '{kind}'");
             GD.Print($"[room-remote] host sees seat1 kind={kind}");
 
@@ -708,6 +735,8 @@ public partial class Main
             guestScreen.Visible = false;
 
             Require(await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port), "客人加入失败");
+            Require((await _room.AdmitForVerificationAsync(guestScreen.Feed!.ConnectionId)).Ok, "批准客人失败");
+            Require(await guestScreen.Feed.WaitForAdmissionAsync(), "客人许可未送达");
             Require(await _room.StartForVerificationAsync(), "开局失败");
 
             await host.RefreshViewAsync();
@@ -837,7 +866,7 @@ public partial class Main
             var seatOne = ((info.Details as System.Text.Json.Nodes.JsonObject)?["seats"]
                     as System.Text.Json.Nodes.JsonArray)?
                 .FirstOrDefault(node => node?["seat"]?.GetValue<int>() == 1);
-            Require(seatOne?["controllerKind"]?.GetValue<string>() == "remote",
+            Require(seatOne?["kind"]?.GetValue<string>() == "remote",
                 "房主侧没有看到座位 1 变成 remote");
 
             GD.Print("ROOM_DISCOVERY_VERIFY_OK announce listen loopback seats-payload join-from-list own-room-filtered");
@@ -881,6 +910,8 @@ public partial class Main
             _room.GetParent().AddChild(guestScreen);
             guestScreen.Visible = false;
             Require(await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port), "客人加入失败");
+            Require((await _room.AdmitForVerificationAsync(guestScreen.Feed!.ConnectionId)).Ok, "批准客人失败");
+            Require(await guestScreen.Feed.WaitForAdmissionAsync(), "客人许可未送达");
             Require(await _room.StartForVerificationAsync(), "开局失败");
 
             var hostFeed = host;

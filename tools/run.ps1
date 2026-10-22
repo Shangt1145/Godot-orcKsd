@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64_console.exe',
     # 引擎源码副本：房间屏要拉起 Orc.Server；构建产物缺 OrcServer/ 时按 ORC_ENGINE_ROOT 兜底解析。
@@ -10,6 +10,7 @@
     [switch]$NetProbe,
     [switch]$NetPlay,
     [switch]$VerifyRoom,
+    [switch]$VerifyViewerReplay,
     [switch]$VerifyRoomRemote,
     [switch]$VerifyRoomJoin,
     [switch]$VerifyRoomReconnect,
@@ -54,6 +55,7 @@ try {
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
+    elseif ($VerifyViewerReplay) { & $Godot --headless --path $BuildRoot '--' --verify-viewer-replay }
     elseif ($VerifyRoom) { & $Godot --headless --path $BuildRoot '--' --verify-room }
     elseif ($VerifyRoomRemote) { & $Godot --headless --path $BuildRoot '--' --verify-room-remote }
     elseif ($VerifyRoomJoin) { & $Godot --headless --path $BuildRoot '--' --verify-room-join }

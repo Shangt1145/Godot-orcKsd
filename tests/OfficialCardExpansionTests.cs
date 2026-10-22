@@ -27,7 +27,7 @@ public sealed class OfficialPackagesFixture : IDisposable
     public void Dispose()=>OrcEngineHost.Reset();
     public async Task<OrcMatchSession> Ready(params string[] hand)
     {
-        var session=await OrcMatchSession.CreateFromCatalogAsync(Catalog.Cards,31,"official-card-test","unused",sourceDirectory:Source,openingHand:hand);
+        var session=await OrcMatchSession.CreateFromCatalogAsync(Catalog.Cards,31,"official-card-test","unused",sourceDirectory:Source,openingHand:hand, firstPlayerIndex: 0);
         session.DriveOpponent=false;await session.SettleMulliganAsync(false);
         await session.Host.Match.ResourceManager.GainSlotsAsync(session.Host.Match.Players[0],10);
         await session.Host.Match.ResourceManager.GainPointsAsync(session.Host.Match.Players[0],10);session.SettleProjection();return session;

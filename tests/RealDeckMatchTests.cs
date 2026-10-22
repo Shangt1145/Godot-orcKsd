@@ -78,7 +78,7 @@ public sealed class RealDeckMatchTests
         var deck = DeckBuilder.Build(pool, seed: 20261007);
 
         var session = await OrcMatchSession.CreateAsync(pool, deck, deck,
-            seed: 20261007, matchId: "real-deck");
+            seed: 20261007, matchId: "real-deck", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -141,7 +141,7 @@ public sealed class RealDeckMatchTests
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007 + seed);
         var session = await OrcMatchSession.CreateAsync(pool, deck, deck,
-            seed: 20261007 + seed, matchId: $"real-{seed}");
+            seed: 20261007 + seed, matchId: $"real-{seed}", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);

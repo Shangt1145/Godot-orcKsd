@@ -58,7 +58,7 @@ public sealed class Stage6C2Tests
         var pool = new[] { new CardDefinitionEntry("order", Definition("选择指令", CardCategory.Command)),
             new CardDefinitionEntry("candidate", Definition("引擎候选单位", CardCategory.Unit)) };
         var deck = Enumerable.Repeat("order", 20).ToArray();
-        using var session = await OrcMatchSession.CreateAsync(pool, deck, deck, 4, "multi-command");
+        using var session = await OrcMatchSession.CreateAsync(pool, deck, deck, 4, "multi-command", firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var requests = Channel.CreateUnbounded<(UiTargetRequest Request, IUiTargetResponder Responder)>();
         session.TargetRequested += (request, responder) => requests.Writer.TryWrite((request, responder));

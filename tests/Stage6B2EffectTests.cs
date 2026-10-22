@@ -15,7 +15,7 @@ public sealed class Stage6B2EffectTests
     private static async Task<OrcMatchSession> Ready(params string[] hand)
     {
         var session = await OrcMatchSession.CreateFromCatalogAsync(Catalog().Cards, 7, Guid.NewGuid().ToString(), "probe",
-            openingHand: hand, sourceDirectory: Source);
+            openingHand: hand, sourceDirectory: Source, firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var match = session.Host.Match;
         await match.ResourceManager.GainSlotsAsync(match.Players[0], 11);
@@ -240,8 +240,8 @@ public sealed class Stage6B2EffectTests
         var catalog = Catalog(); var hands = new HashSet<string>();
         for (var seed = 0; seed < 8; seed++)
         {
-            using var first = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, seed, "a", "probe", sourceDirectory: Source);
-            using var second = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, seed, "b", "probe", sourceDirectory: Source);
+            using var first = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, seed, "a", "probe", sourceDirectory: Source, firstPlayerIndex: 0);
+            using var second = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, seed, "b", "probe", sourceDirectory: Source, firstPlayerIndex: 0);
             Assert.Equal(first.View.SelfHand.Select(c => c.CardId), second.View.SelfHand.Select(c => c.CardId));
             Assert.Equal(26, first.View.SelfDeckCount); hands.Add(string.Join(",", first.View.SelfHand.Select(c => c.CardId)));
         }

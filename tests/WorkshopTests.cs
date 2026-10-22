@@ -112,7 +112,7 @@ public sealed class WorkshopTests : IDisposable
     [Fact]
     public async Task AuthoredKeywordActuallyExecutesOnDeploymentWithTheCustomNation()
     {
-        var (_,_,n,card)=Authored();using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"workshop-test","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        var (_,_,n,card)=Authored();using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"workshop-test","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card], firstPlayerIndex: 0);
         session.DriveOpponent=false;await session.SettleMulliganAsync(false);
         var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);Assert.Equal(card.Attack,actor.EffectiveAttack);
         Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
@@ -134,7 +134,7 @@ public sealed class WorkshopTests : IDisposable
         var loaded=new DiyWorkshopLibrary(Path.Combine(root,"packs.json"));Assert.Equal(program.ToJson(),loaded.Packs.Single().Keywords.Single().ProgramJson);
         var result=DiyCardCompiler.Validate(card,catalog.Cards);Assert.True(result.Success,string.Join(';',result.Errors));
         Assert.Contains(":7",result.EngineCardJson);Assert.True(WorkshopAuthoring.TryKeyword(keyword.Id,out var engineId));
-        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"program-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"program-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card], firstPlayerIndex: 0);
         session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
         Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
         var unit=(CardBase)session.Host.Index[actor.Uid];Assert.Equal(7,unit.Keywords.GetValue(engineId));Assert.True(unit.GetData<CommandData>().CanMove);Assert.False(unit.GetData<CommandData>().CanAttack);
@@ -145,7 +145,7 @@ public sealed class WorkshopTests : IDisposable
         var program=new KeywordProgram{Handlers=[new(){Actions=[new(){Op="attack.set",Value="1"}]}],Skills=[new(){Id="strike",Name="重击",Cost="0",SpendAttack=true,SpendMove=false,Actions=[new(){Op="buff",Value="2"}]}]};
         var keyword=new DiyKeywordDraft{Name="突击",ProgramJson=program.ToJson()};var pack=new DiyPackDraft{Keywords=[keyword]};store.Save(pack);
         var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id]};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
-        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"skill-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"skill-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card], firstPlayerIndex: 0);
         session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
         Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
         var skill=Assert.Single(session.KeywordSkills(actor.Uid));
@@ -161,7 +161,7 @@ public sealed class WorkshopTests : IDisposable
         var program=new KeywordProgram{Skills=[new(){Id="grand",Name="大招",Cost="10000",SpendAttack=false,SpendMove=false,Actions=[new(){Op="buff",Value="2"}]}]};
         var keyword=new DiyKeywordDraft{Name="豪掷",ProgramJson=program.ToJson()};var pack=new DiyPackDraft{Keywords=[keyword]};store.Save(pack);
         var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id]};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
-        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"skill-guard","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card]);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"skill-guard","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card], firstPlayerIndex: 0);
         session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
         Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
         Assert.Equal(UiSubmitOutcome.UnknownCard,await session.SubmitAsync(new UseKeywordSkill("uid/nothing",keyword.Id,"grand")));
@@ -184,7 +184,7 @@ public sealed class WorkshopTests : IDisposable
             new(){Id="morph",Name="变形",Cost="0",SpendAttack=false,SpendMove=false,Actions=[new(){Op="replace",Target="self",Key=body.Id}]}]};
         var keyword=new DiyKeywordDraft{Name="突袭形态",ProgramJson=program.ToJson()};var pack2=pack with{Keywords=[keyword]};store.Save(pack2);
         var card=new DiyCardDraft{PackId=pack.Id,Cost=0,Keywords=[keyword.Id]};cards.Save(card);WorkshopAuthoring.Configure(store,cards.Cards);
-        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"combat-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card,body]);
+        using var session=await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,31,"combat-bridge","unused",sourceDirectory:Source,openingHand:[card.Id],customCards:[card,body], firstPlayerIndex: 0);
         session.DriveOpponent=false;await session.SettleMulliganAsync(false);var actor=session.View.SelfHand.Single(c=>c.CardId==card.Id);
         Assert.Equal(UiSubmitOutcome.Applied,await session.SubmitAsync(new PlayCard(actor.Uid)));session.SettleProjection();
         Assert.True(WorkshopAuthoring.TryKeyword(keyword.Id,out var engineId));
@@ -208,7 +208,7 @@ public sealed class WorkshopTests : IDisposable
         var source = new DiyCardDraft { PackId = pack.Id, Cost = 1, Keywords = [keyword.Id] };
         cards.Save(target); cards.Save(source); WorkshopAuthoring.Configure(store, cards.Cards);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 31, "target-deployment", "unused",
-            sourceDirectory: Source, openingHand: [target.Id, source.Id], customCards: [target, source]);
+            sourceDirectory: Source, openingHand: [target.Id, source.Id], customCards: [target, source], firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var victim = session.View.SelfHand.Single(c => c.CardId == target.Id);
         await session.SubmitAsync(new PlayCard(victim.Uid)); session.SettleProjection();
@@ -244,7 +244,7 @@ public sealed class WorkshopTests : IDisposable
         var source = new DiyCardDraft { PackId = pack.Id, Cost = 0, Keywords = [keyword.Id] };
         cards.Save(source); WorkshopAuthoring.Configure(store, cards.Cards);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 31, "skill-target-source", "unused",
-            sourceDirectory: Source, openingHand: [source.Id], customCards: [source]);
+            sourceDirectory: Source, openingHand: [source.Id], customCards: [source], firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var actor = session.View.SelfHand.Single(c => c.CardId == source.Id);
         await session.SubmitAsync(new PlayCard(actor.Uid)); session.SettleProjection();
@@ -277,7 +277,7 @@ public sealed class WorkshopTests : IDisposable
         var order = new DiyCardDraft { PackId = pack.Id, CardType = "order", Cost = 0, Keywords = [keyword.Id] };
         cards.Save(target); cards.Save(order); WorkshopAuthoring.Configure(store, cards.Cards);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 31, "direct-keyword-order", "unused",
-            sourceDirectory: Source, openingHand: [target.Id, order.Id], customCards: [target, order]);
+            sourceDirectory: Source, openingHand: [target.Id, order.Id], customCards: [target, order], firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var victim = session.View.SelfHand.Single(c => c.CardId == target.Id);
         var source = session.View.SelfHand.Single(c => c.CardId == order.Id);

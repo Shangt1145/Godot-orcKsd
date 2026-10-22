@@ -34,7 +34,7 @@ public sealed class TargetHonourTests
     [Fact]
     public async Task AttackingTheOfferedUnitDamagesThatUnitNotTheHeadquarters()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261011, "honour-attack");
+        var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261011, "honour-attack", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -89,13 +89,13 @@ public sealed class TargetHonourTests
     {
         for (var requested = 0; requested <= 3; requested++)
         {
-            var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261012, $"honour-deploy-{requested}");
+            var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261012, $"honour-deploy-{requested}", firstPlayerIndex: 0);
             try
             {
                 await session.SettleMulliganAsync(interactive: false);
                 session.Pump();
                 var line = session.Host.Match.Battlefield.GetSupportLine(session.Host.Viewer.Index);
-                var free = line[requested].IsEmpty;
+                var free = line.GetInsertionGaps().Any(g => g.Ordinal == requested);
                 var uid = session.View.SelfHand.OrderBy(c => c.SlotIndex).First().Uid;
 
                 var outcome = await session.SubmitAsync(new PlayCard(uid, requested));
@@ -124,7 +124,7 @@ public sealed class TargetHonourTests
     {
         for (var requested = 0; requested <= 3; requested++)
         {
-            var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261013, $"honour-move-{requested}");
+            var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261013, $"honour-move-{requested}", firstPlayerIndex: 0);
             session.DriveOpponent = false;
             try
             {
@@ -141,14 +141,17 @@ public sealed class TargetHonourTests
                 var deployed = session.View.SelfLine.FirstOrDefault(c => c.Uid == uid);
                 Assert.NotNull(deployed);
 
+                var available = session.Actions.Moves.Any(m => m.Uid == uid && m.ToZone == "frontline" && m.SlotIndex == requested);
                 session.NoteSlot(requested);
                 var outcome = await session.SubmitAsync(new MoveUnit(uid, "frontline", requested));
                 session.Pump();
                 var moved = session.View.SelfLine.FirstOrDefault(c => c.Uid == uid);
                 Dump($"[move] requested={requested} outcome={outcome} " +
                     $"landed={(moved is null ? "<gone>" : $"{moved.Zone}[{moved.SlotIndex}]")}");
-                Assert.Equal(UiSubmitOutcome.Applied, outcome);
-                Assert.NotNull(moved); Assert.Equal("frontline", moved.Zone); Assert.Equal(requested, moved.SlotIndex);
+                Assert.Equal(available ? UiSubmitOutcome.Applied : UiSubmitOutcome.Rejected, outcome);
+                Assert.NotNull(moved);
+                Assert.Equal(available ? "frontline" : "support", moved.Zone);
+                if (available) Assert.Equal(requested, moved.SlotIndex);
             }
             finally { session.Dispose(); }
         }
@@ -162,7 +165,7 @@ public sealed class TargetHonourTests
     [Fact]
     public async Task AttackingTheEnemyHeadquartersDamagesIt()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261014, "honour-hq");
+        var session = await OrcMatchSession.CreateProbeAsync(Infantry, 20, 20261014, "honour-hq", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -213,8 +216,8 @@ public sealed class TargetHonourTests
     {
         var move = session.Actions.Moves.FirstOrDefault(m => m.ToZone == "frontline");
         if (move is null) return;
-        session.NoteSlot(2);
-        await session.SubmitAsync(new MoveUnit(move.Uid, "frontline", 2));
+        session.NoteSlot(move.SlotIndex);
+        await session.SubmitAsync(new MoveUnit(move.Uid, "frontline", move.SlotIndex));
         session.Pump();
     }
 

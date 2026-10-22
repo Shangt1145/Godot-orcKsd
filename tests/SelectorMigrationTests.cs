@@ -125,7 +125,7 @@ public sealed class SelectorMigrationTests
         const string source = @"H:\Working Folder\OrC-KSD.Godot\proto\data\nations";
         var catalog = new CardCatalog(); catalog.Load(source);
         var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 7, "ui-selector", "probe",
-            openingHand: ["deran/command/_13"], sourceDirectory: source);
+            openingHand: ["deran/command/_13"], sourceDirectory: source, firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         await session.Host.Match.ResourceManager.GainSlotsAsync(session.Host.Viewer, 11);
         await session.Host.Match.ResourceManager.GainPointsAsync(session.Host.Viewer, 12);

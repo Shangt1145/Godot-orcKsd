@@ -7,7 +7,7 @@ namespace Kards.Ui.OrcBridge;
 
 /// <summary>
 /// M4 大厅·房间发现：**宣告式广播**（O(N)，来自 2026-10-21 锁步文档的结论——
-/// 宣告优于逐台探测 O(N²)；Radmin 虚拟局域网当免费房间服务器）。
+/// 宣告优于逐台探测 O(N²)；虚拟局域网（ZeroTier / n2n 等开源组网）当免费房间服务器）。
 ///
 /// <para>
 /// 房主起服后每 2 秒向广播地址发一条 JSON；客人监听 UDP 端口、按 roomId 去重、
@@ -77,7 +77,7 @@ public sealed class RoomAnnouncer : IDisposable
     {
         var targets = new[]
         {
-            new IPEndPoint(IPAddress.Broadcast, RoomDiscovery.DefaultPort), // 255.255.255.255：所有网卡（Radmin 含）
+            new IPEndPoint(IPAddress.Broadcast, RoomDiscovery.DefaultPort), // 255.255.255.255：所有网卡（含任意虚拟局域网网卡）
             new IPEndPoint(IPAddress.Parse("127.255.255.255"), RoomDiscovery.DefaultPort), // 环回广播：同机探针
         };
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));

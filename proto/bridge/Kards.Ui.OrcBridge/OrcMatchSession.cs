@@ -548,12 +548,12 @@ public sealed partial class OrcMatchSession : IDisposable
             return;
         }
         var allowed = data.Candidates.Where(r => r.IsAlive).ToArray();
-        if (_pendingGapId is { } gapId)
+        if (_pendingGapId is { } gapId && (selector.SelectorName == SelectorNames.Slot || allowed.Any(r => r.Value is FormationGap)))
         {
             var wanted = allowed.FirstOrDefault(r => r.Value is FormationGap && OrcRefs.KeyOf(r.Value) == gapId);
             ClearIntent();
             if (wanted is not null) selector.Submit(new PickEvent([wanted]));
-            else { LastRejectionReason = "FormationGapUnavailable"; selector.Submit(new CancelEvent()); }
+            else {  LastRejectionReason = "FormationGapUnavailable"; selector.Submit(new CancelEvent()); }
             return;
         }
         if (_pendingSelection is { Length: > 0 })
@@ -569,13 +569,13 @@ public sealed partial class OrcMatchSession : IDisposable
             LastRejectionReason = "SelectedTargetUnavailable";
             ClearIntent(); selector.Submit(new CancelEvent()); return;
         }
-        if (_pendingSupportIndex is not null || _pendingSlot is not null)
+        if ((_pendingSupportIndex is not null || _pendingSlot is not null) && (selector.SelectorName == SelectorNames.Slot || allowed.Any(r => r.Value is FormationGap)))
         {
             var wanted = SlotAt();
             ClearIntent();
             if (wanted is not null && allowed.Any(r => ReferenceEquals(r.Value, wanted.Value)))
                 selector.Submit(selector.Mode == SelectorInteractionMode.Drag ? new DropEvent(wanted) : new PickEvent([wanted]));
-            else { LastRejectionReason = "SelectedSlotUnavailable"; selector.Submit(new CancelEvent()); }
+            else {  LastRejectionReason = "SelectedSlotUnavailable"; selector.Submit(new CancelEvent()); }
             return;
         }
         if (_automaticChoice) OrcTargeterBridge.AutoRespond(selector);
@@ -588,11 +588,11 @@ public sealed partial class OrcMatchSession : IDisposable
         if (_pendingSupportIndex is { } support)
         {
             var line = Match.Battlefield.GetSupportLine(_host.Viewer.Index);
-            return support >= 0 && support < line.Count ? line[support].Ref : null;
+            return line.GetInsertionGaps().FirstOrDefault(g=>g.Ordinal==support)?.Ref;
         }
         if (_pendingSlot is not { } front) return null;
         var frontline = Match.Battlefield.FrontLine;
-        return front >= 0 && front < frontline.Count ? frontline[front].Ref : null;
+        return frontline.GetInsertionGaps().FirstOrDefault(g=>g.Ordinal==front)?.Ref;
     }
 
     /// <summary>
@@ -812,9 +812,10 @@ public sealed partial class OrcMatchSession : IDisposable
         if (supportIndex is { } legacy && _pendingGapId is null)
         {
             var line = Match.Battlefield.GetSupportLine(_host.Viewer);
-            if (legacy < 0 || legacy >= line.Count || !line[legacy].IsEmpty)
+            var gap = line.GetInsertionGaps().FirstOrDefault(g=>g.Ordinal==legacy);
+            if (gap is null)
             { LastRejectionReason = "SelectedSlotUnavailable"; return UiSubmitOutcome.Rejected; }
-            return Report(await Match.PlayManager.PlayUnitAsync(unit, line[legacy], ct));
+            return Report(await Match.PlayManager.PlayUnitAsync(unit, gap, ct));
         }
         // Contract-only callers may omit a position. This explicit adapter policy is limited to
         // untargeted deployment; a named but illegal position is always refused.

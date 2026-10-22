@@ -61,7 +61,7 @@ public sealed class OpeningHandTests
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
 
-        var dealt = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "pin-off");
+        var dealt = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "pin-off", firstPlayerIndex: 0);
         string[] dealtIds;
         try
         {
@@ -71,7 +71,7 @@ public sealed class OpeningHandTests
         finally { dealt.Dispose(); }
 
         var pinned = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "pin-on",
-            openingHand: DemoOpeningHand.CardIds);
+            openingHand: DemoOpeningHand.CardIds, firstPlayerIndex: 0);
         try
         {
             var hand = pinned.View.SelfHand.OrderBy(c => c.SlotIndex).ToArray();
@@ -93,7 +93,7 @@ public sealed class OpeningHandTests
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
         var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "pin-play",
-            openingHand: DemoOpeningHand.CardIds);
+            openingHand: DemoOpeningHand.CardIds, firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);

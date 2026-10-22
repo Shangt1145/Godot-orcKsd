@@ -18,22 +18,7 @@ namespace Kards.Ui.OrcBridge;
 /// </summary>
 public sealed record RemoteToolResult(bool Ok, string Code, string? Message, JsonNode? Details);
 
-/// <summary>
-/// 远端对局数据源：引擎跑在 <c>Orc.Server</c> 里，本类只做协议翻译。
-///
-/// <para>
-/// **第一阶段范围（当前）**：连接、`initialize`、`room.*`、`notify/view`（全量投影）、
-/// `match.end_turn` / `match.concede` 两条命令。目标是"能连上、能看到盘、能结束回合"。
-/// </para>
-///
-/// <para>
-/// **尚未接的两块**（有意留白，不是遗漏）：
-/// ① `notify/segment` → <c>UiPresentationResolution</c>：本地翻译器 <c>OrcUpdateTranslator</c>
-///    的入参是引擎 <c>Card</c> 对象，远端只有投影。需要一条"用 uid 在投影里查卡"的翻译路径，
-///    在此之前远端是**无演出**的（状态仍然正确，只是没有逐段动画）。
-/// ② `notify/target.request` 的选靶应答：需要先实现 <c>IUiTargetResponder</c> 的远端版本。
-/// </para>
-/// </summary>
+/// <summary>Remote projection and command adapter. Sessions require approval; no-seat viewers stay read-only.</summary>
 public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 {
     private readonly OrcClient _client;
@@ -46,6 +31,9 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private readonly Dictionary<string, string> _refsByChoiceId = new(StringComparer.Ordinal);
     /// <summary>下一条选靶请求要自动命中的目标引用键（攻击/指向性指挥用）。</summary>
     private string? _desiredTargetRef;
+    private bool _desiredGap;
+    private HashSet<string>? _mulliganReplacements;
+    public Func<string, string?>? ArtPathResolver { get; set; }
 
     /// <summary>
     /// 视图反序列化专用配置：服务端把枚举写成**字符串**（<c>"None"</c>、<c>"Mulligan"</c>…），
@@ -117,12 +105,13 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         _client.NotificationReceived += OnNotification;
     }
 
-    /// <summary>本端占用的座位（0 或 1）。</summary>
-    public int Seat { get; }
+    /// <summary>当前显示视角；是否真正绑定座位由 BoundSeat 表达。</summary>
+    public int Seat { get; private set; }
+    public int? BoundSeat => IsObserver || AdmissionState != "admitted" ? null : Seat;
 
     public string MatchId { get; private set; } = "";
     public UiMatchView? CurrentView => _view;
-    public UiBattleActions CurrentActions => _targetPending ? new() : _actions;
+    public UiBattleActions CurrentActions => IsObserver || AdmissionState != "admitted" || _targetPending ? new() : _actions;
     public bool IsSubmitting { get; private set; }
     public bool MulliganPending => _mulliganPending;
     public bool TargetPending => _targetPending;
@@ -165,86 +154,54 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         return new RemoteToolResult(result.Ok, result.Code, result.Message, result.Details);
     }
 
-    /// <summary>
-    /// 声明座位。房主用 <c>kind:"local"</c>（服务端只接受回环来源），远端玩家用 <c>kind:"remote"</c>。
-    /// 返回的 <c>details.seatToken</c> 必须持久化——它是断线重连的唯一凭据。
-    /// </summary>
-    public async Task<string?> ClaimSeatAsync(
-        int seat, string kind, string? name, IReadOnlyList<string> deck, CancellationToken ct = default)
+    public string ConnectionId => _client.ConnectionId ?? "";
+    public string AdmissionState { get; private set; } = "idle";
+    public bool IsObserver { get; private set; }
+    public event Action<string>? AdmissionChanged;
+    internal IReadOnlyList<(string Id, string? Version, string? Guid)> PackageDeclaration { get; set; } = [];
+    internal Func<CancellationToken, Task<bool>>? StartHostMatch { get; set; }
+    private JsonNode? _observerFrame;
+    public event Action<int, UiMatchView>? ObserverProjectionReady;
+    public async Task<string?> ClaimSeatAsync(int seat, string kind, string? name, IReadOnlyList<string> deck, CancellationToken ct = default)
     {
-        var arguments = new JsonObject
-        {
-            ["seat"] = seat,
-            ["kind"] = kind,
-            ["name"] = name ?? "",
-            ["deck"] = new JsonArray([.. deck.Select(id => (JsonNode)JsonValue.Create(id)!)]),
-        };
-        var result = await _client.CallAsync("room.claim", arguments, ct).ConfigureAwait(false);
-        if (!result.Ok)
-        {
-            ErrorRaised?.Invoke(result.Message ?? result.Code);
-            return null;
-        }
-
-        // 记住本座令牌：room.start / room.resume 都靠它认人（服务端只允许房主开局）。
-        _seatToken = result.Details?["seatToken"]?.GetValue<string>();
-        return _seatToken;
+        var result = await _client.AttachAsync(new SessionAttachParams {
+            Roles = ["controller", "viewer"], Seat = seat, DisplayName = name, Deck = deck,
+            Packages = PackageDeclaration.Select(p => new PackageRef(p.Id, p.Version, p.Guid)).ToArray()
+        }, ct).ConfigureAwait(false);
+        Seat = seat;
+        if (AdmissionState != "admitted") AdmissionState = result.State;
+        if (result.Code != "ok") { ErrorRaised?.Invoke(result.Message ?? result.Code); return null; }
+        return result.ConnectionId;
     }
-
-    /// <summary>房主给空座添加 AI（服务端进程内驱动，不经过协议）。</summary>
-    public async Task<bool> AddAiAsync(int seat, IReadOnlyList<string> deck, string? name = null, CancellationToken ct = default)
+    public async Task<bool> WaitForAdmissionAsync(CancellationToken ct = default)
     {
-        var arguments = new JsonObject
-        {
-            ["seat"] = seat,
-            ["name"] = name ?? "AI",
-            ["deck"] = new JsonArray([.. deck.Select(id => (JsonNode)JsonValue.Create(id)!)]),
-        };
-        var result = await _client.CallAsync("room.add_ai", arguments, ct).ConfigureAwait(false);
-        if (!result.Ok) ErrorRaised?.Invoke($"room.add_ai: {result.Code} {result.Message}");
-        return result.Ok;
+        for (var i = 0; i < 100 && AdmissionState is "pending" or "idle"; i++)
+            await Task.Delay(50, ct).ConfigureAwait(false);
+        return AdmissionState == "admitted";
     }
-
-    /// <summary>房主开局。远端玩家不调用。必须带本座令牌——服务端拒绝免令牌开局。</summary>
-    public async Task<bool> StartMatchAsync(CancellationToken ct = default)
+    public async Task<bool> AttachViewerAsync(string name = "观战者", CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(_seatToken))
-        {
-            ErrorRaised?.Invoke("room.start: 尚未占座（没有 seatToken），无法开局。");
-            return false;
-        }
-
-        var arguments = new JsonObject { ["seatToken"] = _seatToken };
-        var result = await _client.CallAsync("room.start", arguments, ct).ConfigureAwait(false);
-        if (!result.Ok) ErrorRaised?.Invoke(result.Message ?? result.Code);
-        return result.Ok;
+        IsObserver = true;
+        var result = await _client.AttachAsync(new SessionAttachParams { Roles = ["viewer"], DisplayName = name }, ct).ConfigureAwait(false);
+        AdmissionState = result.State;
+        return result.Code == "ok";
     }
-
-    /// <summary>本座令牌（未占座＝null）。断线重连时凭它 resume。</summary>
+    public void SetObserverPerspective(int seat)
+    {
+        if (!IsObserver || seat is not (0 or 1)) return;
+        Seat = seat;
+        if (_observerFrame is not null) ApplyViewPayload(_observerFrame);
+    }
+    public Task<bool> StartMatchAsync(CancellationToken ct = default)
+        => StartHostMatch?.Invoke(ct) ?? Task.FromResult(false);
     public string? SeatToken => _seatToken;
-
-    /// <summary>
-    /// 凭座位令牌重连（M3）。服务端 <c>room.resume</c> 房间态/对局态均可、凭令牌不看来源，
-    /// 对局态座位不会因断线被释放。重连后的 feed 是全新实例（没有 claim 过），令牌必须由调用方传入；
-    /// 成功后本 feed 即持有该令牌，后续 room.start 等照常可用。
-    /// </summary>
     public async Task<bool> ResumeSeatAsync(string? seatToken = null, CancellationToken ct = default)
     {
         var token = seatToken ?? _seatToken;
-        if (string.IsNullOrEmpty(token))
-        {
-            ErrorRaised?.Invoke("room.resume: 没有 seatToken（从未占座），无法重连。");
-            return false;
-        }
-
-        var arguments = new JsonObject { ["seatToken"] = token };
-        var result = await _client.CallAsync("room.resume", arguments, ct).ConfigureAwait(false);
-        if (!result.Ok)
-        {
-            ErrorRaised?.Invoke(result.Message ?? result.Code);
-            return false;
-        }
-
+        if (string.IsNullOrEmpty(token)) return false;
+        var result = await _client.AttachAsync(new SessionAttachParams { Roles = ["controller", "viewer"], Seat = Seat, Token = token }, ct).ConfigureAwait(false);
+        AdmissionState = result.State;
+        if (result.Code != "ok") return false;
         _seatToken = token;
         return true;
     }
@@ -279,6 +236,25 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public async Task SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
         if (_disposed) return;
+        if (IsObserver || AdmissionState != "admitted") { CommandRefused?.Invoke(command); HintRequested?.Invoke("观战模式无法操作对局。"); return; }
+        if (command is ChooseMulligan choice)
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            IsSubmitting = true;
+            try
+            {
+                if (!_mulliganPending || _view is null) throw new InvalidOperationException("换牌阶段已结束。");
+                _mulliganReplacements = _view.SelfHand.Where(c => !choice.KeepUids.Contains(c.Uid)).Select(c => c.Uid).ToHashSet(StringComparer.Ordinal);
+                var toolName = _mulliganReplacements.Count == 0 ? "mulligan.done" : "mulligan.begin";
+                var result = await _client.CallAsync(toolName, new JsonObject { ["owner"] = Seat }, ct).ConfigureAwait(false);
+                if (!result.Ok && result.Code != "targeting") throw new InvalidOperationException(result.Message ?? result.Code);
+                if (toolName == "mulligan.done") _mulliganReplacements = null;
+                await RefreshViewAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception error) { _mulliganReplacements = null; CommandRefused?.Invoke(command); HintRequested?.Invoke(error.Message); MulliganRequested?.Invoke(); }
+            finally { IsSubmitting = false; _gate.Release(); }
+            return;
+        }
         RememberDesiredTarget(command);
         var (tool, arguments) = Map(command);
         if (tool is null)
@@ -355,8 +331,10 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     /// </summary>
     private void RememberDesiredTarget(UiCommand command)
     {
+        _desiredGap = command is PlayCard { GapId: not null };
         _desiredTargetRef = command switch
         {
+            PlayCard play => play.GapId ?? play.TargetUid,
             AttackUnit attack => attack.DefenderUid,
             CommandUnit unit => unit.TargetUid,
             // MoveUnit 的目标是槽位（ToZone/SlotIndex），不是实体引用键，
@@ -399,6 +377,17 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     {
         switch (notification.Method)
         {
+            case "notify/admission":
+                var admitted = notification.Params?["decision"]?.GetValue<string>() ?? "revoked";
+                AdmissionState = admitted;
+                _seatToken = notification.Params?["seatToken"]?.GetValue<string>();
+                if (admitted != "admitted") { _actions = new(); _mulliganPending = false; _targetPending = false; _view = null; _observerFrame = null; TargetClosed?.Invoke(); }
+                AdmissionChanged?.Invoke(admitted);
+                break;
+            case "notify/room.rotated":
+                AdmissionState = "revoked"; _seatToken = null; _actions = new(); _mulliganPending = false; _targetPending = false; _view = null; _observerFrame = null; TargetClosed?.Invoke();
+                AdmissionChanged?.Invoke("revoked");
+                break;
             case "notify/view":
                 ApplyViewPayload(notification.Params);
                 break;
@@ -446,6 +435,15 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         }
     }
 
+    private UiMatchView ResolveArt(UiMatchView view)
+    {
+        UiCardView? Art(UiCardView? card) => card is null ? null : card with
+        { Definition = card.Definition with { ArtPath = ArtPathResolver?.Invoke(card.Definition.CardId) ?? card.Definition.ArtPath } };
+        return view with { SelfHand = view.SelfHand.Select(c => Art(c)!).ToArray(), SelfLine = view.SelfLine.Select(c => Art(c)!).ToArray(),
+            EnemyLine = view.EnemyLine.Select(c => Art(c)!).ToArray(), SelfHq = Art(view.SelfHq), EnemyHq = Art(view.EnemyHq),
+            PendingChoices = view.PendingChoices.Select(c => Art(c)!).ToArray(), SelectedTarget = Art(view.SelectedTarget) };
+    }
+
     private void ApplyViewPayload(JsonNode? payload)
     {
         if (payload is null)
@@ -454,6 +452,16 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             return;
         }
 
+        if (IsObserver && payload["views"] is JsonArray perspectives)
+        {
+            if (!ReferenceEquals(_observerFrame, payload))
+                foreach (var perspective in perspectives)
+                    if (perspective?["view"] is { } projected && projected.Deserialize<UiMatchView>(ViewJson) is { } observed)
+                        ObserverProjectionReady?.Invoke(perspective["seat"]!.GetValue<int>(), ResolveArt(observed));
+            _observerFrame = payload;
+            payload = perspectives.FirstOrDefault(p => p?["seat"]?.GetValue<int>() == Seat);
+            if (payload is null) return;
+        }
         var viewNode = payload["view"];
         var actionsNode = payload["actions"];
         if (viewNode is null)
@@ -480,11 +488,13 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             return;
         }
 
+        view = ResolveArt(view);
         _view = view;
-        _actions = actions;
+        _actions = IsObserver ? new() : actions;
+        actions = _actions;
         MatchId = view.MatchId;
         var wasPending = _mulliganPending;
-        _mulliganPending = view.Phase == "mulligan";
+        _mulliganPending = !IsObserver && view.Phase == "mulligan";
         ProjectionReady?.Invoke(view, actions);
 
         // 上升沿触发一次：换牌面板只在"刚进入 mulligan"时弹，不能每帧重弹。
@@ -556,10 +566,20 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         _targetSessionId = sessionId;
         _targetPending = true;
 
-        // 玩家已经点明了"打谁"：候选里能找到就直接提交，不再让人点第二次。
-        if (_desiredTargetRef is { Length: > 0 } wanted)
+        if (selector == "mulligan" && _mulliganReplacements is { } replacements)
         {
-            _desiredTargetRef = null;
+            _mulliganReplacements = null;
+            var picks = _refsByChoiceId.Where(p => replacements.Contains(p.Value)).Select(p => _picksByChoiceId[p.Key]).ToArray();
+            _targetPending = false;
+            if (picks.Length != replacements.Count) { _ = CancelTargetAsync(sessionId); HintRequested?.Invoke("换牌候选已变化，请重新选择。"); MulliganRequested?.Invoke(); }
+            else _ = SubmitTargetAsync(sessionId, picks);
+            return;
+        }
+
+        // 玩家已经点明了"打谁"：候选里能找到就直接提交，不再让人点第二次。
+        if (_desiredTargetRef is { Length: > 0 } wanted && (!_desiredGap || selector == "slot"))
+        {
+            _desiredTargetRef = null; _desiredGap = false;
             var hit = allowed.FirstOrDefault(choice =>
                 _refsByChoiceId.TryGetValue(choice.Id, out var reference) && reference == wanted);
             if (hit is not null && _picksByChoiceId.TryGetValue(hit.Id, out var index))

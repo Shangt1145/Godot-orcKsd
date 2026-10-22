@@ -23,7 +23,7 @@ public static class OrcDragVerification
     {
         var match=session.Host.Match;var owner=match.Players[ownerIndex];
         var unit=(UnitCard)await match.CardService.CreateAsync(cardId,owner);
-        await match.PlayManager.JoinUnitAsync(unit,match.Battlefield.GetSupportLine(owner).First(s=>s.IsEmpty));
+        await match.PlayManager.JoinUnitAsync(unit,match.Battlefield.GetSupportLine(owner).GetInsertionGaps().First());
         return OrcRefs.KeyOf(unit);
     }
 
@@ -40,8 +40,8 @@ public static class OrcDragVerification
         await FundAsync(session);var match=session.Host.Match;
         var routed=(UnitCard)await match.CardService.CreateAsync("diy/demo-kuijun",match.Players[0]);
         var mobile=(UnitCard)await match.CardService.CreateAsync("diy/demo-jidong",match.Players[0]);
-        await match.PlayManager.JoinUnitAsync(routed,match.Battlefield.FrontLine[0]);
-        await match.PlayManager.JoinUnitAsync(mobile,match.Battlefield.FrontLine[1]);
+        await match.PlayManager.JoinUnitAsync(routed,match.Battlefield.FrontLine.GetInsertionGaps().First());
+        await match.PlayManager.JoinUnitAsync(mobile,match.Battlefield.FrontLine.GetInsertionGaps().Last());
         // 引擎把 CanMove/CanAttack 改成只读：可动/可攻从布尔变成配额（1＝可，0＝否）。
         foreach(var unit in new[]{routed,mobile})
         {var data=unit.GetData<CommandData>();data.SetMoveQuota(1);data.SetAttackQuota(1);}
@@ -52,7 +52,7 @@ public static class OrcDragVerification
     public static void AssertRetreated(OrcMatchSession session,string uid,int points)
     {
         var unit=(UnitCard)session.Host.Index[uid];var match=session.Host.Match;
-        if(!match.Battlefield.PlayerASupportLine.Contains(unit.GetData<UnitStateData>().Position!)
+        if(!ReferenceEquals(match.Battlefield.PlayerASupportLine,unit.GetData<UnitStateData>().Line)
             ||Points(session)!=points-1||unit.GetData<CommandData>().CanMove)
             throw new Exception("Retreat did not use native movement cost and opportunity.");
     }

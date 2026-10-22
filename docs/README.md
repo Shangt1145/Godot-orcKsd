@@ -1,5 +1,7 @@
 # 文档索引
 
+**当前引擎兼容状态（2026-10-22）**：[7f3ae35 更新影响与观战接口验证](engine/ENGINE_7F3AE35_IMPACT_20261022.md)。引擎已更新，UI 尚有 19 项编译错误和旧会话协议待适配；下列历史验收不代表新基线已通过。
+
 按主题分桶，每桶内的文件保持原文件名（`STAGE_6A_ACCEPTANCE` 这类阶段名不重命名，避免与提交历史和外部引用脱节）。
 
 | 目录 | 装什么 | 什么时候看 |
@@ -28,6 +30,16 @@
 全入口遗漏修正：[所有卡包统一工作区与草稿自动恢复](acceptance/WORKSHOP_ALL_PACK_ROUTES_AND_DRAFT_RECOVERY_20261021.md)。
 
 2026-10-21 暂停现场：[Beta.4 开发交接（尚未完成，不可直接发布）](planning/BETA4_HANDOFF_20261021.md)。
+
+2026-10-22 大更新后的改造准备：[联机主流程 UI 核查与实施顺序](planning/UI_REPLAN_MULTIPLAYER_20261022.md)。
+
+本轮实现：[联机 AI 开局修复与作战准备页](acceptance/ROOM_AI_AND_SETUP_SELECTION_20261022.md)。
+
+联机网络层选型（Radmin → 开源组网）：[从 Radmin 切换至开源组网](design/NETWORK_OPENSRC_20261022.md)（ZeroTier / n2n；广播发现链路一行不改）。
+
+卡组选择视觉修正：[以原版卡背陈列重做准备页](acceptance/SETUP_CARD_BACK_REFERENCE_20261022.md)。
+
+材质细化：[KARDS 纸面、织物与字重对照及第一轮实装](research/KARDS_MATERIAL_STUDY_20261022.md)。
 
 ## 不在本目录的文档
 

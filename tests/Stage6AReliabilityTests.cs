@@ -132,7 +132,7 @@ public sealed class Stage6AReliabilityTests
     [Fact]
     public async Task DisposingAParkedMulliganCancelsTheMatch()
     {
-        var session = await OrcMatchSession.CreateProbeAsync("probe", 20, 17, "cancel");
+        var session = await OrcMatchSession.CreateProbeAsync("probe", 20, 17, "cancel", firstPlayerIndex: 0);
         await session.SettleMulliganAsync(interactive: true);
         Assert.True(session.MulliganPending);
         session.Dispose();

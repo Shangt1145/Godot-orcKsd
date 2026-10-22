@@ -49,7 +49,7 @@
 
 | 决定 | 理由 |
 |---|---|
-| 地址只列 3 条，Radmin `26.x` 优先 | 本机常枚举出 7 张网卡，全列会把左栏撑满；"发给对方"实际只需一个可用地址 |
+| 地址只列 3 条，虚拟局域网段优先（`AddressPriority`：Radmin `26.` / ZeroTier `28-30.` 等） | 本机常枚举出 7 张网卡，全列会把左栏撑满；"发给对方"实际只需一个可用地址 |
 | 空座卡内直接给"放 AI" | 用户的心智是"把位置填上"，不是"先建一个 controller 再绑座位"；v1 的 `add_ai` 本身就要求指定座位 |
 | 座位有 controller 用**金框**，空座用**暗框** | 沿用项目已有语言（实线＝生效 / 虚线＝未启用）的近似表达 |
 | "开始对局"三绿才可点 | 与 `room.start` 的服务端前置条件一一对应（两座非空 + 卡池 loaded），失败原因在按钮变灰前就能看见 |
@@ -82,7 +82,7 @@
 | 界面元素 | 协议 | 备注 |
 |---|---|---|
 | 进屏 | `ServerProcess` 起 `Orc.Server --packs ... --port 0` | 端口 0 ＝系统分配，避免撞车 |
-| 左栏"本机服务器" | `room.info` → `addresses` / `packPolicy` / `packFingerprint` | 地址由服务端枚举全部网卡，Radmin `26.x` 自动在列 |
+| 左栏"本机服务器" | `room.info` → `addresses` / `packPolicy` / `packFingerprint` | 地址由服务端枚举全部网卡，虚拟局域网地址自动在列 |
 | 房主占座 | `room.claim {seat:0, kind:"local", deck:[全名]}` | **必须 `kind:"local"`**，否则 `HostSlot()` 不认，开局返回"房间没有房主" |
 | 座位卡 | `room.info` → `seats[].controllerKind / displayName / connected` | `local`＝房主、`remote`＝玩家、`ai`＝引擎 |
 | 放 AI | `room.add_ai {seat, deck:[全名]}` | 一次必须指定座位 |

@@ -34,7 +34,7 @@ public sealed class HotseatMatchTests
     public async Task TwoSeatsOverOneMatchSeeDifferentHands()
     {
         var (pool, deck) = RealPool();
-        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 4242, matchId: "hotseat");
+        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 4242, matchId: "hotseat", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -67,7 +67,7 @@ public sealed class HotseatMatchTests
     public async Task EachSeatIsOfferedOnlyItsOwnActions()
     {
         var (pool, deck) = RealPool();
-        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 99, matchId: "hotseat-actions");
+        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 99, matchId: "hotseat-actions", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -96,7 +96,7 @@ public sealed class HotseatMatchTests
     public async Task APlayByOneSeatAppearsOnTheOthersBoard()
     {
         var (pool, deck) = RealPool();
-        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "hotseat-play");
+        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "hotseat-play", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);

@@ -165,10 +165,11 @@ public partial class Main
             GD.Print($"[net-play] packs={packs}");
             var deck = ProbeDeck(packs);
 
-            server = await ServerLauncher.StartAsync(packs, ProbeSandbox());
+            server = await ServerLauncher.StartAsync([packs], ProbeSandbox(), aiSeat: 1, aiDeck: deck);
             GD.Print($"[net-play] server port={server.Port}");
 
             feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
+            server.Configure(feed);
             feed.ErrorRaised += message => GD.Print($"[net-play] error: {message}");
             feed.ProjectionReady += (view, actions) =>
                 GD.Print($"[net-play] view phase={view.Phase} turn={view.Turn} active={view.ActivePlayerSide} " +
@@ -178,9 +179,8 @@ public partial class Main
             GD.Print($"[net-play] claim={(token is null ? "FAILED" : "ok token=" + token[..Math.Min(8, token.Length)])}");
             if (token is null) { GetTree().Quit(1); return; }
 
-            var ai = await feed.AddAiAsync(1, deck);
-            GD.Print($"[net-play] add_ai={ai}");
-            if (!ai) { GetTree().Quit(1); return; }
+            var approval = await server.AdmitAsync(feed.ConnectionId);
+            if (!approval.Ok || !await feed.WaitForAdmissionAsync()) throw new Exception(approval.Message ?? approval.Code);
 
             var started = await feed.StartMatchAsync();
             GD.Print($"[net-play] start={started}");

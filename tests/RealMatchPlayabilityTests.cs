@@ -37,7 +37,7 @@ public sealed class RealMatchPlayabilityTests
     {
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
-        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "attack-audit");
+        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "attack-audit", firstPlayerIndex: 0);
         var hqOnlyTurns = 0;
         var turnsWithEnemyUnits = 0;
         try
@@ -140,7 +140,7 @@ public sealed class RealMatchPlayabilityTests
         for (var seed = 0; seed < trials; seed++)
         {
             var deck = DeckBuilder.Build(pool, seed: seed);
-            var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: seed, matchId: $"open-{seed}");
+            var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: seed, matchId: $"open-{seed}", firstPlayerIndex: 0);
             try
             {
                 await session.SettleMulliganAsync(interactive: false);
@@ -178,7 +178,7 @@ public sealed class RealMatchPlayabilityTests
         for (var seed = 0; seed < 6; seed++)
         {
             var deck = DeckBuilder.Build(pool, seed: seed);
-            var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: seed, matchId: $"full-{seed}");
+            var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: seed, matchId: $"full-{seed}", firstPlayerIndex: 0);
             try
             {
                 await session.SettleMulliganAsync(interactive: false);

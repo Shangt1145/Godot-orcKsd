@@ -126,7 +126,7 @@ public class DiyTextEffectsTests(ITestOutputHelper output)
         catalog.Load(Source);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(
             catalog.Cards, 20261016, "diy-text-trial", "probe",
-            openingHand: [draft.Id], sourceDirectory: Source, customCards: [draft]);
+            openingHand: [draft.Id], sourceDirectory: Source, customCards: [draft], firstPlayerIndex: 0);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();
         var actor = session.View.SelfHand.Single(c => c.CardId == draft.Id);

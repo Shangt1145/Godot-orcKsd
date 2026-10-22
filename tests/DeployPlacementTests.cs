@@ -41,12 +41,12 @@ public sealed class DeployPlacementTests
     /// Whatever the player asked for is not represented here at all.
     /// </summary>
     [Fact]
-    public async Task TheInteractiveEntryOnlyEverOffersTheAdjacentSlot()
+    public async Task TheInteractiveEntryUsesEngineInsertionGaps()
     {
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
         var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 2, matchId: "deploy-interactive",
-            openingHand: DemoOpeningHand.CardIds);
+            openingHand: DemoOpeningHand.CardIds, firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -54,10 +54,10 @@ public sealed class DeployPlacementTests
             var match = session.Host.Match;
             var player = match.Players[0];
             var line = match.Battlefield.GetSupportLine(player);
-            var empty = Enumerable.Range(0, line.Count).Where(i => line[i].IsEmpty).ToArray();
+            var empty = line.GetInsertionGaps().Select(g => g.Ordinal).ToArray();
             var unit = player.Hand.OfType<UnitCard>().OrderBy(u => u.Definition.DeployCost).Skip(1).First();
 
-            _out.WriteLine($"support slots={line.Count} empty=[{string.Join(',', empty)}]");
+            _out.WriteLine($"support slots={line.Size} empty=[{string.Join(',', empty)}]");
             _out.WriteLine($"kredits={session.View.SelfKredits} unit={unit.Name} cost={unit.Definition.DeployCost} " +
                 $"points={player.Points}");
 
@@ -80,7 +80,7 @@ public sealed class DeployPlacementTests
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
         var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 2, matchId: "deploy-direct",
-            openingHand: DemoOpeningHand.CardIds);
+            openingHand: DemoOpeningHand.CardIds, firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -90,11 +90,11 @@ public sealed class DeployPlacementTests
             var line = match.Battlefield.GetSupportLine(player);
             var unit = (UnitCard)player.Hand.OfType<UnitCard>().OrderBy(u => u.Definition.DeployCost).First();
             var uid = OrcRefs.KeyOf(unit);
-            var empty = Enumerable.Range(0, line.Count).Where(i => line[i].IsEmpty).ToArray();
+            var empty = line.GetInsertionGaps().Select(g => g.Ordinal).ToArray();
             var far = empty.Last();
 
             var before = session.View.SelfKredits;
-            var result = await match.PlayManager.PlayUnitAsync(unit, line[far]);
+            var result = await match.PlayManager.PlayUnitAsync(unit, line.GetInsertionGaps().Single(g => g.Ordinal == far));
             session.Pump();
             var landed = session.View.SelfLine.FirstOrDefault(c => c.Uid == uid);
 
@@ -123,7 +123,7 @@ public sealed class DeployPlacementTests
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
         var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 2, matchId: "deploy-points",
-            openingHand: DemoOpeningHand.CardIds);
+            openingHand: DemoOpeningHand.CardIds, firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -134,11 +134,11 @@ public sealed class DeployPlacementTests
             // One point on the first turn; the second-cheapest card of the pinned hand costs two.
             var unit = (UnitCard)player.Hand.OfType<UnitCard>().OrderBy(u => u.Definition.DeployCost).Skip(1).First();
             var uid = OrcRefs.KeyOf(unit);
-            var far = Enumerable.Range(0, line.Count).Where(i => line[i].IsEmpty).Last();
+            var far = line.GetInsertionGaps().Select(g => g.Ordinal).Last();
 
             var before = session.View.SelfKredits;
             Assert.True(unit.Definition.DeployCost > before, "the probe needs a card the player cannot afford");
-            var result = await match.PlayManager.PlayUnitAsync(unit, line[far]);
+            var result = await match.PlayManager.PlayUnitAsync(unit, line.GetInsertionGaps().Single(g => g.Ordinal == far));
             session.Pump();
 
             _out.WriteLine($"[points] unit={unit.Name} cost={unit.Definition.DeployCost} kredits={before} " +

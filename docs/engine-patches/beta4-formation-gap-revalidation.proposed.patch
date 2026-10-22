@@ -1,0 +1,20 @@
+--- a/src/Orc.Game/Judicators/MoveRevalidationJudicator.cs
++++ b/src/Orc.Game/Judicators/MoveRevalidationJudicator.cs
+@@ -69,7 +69,7 @@
+             return ValidationVerdict.Invalid();
+         }
+ 
+-        if (!refs[2].IsAlive || refs[2].Value is not BoardPosition newPosition)
++        if (!refs[2].IsAlive || refs[2].Value is not FormationGap newPosition || !newPosition.IsCurrent)
+         {
+             return ValidationVerdict.Invalid();
+         }
+@@ -97,7 +97,7 @@
+             ? _battlefield.GetSupportLine(unit.Owner!)
+             : _battlefield.FrontLine;
+         if (!ReferenceEquals(newSlot.Line, destinationLine)
+-            || newSlot.Index < 0 || newSlot.Index > destinationLine.Size)
++            || newSlot.Ordinal < 0 || newSlot.Ordinal > destinationLine.Size)
+         {
+             return ValidationVerdict.Invalid();
+         }

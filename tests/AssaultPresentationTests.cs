@@ -36,7 +36,7 @@ public sealed class AssaultPresentationTests
         match = new Match(
             new CardList(Enumerable.Repeat(InfantryId, 20)),
             new CardList(Enumerable.Repeat(InfantryId, 20)),
-            definitions, seed: 11, firstPlayerIndex: 0, targeterBridge: bridge);
+            definitions, seed: 11, firstPlayerIndex: 0, targeterBridge: bridge, packageActivator: new Orc.Packages.SnapshotPackageActivator(OrcEngineHost.Snapshot()));
         return match;
     }
 

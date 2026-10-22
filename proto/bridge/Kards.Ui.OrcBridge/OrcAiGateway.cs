@@ -182,10 +182,10 @@ public sealed class OrcAiGateway : IAiMatchGateway
                 if (OrcRefs.KeyOf(card) == uid) return card;
         }
         var battlefield = Match.Battlefield;
-        foreach (var slot in battlefield.PlayerASupportLine
-            .Concat(battlefield.FrontLine)
-            .Concat(battlefield.PlayerBSupportLine))
-            if (slot.Occupant is Card occupant && OrcRefs.KeyOf(occupant) == uid) return occupant;
+        foreach (var slot in battlefield.PlayerASupportLine.Members
+            .Concat(battlefield.FrontLine.Members)
+            .Concat(battlefield.PlayerBSupportLine.Members))
+            if (slot is Card occupant && OrcRefs.KeyOf(occupant) == uid) return occupant;
         return null;
     }
 }

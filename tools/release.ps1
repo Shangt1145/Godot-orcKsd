@@ -1,9 +1,12 @@
-﻿param(
+param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = (Join-Path $PSScriptRoot 'godot-wait.ps1'),
     [string]$Preset = 'Windows Desktop',
     [string]$OutDir = 'dist\windows',
     [switch]$SkipGate,
+    [switch]$TestPackage,
+    [string]$EngineRoot = 'H:\Working Folder\OrC-KSD-github',
+    [string]$KnownIssuesFile = 'docs/acceptance/BETA4_TEST_PACKAGE_20261023.md',
     [switch]$FullTests,
     [string]$BaselineZip='',
     [string]$BaselineVersion='',
@@ -48,7 +51,12 @@ $sourceRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
 $version = (Get-Content -LiteralPath (Join-Path $sourceRoot 'VERSION') -Raw).Trim()
 # Preserve the previously delivered archive before publishing another build with the same display version.
-if(!$BaselineZip){$candidate=Join-Path $sourceRoot "dist/OrC-KSD-$version-win-x64.zip";if(Test-Path -LiteralPath $candidate){$BaselineZip=$candidate}}
+if($TestPackage){
+    $SkipGate = $true
+    if(!(Test-Path -LiteralPath (Join-Path $sourceRoot $KnownIssuesFile))){throw 'A test package must include its known-issues document.'}
+    $BaselineZip = ''; $AdditionalBaselineZips = @()
+}
+if(!$TestPackage -and !$BaselineZip){$candidate=Join-Path $sourceRoot "dist/OrC-KSD-$version-win-x64.zip";if(Test-Path -LiteralPath $candidate){$BaselineZip=$candidate}}
 if($BaselineZip){
     $BaselineZip=[IO.Path]::GetFullPath($BaselineZip)
     if(!(Test-Path -LiteralPath $BaselineZip)){throw 'Baseline ZIP does not exist.'}
@@ -137,6 +145,24 @@ foreach ($dependency in @('Kards.Ui.dll','ClearScriptV8.win-x64.dll','ClearScrip
     if (!(Get-ChildItem -LiteralPath $target -Recurse -File -Filter $dependency | Select-Object -First 1)) { throw "Missing exported runtime: $dependency" }
 }
 
+# Ship the server and a private .NET runtime; hosting must not require the developer checkout or SDK.
+$serverOutput = Join-Path $target 'OrcServer'
+& dotnet publish (Join-Path $EngineRoot 'src/Orc.Server/Orc.Server.csproj') -c Release -o $serverOutput --self-contained false --nologo
+if($LASTEXITCODE -ne 0){throw 'Server publish failed.'}
+$dotnetRoot = Split-Path -Parent (Get-Command dotnet).Source
+$coreRuntime = Get-ChildItem (Join-Path $dotnetRoot 'shared/Microsoft.NETCore.App') -Directory | Where-Object Name -match '^8\.' | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+$hostRuntime = Get-ChildItem (Join-Path $dotnetRoot 'host/fxr') -Directory | Where-Object Name -match '^8\.' | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+if(!$coreRuntime -or !$hostRuntime){throw 'A .NET 8 runtime and hostfxr are required to assemble the private server runtime.'}
+$privateRuntime = Join-Path $target 'OrcRuntime'
+New-Item -ItemType Directory -Path $privateRuntime,(Join-Path $privateRuntime 'host/fxr'),(Join-Path $privateRuntime 'shared/Microsoft.NETCore.App') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $dotnetRoot 'dotnet.exe'),(Join-Path $dotnetRoot 'LICENSE.txt'),(Join-Path $dotnetRoot 'ThirdPartyNotices.txt') -Destination $privateRuntime
+Copy-Item -LiteralPath $coreRuntime.FullName -Destination (Join-Path $privateRuntime 'shared/Microsoft.NETCore.App') -Recurse
+Copy-Item -LiteralPath $hostRuntime.FullName -Destination (Join-Path $privateRuntime 'host/fxr') -Recurse
+if($TestPackage){
+    Set-Content -LiteralPath (Join-Path $target 'TEST_BUILD.txt') -Value 'Known-issues test package. See 已知问题-测试包.md. Not a release acceptance pass.' -Encoding utf8
+    Copy-Item -LiteralPath (Join-Path $sourceRoot $KnownIssuesFile) -Destination (Join-Path $target '已知问题-测试包.md')
+}
+
 # 5) Package.
 & (Join-Path $PSScriptRoot 'build-updater.ps1') -BuildRoot $UpdaterBuildRoot -Godot $Godot
 if($LASTEXITCODE -ne 0){throw 'Offline updater build failed.'}
@@ -182,7 +208,8 @@ if($BaselineZip){
 $bootstrap=Join-Path (Split-Path -Parent $target) 'OrC-KSD-offline-updater-1.1.0-win-x64.zip'
 if(Test-Path -LiteralPath $bootstrap){Clear-Path $bootstrap}
 Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $updaterOutput|Select-Object -ExpandProperty FullName) -DestinationPath $bootstrap
-$zip = Join-Path (Split-Path -Parent $target) "OrC-KSD-$version-win-x64.zip"
+$packageSuffix = if($TestPackage){'-test'}else{''}
+$zip = Join-Path (Split-Path -Parent $target) "OrC-KSD-$version$packageSuffix-win-x64.zip"
 if (Test-Path -LiteralPath $zip) { Clear-Path $zip }
 $runtime = Get-ChildItem -LiteralPath $target -Directory -Filter 'data_*' | Select-Object -First 1
 if (!$runtime) { throw 'Missing self-contained .NET runtime directory.' }
@@ -241,4 +268,4 @@ Get-FileHash -LiteralPath $deliveredFiles -Algorithm SHA256 | Format-List | Out-
 $fullBytes=(Get-Item -LiteralPath $zip).Length;$bootstrapBytes=(Get-Item -LiteralPath $bootstrap).Length;$patchBytes=if($patch){(Get-Item -LiteralPath $patch).Length}else{0}
 @{version=$version;buildId=$buildInfo.BuildId;fullPackageBytes=$fullBytes;bootstrapBytes=$bootstrapBytes;patchBytes=$patchBytes;firstUpdateDownloadBytes=($bootstrapBytes+$patchBytes);reductionPercent=if($patch){[Math]::Round(100*(1-$patchBytes/[double]$fullBytes),2)}else{$null};baselineSha256=if($BaselineZip){$baseHash}else{$null};patch=if($patch){[IO.Path]::GetFileName($patch)}else{$null}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $delivery 'offline-update-report.json') -Encoding utf8
 Write-Host "EXPORTED_PLAYER_VERIFY_OK $smokeLog"
-Write-Host "RELEASE_OK $deliveredZip"
+Write-Host "$(if($TestPackage){'TEST_PACKAGE_OK'}else{'RELEASE_OK'}) $deliveredZip"

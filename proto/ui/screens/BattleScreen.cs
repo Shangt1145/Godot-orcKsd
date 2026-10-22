@@ -122,7 +122,7 @@ public partial class BattleScreen : Control
             else if (id == 28) NavigationRequested?.Invoke("decklib");
             else if (id == 31) NavigationRequested?.Invoke("home");
             else if (id == 30) NavigationRequested?.Invoke("editor");
-            else if (id == 25) RealMatchRequested?.Invoke();
+            else if (id == 25 && _readOnlyMode is null) RealMatchRequested?.Invoke();
             else if (id == 0) NavigationRequested?.Invoke("collection");
             else if (id == 1) NavigationRequested?.Invoke("settings");
         };
@@ -285,7 +285,7 @@ public partial class BattleScreen : Control
             var restart = new Button { Text = "再来一局", Position = new(115, 168), Size = new(160, 38) };
             foreach (var style in new[] { "normal", "hover", "pressed", "focus" }) restart.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
             restart.AddThemeColorOverride("font_color", new("e9e3cc"));
-            restart.Pressed += () => { if (_usingDemo) ResetDemo(); else RealMatchRequested?.Invoke(); }; _result.AddChild(restart);
+            restart.Pressed += () => { if (_readOnlyMode is not null) return; if (_usingDemo) ResetDemo(); else RealMatchRequested?.Invoke(); }; _result.AddChild(restart);
         }
         var selfLine = state.SelfLine.Where(c => !_removalActors.ContainsKey(c.Uid)).ToArray();
         var enemyLine = state.EnemyLine.Where(c => !_removalActors.ContainsKey(c.Uid)).ToArray();
@@ -446,6 +446,7 @@ public partial class BattleScreen : Control
     }
     private void CardPressed(BattleCard card, Vector2 viewportPosition)
     {
+        if (_readOnlyMode is not null) { ShowDetail(card); return; }
         if (!IsFriendlyTurn) return;
         if (TargetChoiceVisible) return;
         // Actions are drag-only. A click never deploys, moves or attacks; it only selects and previews.
@@ -471,7 +472,7 @@ public partial class BattleScreen : Control
     }
     private void CardHovered(BattleCard card, bool on)
     {
-        if (!IsFriendlyTurn) return;
+        if (!IsFriendlyTurn && _readOnlyMode is null) return;
         if (TargetChoiceVisible) return;
         if (HasPendingHandPlay(card.Uid)) return;
         if (_interaction.IsPending(card.Uid)) return;

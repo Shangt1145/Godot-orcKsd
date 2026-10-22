@@ -12,7 +12,7 @@ public sealed class OrderTargetingTests
     {
         var catalog = new CardCatalog(); catalog.Load(Source);
         var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 7, Guid.NewGuid().ToString(), "probe",
-            openingHand: hand, sourceDirectory: Source);
+            openingHand: hand, sourceDirectory: Source, firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var match = session.Host.Match;
         await match.ResourceManager.GainSlotsAsync(match.Players[0], 11);

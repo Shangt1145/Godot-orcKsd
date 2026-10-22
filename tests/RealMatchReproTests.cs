@@ -36,7 +36,7 @@ public sealed class RealMatchReproTests
     [Fact]
     public async Task OneDrawProducesExactlyOneDrawStep()
     {
-        var session = await OrcMatchSession.CreateProbeAsync("repro-infantry", 20, 20261007, "repro-draw");
+        var session = await OrcMatchSession.CreateProbeAsync("repro-infantry", 20, 20261007, "repro-draw", firstPlayerIndex: 0);
         try
         {
             var drawCounts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -77,7 +77,7 @@ public sealed class RealMatchReproTests
     [Fact]
     public async Task OneTurnProducesExactlyOneTurnStep()
     {
-        var session = await OrcMatchSession.CreateProbeAsync("repro-infantry", 20, 20261007, "repro-turn");
+        var session = await OrcMatchSession.CreateProbeAsync("repro-infantry", 20, 20261007, "repro-turn", firstPlayerIndex: 0);
         try
         {
             var perSegment = new List<int>();
@@ -125,7 +125,7 @@ public sealed class RealMatchReproTests
         for (var seed = 0; seed < trials; seed++)
         {
             var deck = DeckBuilder.Build(pool, seed: seed);
-            var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: seed, matchId: $"open-{seed}");
+            var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: seed, matchId: $"open-{seed}", firstPlayerIndex: 0);
             try
             {
                 await session.SettleMulliganAsync(interactive: false);
@@ -196,7 +196,7 @@ public sealed class RealMatchReproTests
     {
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
-        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "repro-attack");
+        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "repro-attack", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -237,7 +237,7 @@ public sealed class RealMatchReproTests
     {
         var (pool, _) = LoadPool();
         var deck = DeckBuilder.Build(pool, seed: 20261007);
-        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "order-audit");
+        var session = await OrcMatchSession.CreateAsync(pool, deck, deck, seed: 20261007, matchId: "order-audit", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -299,7 +299,7 @@ public sealed class RealMatchReproTests
     {
         var move = session.Actions.Moves.FirstOrDefault(m => m.ToZone == "frontline");
         if (move is null) return false;
-        var outcome = await session.SubmitAsync(new MoveUnit(move.Uid, "frontline", 2));
+        var outcome = await session.SubmitAsync(new MoveUnit(move.Uid, "frontline", move.SlotIndex));
         session.Pump();
         return outcome == UiSubmitOutcome.Applied;
     }

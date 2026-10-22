@@ -80,7 +80,7 @@ internal sealed class SourceEffectAssembly : IDisposable
     public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
     {
         var units = new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine }
-            .SelectMany(line => line).Select(slot => slot.Occupant).OfType<UnitCard>().ToArray();
+            .SelectMany(line => line.Members).OfType<UnitCard>().ToArray();
         var options = new List<UiOrderTargeting>();
         foreach (var card in viewer.Hand.OfType<OrderCard>())
         {
@@ -95,7 +95,7 @@ internal sealed class SourceEffectAssembly : IDisposable
     }
 
     private static bool IsOrderTarget(OrderCard card, UnitCard unit, string side) =>
-        unit.GetData<UnitStateData>().Position is not null && !unit.GetData<UnitStateData>().IsDestroyed
+        unit.GetData<UnitStateData>().Line is not null && !unit.GetData<UnitStateData>().IsDestroyed
         && (side == "any" || ReferenceEquals(unit.Owner, card.Owner) == (side == "friendly"));
 
     private async Task CaptureAsync(OrderCard card, JsonElement plan, CardTriggerView view, CancellationToken ct)
@@ -109,7 +109,7 @@ internal sealed class SourceEffectAssembly : IDisposable
                     ct.ThrowIfCancellationRequested();
                     var name = target.GetProperty("id").GetString()!;
                     var side = Text(target, "side", "any");
-                    var candidates = new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine }.SelectMany(line => line).Select(slot => slot.Occupant).OfType<UnitCard>().Where(u => IsOrderTarget(card, u, side)).Select(u => u.Ref).ToArray();
+                    var candidates = new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine }.SelectMany(line => line.Members).OfType<UnitCard>().Where(u => IsOrderTarget(card, u, side)).Select(u => u.Ref).ToArray();
                     if (candidates.Length == 0) return TargeterResult.Failed(TargeterFailureReason.NoAvailableCandidates);
                     var step = await flow.Step(SelectorTemplates.FieldUnit,
                         new ReferenceSetParameter(candidates, 1, 1,

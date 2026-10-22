@@ -1,80 +1,89 @@
-using Orc.Client;
+using System.Text.Json.Nodes;
+using Orc.Manager;
+using Orc.Protocol;
 
 namespace Kards.Ui.OrcBridge;
 
-/// <summary>
-/// 拉起本地 <c>Orc.Server</c> 子进程——联机时房主机器上的"食堂"。
-///
-/// <para>
-/// 约定（来自引擎接入指南）：stdout 首行 <c>{"ready":true,"port":N}</c> 即就绪，其余输出走 stderr；
-/// 端口传 0 由系统分配，避免和玩家机器上别的东西撞端口。
-/// </para>
-///
-/// <para>
-/// **服务端可执行文件从哪来**，按顺序找：
-/// ① 环境变量 <c>ORC_SERVER_DLL</c>（开发期最省事）；
-/// ② 发行布局 <c>&lt;游戏目录&gt;/OrcServer/Orc.Server.dll</c>（打包时一并带上）；
-/// ③ 开发布局 <c>ORC_ENGINE_ROOT</c> 指向的引擎源码里的构建产物。
-/// 三条都落空就抛带指引的错误，而不是让玩家看到一个莫名的连接失败。
-/// </para>
-/// </summary>
+/// <summary>房主私有管理通道；业务连接无法调用管理命令。</summary>
 public sealed class ServerLauncher : IAsyncDisposable
 {
-    private readonly ServerProcess _process;
-
-    private ServerLauncher(ServerProcess process) => _process = process;
-
-    /// <summary>实际监听端口（系统分配）。</summary>
-    public int Port => _process.Port;
-
-    /// <summary>服务端进程是否已经退出（房主关掉它就等于散场）。</summary>
-    public bool HasExited => _process.HasExited;
-
-    public static async Task<ServerLauncher> StartAsync(
-        string packsDirectory, string sandboxDirectory, CancellationToken ct = default)
-        => await StartAsync([packsDirectory], sandboxDirectory, ct).ConfigureAwait(false);
-
-    /// <summary>
-    /// 多包启动。<c>--packs</c> 的每个元素都必须是**卡包目录本身**（内有 manifest.json）；
-    /// 传父目录会被服务端判为"不是卡包"。多个目录用分号拼，与服务端的拆分方式一致。
-    /// </summary>
-    public static async Task<ServerLauncher> StartAsync(
-        IReadOnlyList<string> packsDirectories, string sandboxDirectory, CancellationToken ct = default)
+    private readonly ServerManager _manager;
+    private readonly string _id;
+    private readonly IReadOnlyList<PackageRef> _packages;
+    public int Port { get; }
+    public bool HasExited => !_manager.List().Any(i => i.InstanceId == _id && i.Running);
+    private ServerLauncher(ServerManager manager, string id, int port, IReadOnlyList<PackageRef> packages)
+        => (_manager, _id, Port, _packages) = (manager, id, port, packages);
+    public static Task<ServerLauncher> StartAsync(string packsDirectory, string sandboxDirectory, CancellationToken ct = default)
+        => StartAsync([packsDirectory], sandboxDirectory, ct);
+    public static async Task<ServerLauncher> StartAsync(IReadOnlyList<string> packsDirectories, string sandboxDirectory,
+        CancellationToken ct = default, int? aiSeat = null, IReadOnlyList<string>? aiDeck = null)
     {
-        ArgumentNullException.ThrowIfNull(packsDirectories);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sandboxDirectory);
-        if (packsDirectories.Count == 0) throw new ArgumentException("至少需要一个卡包目录。", nameof(packsDirectories));
-
-        foreach (var directory in packsDirectories)
+        EnableBundledRuntime();
+        var manager = new ServerManager(ResolveServerDll());
+        try
         {
-            if (!Directory.Exists(directory))
-                throw new DirectoryNotFoundException($"卡包目录不存在：{directory}");
-            if (!File.Exists(Path.Combine(directory, "manifest.json")))
-                throw new InvalidOperationException($"不是卡包（缺 manifest.json）：{directory}");
+            var registered = manager.Assets.Register(packsDirectories);
+            if (registered.Rejected.Count > 0) throw new InvalidOperationException(string.Join("；", registered.Rejected));
+            var packages = registered.Registered.Select(p => new PackageRef(p.PackageId, p.Version, p.Guid)).ToArray();
+            var id = Guid.NewGuid().ToString("N");
+            var reply = await manager.SpawnAsync(new SpawnRequest {
+                InstanceId = id, PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory,
+                RunDir = Path.Combine(sandboxDirectory, "instances", id), StartupTimeout = TimeSpan.FromSeconds(60),
+                Seats = Enumerable.Range(0, 2).Select(n => new SeatSpawn {
+                    Kind = n == aiSeat ? "ai" : "agent", DisplayName = n == aiSeat ? "引擎 AI" : null,
+                    Deck = n == aiSeat ? aiDeck : null, Packages = packages }).ToArray()
+            }, ct).ConfigureAwait(false);
+            if (!reply.Ok) throw new InvalidOperationException(reply.Message ?? reply.Code);
+            return new ServerLauncher(manager, id, reply.Payload!["port"]!.GetValue<int>(), packages);
         }
-
-        Directory.CreateDirectory(sandboxDirectory);
-        var dll = ResolveServerDll();
-
-        var options = new ServerProcessOptions
-        {
-            ExecutablePath = "dotnet",
-            Arguments = [dll, "--packs", string.Join(';', packsDirectories), "--sandbox", sandboxDirectory, "--port", "0"],
-            // 首次启动要装配卡包（项目里有 14 个包），15 秒的默认值不够宽裕。
-            StartupTimeout = TimeSpan.FromSeconds(60),
-            LogPath = Path.Combine(sandboxDirectory, "server.log"),
-        };
-
-        return new ServerLauncher(await ServerProcess.StartAsync(options, ct).ConfigureAwait(false));
+        catch { await manager.DisposeAsync(); throw; }
     }
-
+    public void Configure(RemoteMatchFeed feed)
+    {
+        feed.PackageDeclaration = _packages.Select(p => (p.PackageId, p.Version, p.Guid)).ToArray();
+        feed.StartHostMatch = StartMatchAsync;
+    }
+    public async Task<RemoteToolResult> AdminAsync(string op, JsonObject? args = null, CancellationToken ct = default)
+    {
+        var r = await _manager.AdminAsync(_id, new ManagerAdminCall(op, args), ct).ConfigureAwait(false);
+        return new(r.Ok, r.Code, r.Message, r.Payload);
+    }
+    public Task<RemoteToolResult> AdmitAsync(string connectionId, CancellationToken ct = default)
+        => AdminAsync("conn.admit", new JsonObject { ["connectionId"] = connectionId }, ct);
+    private async Task<bool> StartMatchAsync(CancellationToken ct)
+    {
+        var plan = _manager.Assets.Plan(new PackageDeclaration("seat0", _packages), new PackageDeclaration("seat1", _packages));
+        if (!plan.Ok) throw new InvalidOperationException(plan.Message ?? plan.Code);
+        var reply = await AdminAsync("match.start", new JsonObject { ["plan"] = plan.Plan!.ToJson() }, ct);
+        if (!reply.Ok) throw new InvalidOperationException(reply.Message ?? reply.Code);
+        return true;
+    }
+    private static IEnumerable<string> ApplicationRoots()
+        => new[] { AppContext.BaseDirectory, Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory }.Distinct();
+    private static void EnableBundledRuntime()
+    {
+        foreach (var root in ApplicationRoots())
+        {
+            var runtime = Path.Combine(root, "OrcRuntime");
+            if (!File.Exists(Path.Combine(runtime, "dotnet.exe"))) continue;
+            // Process-local PATH only. ServerManager starts its private child via the dotnet host.
+            var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            if (!path.Split(Path.PathSeparator).Contains(runtime, StringComparer.OrdinalIgnoreCase))
+                Environment.SetEnvironmentVariable("PATH", runtime + Path.PathSeparator + path);
+            return;
+        }
+    }
     private static string ResolveServerDll()
     {
         var fromEnv = Environment.GetEnvironmentVariable("ORC_SERVER_DLL");
         if (!string.IsNullOrWhiteSpace(fromEnv) && File.Exists(fromEnv)) return fromEnv;
 
-        var shipped = Path.Combine(AppContext.BaseDirectory, "OrcServer", "Orc.Server.dll");
-        if (File.Exists(shipped)) return shipped;
+        foreach (var root in ApplicationRoots())
+        {
+            var shipped = Path.Combine(root, "OrcServer", "Orc.Server.dll");
+            if (File.Exists(shipped)) return shipped;
+        }
 
         var engineRoot = Environment.GetEnvironmentVariable("ORC_ENGINE_ROOT");
         if (!string.IsNullOrWhiteSpace(engineRoot))
@@ -92,5 +101,5 @@ public sealed class ServerLauncher : IAsyncDisposable
             "或设置 ORC_ENGINE_ROOT 指向引擎源码并先构建 Orc.Server。");
     }
 
-    public ValueTask DisposeAsync() => _process.DisposeAsync();
+    public ValueTask DisposeAsync() => _manager.DisposeAsync();
 }

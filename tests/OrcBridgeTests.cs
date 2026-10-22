@@ -28,7 +28,7 @@ public sealed class OrcBridgeTests
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
         Match? match = null;
         var bridge = new OrcTargeterBridge();
-        match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: firstPlayerIndex, targeterBridge: bridge);
+        match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: firstPlayerIndex, targeterBridge: bridge, packageActivator: new Orc.Packages.SnapshotPackageActivator(OrcEngineHost.Snapshot()));
         return match;
     }
 
@@ -172,7 +172,7 @@ public sealed class OrcBridgeTests
         };
         var deckA = new CardList(Enumerable.Repeat(InfantryId, 20));
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
-        match = new Match(deckA, deckB, definitions, seed: 7, firstPlayerIndex: 0, targeterBridge: bridge);
+        match = new Match(deckA, deckB, definitions, seed: 7, firstPlayerIndex: 0, targeterBridge: bridge, packageActivator: new Orc.Packages.SnapshotPackageActivator(OrcEngineHost.Snapshot()));
         var host = new OrcMatchHost(match, "orc-mulligan");
         await host.InitializeAsync();
 
@@ -222,7 +222,7 @@ public sealed class OrcBridgeTests
         };
         match = new Match(
             new CardList(Enumerable.Repeat(InfantryId, 20)), new CardList(Enumerable.Repeat(InfantryId, 20)),
-            definitions, seed: 7, firstPlayerIndex: 0, targeterBridge: bridge);
+            definitions, seed: 7, firstPlayerIndex: 0, targeterBridge: bridge, packageActivator: new Orc.Packages.SnapshotPackageActivator(OrcEngineHost.Snapshot()));
         var host = new OrcMatchHost(match, "orc-mulligan-keep");
         await host.InitializeAsync();
         var opening = host.View.SelfHand.Select(c => c.Uid).ToArray();

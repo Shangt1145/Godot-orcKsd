@@ -37,7 +37,7 @@ public sealed class BridgeContractTests
         // AutoRespond matters: BeginUnitPrePlayAsync parks on a native selector and waits forever
         // unless a choice is submitted. A bridge that only records requests deadlocks the host.
         var bridge = new OrcTargeterBridge(present ?? OrcTargeterBridge.AutoRespond);
-        match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: 0, targeterBridge: bridge);
+        match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: 0, targeterBridge: bridge, packageActivator: new Orc.Packages.SnapshotPackageActivator(OrcEngineHost.Snapshot()));
         return match;
     }
 
@@ -414,16 +414,14 @@ public sealed class BridgeContractTests
         var match = CreateMatch();
         await match.Initialize();
         var line = match.Battlefield.FrontLine;
-        // A drop is resolved by position within the line, so the indices must be dense.
-        Assert.Equal([0, 1, 2, 3, 4], line.Select(s => s.Index).ToArray());
-        // The support line holds the headquarters in a fixed middle slot, which is what leaves room on
-        // both of its sides. Asserted through the engine's own constant rather than a copied number: the
-        // point of the guard is that a deployment can go to either side of the headquarters.
+        Assert.Empty(line.Members);
+        Assert.Equal(new[] { 0 }, line.GetInsertionGaps().Select(g => g.Ordinal));
         var support = match.Battlefield.PlayerASupportLine;
-        Assert.Equal(5, support.Count);
-        Assert.Equal(5, match.Battlefield.PlayerBSupportLine.Count);
-        Assert.Equal(Battlefield.HqSlotIndex, Battlefield.IndexOfHq(support));
-        Assert.True(Battlefield.HqSlotIndex >= 2, "no room to the left of the headquarters");
-        Assert.True(support.Count - Battlefield.HqSlotIndex - 1 >= 2, "no room to the right of the headquarters");
+        Assert.Equal(5, support.Capacity);
+        Assert.Equal(1, support.Size);
+        Assert.Same(match.Players[0].Hq, support[0]);
+        Assert.Equal(0, Battlefield.IndexOfHq(support));
+        Assert.Equal(new[] { 0, 1 }, support.GetInsertionGaps().Select(g => g.Ordinal));
+        Assert.Equal(new[] { 0, 1 }, match.Battlefield.PlayerBSupportLine.GetInsertionGaps().Select(g => g.Ordinal));
     }
 }

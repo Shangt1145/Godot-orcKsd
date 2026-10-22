@@ -115,9 +115,9 @@ public sealed class OrcMatchHost
         }
 
         var battlefield = _match.Battlefield;
-        for (var i = 0; i < battlefield.FrontLine.Count; i++)
+        for (var i = 0; i < battlefield.FrontLine.Size; i++)
         {
-            if (battlefield.FrontLine[i].Occupant is Card front)
+            if (battlefield.FrontLine[i] is Card front)
             {
                 index[OrcRefs.KeyOf(front)] = front;
             }
@@ -126,9 +126,9 @@ public sealed class OrcMatchHost
         foreach (var player in _match.Players)
         {
             var line = battlefield.GetSupportLine(player.Index);
-            for (var i = 0; i < line.Count; i++)
+            for (var i = 0; i < line.Size; i++)
             {
-                if (line[i].Occupant is Card support)
+                if (line[i] is Card support)
                 {
                     index[OrcRefs.KeyOf(support)] = support;
                 }

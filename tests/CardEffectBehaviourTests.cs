@@ -39,7 +39,7 @@ public sealed class CardEffectBehaviourTests
         Assert.True(cards.Count > 0, "卡池为空");
 
         var session = await OrcMatchSession.CreateFromCatalogAsync(cards, seed: 20261007,
-            matchId: "h39-combat", fallbackCardId: H39, openingHand: [H39], sourceDirectory: nations);
+            matchId: "h39-combat", fallbackCardId: H39, openingHand: [H39], sourceDirectory: nations, firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -57,7 +57,7 @@ public sealed class CardEffectBehaviourTests
             }
             _out.WriteLine($"[fund] kredits={session.View.SelfKredits} cost={cost}");
 
-            var placed = await session.SubmitAsync(new PlayCard(card.Uid, 4));
+            var placed = await session.SubmitAsync(new PlayCard(card.Uid, GapId: session.Actions.DeploymentGaps.Last().GapId));
             session.Pump();
             _out.WriteLine($"[deploy] outcome={placed} reason={session.LastRejectionReason} support=[{string.Join(' ',
                 session.View.SelfLine.Where(c => !c.IsHq).Select(c => $"{c.CardId}@{c.SlotIndex}"))}]");

@@ -1,4 +1,4 @@
-﻿using Kards.Ui.Contracts;
+using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
 using Orc.Game;
 using Orc.Game.Cards;
@@ -21,7 +21,7 @@ public sealed class OrcMatchSessionTests
     [Fact]
     public async Task ASessionRunsAMatchThroughTheContractAlone()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 20261005, "session-a");
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 20261005, "session-a", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -46,7 +46,7 @@ public sealed class OrcMatchSessionTests
     [Fact]
     public async Task SubmittingCommandsMovesTheRealBoard()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 11, "session-play");
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 11, "session-play", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -70,7 +70,7 @@ public sealed class OrcMatchSessionTests
     [Fact]
     public async Task AnUnknownCardIsRefusedRatherThanAccepted()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 13, "session-unknown");
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 13, "session-unknown", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: false);
@@ -89,7 +89,7 @@ public sealed class OrcMatchSessionTests
     [Fact]
     public async Task AMulliganReplacesTheCardsThePlayerDidNotKeep()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 17, "session-mulligan");
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 17, "session-mulligan", firstPlayerIndex: 0);
         try
         {
             await session.SettleMulliganAsync(interactive: true);
@@ -115,7 +115,7 @@ public sealed class OrcMatchSessionTests
     [Fact]
     public async Task CommandsBeforePlayAreRefusedByPhase()
     {
-        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 19, "session-gate");
+        var session = await OrcMatchSession.CreateProbeAsync(InfantryId, 20, 19, "session-gate", firstPlayerIndex: 0);
         try
         {
             // The mulligan has not been answered yet, so the phase gate is still shut.

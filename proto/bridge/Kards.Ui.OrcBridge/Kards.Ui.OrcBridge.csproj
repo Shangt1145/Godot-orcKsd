@@ -44,6 +44,12 @@
          否则 Kards.Ui.dll 的 AssemblyRef 会出现 Orc.Client／Orc.Protocol，
          被 UI_BOUNDARY_VERIFY_OK 判为越界（UI 只许经本桥接层的公开面说话）。 -->
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Client/Orc.Client.csproj" PrivateAssets="all" />
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Manager/Orc.Manager.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <!-- Manager is an executable assembly; explicit runtime reference keeps it in Godot's deps manifest. -->
+    <Reference Include="Orc.Manager">
+      <HintPath>$(OrcEngineRoot)/../Orc.Manager/bin/$(Configuration)/net8.0/Orc.Manager.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

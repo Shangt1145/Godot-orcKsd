@@ -16,7 +16,7 @@ public class DiyCardTests
     private static DiyCardDraft Unit(string id = "diy/test") => new() { Id = id, Name = "测试步兵", Cost = 0, OpCost = 0 };
     private static Task<OrcMatchSession> Session(params DiyCardDraft[] drafts)
         => OrcMatchSession.CreateFromCatalogAsync(Catalog().Cards, 20261011, Guid.NewGuid().ToString(), "unused",
-            openingHand: drafts.Select(d => d.Id).ToArray(), sourceDirectory: Source, customCards: drafts);
+            openingHand: drafts.Select(d => d.Id).ToArray(), sourceDirectory: Source, customCards: drafts, firstPlayerIndex: 0);
 
     [Fact]
     public void CompilesNativeCardAndSelfScopedPrefabWithoutEditingSourcePool()

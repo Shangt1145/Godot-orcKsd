@@ -91,7 +91,7 @@ public class OrcImportUiTests(ITestOutputHelper output)
         catalog.Load(Source);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(
             catalog.Cards, 20261016, "orc-import-trial", "probe",
-            openingHand: ["orc/ui-deploy-draw"], sourceDirectory: Source, imported: [complete]);
+            openingHand: ["orc/ui-deploy-draw"], sourceDirectory: Source, imported: [complete], firstPlayerIndex: 0);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();
         var actor = session.View.SelfHand.Single(c => c.CardId == "orc/ui-deploy-draw");

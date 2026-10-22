@@ -102,9 +102,9 @@ public sealed class Stage6B1AdmissionTests
     public async Task CatalogInitializationCannotSilentlyFallBackOrPinUnreviewedCards()
     {
         var card = Catalog().Cards.Single(c => c.CardId == "USG/commands/_3");
-        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync([card], 7, "rejected-catalog", "probe", sourceDirectory: Source));
+        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync([card], 7, "rejected-catalog", "probe", sourceDirectory: Source, firstPlayerIndex: 0));
         await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(Catalog().Cards, 7, "bad-pin", "probe",
-            openingHand: ["av76/units/-4"], sourceDirectory: Source));
+            openingHand: ["av76/units/-4"], sourceDirectory: Source, firstPlayerIndex: 0));
     }
 
     [Theory]
@@ -121,7 +121,7 @@ public sealed class Stage6B1AdmissionTests
     {
         var cards = Catalog().Cards; var original = cards.Single(c => c.CardId == id);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(cards, 7, "reviewed-" + id, "probe",
-            openingHand: [id], sourceDirectory: Source);
+            openingHand: [id], sourceDirectory: Source, firstPlayerIndex: 0);
         Assert.Equal(24, session.CardPoolReport!.Verified);
         await session.SettleMulliganAsync(false);
         session.SettleProjection();

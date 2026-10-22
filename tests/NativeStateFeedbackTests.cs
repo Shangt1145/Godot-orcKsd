@@ -57,7 +57,7 @@ public sealed class NativeStateFeedbackTests
         var path = @"H:\Working Folder\OrC-KSD.Godot\proto\data\nations";
         var catalog = new CardCatalog(); catalog.Load(path);
         using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 7, Guid.NewGuid().ToString(), "probe",
-            openingHand: ["deran/units/_6q", id], sourceDirectory: path);
+            openingHand: ["deran/units/_6q", id], sourceDirectory: path, firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false);
         var match = session.Host.Match;
         await match.ResourceManager.GainSlotsAsync(match.Players[0], 10);
@@ -81,7 +81,7 @@ public sealed class NativeStateFeedbackTests
     [Fact]
     public async Task ConcedeProducesOneAuthoritativeResultAndRejectsAllFurtherCommands()
     {
-        using var session = await OrcMatchSession.CreateProbeAsync("probe", 24, 17, "concede");
+        using var session = await OrcMatchSession.CreateProbeAsync("probe", 24, 17, "concede", firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(false); session.SettleProjection();
         var hand = session.View.SelfHand; var points = session.View.SelfKredits;
         var results = new List<UiPresentationResolution>(); session.Host.PresentationReady += (r, _) => results.Add(r);
@@ -100,7 +100,7 @@ public sealed class NativeStateFeedbackTests
     [Fact]
     public async Task ConcedeCannotChangeAnEnemyTurnOrAParkedMulligan()
     {
-        using var session = await OrcMatchSession.CreateProbeAsync("probe", 24, 17, "concede-gates");
+        using var session = await OrcMatchSession.CreateProbeAsync("probe", 24, 17, "concede-gates", firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(true);
         Assert.Equal(UiSubmitOutcome.WrongPhase, await session.SubmitAsync(new Concede())); Assert.True(session.MulliganPending);
         await session.CompleteMulliganAsync(session.View.SelfHand.Select(c => c.Uid).ToArray());

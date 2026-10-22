@@ -8,6 +8,19 @@ namespace Kards.Ui;
 
 public partial class BattleScreen
 {
+    private string? _readOnlyMode;
+    public void SetReadOnlyMode(string? mode)
+    {
+        _readOnlyMode = mode;
+        if (_endTurn is not null) RefreshTurnInput();
+    }
+    internal void VerifyReadOnlyInspection()
+    {
+        var card = _cards.Values.First(c => c.Mode == BattleCardMode.Hand && c.View?.Visibility == Visibility.Full);
+        CardHovered(card, true); RefreshTurnInput();
+        if (!_detail.Visible || !_endTurn.Disabled || _selected is not null) throw new InvalidOperationException("只读卡牌查看或输入门禁异常。");
+        CardHovered(card, false);
+    }
     private UiMatchView? _liveInputView;
     private UiBattleActions? _liveInputActions;
     private readonly TurnInputGate _turnInput = new();
@@ -21,7 +34,7 @@ public partial class BattleScreen
 
     private UiMatchView InteractionView => _liveInputView ?? _state;
     private static readonly UiBattleActions NoTurnActions = new();
-    private bool IsFriendlyTurn => _turnInput.AllowsInput(InteractionView);
+    private bool IsFriendlyTurn => _readOnlyMode is null && _turnInput.AllowsInput(InteractionView);
     private UiBattleActions InteractionActions => IsFriendlyTurn ? _liveInputActions ?? _actions : NoTurnActions;
     private bool CanEndTurnNow => IsFriendlyTurn && !TargetChoiceVisible && InteractionActions.CanEndTurn;
     private bool CanConcedeNow => !_usingDemo && CanEndTurnNow && !TargetChoiceVisible;
@@ -89,7 +102,7 @@ public partial class BattleScreen
 
     private void RefreshTurnInput()
     {
-        if (!IsFriendlyTurn && (_pressed is not null || _selected is not null || _hovered is not null
+        if (!IsFriendlyTurn && _readOnlyMode is null && (_pressed is not null || _selected is not null || _hovered is not null
             || _detail.Visible || _inspectStats.Visible)) CancelGesture();
         UpdateSelection(); UpdateEndTurnButton();
         if (_dragging && _pressed is { } source && IsTargetedOrder(source.Uid)) UpdateOrderAim(source, _aim.To);
@@ -98,7 +111,7 @@ public partial class BattleScreen
     private void UpdateEndTurnButton()
     {
         var view = InteractionView;
-        _endTurn.Text = view.Phase == "over" ? "对局结束" : IsFriendlyTurn ? "结束回合" : "对手回合";
+        _endTurn.Text = _readOnlyMode ?? (view.Phase == "over" ? "对局结束" : IsFriendlyTurn ? "结束回合" : "对手回合");
         _endTurn.Disabled = !CanEndTurnNow;
         _menu.SetItemDisabled(_menu.GetItemIndex(29), !CanConcedeNow);
         if (!CanConcedeNow) _concedeDialog.Hide();

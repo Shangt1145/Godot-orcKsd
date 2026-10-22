@@ -41,8 +41,8 @@ public sealed class OrcActionReader
             var uid = OrcRefs.KeyOf(unit);
             if (availability.Move.CanUse)
                 foreach (var candidate in availability.Move.Candidates)
-                    if (candidate.IsAlive && candidate.Value is Slot slot)
-                        moves.Add(new UiMoveOption(uid, match.Battlefield.FrontLine.Contains(slot) ? "frontline" : "support", slot.Index));
+                    if (candidate.IsAlive && candidate.Value is FormationGap gap)
+                        moves.Add(new UiMoveOption(uid, ReferenceEquals(match.Battlefield.FrontLine,gap.Line) ? "frontline" : "support", gap.Ordinal));
             foreach (var candidate in availability.Attack.Candidates)
             {
                 if (!candidate.IsAlive) continue;
@@ -68,8 +68,8 @@ public sealed class OrcActionReader
     {
         var battlefield = match.Battlefield;
         foreach (var line in new[] { battlefield.PlayerASupportLine, battlefield.FrontLine, battlefield.PlayerBSupportLine })
-            foreach (var slot in line)
-                if (slot.Occupant is UnitCard unit && ReferenceEquals(unit.Owner, viewer))
+            foreach (var card in line.Members)
+                if (card is UnitCard unit && ReferenceEquals(unit.Owner, viewer))
                     yield return unit;
     }
 }

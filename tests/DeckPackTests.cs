@@ -51,6 +51,6 @@ public class DeckPackTests
         var catalog = new CardCatalog(); catalog.Load(Source); var service = new DeckConstructionService(catalog.Cards, Source);
         var illegal = service.Starter() with { PackIds = ["pack/builtin"] };
         await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(catalog.Cards,
-            31, "pack-scope-rejection", "unused", sourceDirectory: Source, constructedDeck: illegal));
+            31, "pack-scope-rejection", "unused", sourceDirectory: Source, constructedDeck: illegal, firstPlayerIndex: 0));
     }
 }

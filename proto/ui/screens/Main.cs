@@ -1,4 +1,4 @@
-﻿using Kards.Ui.OrcBridge;
+using Kards.Ui.OrcBridge;
 using Godot;
 using Kards.Ui.Core;
 using Kards.Ui.Contracts;
@@ -205,6 +205,7 @@ public partial class Main : Control
         _setup.ChooseDeckRequested += () => Show("decklib");
         _setup.BackRequested += () => Show("home");
         AddScreen(content, "setup", _setup);
+        _setup.ReplayRequested += OpenReplayLibrary;
 
         // 作战房间：进屏即拉起服务器实例，拉人后分配座位，开局交给远端 feed 驱动。
         _room = new RoomScreen();
@@ -217,6 +218,7 @@ public partial class Main : Control
         AddScreen(content, "room", _room);
         _setup.RoomRequested += () => { Show("room"); _room.Open(); };
         // 局域网房间列表一键加入（M4 主流程入口）：跳房间屏并直接连对方地址。
+        _setup.RoomSpectateRequested += (host, port) => { Show("room"); _ = _room.SpectateAsync(host, port); };
         _setup.RoomJoinRequested += (host, port) =>
         {
             Show("room");
@@ -300,6 +302,8 @@ public partial class Main : Control
         var args = OS.GetCmdlineUserArgs();
         if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
         else if (args.Contains("--net-play")) Callable.From(NetPlay).CallDeferred();
+        else if (args.Contains("--verify-setup-selection")) Callable.From(VerifySetupSelection).CallDeferred();
+        else if (args.Contains("--verify-viewer-replay")) Callable.From(VerifyViewerReplay).CallDeferred();
         else if (args.Contains("--verify-room")) Callable.From(VerifyRoom).CallDeferred();
         else if (args.Contains("--verify-room-remote")) Callable.From(VerifyRoomRemote).CallDeferred();
         else if (args.Contains("--verify-room-join")) Callable.From(VerifyRoomJoin).CallDeferred();
@@ -459,6 +463,8 @@ public partial class Main : Control
     private void BindFeed(IMatchFeed feed)
     {
         _feed = feed;
+        _battle.SetReadOnlyMode(feed is ReplayMatchFeed ? "回放中" : feed is RemoteMatchFeed { IsObserver: true } ? "观战中" : null);
+        AttachRecording(feed);
         // 单机＝主线程，保持同步；远端＝协议线程，必须 deferred。
         var remote = !ReferenceEquals(feed, _runner);
         void Marshal(Action action)
@@ -506,6 +512,7 @@ public partial class Main : Control
     {
         var feed = _feed;
         feed?.Advance(delta);
+        UpdateReplayControls();
         if (_feed == feed && feed?.CurrentView is { } view)
             _battle.UpdateInputProjection(view, feed.CurrentActions);
     }
@@ -518,21 +525,34 @@ public partial class Main : Control
     {
         if (_room.Feed is not { } feed) return;
         StopRealMatch();
+        feed.ArtPathResolver = id => _artById.GetValueOrDefault(id);
         BindFeed(feed);
+        feed.AdmissionChanged += state => Callable.From(() => {
+            if (_feed != feed || state == "admitted") return;
+            StopRealMatch(); Show("room");
+        }).CallDeferred();
         // 联机延迟角标（M5）：ping 循环随 feed 走，重连后的新 feed 由房间屏再挂一次，
         // 这里按当前引用显示——feed 换人后旧句柄事件自然失效。
         if (feed is RemoteMatchFeed remote)
         {
+            remote.ArtPathResolver = id => _artById.GetValueOrDefault(id);
             remote.StartPingLoop();
             remote.PingUpdated += ms => Callable.From(() => _battle?.SetNetworkPing(ms)).CallDeferred();
         }
         Show("battle");
+        if (feed.IsObserver) BuildReadOnlyBar(null, feed);
         try { await feed.RefreshViewAsync(); }
         catch (Exception error) { GD.PushError($"[remote] 拉取首帧视图失败：{error}"); }
+        if (feed.MulliganPending) _battle.ShowMulliganPanel(feed.CurrentView, feed.MulliganRequestId);
     }
 
     private void StopRealMatch()
     {
+        _replayLoadVersion++;
+        _battle?.SetReadOnlyMode(null);
+        _replayRecorder?.Dispose(); _replayRecorder = null;
+        _replayFeed = null; _replaySeek = null; _replayTime = null; _replayPlay = null;
+        _readOnlyBar?.QueueFree(); _readOnlyBar = null;
         var runner = _runner;
         _runner = null;
         _feed = null;
@@ -735,7 +755,9 @@ public partial class Main : Control
     private static string VersionSuffix()
     {
         var value = ProjectSettings.GetSetting("application/config/version", "").AsString();
-        return value.Length == 0 ? "" : " · " + value;
+        var executableRoot = Path.GetDirectoryName(System.Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        var channel = File.Exists(Path.Combine(executableRoot, "TEST_BUILD.txt")) ? " · 已知问题测试包" : "";
+        return (value.Length == 0 ? "" : " · " + value) + channel;
     }
 
     private void AddScreen(Control host, string id, Control screen)

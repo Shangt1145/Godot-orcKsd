@@ -118,16 +118,16 @@ public sealed class DeckConstructionTests
             deck = deck with { Options = new DeckOptions { TotalCards = size + 1 }, CardIds = eligible.SelectMany(c => Enumerable.Repeat(c.CardId, ConstructionRules.CopyLimit(c.Rarity))).Take(size).ToArray() };
         }
         Assert.Empty(service.Validate(deck));
-        using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 3, "constructed", "unused", sourceDirectory: Source, constructedDeck: deck);
+        using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 3, "constructed", "unused", sourceDirectory: Source, constructedDeck: deck, firstPlayerIndex: 0);
         session.DriveOpponent = false;
         await session.SettleMulliganAsync(interactive: false); session.Pump();
         var player = session.Host.Match.Players[0];
         var actual = player.Deck.Concat(session.View.SelfHand.Select(c => c.Definition.CardId)).OrderBy(id => id).ToArray();
         Assert.Equal(deck.CardIds.OrderBy(id => id), actual);
         Assert.Equal(size - session.View.SelfHand.Count, session.View.SelfDeckCount);
-        // 🔧 新引擎对自动对手按 TotalCards(含 HQ=40) 补齐缺张，EnemyDeckCount=40−5；
-        // 玩家座不补（行为不对称，引擎侧深水区）。先按现行为断言，待引擎明确口径后再收紧。
-        Assert.Equal(size + 1 - 5, session.View.EnemyDeckCount);
+        var opponent = session.Host.Match.Players[1];
+        Assert.Equal(opponent.Deck.Count, session.View.EnemyDeckCount);
+        Assert.Equal(size, opponent.Deck.Count + opponent.Hand.Count);
         Assert.Equal(Faction.Soviet, player.MainFaction); Assert.Equal(Faction.Germany, player.AllyFaction);
         Assert.Equal(Faction.Soviet, session.Host.Match.Players[1].MainFaction);
         Assert.Equal(Faction.Germany, session.Host.Match.Players[1].AllyFaction);
@@ -137,9 +137,9 @@ public sealed class DeckConstructionTests
     public async Task FactoryRejectsInvalidDeckInsteadOfFallingBackToRandomCards()
     {
         var c = Catalog(); var service = new DeckConstructionService(c.Cards, Source); var deck = service.Starter();
-        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(c.Cards, 1, "invalid", "unused", sourceDirectory: Source, constructedDeck: deck with { CardIds = ["missing"] }));
-        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(c.Cards, 1, "override", "unused", sourceDirectory: Source, constructedDeck: deck, openingHand: deck.CardIds[..4]));
+        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(c.Cards, 1, "invalid", "unused", sourceDirectory: Source, constructedDeck: deck with { CardIds = ["missing"] }, firstPlayerIndex: 0));
+        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(c.Cards, 1, "override", "unused", sourceDirectory: Source, constructedDeck: deck, openingHand: deck.CardIds[..4], firstPlayerIndex: 0));
         var edited = c.Cards.Select(card => card.CardId == deck.CardIds[0] ? card with { Text = card.Text + " changed" } : card).ToArray();
-        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(edited, 1, "changed", "unused", sourceDirectory: Source, constructedDeck: deck));
+        await Assert.ThrowsAsync<InvalidDataException>(() => OrcMatchSession.CreateFromCatalogAsync(edited, 1, "changed", "unused", sourceDirectory: Source, constructedDeck: deck, firstPlayerIndex: 0));
     }
 }
