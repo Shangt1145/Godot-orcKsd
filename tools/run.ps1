@@ -11,6 +11,7 @@
     [switch]$VerifyRoomRemote,
     [switch]$VerifyRoomJoin,
     [switch]$VerifyTarget,
+    [switch]$VerifyCombat,
     [switch]$CaptureRoom,
     [switch]$Capture
 )
@@ -49,6 +50,7 @@ try {
     elseif ($VerifyRoomRemote) { & $Godot --headless --path $BuildRoot '--' --verify-room-remote }
     elseif ($VerifyRoomJoin) { & $Godot --headless --path $BuildRoot '--' --verify-room-join }
     elseif ($VerifyTarget) { & $Godot --headless --path $BuildRoot '--' --verify-target }
+    elseif ($VerifyCombat) { & $Godot --headless --path $BuildRoot '--' --verify-combat }
     elseif ($CaptureRoom) { & $Godot --path $BuildRoot '--' --capture-room }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }

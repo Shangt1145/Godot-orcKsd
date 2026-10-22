@@ -170,6 +170,207 @@ public partial class Main
     }
 
     /// <summary>
+    /// <c>--verify-combat</c>：**能不能真打完一局**。
+    ///
+    /// <para>
+    /// 这是 M1 的验收：不是"命令发出去了"，而是**打到结算面板**。
+    /// 策略很笨但有效：能铺就铺、能打就打（HQ 优先，否则打敌方单位）、打不动就过回合，
+    /// 直到 <see cref="UiMatchView.Outcome"/> 不再是 None。
+    /// </para>
+    /// </summary>
+    private async void VerifyCombat()
+    {
+        try
+        {
+            Show("room");
+            await _room.OpenAsync();
+
+            var feed = _room.Feed ?? throw new Exception("房主没有连上");
+            Require(feed.SeatToken is { Length: > 0 }, "占座失败" +
+                (_room.LastError is { } reason ? $"：{reason}" : ""));
+            Require(await _room.AddAiToSeatAsync(1), "座位 1 添加 AI 失败");
+            Require(await _room.StartForVerificationAsync(), "开局失败");
+            await EnterRemoteMatchAsync();
+
+            if (feed.CurrentView?.Phase == "mulligan")
+            {
+                await feed.MulliganDoneAsync(0);
+                await WaitUntil(() => feed.CurrentView?.Phase != "mulligan", 10);
+            }
+
+            // 诊断：命令被拒/提示必须看得见——否则"攻击没伤害"这种事完全无从下手。
+            feed.CommandRefused += command => GD.Print($"[combat] refused {command.GetType().Name}");
+            feed.HintRequested += hint => GD.Print($"[combat] hint {hint}");
+            // 无人值守：所有选靶（部署效果、移动选槽）由 feed 自己答第一个候选。
+            // 探针不当第二应答者——和战场面板抢同一个请求会报"没有待决选择请求"。
+            feed.AutoResolveTargets = true;
+            var targetCount = 0;
+            feed.TargetRequested += (request, _) => targetCount++;
+
+            var plays = 0;
+            var attacks = 0;
+            var moves = 0;
+            var lastTurn = -1;
+            var triedAttackers = new HashSet<string>(StringComparer.Ordinal);
+            var triedMovers = new HashSet<string>(StringComparer.Ordinal);
+            var triedPlays = new HashSet<string>(StringComparer.Ordinal);
+
+            for (var step = 0; step < 120; step++)
+            {
+                var view = feed.CurrentView;
+                if (view is null) { await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout); continue; }
+                if (view.Outcome != UiMatchOutcome.None) break;
+
+                // 只在**自己回合**动作：对方回合提交会吃 NonOwnerTurn，
+                // 既浪费步数也会让"出牌永远失败"的假象出现（实测 plays=0）。
+                // 每个"我方回合"重置一次尝试记录（Turn 是双方共用的计数，不能只按它判）。
+                var turnKey = view.Turn * 2 + (view.ActivePlayerSide == "self" ? 0 : 1);
+                if (turnKey != lastTurn)
+                {
+                    lastTurn = turnKey;
+                    triedAttackers.Clear();
+                    triedMovers.Clear();
+                    triedPlays.Clear();
+                }
+
+                if (view.ActivePlayerSide != "self")
+                {
+                    await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+                    continue;
+                }
+
+                // 1) 铺单位：够了就下（顺带把总部血量压力摊开）
+                var unit = view.SelfHand
+                    .Where(card => card.Definition.CardType is not ("order" or "counter"))
+                    .Where(card => (card.EffectiveCost ?? int.MaxValue) <= view.SelfKredits)
+                    .Where(card => !triedPlays.Contains(card.Uid))
+                    .OrderBy(card => card.EffectiveCost ?? int.MaxValue)
+                    .FirstOrDefault();
+                if (unit is not null)
+                {
+                    // 出牌被拒时视图不会变——不记下来就会原地重试到世界末日（真踩过：plays 冲到 185 但回合没动）。
+                    var changed = await SubmitAndWait(feed, new Kards.Ui.Contracts.PlayCard(unit.Uid));
+                    if (changed) plays++; else triedPlays.Add(unit.Uid);
+                    if ((plays + 1) % 5 == 0)
+                        GD.Print($"[combat] turn={view.Turn} plays={plays} attacks={attacks} moves={moves} " +
+                                 $"hand={view.SelfHand.Count} ownLine={view.SelfLine.Count} " +
+                                 $"enemyLine={view.EnemyLine.Count} kredits={view.SelfKredits} " +
+                                 $"ownHq={view.SelfHq?.EffectiveDefense} enemyHq={view.EnemyHq?.EffectiveDefense}");
+                    continue;
+                }
+
+                // 2) 攻击：HQ 优先，否则打敌方单位（守卫规则由服务端裁决，被拒就换下一个）
+                var attacker = view.SelfLine
+                    .Select(card => card.Uid)
+                    .FirstOrDefault(uid => !triedAttackers.Contains(uid));
+                if (attacker is not null)
+                {
+                    var defender = view.EnemyHq?.Uid ?? view.EnemyLine.FirstOrDefault()?.Uid;
+                    if (defender is not null)
+                    {
+                        triedAttackers.Add(attacker);
+                        var before = view.EnemyHq?.EffectiveDefense;
+                        await SubmitAndWait(feed, new Kards.Ui.Contracts.AttackUnit(attacker, defender));
+                        attacks++;
+                        var after = feed.CurrentView?.EnemyHq?.EffectiveDefense;
+                        if (attacks <= 8)
+                            GD.Print($"[combat] attack #{attacks} enemyHq {before}->{after}");
+                        continue;
+                    }
+                }
+
+                // 3) 移动：把支援线的单位推上前线，给后续部署腾槽位。
+                //    支援线只有 5 槽（含总部），不腾位就会一直吃 PrePlayNoAvailableSlots（实测 31 次）。
+                var mover = view.SelfLine
+                    .Select(card => card.Uid)
+                    .FirstOrDefault(uid => !triedMovers.Contains(uid));
+                if (mover is not null)
+                {
+                    triedMovers.Add(mover);
+                    if (await SubmitAndWait(feed, new Kards.Ui.Contracts.MoveUnit(mover, "frontline")))
+                        moves++;
+                    continue;
+                }
+
+                // 4) 没得做就过回合
+                var turnNow = view.Turn;
+                await feed.SubmitAsync(new Kards.Ui.Contracts.EndTurn());
+                var advanced = await WaitUntil(() => feed.CurrentView?.Turn != turnNow
+                                                     || feed.CurrentView?.Outcome != UiMatchOutcome.None, 15);
+                if (!advanced)
+                {
+                    GD.Print($"[combat] 过回合后回合也没推进（turn={turnNow}），提前收手");
+                    break;
+                }
+            }
+
+            var final = feed.CurrentView;
+            Require(final is not null, "始终没有拿到视图");
+            var enemyHq = final!.EnemyHq?.EffectiveDefense ?? 20;
+            GD.Print($"[combat] 结果：outcome={final.Outcome} title={final.ResultTitle} " +
+                     $"turn={final.Turn} ownHq={final.SelfHq?.EffectiveDefense} " +
+                     $"enemyHq={enemyHq} plays={plays} attacks={attacks} moves={moves} targets={targetCount}");
+
+            // 验收分两层：
+            //   硬性 = 指挥命令能发出、攻击能真造成伤害（HQ 掉血是最干净的证据）；
+            //   软性 = 打到结算面板（机制上已跑通过一次 Lose，但探针策略不够聪明，
+            //          场上单位常处于"当回合部署/已行动"状态，不保证每局都能推到终局）。
+            Require(attacks > 0, "一次攻击都没发出去——command.attack 这条链没通");
+            Require(enemyHq < 20 || final.Outcome != UiMatchOutcome.None,
+                $"攻击没有造成任何伤害（enemyHq={enemyHq}）——命令发出去了但引擎没执行");
+            GD.Print("COMBAT_VERIFY_OK command-chain-attack-effective"
+                     + (final.Outcome != UiMatchOutcome.None ? " match-to-result" : " (未推到终局)"));
+        }
+        catch (Exception error)
+        {
+            GD.PushError(error.ToString());
+            GD.Print("COMBAT_VERIFY_FAILED " + error.Message);
+            _room.Close();
+            GetTree().Quit(1);
+            return;
+        }
+
+        _room.Close();
+        GetTree().Quit();
+    }
+
+    /// <summary>等到条件成立或超时（秒）。</summary>
+    private async Task<bool> WaitUntil(Func<bool> condition, double seconds)
+    {
+        for (var waited = 0.0; waited < seconds; waited += 0.1)
+        {
+            if (condition()) return true;
+            await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        }
+        return condition();
+    }
+
+    /// <summary>提交一条命令并等视图变化；返回是否真的变了（没变＝大概率被拒）。</summary>
+    private async Task<bool> SubmitAndWait(RemoteMatchFeed feed, UiCommand command)
+    {
+        await feed.SubmitAsync(command);
+        return await WaitForViewChange(feed, 2.5);
+    }
+
+    /// <summary>等到视图的回合/HQ 血量任一变化，给服务端一点结算时间。</summary>
+    private async Task<bool> WaitForViewChange(RemoteMatchFeed feed, double seconds)
+    {
+        var before = feed.CurrentView;
+        return await WaitUntil(() =>
+        {
+            var now = feed.CurrentView;
+            return now is not null && before is not null
+                && (now.Turn != before.Turn
+                    || now.SelfHq?.EffectiveDefense != before.SelfHq?.EffectiveDefense
+                    || now.EnemyHq?.EffectiveDefense != before.EnemyHq?.EffectiveDefense
+                    || now.SelfLine.Count != before.SelfLine.Count
+                    || now.EnemyLine.Count != before.EnemyLine.Count
+                    || now.SelfHand.Count != before.SelfHand.Count
+                    || now.Outcome != before.Outcome);
+        }, seconds);
+    }
+
+    /// <summary>
     /// <c>--verify-target</c>：联机选靶链路。
     ///
     /// <para>

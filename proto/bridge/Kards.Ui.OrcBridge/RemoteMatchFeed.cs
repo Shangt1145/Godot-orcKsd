@@ -42,6 +42,10 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private string? _targetSessionId;
     /// <summary>选靶候选：UI 侧的 choice id（序号字符串）→ 引擎要的 picks 序号。</summary>
     private readonly Dictionary<string, int> _picksByChoiceId = new(StringComparer.Ordinal);
+    /// <summary>选靶候选：choice id → 引擎引用键（用于把"点谁"对到候选）。</summary>
+    private readonly Dictionary<string, string> _refsByChoiceId = new(StringComparer.Ordinal);
+    /// <summary>下一条选靶请求要自动命中的目标引用键（攻击/指向性指挥用）。</summary>
+    private string? _desiredTargetRef;
 
     /// <summary>
     /// 视图反序列化专用配置：服务端把枚举写成**字符串**（<c>"None"</c>、<c>"Mulligan"</c>…），
@@ -207,6 +211,7 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public async Task SubmitAsync(UiCommand command, CancellationToken ct = default)
     {
         if (_disposed) return;
+        RememberDesiredTarget(command);
         var (tool, arguments) = Map(command);
         if (tool is null)
         {
@@ -219,11 +224,13 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         IsSubmitting = true;
         try
         {
-            var result = await _client.CallAsync(tool, arguments, ct).ConfigureAwait(false);
+            var result = await _client.CallAsync(tool, arguments, ct);
             if (!result.Ok)
             {
-                CommandRefused?.Invoke(command);
-                // targeting / cancelled 不是错误：一个表示已挂起等选靶，一个是玩家取消。
+                // targeting ≠ 失败：指挥动作是两段式，第一段结束时服务端一定回 targeting。
+                // 若在这里发 CommandRefused，UI 会把刚发起的动作当成被拒、就地回滚。
+                if (result.Code is not "targeting")
+                    CommandRefused?.Invoke(command);
                 if (result.Code is not ("targeting" or "cancelled"))
                     HintRequested?.Invoke(result.Message ?? result.Code);
             }
@@ -259,10 +266,37 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private (string? Tool, JsonNode? Arguments) Map(UiCommand command) => command switch
     {
         PlayCard play => RoutePlay(play),
+        // 指挥动作全部是"发起 + 选靶"两段式：工具只吃 {ref}，位置/目标靠 pending 应答。
+        // 能直接指定目标的（攻击、指向性指挥）在 ApplyTargetRequest 里自动命中，玩家感觉不到第二段。
+        CommandUnit unit => ("command.begin", new JsonObject { ["ref"] = unit.Uid }),
+        MoveUnit move => ("command.move", new JsonObject { ["ref"] = move.Uid }),
+        AttackUnit attack => ("command.attack", new JsonObject { ["ref"] = attack.AttackerUid }),
+        RetreatUnit retreat => ("command.leave", new JsonObject { ["ref"] = retreat.Uid }),
         EndTurn => ("match.end_turn", new JsonObject()),
         Concede => ("match.concede", new JsonObject()),
         _ => (null, null),
     };
+
+    /// 记下"这条命令希望选中的目标"（引用键），下一条选靶请求优先自动命中它。
+    ///
+    /// <para>
+    /// 服务端只提供"发起指挥"这一个入口，目标要靠 <c>target.submit</c> 回填；
+    /// 但玩家点"攻击这个目标"时不该被迫再点一次。所以带明确目标的命令先记下来，
+    /// 等 pending 到达再按 <c>candidates[].ref</c> 对上号自动提交。
+    /// </para>
+    /// </summary>
+    private void RememberDesiredTarget(UiCommand command)
+    {
+        _desiredTargetRef = command switch
+        {
+            AttackUnit attack => attack.DefenderUid,
+            CommandUnit unit => unit.TargetUid,
+            // MoveUnit 的目标是槽位（ToZone/SlotIndex），不是实体引用键，
+            // 而候选里的槽位 ref 是引擎懒分配的、无法从 SlotIndex 反推——
+            // 所以移动仍然交给选槽面板，不在这里硬猜。
+            _ => null,
+        };
+    }
 
     /// <summary>
     /// 出牌按卡型分流：<c>play.unit{ref,owner,slot}</c> / <c>play.command{ref}</c> / <c>play.counter{ref}</c>。
@@ -279,14 +313,17 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         {
             "order" => ("play.command", new JsonObject { ["ref"] = play.Uid }),
             "counter" => ("play.counter", new JsonObject { ["ref"] = play.Uid }),
-            _ => ("play.unit", new JsonObject
+            // 指定了槽位＝玩家拖到了具体位置，直接落位。
+            _ when play.SupportIndex is { } slot => ("play.unit", new JsonObject
             {
-                // slot 缺省取 0：指挥总部固定在支援线居中槽，槽 0 通常空闲。
-                // 取错只会被服务端拒绝并回业务码，不会写坏状态。
                 ["ref"] = play.Uid,
                 ["owner"] = Seat,
-                ["slot"] = play.SupportIndex ?? 0,
+                ["slot"] = slot,
             }),
+            // 没指定槽位＝不该由前端硬猜：走"预打出"进部署选位交互，由选靶链路决定落点。
+            // 硬猜槽号是本轮最大的坑——UiCardView.SlotIndex 把前线与支援线混在一起，
+            // 算出来的"空槽"经常已被占，实测 40+ 次 TargetSlotOccupied，出牌永远失败。
+            _ => ("play.unit_pre", new JsonObject { ["ref"] = play.Uid }),
         };
     }
 
@@ -400,6 +437,7 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 
         var allowed = new List<UiChoice>();
         _picksByChoiceId.Clear();
+        _refsByChoiceId.Clear();
         if (body["candidates"] is JsonArray candidates)
             foreach (var node in candidates)
             {
@@ -413,6 +451,7 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 var id = index.ToString(CultureInfo.InvariantCulture);
 
                 _picksByChoiceId[id] = index;
+                if (reference.Length > 0) _refsByChoiceId[id] = reference;
                 allowed.Add(new UiChoice(
                     id,
                     string.IsNullOrWhiteSpace(name) ? (reference.Length > 0 ? reference : id) : name,
@@ -437,11 +476,52 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 
         _targetSessionId = sessionId;
         _targetPending = true;
+
+        // 玩家已经点明了"打谁"：候选里能找到就直接提交，不再让人点第二次。
+        if (_desiredTargetRef is { Length: > 0 } wanted)
+        {
+            _desiredTargetRef = null;
+            var hit = allowed.FirstOrDefault(choice =>
+                _refsByChoiceId.TryGetValue(choice.Id, out var reference) && reference == wanted);
+            if (hit is not null && _picksByChoiceId.TryGetValue(hit.Id, out var index))
+            {
+                _targetPending = false;
+                Console.WriteLine($"[net] 自动命中选靶目标 ref={wanted} pick={index}");
+                _ = SubmitTargetAsync(sessionId, [index]);
+                return;
+            }
+
+            // 指定了目标却不在候选里（典型：敌方前线还有单位时打 HQ）。
+            // 必须**主动取消**——把请求挂在那儿等超时，后面每条命令都会吃
+            // "当前有未应答的选靶请求"（实测连出牌都被堵死）。
+            _targetPending = false;
+            Console.WriteLine($"[net] 选靶目标不可用 ref={wanted}，取消本次动作（候选 {allowed.Count} 个）");
+            _ = CancelTargetAsync(sessionId);
+            return;
+        }
+
         var request = new UiTargetRequest(sessionId, [slot])
         {
             SelectorName = selector,
             IsDrag = isDrag,
         };
+
+        // 无人值守：自己答完，别把请求挂在那儿。
+        if (AutoResolveTargets)
+        {
+            var auto = allowed.FirstOrDefault();
+            _targetPending = false;
+            if (auto is not null && _picksByChoiceId.TryGetValue(auto.Id, out var autoIndex))
+            {
+                Console.WriteLine($"[net] 无人值守应答选靶 selector={selector} pick={autoIndex}");
+                _ = SubmitTargetAsync(sessionId, [autoIndex]);
+            }
+            else
+            {
+                _ = CancelTargetAsync(sessionId);
+            }
+            return;
+        }
 
         // 🔴 不要 target.claim：服务端 TargetTools.SubmitAsync 把 claimant 写死成
         // TargeterBridgeAdapter.ClaimantService，认领成 "host" 之后提交会被判
@@ -479,6 +559,17 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             ErrorRaised?.Invoke("target.cancel: " + error.Message);
         }
     }
+
+    /// <summary>
+    /// 无人值守：所有选靶请求自动应答（选第一个候选），**不**触发 <see cref="TargetRequested"/>。
+    ///
+    /// <para>
+    /// 给自动对战/探针用。正常对局必须为 false——否则玩家看不到选靶面板。
+    /// 存在的理由：部署类效果也会走选靶（<c>play.unit</c> 返回 <c>targeting</c>），
+    /// 无人值守时如果不自动应答，请求会挂在服务端等超时，后续每条命令都吃"有待决请求"。
+    /// </para>
+    /// </summary>
+    public bool AutoResolveTargets { get; set; }
 
     /// <summary>把 UI 的选择（序号字符串）翻译成引擎要的 picks。</summary>
     private sealed class RemoteTargetResponder : IUiTargetResponder
