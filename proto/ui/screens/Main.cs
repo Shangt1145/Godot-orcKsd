@@ -678,15 +678,33 @@ public partial class Main : Control
         _runner!.CombatReady += (impacts, _, _) => combatSeen |= impacts.Count > 0;
         await _runner!.SubmitAsync(new EndTurn());
         await SettlePlayback();
-        var hqUid = _runner!.CurrentView!.EnemyHq!.Uid;
+        // 新射程矩阵：支援线只能打敌前线，前线才能打敌支援线/总部。所以"打到总部"不是必然事件——
+        // 引擎给了总部就优先打总部，否则打它给的第一合法目标，只要求"真的造成伤害"。
+        var before = _runner!.CurrentView!;
+        var hqUid = before.EnemyHq!.Uid;
+        GD.Print($"[bridge] turn={before.Turn} side={before.ActivePlayerSide} " +
+                 $"selfLine={string.Join(",", before.SelfLine.Select(c => $"{c.CardId}@{c.Zone}[{c.SlotIndex}]"))} " +
+                 $"enemyLine={string.Join(",", before.EnemyLine.Select(c => $"{c.CardId}@{c.Zone}[{c.SlotIndex}]"))} " +
+                 $"previews={before.SelfLine.Count} cands={_runner!.CurrentActions.AttackPreviews.Count} " +
+                 $"playable={_runner!.CurrentActions.PlayableUids.Count} moves={_runner!.CurrentActions.Moves.Count}");
         var strike = _runner!.CurrentActions.AttackPreviews.FirstOrDefault(p => p.DefenderUid == hqUid)
-            ?? throw new Exception("No unit can attack the enemy headquarters.");
-        await _runner!.SubmitAsync(new AttackUnit(strike.AttackerUid, hqUid));
+            ?? _runner!.CurrentActions.AttackPreviews.FirstOrDefault()
+            ?? throw new Exception("No unit can attack any legal target.");
+        var defender = strike.DefenderUid;
+        var hpBefore = defender == hqUid
+            ? before.EnemyHq!.Health
+            : before.EnemyLine.FirstOrDefault(c => c.Uid == defender)?.Health;
+        await _runner!.SubmitAsync(new AttackUnit(strike.AttackerUid, defender));
         await SettlePlayback();
         if (!combatSeen) throw new Exception("Attack produced no impact presentation.");
-        var hqHealth = _runner!.CurrentView!.EnemyHq!.Health;
-        if (hqHealth is null || hqHealth >= 20) throw new Exception("Attack did not damage the enemy HQ.");
-        GD.Print("BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 pump-stable deploy endturn combat hq-damaged");
+        var after = _runner!.CurrentView!;
+        var hpAfter = defender == hqUid
+            ? after.EnemyHq?.Health
+            : after.EnemyLine.FirstOrDefault(c => c.Uid == defender)?.Health;
+        if (hpBefore is not null && hpAfter is not null && hpAfter >= hpBefore)
+            throw new Exception($"Attack did not damage its target ({hpBefore} -> {hpAfter}).");
+        GD.Print($"BRIDGE_VERIFY_OK real-match play opening-hand=4 opponent-hand-count-only hq=20 " +
+                 $"pump-stable deploy endturn combat {(defender == hqUid ? "hq-damaged" : "front-unit-damaged")}");
     }
 
     /// <summary>
