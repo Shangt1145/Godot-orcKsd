@@ -45,6 +45,8 @@
 
 联机网络层选型（Radmin → 开源组网）：[从 Radmin 切换至开源组网](design/NETWORK_OPENSRC_20261022.md)（ZeroTier / n2n；广播发现链路一行不改）。
 
+**当前交接（0.0.0-beta.5）**：[交接：beta.5](planning/HANDOVER_BETA5_20261023.md)（现状数字 / 怎么跑 / 怎么发版 / 已知问题 / 踩过的坑）。
+
 卡组选择视觉修正：[以原版卡背陈列重做准备页](acceptance/SETUP_CARD_BACK_REFERENCE_20261022.md)。
 
 材质细化：[KARDS 纸面、织物与字重对照及第一轮实装](research/KARDS_MATERIAL_STUDY_20261022.md)。
