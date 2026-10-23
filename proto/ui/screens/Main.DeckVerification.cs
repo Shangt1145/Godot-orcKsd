@@ -100,6 +100,15 @@ public partial class Main
             if (_deckEditor.GetGlobalRect().End.X > GetViewportRect().End.X + 1)
                 throw new Exception("Deck builder overflowed after returning from a full-screen match.");
             await DeckClickAsync(_deckEditor.StartButton);
+            // 编辑器"开始"现在先到作战准备页（新枢纽），再由那里的"进入战场"开局。
+            var settle = DateTime.UtcNow.AddSeconds(12);
+            while (_active != "setup" && DateTime.UtcNow < settle) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            if (_active == "setup")
+            {
+                await MenuSettledAsync();
+                await MenuFrameAsync();
+                await DeckClickAsync(_setup.StartButton);
+            }
             var deadline = DateTime.UtcNow.AddSeconds(12);
             while (!_battle.MulliganPanelVisible && DateTime.UtcNow < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             if (!_battle.MulliganPanelVisible || _runner?.CurrentView is not { } opening)

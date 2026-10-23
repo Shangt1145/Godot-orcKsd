@@ -24,8 +24,11 @@ function Set-Version([string]$value) {
     if ($value -match '-hotfix' -and $value -match '^0\.0\.0') {
         throw "hotfix 用于已发布版本：0.0.0 尚未发布，不能有 hotfix"
     }
-    Set-Content -LiteralPath $versionFile -Value $value -Encoding utf8
-    $lines = Get-Content -LiteralPath $projectFile
+    # PS5.1 的 -Encoding utf8 会写 BOM，Godot 读到 BOM 会把文件解析坏（历史事故：
+    # project.godot 的中文项目名被写崩）。统一用无 BOM 的 UTF-8 写。
+    [IO.File]::WriteAllText($versionFile, $value, [Text.UTF8Encoding]::new($false))
+    # 必须按 UTF-8 读：PS5.1 的 Get-Content 默认走 ANSI，中文项目名会先被读坏再写回去（历史事故）。
+    $lines = [IO.File]::ReadAllLines($projectFile, [Text.UTF8Encoding]::new($false))
     $replaced = $false
     $output = foreach ($line in $lines) {
         if ($line -match '^config/version=') { $replaced = $true; "config/version=`"$value`"" }
@@ -40,7 +43,7 @@ function Set-Version([string]$value) {
             if ($inApplication) { $output += "config/version=`"$value`""; $inApplication = $false }
         }
     }
-    Set-Content -LiteralPath $projectFile -Value $output -Encoding utf8
+    [IO.File]::WriteAllLines($projectFile, [string[]]$output, [Text.UTF8Encoding]::new($false))
     Write-Host "Version set to $value"
 }
 
