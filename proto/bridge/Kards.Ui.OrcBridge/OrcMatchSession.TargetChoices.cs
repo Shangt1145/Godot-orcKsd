@@ -20,9 +20,6 @@ public sealed partial class OrcMatchSession
         if (_disposed || _activeCommandToken.IsCancellationRequested) { selector.Submit(new CancelEvent()); return; }
         if (TargetRequested is null) { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); return; }
         var data = selector.Presentation;
-        Console.WriteLine($"[target] source={_choiceSourceUid ?? "none"} selector={selector.SelectorName} " +
-            $"references={string.Join(',', data.Candidates.Where(r=>r.IsAlive).Select(r=>r.Value.GetType().Name).Distinct())} " +
-            $"count={data.Identifiers?.Count ?? data.Candidates.Count} min={data.Min} max={data.Max}");
         var tag = data.Parameter as OrderSelectorTag;
         var name = tag?.SlotName ?? "default";
         var kind = data.Identifiers is null ? ChoiceKind.Reference

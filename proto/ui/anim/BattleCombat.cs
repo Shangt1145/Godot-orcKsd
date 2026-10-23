@@ -10,7 +10,6 @@ public partial class BattleCombat : Control
     private AnimClock _clock = null!;
     private SfxPlayer _sfx = null!;
     private Texture2D _burst = null!;
-    private ShaderMaterial _smoke = null!;
     private readonly List<Tween> _tweens = [];
     private readonly List<BattleCard> _actors = [];
     private readonly Dictionary<BattleCard, Vector2> _flightPositions = [];
@@ -30,14 +29,7 @@ public partial class BattleCombat : Control
     {
         _clock = clock; _sfx = sfx;
         _burst = textures.Get("res://proto/assets/battle/explosion-v2.png") ?? throw new InvalidOperationException("Missing combat texture.");
-        _smoke = new ShaderMaterial { Shader = new Shader { Code = """
-            shader_type canvas_item;
-            void fragment() {
-                vec4 t=texture(TEXTURE,UV);
-                float l=dot(t.rgb,vec3(0.299,0.587,0.114));
-                COLOR=vec4(mix(vec3(0.10,0.105,0.09),vec3(0.46,0.43,0.35),l),t.a)*COLOR;
-            }
-            """ } };
+
     }
     private double Time(double seconds) => Math.Max(.03, seconds * _clock.Scale);
     private static bool Flies(string? type) => type is "fighter" or "bomber" or "spacefighter" or "space_fighter" or "space";
@@ -60,6 +52,7 @@ public partial class BattleCombat : Control
             var drift = direction * (2 * EaseFlight(age * 7 / 2));
             var bob = new Vector2(MathF.Sin(age * 3.1f) * 1.3f, MathF.Sin(age * 4.5f) * 3.5f);
             card.SetFlightPose((drift + bob) * fade, MathF.Sin(age * 3) * .018f * fade);
+            card.DeploymentElevation = fade * .5f;
         }
     }
     private async Task Delay(double seconds, int epoch)
@@ -85,21 +78,25 @@ public partial class BattleCombat : Control
     public int StepFrames { get; set; }
     public void Interrupt()
     {
+        ResetMotion();
+        foreach (var child in GetChildren()) { RemoveChild(child); child.QueueFree(); }
+    }
+    private void ResetMotion()
+    {
         _epoch++; IsPlaying = false;
         foreach (var t in _tweens) if (GodotObject.IsInstanceValid(t)) t.Kill();
-        _tweens.Clear();
+        _tweens.Clear(); _paperResponses.Clear();
         foreach (var card in _actors.Where(GodotObject.IsInstanceValid))
-        { card.Position = card.RestPosition; card.Scale = Vector2.One; card.Rotation = card.RestRotation; card.Modulate = Colors.White; card.SetFlightPose(Vector2.Zero, 0); }
+        { card.Position = card.RestPosition; card.Scale = Vector2.One; card.Rotation = card.RestRotation; card.Modulate = Colors.White; card.SetFlightPose(Vector2.Zero, 0); card.DeploymentElevation = 0; card.QueueRedraw(); }
         _actors.Clear(); _flightPositions.Clear(); _flightAges.Clear(); _landing = false; _landingAge = 0;
-        foreach (var child in GetChildren()) { RemoveChild(child); child.QueueFree(); }
     }
     public async Task PlayAsync(UiCombatResolution r, BattleCard attacker, BattleCard defender)
     {
-        Interrupt(); var epoch = _epoch; IsPlaying = true; _actors.Add(attacker); _actors.Add(defender);
+        ResetMotion(); var epoch = _epoch; IsPlaying = true; _actors.Add(attacker); _actors.Add(defender);
         var from = attacker.RestPosition + attacker.Size / 2; var to = defender.RestPosition + defender.Size / 2;
         PhaseChanged?.Invoke("ready"); await Delay(.16, epoch);
         await Shoot(r.Attacker, attacker, from, to, epoch);
-        Hit(r.Defender, r.DefenderAfter, defender, to, r.DamageToDefender);
+        Hit(r.Defender, r.DefenderAfter, defender, to, r.DamageToDefender, from);
         PhaseChanged?.Invoke(r.DefenderAfter is null ? r.Defender.IsHq ? "hq-destroy" : "death" : "impact");
         // Counterfire is a second readable impact, even if either participant dies in the resolution.
         if (r.DamageToAttacker > 0)
@@ -107,29 +104,15 @@ public partial class BattleCombat : Control
             await Delay(.18, epoch);
             var airborneTarget = CenterOf(attacker);
             await Shoot(r.Defender, defender, to, airborneTarget, epoch);
-            Hit(r.Attacker, r.AttackerAfter, attacker, CenterOf(attacker), r.DamageToAttacker);
+            Hit(r.Attacker, r.AttackerAfter, attacker, CenterOf(attacker), r.DamageToAttacker, to);
             PhaseChanged?.Invoke("counter");
         }
         else if (r.AttackerAfter is not null) attacker.UpdateView(r.AttackerAfter);
-        var tail = r.Defender.IsHq && r.DefenderAfter is null ? 1.6 : 1.22;
-        if (_flightPositions.Keys.Any(c => GodotObject.IsInstanceValid(c) && c.Visible))
-        {
-            // Keep the card aloft through firing and impact; land during the existing effect tail.
-            await Delay(FlightHoldSeconds, epoch);
-            _landing = true; _landingAge = 0;
-            foreach (var card in _flightPositions.Keys.Where(c => GodotObject.IsInstanceValid(c) && c.Visible))
-            {
-                var landing = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
-                landing.TweenProperty(card, "position", card.RestPosition, Time(LandingSeconds));
-                landing.TweenProperty(card, "scale", Vector2.One, Time(LandingSeconds)); _tweens.Add(landing);
-            }
-            await Delay(LandingSeconds, epoch);
-            foreach (var card in _flightPositions.Keys.Where(GodotObject.IsInstanceValid)) card.SetFlightPose(Vector2.Zero, 0);
-            _flightPositions.Clear(); _flightAges.Clear(); _landing = false; tail -= FlightHoldSeconds + LandingSeconds;
-        }
+        var tail = r.Defender.IsHq && r.DefenderAfter is null ? 1.6 : r.DefenderAfter is null ? .68 : .28;
+        tail = Math.Max(0, tail - await LandAircraftAsync(epoch));
         await Delay(tail, epoch);
         if (epoch != _epoch) throw new OperationCanceledException();
-        Interrupt(); PhaseChanged?.Invoke("settled");
+        ResetMotion(); PhaseChanged?.Invoke("settled");
     }
     private async Task Shoot(UiCardView source, BattleCard actor, Vector2 from, Vector2 to, int epoch)
     {
@@ -139,54 +122,45 @@ public partial class BattleCombat : Control
         {
             if (Flies(type))
             {
-                var raised = actor.RestPosition + direction * TakeoffForwardDistance + new Vector2(0, -TakeoffLiftDistance);
-                _flightPositions[actor] = raised;
-                _flightAges[actor] = 0;
-                var takeoff = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
-                takeoff.TweenProperty(actor, "position", raised, Time(TakeoffSeconds));
-                takeoff.TweenProperty(actor, "scale", Vector2.One * 1.05f, Time(TakeoffSeconds)); _tweens.Add(takeoff);
-                await Delay(TakeoffSeconds, epoch);
+                if (!_flightPositions.ContainsKey(actor))
+                {
+                    PhaseChanged?.Invoke("aircraft-takeoff");
+                    var raised = actor.RestPosition + direction * TakeoffForwardDistance + new Vector2(0, -TakeoffLiftDistance);
+                    _flightPositions[actor] = raised;
+                    _flightAges[actor] = 0;
+                    var takeoff = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+                    takeoff.TweenProperty(actor, "position", raised, Time(TakeoffSeconds));
+                    takeoff.TweenProperty(actor, "scale", Vector2.One * 1.05f, Time(TakeoffSeconds)); _tweens.Add(takeoff);
+                    await Delay(TakeoffSeconds, epoch);
+                }
                 from = CenterOf(actor); direction = (to - from).Normalized();
             }
-            else
-            {
-                var heavyShip = type is "landcruiser" or "land_cruiser";
-                var recoil = CreateTween().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
-                recoil.TweenProperty(actor, "position", actor.RestPosition - direction * (heavyShip ? 18 : 7), Time(heavyShip ? .12 : .10));
-                recoil.TweenProperty(actor, "position", actor.RestPosition, Time(heavyShip ? .30 : .22)); _tweens.Add(recoil);
-            }
+
         }
         _sfx.Play("attack", source);
-        if (type == "bomber")
+        var weapon = BattleWeaponProfile.Resolve(source);
+        WeaponPaperResponse(actor, direction, weapon);
+        if (weapon.Trace == "flame")
         {
-            var drop = to + new Vector2(14, -112);
-            AddTrace(drop, to, .30, "bomb", 0); await Delay(.30, epoch);
+            AddEffect(new CombatFlame { Position = from, To = to - from, Duration = Time(weapon.Travel), Quiet = _clock.ReducedMotion });
+            await Delay(weapon.Travel, epoch); return;
         }
-        else if (type == "artillery")
+        for (var i = 0; i < weapon.Shots; i++)
         {
-            Flash(from, 49); AddTrace(from, to, .43, "shell", 0); await Delay(.43, epoch);
+            var firingFrom = _flightPositions.ContainsKey(actor) ? CenterOf(actor) : from;
+            var offset = direction.Orthogonal() * (weapon.Shots > 1 ? i % 2 == 0 ? 3 : -3 : 0);
+            if (weapon.Trace == "bomb") firingFrom = to + new Vector2(14, -112);
+            else Flash(firingFrom + direction * 20 + offset, weapon.Flash);
+            AddTrace(firingFrom + offset, to + offset, weapon.Travel, weapon.Trace, 0);
+            if (!_clock.ReducedMotion) AddEffect(new CombatContact { Position = to + offset,
+                Duration = Time(weapon.Travel + .09), DelayFraction = (float)(weapon.Travel / (weapon.Travel + .09)), Heavy = weapon.Trace != "bullet", ZIndex = 4 });
+            await Delay(weapon.Interval, epoch);
         }
-        else if (type is "tank" or "cruiser" or "landcruiser")
-        {
-            Flash(from + direction * 28, 42); AddTrace(from + direction * 28, to, .24, "cannon", 0); await Delay(.24, epoch);
-        }
-        else
-        {
-            var count = type == "fighter" ? 4 : 3;
-            for (var i = 0; i < count; i++)
-            {
-                var offset = direction.Orthogonal() * (i % 2 == 0 ? 5 : -5);
-                var firingFrom = _flightPositions.ContainsKey(actor) ? CenterOf(actor) : from;
-                Flash(firingFrom + offset + direction * 20, 22);
-                AddTrace(firingFrom + offset, to + offset, .13, "bullet", 0);
-                await Delay(.065, epoch);
-            }
-            await Delay(.08, epoch);
-        }
+        if (weapon.Travel > weapon.Interval) await Delay(weapon.Travel - weapon.Interval, epoch);
     }
     private void AddTrace(Vector2 from, Vector2 to, double life, string type, float offset)
     {
-        AddChild(new CombatTrace { From = from, To = to, Kind = type, Duration = Time(life), Quiet = _clock.ReducedMotion });
+        AddEffect(new CombatTrace { From = from, To = to, Kind = type, Duration = Time(life), Quiet = _clock.ReducedMotion });
     }
     /// <summary>
     /// Plays an attack that the engine attributed to a unit: the attacker's own weapon runs first,
@@ -196,34 +170,33 @@ public partial class BattleCombat : Control
     public async Task PresentAssaultAsync(BattleCard attacker, IReadOnlyList<(UiOrderImpact Impact, BattleCard Card)> targets)
     {
         if (attacker is not { Visible: true }) { await PresentImpactsAsync(targets); return; }
-        Interrupt(); var epoch = _epoch; IsPlaying = true;
+        ResetMotion(); var epoch = _epoch; IsPlaying = true; _actors.Add(attacker);
         PhaseChanged?.Invoke("assault");
         var from = CenterOf(attacker);
         var victims = targets.Where(t => t.Card != attacker).ToArray();
         // Fire at each victim in order; a unit that struck two things shoots twice.
-        foreach (var (_, card) in victims)
+        foreach (var (impact, card) in victims)
         {
             if (epoch != _epoch) return;
             if (!GodotObject.IsInstanceValid(card) || !card.Visible) continue;
             await Shoot(attacker.View!, attacker, from, CenterOf(card), epoch);
-        }
-        if (epoch != _epoch) return;
-        foreach (var (impact, card) in victims)
-        {
             if (epoch != _epoch) return;
-            if (!GodotObject.IsInstanceValid(card)) continue;
             _actors.Add(card);
-            Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage);
+            Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage, CenterOf(attacker));
+            PhaseChanged?.Invoke("assault-target-impact");
         }
+        foreach (var (impact, card) in targets.Where(t => t.Card == attacker))
+            Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage);
         PhaseChanged?.Invoke("assault-impact");
-        await Delay(victims.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : 1.22, epoch);
-        Interrupt();
+        var tail = victims.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : victims.Any(t => t.Impact.After is null) ? .68 : .30;
+        await Delay(Math.Max(0, tail - await LandAircraftAsync(epoch)), epoch);
+        ResetMotion();
     }
 
     public async Task PresentImpactsAsync(IReadOnlyList<(UiOrderImpact Impact, BattleCard Card)> targets)
     {
         if (targets.Count == 0) { PhaseChanged?.Invoke("order-impact"); return; }
-        Interrupt(); var epoch = _epoch; IsPlaying = true;
+        ResetMotion(); var epoch = _epoch; IsPlaying = true;
         // Capture all target positions before hiding any card; effects outlive their actors.
         foreach (var (impact, card) in targets)
         {
@@ -231,23 +204,23 @@ public partial class BattleCombat : Control
             Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage);
         }
         PhaseChanged?.Invoke("order-impact");
-        await Delay(targets.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : 1.22, epoch);
-        Interrupt();
+        await Delay(targets.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : targets.Any(t => t.Impact.After is null) ? .68 : .30, epoch);
+        ResetMotion();
     }
     private void Flash(Vector2 at, float diameter)
     {
-        AddCloud(at, diameter, .13, false, new Color(1, .90f, .62f, .90f), 0);
+        AddEffect(new CombatMuzzle { Position = at, Radius = diameter / 2, Duration = Time(.09), Quiet = _clock.ReducedMotion, ZIndex = 3 });
     }
     public async Task PresentRemovalAsync(UiCardView supplied, BattleCard card)
     {
-        Interrupt(); var epoch = _epoch; IsPlaying = true; _actors.Add(card);
+        ResetMotion(); var epoch = _epoch; IsPlaying = true; _actors.Add(card);
         Hit(supplied, null, card, CenterOf(card), null);
-        PhaseChanged?.Invoke("unit-destroyed"); await Delay(supplied.IsHq ? 1.6 : 1.22, epoch); Interrupt();
+        PhaseChanged?.Invoke("unit-destroyed"); await Delay(supplied.IsHq ? 1.6 : .68, epoch); ResetMotion();
     }
-    private void Hit(UiCardView before, UiCardView? after, BattleCard card, Vector2 at, int? damage)
+    private void Hit(UiCardView before, UiCardView? after, BattleCard card, Vector2 at, int? damage, Vector2? source = null)
     {
         _sfx.Play("hit", before, target: before);
-        if (damage is { } amount) AddChild(new CombatDamage { Position = at + new Vector2(0, -23), Amount = amount, Duration = Time(.78), Quiet = _clock.ReducedMotion, ZIndex = 10 });
+        if (damage is { } amount) AddEffect(new CombatDamage { Position = at + new Vector2(0, -23), Amount = amount, Duration = Time(.78), Quiet = _clock.ReducedMotion, ZIndex = 10 });
         var dead = after is null; var hq = before.IsHq && dead;
         var aircraft = before.Definition.UnitType is "fighter" or "bomber" or "spacefighter";
         var armored = before.Definition.UnitType is "tank" or "cruiser" or "landcruiser";
@@ -265,30 +238,30 @@ public partial class BattleCombat : Control
             for (var i = 0; i < (hq ? 25 : dead ? 14 : 6); i++)
             {
                 var direction = Vector2.FromAngle(i * 2.399963f + MathF.Sin(i * 4.76f) * .31f);
-                AddChild(new CombatDebris { Position = at, Direction = direction, Distance = (hq ? 150 : dead ? 78 : 32) * (.65f + MathF.Abs(MathF.Sin(i * 13.71f)) * .8f),
+                AddEffect(new CombatDebris { Position = at, Direction = direction, Distance = (hq ? 150 : dead ? 78 : 32) * (.65f + MathF.Abs(MathF.Sin(i * 13.71f)) * .8f),
                     Duration = Time(hq ? 1.2 : .65), Fragment = dead && i % 3 == 0, Index = i });
             }
         if (after is not null)
         {
             card.UpdateView(after);
             card.Visible = after.Visibility == Visibility.Full;
-            if (!_clock.ReducedMotion && card.Visible)
-            {
-                var anchor = _flightPositions.GetValueOrDefault(card, card.RestPosition);
-                var t = CreateTween().SetTrans(Tween.TransitionType.Sine);
-                t.TweenProperty(card, "position", anchor + new Vector2(5, 0), Time(.045));
-                t.TweenProperty(card, "position", anchor - new Vector2(4, 0), Time(.065));
-                t.TweenProperty(card, "position", anchor, Time(.08)); _tweens.Add(t);
-            }
+            ImpactPaperResponse(card, damage, source);
         }
         else { card.Visible = false; _sfx.Play("die", before); }
     }
+    private void AddEffect(CombatEffect effect)
+    {
+        if (GetChildCount() >= 192)
+        {
+            var oldest = GetChildren().OfType<CombatEffect>().FirstOrDefault();
+            if (oldest is not null) { RemoveChild(oldest); oldest.QueueFree(); }
+        }
+        AddChild(effect);
+    }
     private void AddCloud(Vector2 at, float diameter, double duration, bool smoke, Color tint, float angle)
     {
-        var cloud = new CombatCloud { Position = at, Texture = _burst, Diameter = diameter,
-            Duration = Time(duration), Smoke = smoke, Tint = tint, Angle = angle, Quiet = _clock.ReducedMotion, ZIndex = smoke ? 0 : 1 };
-        if (smoke) cloud.Material = _smoke;
-        AddChild(cloud);
+        if (smoke) AddEffect(new CombatDust { Position = at, Diameter = diameter, Duration = Time(duration), Tint = tint, Quiet = _clock.ReducedMotion, ZIndex = 0 });
+        else AddEffect(new CombatCloud { Position = at, Texture = _burst, Diameter = diameter, Duration = Time(duration), Tint = tint, Angle = angle, Quiet = _clock.ReducedMotion, ZIndex = 1 });
     }
     public override void _ExitTree() => Interrupt();
 }
@@ -330,7 +303,7 @@ public partial class CombatTrace : CombatEffect
     public Vector2 To { get; set; }
     public string Kind { get; set; } = "bullet";
     public bool Quiet { get; set; }
-    private Vector2 Point(float p) => From.Lerp(To, p) + (Kind == "shell" && !Quiet ? new Vector2(MathF.Sin(p * MathF.PI) * 45, -MathF.Sin(p * MathF.PI) * 68) : Vector2.Zero);
+    private Vector2 Point(float p) => From.Lerp(To, p) + (Kind is "shell" or "rocket" && !Quiet ? new Vector2(MathF.Sin(p * MathF.PI) * 45, -MathF.Sin(p * MathF.PI) * 68) : Vector2.Zero);
     public override void _Draw()
     {
         var head = Point(Progress); var tail = Point(Math.Max(0, Progress - (Kind == "bullet" ? .10f : .07f)));

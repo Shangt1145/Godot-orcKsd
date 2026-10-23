@@ -27,7 +27,7 @@ public partial class Main
             var key = id; var button = MenuStyles.Button(text, () => NavigateMenu(key)); button.ToggleMode = true;
             MenuStyles.Navigation(button); bar.AddChild(button); _nav[id] = button;
         }
-        _resume = MenuStyles.Button("返回战场 →", () => Show("battle")); MenuStyles.Primary(_resume); bar.AddChild(_resume);
+        _resume = MenuStyles.Button("返回战场 →", ResumeSession); MenuStyles.Primary(_resume); bar.AddChild(_resume);
         bar.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
         _pool = MenuStyles.Label($"{_deckService.PlayableCards.Count} 张可用卡牌", 12, MenuStyles.MenuDim); bar.AddChild(_pool);
         foreach (var (id, text) in new[] { ("help", "帮助 / 演示"), ("settings", "设置") })
@@ -44,8 +44,14 @@ public partial class Main
     }
     private void NavigateMenu(string id)
     {
-        if (id is "decklib" or "collection") _deckLibrary.SetPlaySelection(false);
-        Show(id);
+        void Navigate()
+        {
+            if (id is "decklib" or "collection") _deckLibrary.SetPlaySelection(false);
+            NavigateFromRoom(id);
+        }
+        if (_active == "deck") _deckEditor.GuardLeaving(Navigate);
+        else if (_active is "editor" or "diyfx") _workshop.GuardLeaving(Navigate);
+        else Navigate();
     }
     // 首页「出击」＝作战准备页：卡组就绪状态、组建房间、局域网房间列表（M4）都在这，
     // 它是开战前的唯一枢纽——此前直接跳 decklib，把作战准备页绕成了孤岛（用户找不到）。
@@ -54,11 +60,17 @@ public partial class Main
     private void UpdateMenuNavigation()
     {
         foreach (var (id, button) in _nav) button.SetPressedNoSignal(id == _active || (id == "decklib" && _active == "deck"));
-        _resume.Visible = _runner is { IsRunning: true };
+        _resume.Visible = HasBattleSession; _resume.Text = ResumeCaption;
+        _setup?.SetResume(HasBattleSession, ResumeCaption);
     }
     public override void _UnhandledInput(InputEvent @event)
     {
         if (_active is not ("battle" or "deck" or "editor") && @event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
-        { Show("home"); GetViewport().SetInputAsHandled(); }
+        {
+            if (_active == "room") Show("setup");
+            else if (_active == "decklib" && _deckLibrary.PlaySelection) Show("setup");
+            else Show("home");
+            GetViewport().SetInputAsHandled();
+        }
     }
 }

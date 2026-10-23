@@ -189,20 +189,23 @@ public partial class Main : Control
         _deckLibrary.NewRequested += NewDeck; _deckEditor.NewRequested += NewDeck;
         _deckEditor.PacksRequested += () => _deckPackPicker.Open(DeckCardPacks.Selected(_deckEditor.Draft), _deckEditor.ApplyPacks, creating: false);
         _deckEditor.Saved += RefreshMenuData;
-        _deckEditor.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        _deckEditor.StartRequested += OpenPlaySelection;
+        _deckEditor.BackRequested += () => Show("decklib");
         _deckLibrary.EditRequested += deck => { _deckEditor.Open(deck); Show("deck"); };
-        _deckLibrary.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
+        _deckLibrary.StartRequested += OpenPlaySelection;
+        _deckLibrary.BackRequested += () => Show("setup");
         AddScreen(content, "deck", _deckEditor);
         AddScreen(content, "decklib", _deckLibrary);
         _home = new HomeScreen(); _home.Initialize(_decks, _deckService, _textures);
         _home.PlayRequested += OpenPlaySelection;
-        _home.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
         _home.NavigationRequested += NavigateMenu;
         _deckLibrary.Changed += RefreshMenuData;
         AddScreen(content, "home", _home);
         _setup = new SetupScreen(); _setup.Initialize(_decks, _deckService, _textures);
-        _setup.StartRequested += () => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); };
-        _setup.ChooseDeckRequested += () => Show("decklib");
+        _setup.StartRequested += () => ReplaceSession(() => { Show("battle"); _ = StartRealMatchAsync(useConstructedDeck: true); });
+        _setup.ChooseDeckRequested += () => { _deckLibrary.SetPlaySelection(true); Show("decklib"); };
+        _setup.EditDeckRequested += () => { if (_decks.ActiveDeck is { } deck) { _deckLibrary.SetPlaySelection(true); _deckEditor.Open(deck); Show("deck"); } };
+        _setup.ResumeRequested += ResumeSession;
         _setup.BackRequested += () => Show("home");
         AddScreen(content, "setup", _setup);
         _setup.ReplayRequested += OpenReplayLibrary;
@@ -211,18 +214,20 @@ public partial class Main : Control
         _room = new RoomScreen();
         _room.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
             ProjectSettings.GlobalizePath("user://net-room"));
+        _room.AllowSampleDeck = _verificationRun;
+        _setup.HiddenRoomId = () => _room.HostedRoomId;
         // 联机优先用玩家自己在卡组库里选的构筑卡组（全部为 pack/ 应用层 id 时才采用）。
         _room.ActiveDeckSource = () => _decks.ActiveDeck?.CardIds;
-        _room.BackRequested += () => { _room.Close(); Show("setup"); };
+        _room.DeckPresentationSource = () => _decks.ActiveDeck;
+        _room.BackRequested += () => Show("setup");
         _room.MatchStarted += () => _ = EnterRemoteMatchAsync();
         AddScreen(content, "room", _room);
-        _setup.RoomRequested += () => { Show("room"); _room.Open(); };
+        _setup.RoomRequested += () => ReplaceSession(() => { Show("room"); _room.Open(); });
         // 局域网房间列表一键加入（M4 主流程入口）：跳房间屏并直接连对方地址。
-        _setup.RoomSpectateRequested += (host, port) => { Show("room"); _ = _room.SpectateAsync(host, port); };
+        _setup.RoomSpectateRequested += (host, port) => ReplaceSession(() => { Show("room"); _ = _room.SpectateAsync(host, port); });
         _setup.RoomJoinRequested += (host, port) =>
         {
-            Show("room");
-            _ = _room.JoinAsync(host, port);
+            ReplaceSession(() => { Show("room"); _ = _room.JoinAsync(host, port); });
         };
         _diyEditor = new DiyEditorScreen();
         _diyEditor.Initialize(_diy, () => _catalog.Cards, _textures, id => _decks.Decks.Count(d => d.CardIds.Contains(id)),
@@ -303,6 +308,11 @@ public partial class Main : Control
         if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
         else if (args.Contains("--net-play")) Callable.From(NetPlay).CallDeferred();
         else if (args.Contains("--verify-setup-selection")) Callable.From(VerifySetupSelection).CallDeferred();
+        else if (args.Contains("--verify-navigation")) Callable.From(VerifyNavigation).CallDeferred();
+        else if (args.Contains("--verify-opening")) Callable.From(VerifyOpening).CallDeferred();
+        else if (args.Contains("--capture-opening-polish")) Callable.From(CaptureOpeningPolish).CallDeferred();
+        else if (args.Contains("--capture-table-motion")) Callable.From(CaptureTableMotion).CallDeferred();
+        else if (args.Contains("--verify-paper-motion")) Callable.From(VerifyPaperMotion).CallDeferred();
         else if (args.Contains("--verify-viewer-replay")) Callable.From(VerifyViewerReplay).CallDeferred();
         else if (args.Contains("--verify-room")) Callable.From(VerifyRoom).CallDeferred();
         else if (args.Contains("--verify-room-remote")) Callable.From(VerifyRoomRemote).CallDeferred();
@@ -441,7 +451,7 @@ public partial class Main : Control
         }
         if (_runner != runner || !IsInsideTree()) return;
         if (runner.CardPoolReport is { } report)
-            _battle.ShowHint(selected is null ? $"可用 {report.Verified} 种卡 · 验证用 30 张牌组" : $"{selected.Name} · {selected.CardIds.Length} 张卡牌 + 总部 · 随机发牌");
+            GD.Print(selected is null ? $"[match] admitted={report.Verified} verification-deck=30" : $"[match] deck={selected.Name} cards={selected.CardIds.Length}");
 
     }
 
@@ -832,8 +842,9 @@ public partial class Main : Control
     }
     private void Show(string id)
     {
-        if (_active == "editor" && id != "editor" && id != "diyfx") { _workshop.GuardLeaving(() => ShowCore(id)); return; }
-        ShowCore(id);
+        if (_active == "deck" && id != "deck") { _deckEditor.GuardLeaving(() => NavigateFromRoom(id)); return; }
+        if (_active is "editor" or "diyfx" && id is not ("editor" or "diyfx")) { _workshop.GuardLeaving(() => NavigateFromRoom(id)); return; }
+        NavigateFromRoom(id);
     }
     private void ShowCore(string id)
     {

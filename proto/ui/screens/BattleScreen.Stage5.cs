@@ -18,6 +18,7 @@ public partial class BattleScreen
     private Control _mulliganWaiting = null!;
     private readonly Dictionary<string, MulliganStamp> _mulliganMarks = new();
     private string? _mulliganRequestId;
+    private Label _mulliganCaption = null!;
     private Button _mulliganConfirm = null!;
     private bool _mulliganOpen, _mulliganWaitingPhase;
 
@@ -27,16 +28,19 @@ public partial class BattleScreen
     private void InitializeMulligan()
     {
         _mulligan = new Control { Size = BoardSize, ZIndex = 260, Visible = false, MouseFilter = MouseFilterEnum.Stop };
-        _mulligan.AddChild(new ColorRect { Size = BoardSize, Color = new Color(.02f, .03f, .02f, .55f), MouseFilter = MouseFilterEnum.Stop });
-        var caption = Text("选择要替换的卡牌", new(0, 512), new(BoardSize.X, 30), 17, "ece5ce");
+        _mulligan.AddChild(PreludeShade());
+        _mulliganInstructionPlate = new PreludeInstructionPlate { Position = new(300, 470), Size = new(680, 166), MouseFilter = MouseFilterEnum.Ignore };
+        _mulligan.AddChild(_mulliganInstructionPlate);
+        var caption = Text("选择要替换的卡牌", new(0, 484), new(BoardSize.X, 36), 24, "ece5ce");
+        _mulliganCaption = caption;
         caption.HorizontalAlignment = HorizontalAlignment.Center;
         _mulligan.AddChild(caption);
+        _mulliganNote = Text("点击卡牌标记替换，再次点击取消", new(0, 526), new(BoardSize.X, 24), 14, "b8b49d");
+        _mulliganNote.HorizontalAlignment = HorizontalAlignment.Center; _mulligan.AddChild(_mulliganNote);
         _mulliganRow = new Control { Position = new(0, 118), Size = new(BoardSize.X, 380), MouseFilter = MouseFilterEnum.Ignore };
         _mulligan.AddChild(_mulliganRow);
-        var confirm = new Button { Text = "确认", Position = new(BoardSize.X / 2f - 80, 556), Size = new(160, 38) };
-        foreach (var style in new[] { "normal", "hover", "pressed", "focus" })
-            confirm.AddThemeStyleboxOverride(style, _endTurn.GetThemeStylebox(style));
-        confirm.AddThemeColorOverride("font_color", new("e9e3cc"));
+        var confirm = new Button { Text = "保留全部", Position = new(BoardSize.X / 2f - 106, 570), Size = new(212, 46) };
+        StylePreludeButton(confirm);
         _mulliganConfirm = confirm;
         confirm.Pressed += ConfirmMulligan;
         _mulligan.AddChild(confirm);
@@ -47,14 +51,16 @@ public partial class BattleScreen
         _mulliganWaiting = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore, Visible = false };
         _mulliganWaiting.AddChild(band);
         _mulliganWaiting.AddChild(waiting);
-        _mulligan.AddChild(_mulliganWaiting);
         _canvas.AddChild(_mulligan);
+        _mulliganWaiting.ZIndex = 260;
+        _canvas.AddChild(_mulliganWaiting);
     }
 
     /// <summary>Opens the panel with the viewer's opening hand. Called when the engine parks a mulligan request.</summary>
     public void ShowMulliganPanel(UiMatchView? view, string? requestId = null)
     {
-        if (view is null || view.Phase != "mulligan" || view.SelfHand.Count == 0 || _mulliganOpen) return;
+        if (view is null || view.Phase != "mulligan" || view.SelfHand.Count == 0 || _mulliganOpen || _readOnlyMode is not null) return;
+        CancelMulliganMotion();
         _mulliganOpen = true; _mulliganRequestId = requestId;
         _mulliganWaiting.Visible = false;
         _mulliganWaitingPhase = false;
@@ -73,51 +79,60 @@ public partial class BattleScreen
             var stamp = new MulliganStamp { Size = cardSize, Visible = false, MouseFilter = MouseFilterEnum.Ignore, Rotation = -.10f };
             stamp.PivotOffset = cardSize / 2;
             card.Pressed += (_, _) => ToggleMulliganMark(uid, stamp);
+            var rest = cell.Position;
+            card.Hovered += (_, over) => HoverMulliganPaper(uid, cell, card, rest, over);
             cell.AddChild(card);
             cell.AddChild(stamp);
             _mulliganRow.AddChild(cell);
             _mulliganMarks[uid] = stamp;
         }
+        RefreshMulliganCaption();
         _mulligan.Visible = true;
+        SetMulliganHandHidden(true);
+        BeginOpening(view);
+    }
+
+    private void SetMulliganHandHidden(bool hidden)
+    {
+        foreach (var card in _cards.Values.Where(c => c.Mode == BattleCardMode.Hand)) card.Visible = !hidden;
     }
 
     private void ToggleMulliganMark(string uid, MulliganStamp stamp)
     {
-        stamp.SetMarked(!stamp.Marked);
+        if (_mulliganOpen && !OpeningAnimationActive) { stamp.SetMarked(!stamp.Marked, !_clock.ReducedMotion, _clock.Scale); RefreshMulliganCaption(); _sfx.Play("ui", gain: .32f); }
     }
 
     /// <summary>Programmatic mark for verify and capture hooks; mirrors a click on the card.</summary>
     public void MarkMulliganReplacement(string uid)
     {
-        if (_mulliganMarks.TryGetValue(uid, out var stamp)) stamp.SetMarked(true);
+        if (_mulliganMarks.TryGetValue(uid, out var stamp)) { stamp.SetMarked(true, !_clock.ReducedMotion, _clock.Scale); RefreshMulliganCaption(); }
     }
 
     /// <summary>Submits the keep list (everything without a ✕ stamp) and shows the waiting band.</summary>
     public void ConfirmMulligan()
     {
         if (!_mulliganOpen) return;
+        FinishOpening(); StopMulliganHover();
         var keep = _mulliganMarks.Where(kv => !kv.Value.Marked).Select(kv => kv.Key).ToArray();
         _mulliganOpen = false;
-        _mulligan.Visible = false;
-        UiStyles.Clear(_mulliganRow);
-        _mulliganMarks.Clear();
-        _mulliganWaitingPhase = true;
-        _mulliganWaiting.Visible = true;
-        CommandRequested?.Invoke(new ChooseMulligan(keep, _mulliganRequestId));
+        BeginMulliganDeparture(new ChooseMulligan(keep, _mulliganRequestId));
     }
 
     /// <summary>Reconciles the panel with projections: the waiting band clears when play begins.</summary>
     private void MulliganProjection(string phase)
     {
-        if (_mulliganWaitingPhase && phase == "play")
+        if (_mulliganWaitingPhase && phase != "mulligan")
         {
             _mulliganWaitingPhase = false;
             _mulliganWaiting.Visible = false;
         }
+        if (phase != "mulligan") { FinishOpening(); StopMulliganHover(); }
+        if (phase is not ("mulligan" or "play")) CancelMulliganMotion();
         if (_mulliganOpen && phase != "mulligan")
         {
             // A stale panel (match moved on without an answer): close instead of blocking the board.
             _mulliganOpen = false;
+            SetMulliganHandHidden(false);
             _mulligan.Visible = false;
             UiStyles.Clear(_mulliganRow);
             _mulliganMarks.Clear();
@@ -129,11 +144,19 @@ public partial class BattleScreen
 public partial class MulliganStamp : Control
 {
     public bool Marked { get; private set; }
+    private Tween? _imprint;
 
-    public void SetMarked(bool value)
+    public void SetMarked(bool value, bool animate = false, double timeScale = 1)
     {
-        Marked = value;
-        Visible = value;
+        _imprint?.Kill(); _imprint = null;
+        Marked = value; Visible = value; Scale = Vector2.One; Modulate = Colors.White;
+        if (value && animate && IsInsideTree())
+        {
+            Scale = Vector2.One * 1.22f; Modulate = Colors.White with { A = .45f };
+            _imprint = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+            _imprint.TweenProperty(this, "scale", Vector2.One, .14 * timeScale);
+            _imprint.TweenProperty(this, "modulate:a", 1f, .08 * timeScale);
+        }
         QueueRedraw();
     }
 

@@ -13,7 +13,7 @@ public partial class DiyWorkshopScreen
     private void BuildNativeSessionHeader(string id)
     {
         var row = new HBoxContainer(); row.AddThemeConstantOverride("separation", 14); _workspace.AddChild(row);
-        row.AddChild(MenuStyles.Button("‹ 卡包管理", () => GuardNative(ShowNativePackages)));
+        row.AddChild(MenuStyles.Button("‹ 我的卡包", () => GuardNative(ShowNativePackages)));
         var title = MenuStyles.Label(_native!.WorkingPackage?.Name ?? id, 23, MenuStyles.Gold);
         title.SizeFlagsHorizontal = SizeFlags.ExpandFill; row.AddChild(title);
         row.AddChild(MenuStyles.Button("导出草稿…", () => GuardNative(() => NativeFile(true, path => NativeTry(() => _native.Export(id, path, true))))));

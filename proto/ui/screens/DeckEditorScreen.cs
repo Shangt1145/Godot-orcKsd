@@ -52,7 +52,8 @@ public partial class DeckEditorScreen : VBoxContainer
         NewButton = MenuStyles.Button("新建", () => NewRequested?.Invoke()); heading.AddChild(NewButton);
         PacksButton = MenuStyles.Button("选择卡包…", () => PacksRequested?.Invoke()); heading.AddChild(PacksButton);
         SaveButton = MenuStyles.Button("保存", () => SaveDraft()); heading.AddChild(SaveButton);
-        StartButton = MenuStyles.Button("使用并对战", Start); heading.AddChild(StartButton);
+        heading.AddChild(MenuStyles.Button("返回卡组", () => BackRequested?.Invoke()));
+        StartButton = MenuStyles.Button("保存并前往作战准备", Start); heading.AddChild(StartButton);
         MenuStyles.Primary(StartButton);
         var options = new HBoxContainer(); AddChild(options);
         options.AddChild(MenuStyles.Label("主国 / 总部", 13));
@@ -135,6 +136,18 @@ public partial class DeckEditorScreen : VBoxContainer
         else Load(deck);
     }
     public void CreateNew() => NewRequested?.Invoke();
+    public event Action? BackRequested;
+    internal bool HasUnsavedChanges => _dirty;
+    public void GuardLeaving(Action next)
+    {
+        if (!_dirty) { next(); return; }
+        var dialog = new ConfirmationDialog { Title = "卡组尚未保存", DialogText = "保存修改后离开，或放弃这次改动。", OkButtonText = "保存并离开", CancelButtonText = "继续编辑", DialogHideOnOk = false };
+        AddChild(dialog);
+        dialog.Confirmed += () => { if (!SaveDraft()) return; dialog.QueueFree(); next(); };
+        dialog.AddButton("放弃改动", true, "discard");
+        dialog.CustomAction += action => { if (action != "discard") return; _dirty = false; dialog.QueueFree(); next(); };
+        dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
+    }
     internal void Load(ConstructedDeck deck)
     {
         _draft = deck.Snapshot() with { PackIds = DeckCardPacks.Selected(deck) }; _loading = true; DeckName.Text = deck.Name;

@@ -21,6 +21,9 @@ public partial class BattleCard : Control
     public float DeploymentElevation { get; set; }
     public string? ChoiceCaption { get; set; }
     public bool DrawFaceDown { get; set; }
+    public bool HoldHoverHitArea { get; set; }
+    public override bool _HasPoint(Vector2 point) => new Rect2(Vector2.Zero, Size).HasPoint(point)
+        || HoldHoverHitArea && Mode == BattleCardMode.Hand && new Rect2(RestPosition - Position, Size).HasPoint(point);
     private float _flightTilt;
     public void SetFlightPose(Vector2 offset, float tilt) { FlightOffset = offset; _flightTilt = tilt; QueueRedraw(); }
     private Texture2D? _texture;

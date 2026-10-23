@@ -1,5 +1,6 @@
 using Godot;
 using Kards.Ui.OrcBridge;
+using Kards.Ui.Core;
 
 namespace Kards.Ui;
 
@@ -10,7 +11,11 @@ public partial class RoomScreen : VBoxContainer
     private ServerLauncher? _server;
     private RemoteMatchFeed? _feed;
     private LobbyDeck.Result? _deck;
+    private ConstructedDeck? _deckPresentation;
     private bool _starting;
+    private int _lifecycle;
+    private bool _connecting;
+    internal bool AllowSampleDeck { get; set; }
     private int? _aiSeat;
     private bool _reconnectObserver;
     private Button? _admissions;
@@ -25,6 +30,7 @@ public partial class RoomScreen : VBoxContainer
     // 所以 UI 只需记住 {地址, 座位, seatToken}，断线后循环 重连→resume→RefreshView。
     private bool _reconnecting;
     private bool _closing;
+    private Task? _closeTask;
     private string _reconnectHost = "";
     private int _reconnectPort, _reconnectSeat;
     private string? _reconnectToken;
@@ -35,14 +41,9 @@ public partial class RoomScreen : VBoxContainer
 
     // ── 大厅发现（M4）──────────────────────────────────────────────
     // 房主起服后宣告（RoomAnnouncer），客人监听 UDP 去重渲染（RoomListener）。
-    private RoomListener? _listener;
     private bool _exiting;
-    private readonly System.Collections.Concurrent.ConcurrentQueue<DiscoveredRoom> _incomingRooms = new();
     private RoomAnnouncer? _announcer;
     private string? _ownRoomId;
-    private readonly Dictionary<string, DiscoveredRoom> _discovered = new(StringComparer.Ordinal);
-    private VBoxContainer _discoveredBox = null!;
-    private double _discoveryClock;
 
     /// <summary>验证用：保证这张卡在卡组里（等随机发牌等到天荒地老时可预期地触发选靶）。</summary>
     private string? _requiredCard;
@@ -52,8 +53,8 @@ public partial class RoomScreen : VBoxContainer
     private Label _status = null!, _endpoint = null!, _pool = null!, _room = null!, _ping = null!;
     private Label _checkSeat0 = null!, _checkSeat1 = null!, _checkPool = null!, _hint = null!;
     private RoomSeatCard _seat0 = null!, _seat1 = null!;
-    private Button _addAi = null!, _invite = null!, _addAgent = null!, _start = null!, _back = null!, _join = null!;
-    private LineEdit _joinField = null!;
+    private Button _addAi = null!, _invite = null!, _start = null!, _back = null!;
+    private string _joinEndpoint = "";
 
     /// <summary>请求返回上一屏（需要释放服务器实例）。</summary>
     public event Action? BackRequested;
@@ -69,16 +70,13 @@ public partial class RoomScreen : VBoxContainer
 
     /// <summary>本端是房主（起服务器）还是客人（连别人的）。</summary>
     public bool IsGuest => _guest;
+    internal Func<ConstructedDeck?>? DeckPresentationSource { get; set; }
+    internal string? HostedRoomId => _ownRoomId;
 
     public void Initialize(string packsRoot, string sandboxDirectory)
     {
         _packsRoot = packsRoot;
         _sandbox = sandboxDirectory;
-
-        // 大厅发现（M4）：监听只要进屏就一直开着——浏览房间不依赖自己先起服务器。
-        _listener = new RoomListener();
-        _listener.Received += room => _incomingRooms.Enqueue(room);
-        _listener.Start();
 
         AddThemeConstantOverride("separation", 14);
         BuildHeader();
@@ -103,9 +101,9 @@ public partial class RoomScreen : VBoxContainer
         // 眉标沿用项目语言：双斜线 + 宽的英文小字。
         title.AddChild(UiStyles.Label("//  ROOM  ·  局域网对局", 12, UiStyles.Accent));
         title.AddChild(UiStyles.Label("作战房间", 30, UiStyles.MenuInk));
-        title.AddChild(UiStyles.Label("拉起服务器实例，分配座位，然后开局。", 14, UiStyles.MenuDim));
+        title.AddChild(UiStyles.Label("确认双方准备情况，邀请好友并开始对战。", 14, UiStyles.MenuDim));
 
-        _back = UiStyles.Button("← 返回指挥部", () => BackRequested?.Invoke());
+        _back = UiStyles.Button("离开房间", () => BackRequested?.Invoke());
         _back.CustomMinimumSize = new(160, 44);
         _back.SizeFlagsVertical = SizeFlags.ShrinkCenter;
         header.AddChild(_back);
@@ -129,88 +127,40 @@ public partial class RoomScreen : VBoxContainer
 
         _seat0 = new RoomSeatCard();
         _seat0.Initialize(0);
+        _seat0.SetAccess(false);
         _seat0.FillRequested += () => _ = FillSeatAsync(0);
         seats.AddChild(_seat0);
 
         _seat1 = new RoomSeatCard();
         _seat1.Initialize(1);
+        _seat1.SetAccess(false);
+        _addAi = _seat1.FillButton;
         _seat1.FillRequested += () => _ = FillSeatAsync(1);
         seats.AddChild(_seat1);
 
         right.AddChild(BuildChecks());
     }
 
+    private Button _reapply = null!;
     private PanelContainer BuildInstancePanel()
     {
-        var panel = new PanelContainer { CustomMinimumSize = new(348, 0) };
-        panel.AddThemeStyleboxOverride("panel", UiStyles.Box(UiStyles.MenuPanel, UiStyles.MenuLine, 12, 20));
-
-        var column = new VBoxContainer();
-        column.AddThemeConstantOverride("separation", 6);
-        panel.AddChild(column);
-
-        column.AddChild(UiStyles.Label("本机服务器", 18, UiStyles.MenuInk));
-        _status = UiStyles.Label("○ 启动中…", 14, UiStyles.Accent);
-        column.AddChild(_status);
-        _ping = UiStyles.Label("延迟 —", 12, UiStyles.MenuDim);
-        column.AddChild(_ping);
-
-        column.AddChild(UiStyles.Label("发给对方", 12, UiStyles.Accent));
-        _endpoint = UiStyles.Label("—", 15, UiStyles.MenuInk);
-        _endpoint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        column.AddChild(_endpoint);
-
-        column.AddChild(new HSeparator());
-        _pool = UiStyles.Label("卡池 —", 13, UiStyles.MenuDim);
-        column.AddChild(_pool);
-        _room = UiStyles.Label("房间 —", 13, UiStyles.MenuDim);
-        column.AddChild(_room);
-
+        var panel = new PanelContainer { CustomMinimumSize = new(300, 0) };
+        panel.AddThemeStyleboxOverride("panel", MenuMaterials.Panel(new Color("22272a"), 20));
+        var column = new VBoxContainer(); column.AddThemeConstantOverride("separation", 14); panel.AddChild(column);
+        column.AddChild(UiStyles.Label("与好友一起作战", 22, UiStyles.Gold));
+        _status = UiStyles.Label("正在准备房间…", 14, UiStyles.MenuInk); _status.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_status);
+        _invite = UiStyles.Button("复制邀请地址", CopyInvite); column.AddChild(_invite);
         _admissions = UiStyles.Button("入场申请", () => _ = ShowAdmissionsAsync()); column.AddChild(_admissions);
-        column.AddChild(UiStyles.Button("重新申请入场", () => _ = ReapplyAsync()));
-        column.AddChild(new HSeparator());
-        column.AddChild(UiStyles.Label("加入别人的房间", 12, UiStyles.Accent));
-        _joinField = new LineEdit { PlaceholderText = "10.x.x.x:端口" };
-        _joinField.CustomMinimumSize = new(0, 36);
-        _joinField.TextSubmitted += text => { _ = JoinAsync(); };
-        column.AddChild(_joinField);
-        _join = UiStyles.Button("加入  →", () => _ = JoinAsync());
-        _join.CustomMinimumSize = new(0, 36);
-        column.AddChild(_join);
-        column.AddChild(UiStyles.Button("观战", () => {
-            if (TryParseEndpoint(_joinField.Text, out var host, out var port)) _ = SpectateAsync(host, port);
-            else _hint.Text = "请填写要观战的房间地址。";
-        }));
-
-        column.AddChild(new HSeparator());
-        column.AddChild(UiStyles.Label("发现的房间", 12, UiStyles.Accent));
-        _discoveredBox = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _discoveredBox.AddThemeConstantOverride("separation", 4);
-        column.AddChild(_discoveredBox);
-        var discoveryNote = UiStyles.Label("同一虚拟局域网（ZeroTier / n2n 等）内开过房间的会自动出现在这里。", 11, UiStyles.MenuDim);
-        discoveryNote.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        column.AddChild(discoveryNote);
-
-        column.AddChild(new HSeparator());
-        column.AddChild(UiStyles.Label("拉入", 12, UiStyles.Accent));
-
-        _addAi = UiStyles.Button("＋  引擎 AI", () => _ = AddAiAsync());
-        _addAi.CustomMinimumSize = new(0, 40);
-        column.AddChild(_addAi);
-
-        _invite = UiStyles.Button("＋  远端玩家", CopyInvite);
-        _invite.CustomMinimumSize = new(0, 40);
-        column.AddChild(_invite);
-
-        _addAgent = UiStyles.Button("＋  Agent（未开放）", () => { });
-        _addAgent.CustomMinimumSize = new(0, 40);
-        _addAgent.Disabled = true;
-        column.AddChild(_addAgent);
-
-        _hint = UiStyles.Label("", 12, UiStyles.MenuDim);
-        _hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        column.AddChild(_hint);
-
+        _reapply = UiStyles.Button("重新申请入场", () => _ = ReapplyAsync()); _reapply.Visible = false; column.AddChild(_reapply);
+        var help = UiStyles.Label("邀请好友加入，批准入场后即可开始。也可以在对手位置添加电脑对手。", 14, UiStyles.MenuDim);
+        help.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(help);
+        column.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
+        var details = new VBoxContainer { Visible = false }; column.AddChild(UiStyles.Button("连接详情", () => details.Visible = !details.Visible)); column.AddChild(details);
+        _endpoint = UiStyles.Label("—", 14, UiStyles.MenuInk); _endpoint.AutowrapMode = TextServer.AutowrapMode.WordSmart; details.AddChild(_endpoint);
+        _pool = UiStyles.Label("", 12, UiStyles.MenuDim); _pool.AutowrapMode = TextServer.AutowrapMode.WordSmart; details.AddChild(_pool);
+        _room = UiStyles.Label("", 12, UiStyles.MenuDim); details.AddChild(_room);
+        _ping = UiStyles.Label("延迟 —", 12, UiStyles.MenuDim); details.AddChild(_ping);
+        _hint = UiStyles.Label("", 14, UiStyles.Gold); _hint.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_hint);
         return panel;
     }
 
@@ -227,9 +177,9 @@ public partial class RoomScreen : VBoxContainer
         var row = new HBoxContainer();
         row.AddThemeConstantOverride("separation", 28);
         column.AddChild(row);
-        _checkSeat0 = UiStyles.Label("✗ 座位 0", 13, UiStyles.MenuDim); row.AddChild(_checkSeat0);
-        _checkSeat1 = UiStyles.Label("✗ 座位 1", 13, UiStyles.MenuDim); row.AddChild(_checkSeat1);
-        _checkPool = UiStyles.Label("✗ 卡池", 13, UiStyles.MenuDim); row.AddChild(_checkPool);
+        _checkSeat0 = UiStyles.Label("等待房主", 13, UiStyles.MenuDim); row.AddChild(_checkSeat0);
+        _checkSeat1 = UiStyles.Label("等待对手", 13, UiStyles.MenuDim); row.AddChild(_checkSeat1);
+        _checkPool = UiStyles.Label("等待卡组", 13, UiStyles.MenuDim); row.AddChild(_checkPool);
 
         return panel;
     }
@@ -239,7 +189,7 @@ public partial class RoomScreen : VBoxContainer
         var footer = new HBoxContainer();
         AddChild(footer);
 
-        var note = UiStyles.Label("座位齐备即可开局；远端玩家用上方地址自行加入。", 12, UiStyles.MenuDim);
+        var note = UiStyles.Label("双方就绪后，由房主开始对战。", 12, UiStyles.MenuDim);
         note.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         note.VerticalAlignment = VerticalAlignment.Center;
         footer.AddChild(note);
@@ -260,53 +210,73 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>同上，可 await 版本（验证探针用）。</summary>
     public async Task OpenAsync()
     {
+        if (_closing || _connecting) return;
         if (_feed is not null)
         {
             await RefreshAsync();
             return;
         }
 
+        var lifecycle = _lifecycle; _connecting = true;
         try
         {
-            Ui(() => Say("○ 组装卡组…"));
+            Ui(() => Say("正在准备卡组…"));
             // 有必带卡（验证探针）时强制走自动组牌，否则优先用玩家自己构筑的卡组。
             _deck = (string.IsNullOrEmpty(_requiredCard) ? TryActiveDeck() : null)
-                    ?? LobbyDeck.Build(_packsRoot, requiredLocalId: _requiredCard);
+                    ?? (AllowSampleDeck
+                        || !string.IsNullOrEmpty(_requiredCard) ? LobbyDeck.Build(_packsRoot, requiredLocalId: _requiredCard)
+                        : throw new InvalidOperationException(_deckNote ?? "请先在作战准备页选择可用的对战卡组。"));
 
-            Ui(() => Say("○ 启动服务器实例…"));
+            _deckPresentation = _deck.PackageId == "player" ? DeckPresentationSource?.Invoke()?.Snapshot() : null;
+            Ui(() => Say("正在创建房间…"));
             var packs = Directory.EnumerateDirectories(_packsRoot)
                 .Where(directory => File.Exists(Path.Combine(directory, "manifest.json")))
                 .OrderBy(directory => directory, StringComparer.Ordinal)
                 .ToArray();
-            _server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null);
+            var server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null);
+            if (lifecycle != _lifecycle) { await server.DisposeAsync(); return; }
+            _server = server;
             Ui(() => Say($"● 就绪 · 端口 {_server.Port}"));
 
-            _feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _server.Port);
+            var feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
+            if (lifecycle != _lifecycle) { await feed.DisposeAsync(); return; }
+            _feed = feed;
             _server.Configure(_feed);
             // 回调来自协议线程，控件只能主线程写——统一 marshal。
-            _feed.ErrorRaised += message => { _lastError = message; Ui(() => NoteError(message)); };
+            feed.ErrorRaised += message => Ui(() => { if (_feed == feed) { _lastError = message; NoteError(message); } });
             HookPing(_feed);
 
             // 房主＝local 座位；服务端只认 Kind==Local 的房间主人，否则开局被拒。
             var token = await _feed.ClaimSeatAsync(0, "local", "房主", _deck.CardIds);
-            if (token is null) { Ui(() => Say("✗ 占座失败（见上方错误）")); return; }
+            if (lifecycle != _lifecycle) return;
+            if (token is null) throw new InvalidOperationException("未能加入自己的房间，请重试。");
 
             var admitted = await _server.AdmitAsync(_feed.ConnectionId);
             if (!admitted.Ok) throw new InvalidOperationException(admitted.Message ?? admitted.Code);
             if (!await _feed.WaitForAdmissionAsync()) throw new InvalidOperationException("未收到房主入场许可。");
+            if (lifecycle != _lifecycle) return;
             RememberSession("127.0.0.1", _server.Port, 0, _feed.SeatToken);
             await RefreshAsync();
         }
         catch (Exception error)
         {
             GD.PushError("[room] 进入房间失败：" + error.Message);
-            Ui(() => { Say("✗ " + error.Message); _hint.Text = error.Message; });
+            if (lifecycle == _lifecycle)
+            {
+                await CloseAsync();
+                Ui(() => { Say("✗ " + error.Message); _hint.Text = error.Message; });
+            }
         }
+        finally { if (lifecycle == _lifecycle) _connecting = false; }
     }
 
     /// <summary>离开房间：释放连接与实例（终局后服务器不会自己退出）。</summary>
-    public async void Close()
+    public async void Close() => await CloseAsync();
+    public Task CloseAsync() => _closeTask is { IsCompleted: false } pending ? pending : _closeTask = CloseCoreAsync();
+    private async Task CloseCoreAsync()
     {
+        _lifecycle++;
+        _connecting = false;
         _closing = true;
         _reconnecting = false;
         _announcer?.Dispose();
@@ -317,22 +287,23 @@ public partial class RoomScreen : VBoxContainer
         if (feed is not null) { try { await feed.DisposeAsync(); } catch (Exception) { } }
         if (server is not null) { try { await server.DisposeAsync(); } catch (Exception) { } }
         _aiSeat = null; _guest = false; _guestPort = 0;
+        _deck = null; _deckPresentation = null; _deckNote = null; _lastError = null; _starting = false;
+        Array.Clear(_occupied);
         _reconnectToken = null; _reconnectObserver = false;
         _closing = false;
-        Ui(() => { Say("○ 已停止"); _join.Disabled = false; _joinField.Editable = true; });
+        Ui(() => Say("已离开房间"));
     }
 
     public override void _ExitTree()
     {
-        _exiting = true; _closing = true;
-        _listener?.Dispose(); _announcer?.Dispose();
+        _lifecycle++; _exiting = true; _closing = true;
+        _announcer?.Dispose();
         if (_feed is { } feed) _ = feed.DisposeAsync();
         if (_server is { } server) _ = server.DisposeAsync();
         _feed = null; _server = null;
     }
     public override void _Process(double delta)
     {
-        while (_incomingRooms.TryDequeue(out var discovered)) NoteDiscovered(discovered);
         if (_reconnecting)
         {
             _retryClock += delta;
@@ -342,15 +313,8 @@ public partial class RoomScreen : VBoxContainer
             return;
         }
 
-        if (_feed is null)
-        {
-            _discoveryClock += delta;
-            if (_discoveryClock >= 1.0) { _discoveryClock = 0; PruneDiscovery(); RenderDiscovery(); }
-            return;
-        }
+        if (_feed is null) return;
         _poll += delta;
-        _discoveryClock += delta;
-        if (_discoveryClock >= 1.0) { _discoveryClock = 0; PruneDiscovery(); RenderDiscovery(); }
         if (_poll < 1.5) return;
         _poll = 0;
         _ = RefreshAsync();
@@ -372,16 +336,18 @@ public partial class RoomScreen : VBoxContainer
 
     private async Task RefreshAsync()
     {
-        if (_feed is null) return;
+        if (_feed is not { } feed) return;
+        var lifecycle = _lifecycle;
         try
         {
-            var info = await _feed.RoomInfoAsync();
+            var info = await feed.RoomInfoAsync();
+            if (_feed != feed || lifecycle != _lifecycle) return;
             if (!info.Ok) { Ui(() => Say("✗ " + info.Code)); return; }
             if (info.Details is not System.Text.Json.Nodes.JsonObject details) return;
 
             // 解析在任意线程做，写控件统一回主线程。
             var snapshot = Parse(details);
-            Ui(() => Apply(snapshot));
+            Ui(() => { if (_feed == feed && lifecycle == _lifecycle) Apply(snapshot); });
             if (_server is not null && !_guest)
             {
                 var applicants = await _server.AdminAsync("connections.list");
@@ -391,6 +357,7 @@ public partial class RoomScreen : VBoxContainer
         }
         catch (Exception error)
         {
+            if (_feed != feed || lifecycle != _lifecycle) return;
             // 轮询异常＝连接层问题（服务端错误走 result.Ok=false 分支），转入自动重连。
             if (OnConnectionIssue(error.Message))
             {
@@ -449,7 +416,7 @@ public partial class RoomScreen : VBoxContainer
                      + (_deckNote is { Length: > 0 } note ? $" · {note}" : "");
         // 客人（房主＝false）看不到对方网卡列表——那对"加入方"没意义，显示自己连的是哪。
         _endpoint.Text = _guest
-            ? $"已连接 {_joinField.Text.Trim()}"
+            ? $"已连接 {_joinEndpoint.Trim()}"
             : snapshot.Addresses.Count > 0
                 ? FormatAddresses(snapshot.Addresses)
                 : $"127.0.0.1:{Port}";
@@ -459,21 +426,28 @@ public partial class RoomScreen : VBoxContainer
             if (seat is not (0 or 1)) continue;
             _occupied[seat] = kind.Length > 0;
             var deckLabel = _deck is null || _feed is null || seat != _feed.Seat || _feed.IsObserver ? null : $"卡组 {_deck.CardIds.Count} 张 · {_deck.Faction}";
-            (seat == 0 ? _seat0 : _seat1).SetState(kind, name, connected, deckLabel);
+            var card = seat == 0 ? _seat0 : _seat1;
+            card.SetState(kind, kind == "ai" ? "电脑对手" : name, connected, deckLabel);
+            var self = _feed is { IsObserver: false } && seat == _feed.Seat;
+            card.SetDeck(self ? _deckPresentation : null, self);
         }
 
         var ready0 = snapshot.Seats.Any(s => s.Seat == 0 && s.Connected);
         var ready1 = snapshot.Seats.Any(s => s.Seat == 1 && s.Connected);
         var poolOk = snapshot.Policy == "loaded";
 
-        SetCheck(_checkSeat0, ready0, "座位 0");
-        SetCheck(_checkSeat1, ready1, "座位 1");
-        SetCheck(_checkPool, poolOk, "卡池");
+        SetCheck(_checkSeat0, ready0, "房主就绪");
+        SetCheck(_checkSeat1, ready1, "对手就绪");
+        SetCheck(_checkPool, poolOk, "卡组已提交");
 
         _start.Disabled = _guest || !(ready0 && ready1 && poolOk);
         _start.Text = _guest ? "等待房主开局…" : "开始对局  →";
         _addAi.Disabled = _guest || (ready0 && ready1);
-        Say(_guest ? (_feed?.AdmissionState == "pending" ? "○ 等待房主批准入场…" : _feed?.IsObserver == true ? "● 正在观战 · 只读" : $"● 已在房间 · 座位 {_feed?.Seat}") : $"● 就绪 · 端口 {Port}");
+        _seat0.SetAccess(false); _seat1.SetAccess(!_guest && !ready1);
+        _invite.Visible = !_guest; _admissions!.Visible = !_guest;
+        _reapply.Visible = _feed?.AdmissionState is "rejected" or "revoked";
+        _start.Visible = _feed?.IsObserver != true;
+        Say(_guest ? (_feed?.AdmissionState == "pending" ? "等待房主批准入场…" : _feed?.IsObserver == true ? "正在观战" : "已加入好友的房间") : ready0 && ready1 ? "双方已就绪，可以开始对战" : "等待好友加入");
     }
 
     /// <summary>
@@ -512,7 +486,7 @@ public partial class RoomScreen : VBoxContainer
 
     private static void SetCheck(Label label, bool ok, string what)
     {
-        label.Text = ok ? $"✓ {what} 就位" : $"✗ {what} 空缺";
+        label.Text = ok ? $"✓ {what}" : $"○ 等待{what.Replace("就绪", "").Replace("已提交", "")}";
         label.AddThemeColorOverride("font_color", ok ? UiStyles.Green : UiStyles.MenuDim);
     }
 
@@ -522,22 +496,29 @@ public partial class RoomScreen : VBoxContainer
     /// </summary>
     private async Task JoinAsync()
     {
+        if (_closing || _connecting) return;
         if (_feed is not null) { _hint.Text = "已经在房间里了。"; return; }
-        if (!TryParseEndpoint(_joinField.Text, out var host, out var port))
+        if (!TryParseEndpoint(_joinEndpoint, out var host, out var port))
         {
             _hint.Text = "地址格式：IP:端口，例如 10.147.20.5:4717";
             return;
         }
 
+        var lifecycle = _lifecycle; _connecting = true;
+        RemoteMatchFeed? connectingFeed = null;
         try
         {
-            Ui(() => Say("○ 组装卡组…"));
-            _deck ??= TryActiveDeck() ?? LobbyDeck.Build(_packsRoot);
+            Ui(() => Say("正在准备卡组…"));
+            _deck = TryActiveDeck() ?? (AllowSampleDeck
+                ? LobbyDeck.Build(_packsRoot) : throw new InvalidOperationException(_deckNote ?? "请先选择可用卡组。"));
+            _deckPresentation = _deck.PackageId == "player" ? DeckPresentationSource?.Invoke()?.Snapshot() : null;
 
             Ui(() => Say($"○ 连接 {host}:{port}…"));
             _guestPort = port;
             var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
-            feed.ErrorRaised += message => Ui(() => NoteError(message));
+            connectingFeed = feed;
+            if (lifecycle != _lifecycle) return;
+            feed.ErrorRaised += message => Ui(() => { if (_feed == feed) NoteError(message); });
             HookPing(feed);
 
             // 两个座位都可能被占：房主通常坐 0，所以先试 1 再试 0。
@@ -545,6 +526,7 @@ public partial class RoomScreen : VBoxContainer
             foreach (var candidate in new[] { 1, 0 })
             {
                 token = await feed.ClaimSeatAsync(candidate, "remote", "远端玩家", _deck.CardIds);
+                if (lifecycle != _lifecycle) return;
                 if (token is not null) break;
             }
 
@@ -556,9 +538,11 @@ public partial class RoomScreen : VBoxContainer
             }
 
             _feed = feed;
+            connectingFeed = null;
             _guest = true;
             RememberSession(host, port, feed.Seat, feed.SeatToken);
             feed.AdmissionChanged += state => Ui(() => {
+                if (_feed != feed) return;
                 if (state == "admitted") RememberSession(host, port, feed.Seat, feed.SeatToken);
                 Say(state == "admitted" ? "● 房主已批准加入" : state == "rejected" ? "加入申请已被拒绝" : "入场许可已撤销");
             });
@@ -567,24 +551,29 @@ public partial class RoomScreen : VBoxContainer
             HookGuestAutoEnter(feed);
 
             // 客人不能添 AI、也不能开局——那是房主的权限。
-            Ui(() => { _join.Disabled = true; _addAi.Disabled = true; _joinField.Editable = false; });
+            Ui(() => _addAi.Disabled = true);
             await RefreshAsync();
         }
         catch (Exception error)
         {
-            Ui(() => Say("✗ " + error.Message));
+            Ui(() => { if (lifecycle == _lifecycle) Say("✗ " + error.Message); });
+        }
+        finally
+        {
+            if (connectingFeed is not null) await connectingFeed.DisposeAsync();
+            if (lifecycle == _lifecycle) _connecting = false;
         }
     }
 
     /// <summary>从主流程入口（作战配置页的房间列表）直接加入：填地址走同一条界面路径（M4）。</summary>
     public Task JoinAsync(string host, int port)
     {
-        _joinField.Text = $"{host}:{port}";
+        _joinEndpoint = $"{host}:{port}";
         return JoinAsync();
     }
 
-    /// <summary>解析 "IP:端口"（也接受只给 IP，默认端口见调用处提示）。</summary>
-    private static bool TryParseEndpoint(string text, out string host, out int port)
+    /// <summary>解析好友分享的主机地址与端口。</summary>
+    internal static bool TryParseEndpoint(string text, out string host, out int port)
     {
         host = "";
         port = 0;
@@ -597,24 +586,22 @@ public partial class RoomScreen : VBoxContainer
                && port is > 0 and < 65536;
     }
 
-    private async Task AddAiAsync()
-    {
-        // 左栏入口＝"拉一个人进来，然后分配座位"：自动挑第一个空座。
-        var seat = _occupied[0] ? (_occupied[1] ? -1 : 1) : 0;
-        if (seat < 0) { _hint.Text = "两个座位都有人了。"; return; }
-        await FillSeatAsync(seat);
-    }
-
     /// <summary>把 AI 放进指定座位（座位卡上的按钮与左栏入口共用）。</summary>
     private async Task FillSeatAsync(int seat)
     {
         if (_feed is null || _deck is null) { _hint.Text = "房间尚未就绪。"; return; }
         if (_occupied[seat]) { _hint.Text = $"座位 {seat} 已经有人了。"; return; }
 
-        _hint.Text = $"正在把 AI 放到座位 {seat}…";
-        var ok = await AddAiToSeatAsync(seat);
-        Ui(() => _hint.Text = ok ? $"座位 {seat} 已交给引擎 AI。" : $"座位 {seat} 添加 AI 失败（见上方错误）。");
-        await RefreshAsync();
+        _addAi.Disabled = true;
+        try
+        {
+            _hint.Text = "正在添加电脑对手…";
+            var ok = await AddAiToSeatAsync(seat);
+            Ui(() => _hint.Text = ok ? "电脑对手已准备就绪。" : "未能添加电脑对手，请重试。");
+            await RefreshAsync();
+        }
+        catch (Exception error) { Ui(() => _hint.Text = error.Message); }
+        finally { _addAi.Disabled = _guest || _occupied[1]; }
     }
 
     /// <summary>把 AI 放到指定座位（验证探针直接用，跳过"自动找空座"）。</summary>
@@ -650,12 +637,12 @@ public partial class RoomScreen : VBoxContainer
     /// 联机只认应用层 id（<c>pack/{包}/{局部id}</c>）。卡库分两套 id：原始 catalog（<c>av76/...</c>）
     /// 与卡包投影（<c>pack/...</c>），而**两者之间没有任何溯源字段**——不是"还没打通映射"，
     /// 是数据本身毫无关联（实测 219 张包卡按国别+卡名只能对上 2 张）。所以这里只接受 <c>pack/</c> 前缀，
-    /// 混进源卡就退回自动组牌，并在卡池标签上写明原因。
+    /// 混入源卡时阻止加入并提示更换卡组；产品入口不替玩家更换牌组。
     /// </para>
     /// </summary>
     internal Func<IReadOnlyList<string>?>? ActiveDeckSource { get; set; }
 
-    /// <summary>卡组来源说明（自建卡组 / 为什么要退回自动组牌）。</summary>
+    /// <summary>卡组来源说明与不可用原因。</summary>
     private string? _deckNote;
 
     /// <summary>尝试用玩家自己的卡组；不可用返回 null 并记下原因。</summary>
@@ -693,7 +680,7 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>按"客人"路径加入（验证探针用，等价于在输入框填地址后点"加入"）。</summary>
     internal async Task<bool> JoinForVerificationAsync(string host, int port)
     {
-        _joinField.Text = $"{host}:{port}";
+        _joinEndpoint = $"{host}:{port}";
         await JoinAsync();
         return _feed is not null;
     }
@@ -717,15 +704,18 @@ public partial class RoomScreen : VBoxContainer
 
     private async Task StartAsync()
     {
-        if (_feed is null || _starting) return;
+        if (_feed is not { } feed || _starting) return;
+        var lifecycle = _lifecycle;
         _starting = true;
         _start.Disabled = true;
         try
         {
-            var started = await _feed.StartMatchAsync();
+            var started = await feed.StartMatchAsync();
+            if (_feed != feed || lifecycle != _lifecycle) return;
             if (!started) { _hint.Text = "开局失败（见上方错误）。"; return; }
             MatchStarted?.Invoke();
         }
+        catch (Exception error) { _hint.Text = "未能开始对战：" + error.Message; }
         finally
         {
             _starting = false;
@@ -737,71 +727,16 @@ public partial class RoomScreen : VBoxContainer
     {
         var text = _endpoint.Text.Contains(':') ? _endpoint.Text.Split('\n')[0] : _endpoint.Text;
         DisplayServer.ClipboardSet(text);
-        _hint.Text = $"已复制 {text}，发给对方后在联机页填入。";
+        _hint.Text = $"已复制 {text}。好友可在作战准备页使用地址加入。";
     }
 
-    // ── 大厅发现（M4）──────────────────────────────────────────────
-
-    /// <summary>看到一条房间宣告（协议线程回调经 Ui 投递到主线程）。自己的房间不进列表。</summary>
-    private void NoteDiscovered(DiscoveredRoom room)
-    {
-        if (room.RoomId == _ownRoomId) return;
-        _discovered[room.RoomId] = room;
-        RenderDiscovery();
-    }
-
-    /// <summary>超过 <see cref="RoomDiscovery.Expiry"/> 没听到的房间从列表剔除。</summary>
-    private void PruneDiscovery()
-    {
-        var now = System.Environment.TickCount64;
-        var expired = _discovered.Values
-            .Where(room => now - room.SeenMilliseconds > RoomDiscovery.Expiry.TotalMilliseconds)
-            .Select(room => room.RoomId).ToArray();
-        foreach (var id in expired) _discovered.Remove(id);
-        if (expired.Length > 0) RenderDiscovery();
-    }
-
-    private void RenderDiscovery()
-    {
-        if (_discoveredBox is null) return;
-        UiStyles.Clear(_discoveredBox);
-        foreach (var room in _discovered.Values.OrderByDescending(room => room.SeenMilliseconds))
-        {
-            var row = new HBoxContainer();
-            row.AddThemeConstantOverride("separation", 8);
-            var label = UiStyles.Label(
-                $"{room.Host}:{room.Port} · 座位 {room.SeatsTaken}/{room.SeatsTotal}", 13, UiStyles.MenuInk);
-            label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            label.VerticalAlignment = VerticalAlignment.Center;
-            label.ClipText = true;
-            row.AddChild(label);
-            var join = UiStyles.Button("加入", () =>
-            {
-                _joinField.Text = $"{room.Host}:{room.Port}";
-                _ = JoinAsync();
-            });
-            join.CustomMinimumSize = new(64, 30);
-            row.AddChild(join);
-            _discoveredBox.AddChild(row);
-        }
-    }
-
-    /// <summary>当前发现列表（验证探针用）。</summary>
-    internal DiscoveredRoom[] DiscoveredRooms => [.. _discovered.Values];
-
-    /// <summary>延迟显示文本（验证探针用）。</summary>
+    /// <summary>判定是否连接层故障；是则转入重连状态（幂等）。返回 false 表示普通业务错误。</summary>
     internal string PingText => _ping.Text;
-
-    // ── 断线重连（M3）──────────────────────────────────────────────
-
-    /// <summary>统一错误入口：连接层故障触发自动重连，其余只展示。</summary>
     private void NoteError(string message)
     {
         if (OnConnectionIssue(message)) Say("✗ 连接断开 · 正在自动重连…");
         else Say("✗ " + message);
     }
-
-    /// <summary>判定是否连接层故障；是则转入重连状态（幂等）。返回 false 表示普通业务错误。</summary>
     private bool OnConnectionIssue(string message)
     {
         if (_closing || _reconnecting || _feed is null || _feed.AdmissionState is "revoked" or "rejected") return false;
@@ -847,23 +782,30 @@ public partial class RoomScreen : VBoxContainer
 
     private async Task TryReconnectCoreAsync()
     {
+        if (!_reconnecting || _closing) return;
+        var lifecycle = _lifecycle;
         _reconnectAttempts++;
+        RemoteMatchFeed? connectingFeed = null;
         try
         {
             var feed = await RemoteMatchFeed.ConnectAsync(_reconnectHost, _reconnectPort, seat: _reconnectSeat);
+            connectingFeed = feed;
+            if (lifecycle != _lifecycle) return;
             feed.ErrorRaised += message => { _lastError = message; Ui(() => NoteError(message)); };
             HookPing(feed);
             _server?.Configure(feed);
             var resumed = _reconnectObserver ? await feed.AttachViewerAsync() :
                 !string.IsNullOrEmpty(_reconnectToken) && await feed.ResumeSeatAsync(_reconnectToken);
+            if (lifecycle != _lifecycle) return;
             if (!resumed)
             {
-                _feed = feed; _reconnecting = false; _reconnectToken = null;
+                _feed = feed; connectingFeed = null; _reconnecting = false; _reconnectToken = null;
                 Say("入场凭据已失效，请重新申请入场。");
                 return;
             }
 
             _feed = feed;
+            connectingFeed = null;
             _reconnecting = false;
             if (_guest) HookGuestAutoEnter(feed);
             GD.Print($"[room] reconnect success (attempt {_reconnectAttempts}, feed#{feed.GetHashCode():x})");
@@ -884,8 +826,9 @@ public partial class RoomScreen : VBoxContainer
         }
         catch (Exception)
         {
-            Say($"✗ 重连失败（第 {_reconnectAttempts} 次）· 2.5 秒后再试");
+            if (lifecycle == _lifecycle) Say($"✗ 重连失败（第 {_reconnectAttempts} 次）· 2.5 秒后再试");
         }
+        finally { if (connectingFeed is not null) await connectingFeed.DisposeAsync(); }
     }
 
     /// <summary>客人：房主开局（或重连后补到投影）自动切战场。每条连接只触发一次。</summary>
@@ -894,12 +837,17 @@ public partial class RoomScreen : VBoxContainer
         if (_feed is not { } previous || previous.AdmissionState is "pending" or "admitted") return;
         try
         {
-            if (previous.IsObserver) { await SpectateAsync(_reconnectHost, Port); return; }
+            if (previous.IsObserver)
+            {
+                var port = Port; _feed = null; await previous.DisposeAsync();
+                await SpectateAsync(_reconnectHost, port); return;
+            }
             if (_guest)
             {
                 _feed = null; await previous.DisposeAsync(); await JoinAsync(); return;
             }
             if (_server is null || _deck is null) return;
+            _feed = null; await previous.DisposeAsync();
             var feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _server.Port);
             _server.Configure(feed); _feed = feed; HookPing(feed);
             await previous.DisposeAsync();
@@ -950,21 +898,30 @@ public partial class RoomScreen : VBoxContainer
     }
     public async Task SpectateAsync(string host, int port)
     {
+        if (_closing || _connecting || _feed is not null) return;
+        var lifecycle = _lifecycle; _connecting = true;
+        RemoteMatchFeed? connectingFeed = null;
         try
         {
             if (_server is not null && port == _server.Port) throw new InvalidOperationException("房主无需通过自己的地址观战，请由另一客户端加入。");
             var feed = await RemoteMatchFeed.ConnectAsync(host, port);
-            feed.ErrorRaised += message => Ui(() => NoteError(message));
-            if (!await feed.AttachViewerAsync()) { await feed.DisposeAsync(); return; }
-            if (_feed is not null) await _feed.DisposeAsync();
-            if (_server is not null) { await _server.DisposeAsync(); _server = null; }
-            _feed = feed; _guest = true; _guestPort = port; _joinField.Text = $"{host}:{port}";
+            connectingFeed = feed;
+            if (lifecycle != _lifecycle) return;
+            feed.ErrorRaised += message => Ui(() => { if (_feed == feed) NoteError(message); });
+            if (!await feed.AttachViewerAsync() || lifecycle != _lifecycle) return;
+            _feed = feed; _guest = true; _guestPort = port; _joinEndpoint = $"{host}:{port}";
+            connectingFeed = null;
             _reconnectHost = host; _reconnectPort = port; _reconnectSeat = 0; _reconnectToken = null;
             HookGuestAutoEnter(feed); HookPing(feed);
-            feed.AdmissionChanged += state => Ui(() => Say(state == "admitted" ? "● 观战已获批准" : $"观战许可：{state}"));
+            feed.AdmissionChanged += state => Ui(() => { if (_feed == feed) Say(state == "admitted" ? "● 观战已获批准" : state == "pending" ? "等待房主批准观战" : "观战申请未获批准"); });
             await RefreshAsync();
         }
-        catch (Exception e) { Ui(() => NoteError(e.Message)); }
+        catch (Exception e) { Ui(() => { if (lifecycle == _lifecycle) NoteError(e.Message); }); }
+        finally
+        {
+            if (connectingFeed is not null) await connectingFeed.DisposeAsync();
+            if (lifecycle == _lifecycle) _connecting = false;
+        }
     }
 
     private void HookGuestAutoEnter(RemoteMatchFeed feed)
@@ -974,7 +931,7 @@ public partial class RoomScreen : VBoxContainer
         {
             if (fired) return;
             fired = true;
-            Ui(() => MatchStarted?.Invoke());
+            Ui(() => { if (_feed == feed) MatchStarted?.Invoke(); });
         };
     }
 
@@ -984,15 +941,17 @@ public partial class RoomScreen : VBoxContainer
         feed.StartPingLoop();
         feed.AdmissionChanged += state => Ui(() => {
             if (_feed != feed) return;
+            _reapply.Visible = state is "revoked" or "rejected";
             _reconnectToken = feed.SeatToken;
             if (state is "revoked" or "rejected")
             {
                 _hint.Text = state == "rejected" ? "房主拒绝了入场申请。" : "房间已更新或许可已撤销，请重新申请入场。";
+                _start.Disabled = true; _seat1.SetAccess(false);
                 Say(_hint.Text);
             }
         });
-        feed.PingUpdated += ms => Ui(() => _ping.Text = ms is null ? "延迟 —"
-            : $"延迟 {ms} ms" + (ms > 250 ? "（高）" : ""));
+        feed.PingUpdated += ms => Ui(() => { if (_feed == feed) _ping.Text = ms is null ? "延迟 —"
+            : $"延迟 {ms} ms" + (ms > 250 ? "（高）" : ""); });
     }
 
     /// <summary>记住本端会话凭据（重连的唯一依据），并落盘 user://net-room/last-session.json。</summary>
@@ -1021,6 +980,17 @@ public partial class RoomSeatCard : PanelContainer
     private Label _seat = null!, _who = null!, _state = null!, _deck = null!;
     private Button _fill = null!;
     private int _index;
+    private readonly TextureCache _textures = new();
+    private SetupDeckBack _ownCover = null!;
+    private SetupDeckArtwork _hiddenCover = null!;
+    private string? _coverSignature;
+    public void SetDeck(ConstructedDeck? deck, bool self)
+    {
+        _ownCover.Visible = self && deck is not null; _hiddenCover.Visible = !_ownCover.Visible;
+        var signature = deck is null ? null : deck.Id + "/" + deck.Options.MainNation + "/" + deck.Options.UnrestrictedNations;
+        if (signature != _coverSignature) { _coverSignature = signature; if (deck is not null) _ownCover.Bind(deck, _textures); }
+        if (_ownCover.Visible) _deck.Text = deck!.Name;
+    }
 
     /// <summary>空座位的"放 AI"被点：由房间屏决定实际调用。</summary>
     public event Action? FillRequested;
@@ -1030,6 +1000,8 @@ public partial class RoomSeatCard : PanelContainer
 
     /// <summary>座位号。</summary>
     public int Seat => _index;
+    internal Button FillButton => _fill;
+    public void SetAccess(bool canAddAi) { _fill.Visible = !HasController && canAddAi; }
 
     public void Initialize(int index)
     {
@@ -1041,21 +1013,22 @@ public partial class RoomSeatCard : PanelContainer
         column.AddThemeConstantOverride("separation", 6);
         AddChild(column);
 
-        _seat = UiStyles.Label($"SEAT {index}", 12, UiStyles.Accent);
+        _seat = UiStyles.Label(index == 0 ? "房主" : "对手", 12, UiStyles.Accent);
         column.AddChild(_seat);
         _who = UiStyles.Label("空座", 24, UiStyles.MenuInk);
+        MenuMaterials.Title(_who);
         column.AddChild(_who);
         _state = UiStyles.Label("等待加入", 14, UiStyles.MenuDim);
         _state.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         column.AddChild(_state);
 
         column.AddChild(new HSeparator());
-        _deck = UiStyles.Label("卡组 —", 13, UiStyles.MenuDim);
+        var artwork = new Control { SizeFlagsVertical = SizeFlags.ExpandFill, CustomMinimumSize = new(0, 240), MouseFilter = MouseFilterEnum.Ignore }; column.AddChild(artwork);
+        _ownCover = new SetupDeckBack { MouseFilter = MouseFilterEnum.Ignore }; artwork.AddChild(_ownCover); _ownCover.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect); _ownCover.Hide();
+        _hiddenCover = new SetupDeckArtwork(); _hiddenCover.Initialize(_textures, true); artwork.AddChild(_hiddenCover); _hiddenCover.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        _deck = UiStyles.Label("卡组 —", 15, UiStyles.MenuDim); _deck.HorizontalAlignment = HorizontalAlignment.Center; _deck.ClipText = true;
         column.AddChild(_deck);
-
-        // 撑开中段，让"放 AI"落在卡片底部，而不是紧贴文字。
-        column.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
-        _fill = UiStyles.Button("＋  放引擎 AI 到此座", () => FillRequested?.Invoke());
+        _fill = UiStyles.Button("＋ 添加电脑对手", () => FillRequested?.Invoke());
         _fill.CustomMinimumSize = new(0, 36);
         _fill.AddThemeStyleboxOverride("normal", UiStyles.Box(new("2b3229"), UiStyles.Accent, 10, 8));
         column.AddChild(_fill);
@@ -1071,18 +1044,20 @@ public partial class RoomSeatCard : PanelContainer
         if (!HasController)
         {
             _who.Text = "空座";
-            _state.Text = "等待玩家接入，或直接放一个 AI";
+            _state.Text = "邀请好友，或添加电脑对手";
             _state.AddThemeColorOverride("font_color", UiStyles.MenuDim);
             _deck.Text = "卡组 —";
-            AddThemeStyleboxOverride("panel", UiStyles.Box(new Color("1a211b"), UiStyles.MenuLine, 12, 18));
+            _hiddenCover.Modulate = new Color(1,1,1,.35f);
+            AddThemeStyleboxOverride("panel", MenuMaterials.Panel(new Color("202529"),20));
             return;
         }
 
         var isAi = controllerKind == "ai";
-        _who.Text = string.IsNullOrWhiteSpace(displayName) ? (isAi ? "引擎 AI" : "玩家") : displayName;
-        _state.Text = isAi ? "引擎驱动 · 自动行动" : connected ? "玩家 · 已连接" : "玩家 · 离线";
+        _who.Text = string.IsNullOrWhiteSpace(displayName) ? (isAi ? "电脑对手" : "玩家") : displayName;
+        _state.Text = isAi ? "电脑控制 · 已就绪" : connected ? "玩家 · 已连接" : "玩家 · 离线";
         _state.AddThemeColorOverride("font_color", connected || isAi ? UiStyles.MenuInk : UiStyles.Accent);
-        _deck.Text = deckLabel ?? (isAi ? "卡组 · 服务端托管" : "卡组 · 已提供");
-        AddThemeStyleboxOverride("panel", UiStyles.Box(UiStyles.MenuPanel, UiStyles.Gold, 12, 18));
+        _deck.Text = deckLabel ?? (isAi ? "电脑对手卡组" : "卡组 · 已提供");
+        _hiddenCover.Modulate = Colors.White;
+        AddThemeStyleboxOverride("panel", MenuMaterials.Panel(new Color("29302e"),20));
     }
 }

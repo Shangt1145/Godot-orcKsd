@@ -34,7 +34,7 @@ public partial class BattleScreen
 
     private UiMatchView InteractionView => _liveInputView ?? _state;
     private static readonly UiBattleActions NoTurnActions = new();
-    private bool IsFriendlyTurn => _readOnlyMode is null && _turnInput.AllowsInput(InteractionView);
+    private bool IsFriendlyTurn => !MulliganMotionActive && _readOnlyMode is null && _turnInput.AllowsInput(InteractionView);
     private UiBattleActions InteractionActions => IsFriendlyTurn ? _liveInputActions ?? _actions : NoTurnActions;
     private bool CanEndTurnNow => IsFriendlyTurn && !TargetChoiceVisible && InteractionActions.CanEndTurn;
     private bool CanConcedeNow => !_usingDemo && CanEndTurnNow && !TargetChoiceVisible;
@@ -160,16 +160,16 @@ public partial class BattleScreen
         if (_hovered is { Mode: BattleCardMode.Hand } hovered && hovered != _pressed
             && GodotObject.IsInstanceValid(hovered) && !HasPendingHandPlay(hovered.Uid))
         {
-            StopHandMotion(hovered.Uid);
-            hovered.Position = hovered.RestPosition; hovered.Rotation = hovered.RestRotation;
-            hovered.ZIndex = 20 + (hovered.View?.SlotIndex ?? 0);
+            MoveHandPaper(hovered, false, .24);
         }
         if (_pressed is { } card && GodotObject.IsInstanceValid(card) && !HasPendingHandPlay(card.Uid))
         {
-            StopHandMotion(card.Uid);
-            card.Position = card.RestPosition; card.Rotation = card.RestRotation;
+            if (card.Mode == BattleCardMode.Hand) MoveHandPaper(card, false, .24);
+            else { card.Position = card.RestPosition; card.Rotation = card.RestRotation; }
             card.ZIndex = card.Mode == BattleCardMode.Hand ? 20 + (card.View?.SlotIndex ?? 0) : 0;
         }
+        if (_selected is { } selected && _cards.TryGetValue(selected, out var released) && released.Mode == BattleCardMode.Hand
+            && released != _pressed && released != _hovered && !HasPendingHandPlay(selected)) MoveHandPaper(released, false, .24);
         _pressed = null; _hovered = null; _dragging = false; _selected = null;
         _aim.Visible = false; _aim.Preview = null; _aim.InvalidTarget = false; _detail.Visible = _inspectStats.Visible = false;
         ClearSlotHints(); UpdateSelection(); _hint.Visible = false; ReleaseGestureWaiter();
@@ -193,7 +193,7 @@ public partial class BattleScreen
             {
                 if (InteractionCard(play.Uid) is { } restored) card.Bind(restored, BattleCardMode.Hand, _textures);
                 card.ChoiceCaption = null;
-                card.Position = card.RestPosition; card.Rotation = card.RestRotation; card.Scale = Vector2.One;
+                MoveHandPaper(card, false, .24); card.Scale = Vector2.One;
                 card.ZIndex = 20 + (card.View?.SlotIndex ?? 0); card.MouseFilter = MouseFilterEnum.Stop;
             }
         }

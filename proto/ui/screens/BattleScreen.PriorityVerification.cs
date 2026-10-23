@@ -87,6 +87,7 @@ public partial class BattleScreen
             _ = player.Enqueue(new(initial.MatchId, [new UiDeploymentPresentation(deployed, final)], final) { Sequence = 4 }, actions);
             UpdateInputProjection(final, actions);
             await player.Completion;
+            await WaitForCombatResidueAsync();
             if (!played.SequenceEqual(new long[] { 1, 4, 2, 3 }) || !MatchesProjection(final)
                 || _state.SelfHand.Count != final.SelfHand.Count || _cards.ContainsKey(removed.Uid)
                 || _cards[uid].Mode != BattleCardMode.Field || _sequence.LiveCardCount != 0 || _combat.LiveEffectCount != 0)
@@ -163,6 +164,7 @@ public partial class BattleScreen
                 UpdateInputProjection(replaced, actions); await deathQueue.Completion;
             }
             finally { _sequence.PhaseChanged -= OnLand; }
+            await WaitForCombatResidueAsync();
             if (!checkedSlot || !played.SequenceEqual(new long[] { 1, 2, 1 }) || !MatchesProjection(replaced)
                 || _removalActors.Count != 0 || _combat.LiveEffectCount != 0)
                 throw new Exception("Deferred death occupied the replacement slot or leaked a retained actor.");

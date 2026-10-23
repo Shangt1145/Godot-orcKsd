@@ -231,11 +231,17 @@ public partial class BattleScreen : Control
         FitBoard();
         foreach (var ghost in _ghosts) if (GodotObject.IsInstanceValid(ghost) && !ghost.IsQueuedForDeletion()) { ghost.GetParent()?.RemoveChild(ghost); ghost.QueueFree(); }
         _ghosts.Clear(); _busy = false;
-        foreach (var c in _cards.Values) { c.Position = c.RestPosition; c.Rotation = c.RestRotation; c.Scale = Vector2.One; c.Visible = true; }
+        foreach (var c in _cards.Values)
+        {
+            if (_fieldMotionZ.TryGetValue(c.Uid, out var z)) c.ZIndex = z;
+            c.Position = c.RestPosition; c.Rotation = c.RestRotation; c.Scale = Vector2.One; c.Visible = true; c.HoldHoverHitArea = false; c.DeploymentElevation = 0;
+        }
+        _fieldMotionZ.Clear();
         RestorePendingDeploymentPoses();
     }
     private void Render(UiMatchView state, UiBattleActions actions, bool animate, string? deploymentActorUid = null)
     {
+        if (_state?.MatchId != state.MatchId) MulliganProjection("transition");
         MulliganProjection(state.Phase);
         _generation++;
         var previous = _cards.ToDictionary(p => p.Key, p => (RestPosition: p.Value.Position, p.Value.Size, RestRotation: p.Value.Rotation, p.Value.Mode, p.Value.View));
@@ -318,30 +324,57 @@ public partial class BattleScreen : Control
             {
                 // The dedicated deployment sequence owns this card's visual until landing.
                 if (uid == deploymentActorUid) continue;
-                if (!previous.TryGetValue(uid, out var old)) continue;
-                if (old.Mode == BattleCardMode.Hand && card.Mode == BattleCardMode.Field)
+                if (!previous.TryGetValue(uid, out var old))
+                {
+                    if (card.Mode == BattleCardMode.Field)
+                    {
+                        card.Scale = Vector2.One * .94f; card.Modulate = new Color(1,1,1,0);
+                        var arrival = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+                        arrival.TweenProperty(card, "scale", Vector2.One, .18 * _clock.Scale);
+                        arrival.TweenProperty(card, "modulate:a", 1f, .12 * _clock.Scale); _tweens.Add(arrival);
+                    }
+                    continue;
+                }
+                if (old.Mode is BattleCardMode.Hand or BattleCardMode.Field && card.Mode is BattleCardMode.Hand or BattleCardMode.Field
+                    && (old.Mode != card.Mode || old.View?.CardId != card.View?.CardId))
                 {
                     var ghost = new BattleCard { Position = old.RestPosition, Size = old.Size, Rotation = old.RestRotation, ZIndex = 130, MouseFilter = MouseFilterEnum.Ignore };
-                    ghost.Bind(card.View, BattleCardMode.Hand, _textures); ghost.PivotOffset = ghost.Size / 2;
+                    ghost.Bind(old.View, old.Mode, _textures); ghost.PivotOffset = ghost.Size / 2;
                     _cardLayer.AddChild(ghost); _ghosts.Add(ghost); card.Visible = false; _busy = true;
                     var t = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
                     var time = .42 * _clock.Scale;
                     t.TweenProperty(ghost, "position", card.RestPosition + (card.Size - ghost.Size) / 2, time);
-                    t.TweenProperty(ghost, "scale", card.Size / ghost.Size, time);
-                    t.TweenProperty(ghost, "rotation", 0f, time); _tweens.Add(t);
+                    var changedFace = false; var transform = old.View?.CardId != card.View?.CardId;
+                    t.TweenMethod(Callable.From<float>(p =>
+                    {
+                        ghost.Scale = Vector2.One.Lerp(card.Size / ghost.Size, p) * new Vector2(transform ? Math.Max(.035f, MathF.Abs(MathF.Cos(p * MathF.PI))) : 1, 1);
+                        ghost.PaperShear = MathF.Sin(p * MathF.PI) * .06f;
+                        if (!changedFace && p >= .5f) { changedFace = true; ghost.Bind(card.View, card.Mode, _textures); }
+                        ghost.QueueRedraw();
+                    }), 0f, 1f, time);
+                    t.TweenProperty(ghost, "rotation", card.RestRotation, time); _tweens.Add(t);
                     t.Finished += () => { if (generation != _generation) return; card.Visible = true; ghost.QueueFree(); _ghosts.Remove(ghost); _busy = false; };
                 }
                 else if (card.RestPosition.DistanceTo(old.RestPosition) > 1)
                 {
-                    card.Position = old.RestPosition; card.Rotation = old.RestRotation;
-                    var t = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
-                    t.TweenProperty(card, "position", card.RestPosition, .32 * _clock.Scale);
-                    t.TweenProperty(card, "rotation", card.RestRotation, .32 * _clock.Scale); _tweens.Add(t);
-                    if (card.Mode == BattleCardMode.Hand) _handMotion[card.Uid] = t;
+                    if (card.Mode == BattleCardMode.Field)
+                        MoveFieldPaper(card, old.RestPosition, old.RestRotation, old.View?.Zone != card.View?.Zone);
+                    else
+                    {
+                        card.Position = old.RestPosition; card.Rotation = old.RestRotation;
+                        var t = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+                        t.TweenProperty(card, "position", card.RestPosition, .32 * _clock.Scale);
+                        t.TweenProperty(card, "rotation", card.RestRotation, .32 * _clock.Scale); _tweens.Add(t);
+                        if (card.Mode == BattleCardMode.Hand) _handMotion[card.Uid] = t;
+                    }
                 }
             }
         }
         RestorePendingDeploymentPoses();
+        if (_mulliganOpen) SetMulliganHandHidden(true);
+        StartMulliganArrival(state);
+        HideMulliganArrivals();
+        HideOpeningHeadquarters();
         UpdateSelection();
     }
     /// <summary>
@@ -461,13 +494,15 @@ public partial class BattleScreen : Control
         if (_interaction.IsPending(card.Uid)) return;
         _sequence.TakeDraw(card.Uid);
         var position = card.Position; var rotation = card.Rotation;
-        if (_pendingPresentation is null && _pendingCombat is null) FinishMotion();
-        else StopHandMotion(card.Uid);
+        if (card.Mode == BattleCardMode.Hand) StopHandMotion(card.Uid);
+        else if (_pendingPresentation is null && _pendingCombat is null) FinishMotion();
         SelectCard(card.Uid);
         if (_selected != card.Uid) return;
         if (card.Mode == BattleCardMode.Hand) { card.Position = position; card.Rotation = rotation; card.ZIndex = 100; }
         _pressed = card; _pressAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * viewportPosition;
-        _grabOffset = _pressAt - card.Position; _dragging = false;
+        card.HoldHoverHitArea = false; FanAroundHover(null);
+        _grabOffset = (_pressAt - card.Position - card.PivotOffset).Rotated(-card.Rotation) + card.PivotOffset; _dragging = false;
+        _dragPointer = _dragPrevious = _pressAt; _dragLastTick = Time.GetTicksUsec(); _dragTiltTarget = 0;
         if (card.Mode == BattleCardMode.Hand && IsTargetedOrder(card.Uid)) UpdateOrderAim(card, _pressAt);
     }
     private void CardHovered(BattleCard card, bool on)
@@ -482,8 +517,8 @@ public partial class BattleScreen : Control
             _hovered = card;
             if (!_dragging && card.Mode == BattleCardMode.Hand)
             {
-                StopHandMotion(card.Uid);
-                card.Position = card.RestPosition + new Vector2(0, -90); card.Rotation = 0; card.ZIndex = 100;
+                MoveHandPaper(card, true);
+                FanAroundHover(card);
             }
             if (_selected is null && !_dragging) ShowDetail(card);
             if (_selected is not null) PreviewTarget(card.Uid);
@@ -492,7 +527,7 @@ public partial class BattleScreen : Control
         {
             if (_hovered == card) _hovered = null;
             if (!_dragging && card.Mode == BattleCardMode.Hand && _pressed != card)
-            { card.Position = card.RestPosition; card.Rotation = card.RestRotation; card.ZIndex = 20 + (card.View?.SlotIndex ?? 0); }
+            { MoveHandPaper(card, false); FanAroundHover(null); }
             if (_selected is null) _detail.Visible = _inspectStats.Visible = false;
             if (_aim.Preview?.DefenderUid == card.Uid) { _aim.Preview = null; card.Targeted = false; card.QueueRedraw(); }
         }
@@ -925,7 +960,8 @@ public partial class BattleScreen : Control
                 // from placing a card.
                 if (_dragging && _pressed.Mode == BattleCardMode.Hand && !IsTargetedOrder(_pressed.Uid))
                 {
-                    _pressed.Position = at - _grabOffset; _pressed.Rotation = 0; _pressed.ZIndex = 140;
+                    StopHandMotion(_pressed.Uid);
+                    ObserveHandDrag(at);
                 }
                 if (_dragging && IsTargetedOrder(_pressed.Uid)) UpdateOrderAim(_pressed, at);
             }
@@ -951,7 +987,7 @@ public partial class BattleScreen : Control
             var wasDragging = _dragging;
             var wasOrderAim = IsTargetedOrder(_pressed.Uid);
             var releasedPose = wasDragging && _pressed.Mode == BattleCardMode.Hand ? DeploymentPose.From(_pressed) : (DeploymentPose?)null;
-            _pressed.Position = _pressed.RestPosition; _pressed.Rotation = _pressed.RestRotation;
+            if (!wasDragging && _pressed.Mode == BattleCardMode.Hand) MoveHandPaper(_pressed, false);
             _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
             _pressed = null; _dragging = false;
             if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position, releasedPose);
@@ -1121,6 +1157,10 @@ public partial class BattleScreen : Control
             while (IsInsideTree() && generation == _generation && _pendingCombat == resolution
                 && _tweens.Any(t => GodotObject.IsInstanceValid(t) && t.IsRunning()))
                 await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            // 余效（火焰/残烟/弹道/碎片）是渐隐自删的：演出"结束"应当包含它们淡完。
+            // 不等这一步，紧随其后的"LiveEffectCount==0"断言测到的只是帧数差（实测 live=2）。
+            for (var drain = 0.0; drain < 1.0 && _combat.LiveEffectCount > 0 && IsInsideTree() && generation == _generation; drain += 0.05)
+                await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
             if (generation == _generation && _pendingCombat == resolution) { _pendingCombat = null; _pendingActions = null; }
         }
         catch (OperationCanceledException) { /* The interrupt path already settled the authoritative after-state. */ }
@@ -1130,8 +1170,8 @@ public partial class BattleScreen : Control
             if (generation == _generation) CancelSelection();
         }
     }
-    private void PreferencesChanged() { CancelSelection(); }
-    public override void _ExitTree() { StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); ClearRemovalActors(); FinishMotion(); ReleaseGestureWaiter(); }
+    private void PreferencesChanged() { if (_clock.ReducedMotion) FinishOpening(); CancelSelection(); }
+    public override void _ExitTree() { CancelMulliganMotion(); FinishOpening(); StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); ClearRemovalActors(); FinishMotion(); ReleaseGestureWaiter(); }
 
     public async Task VerifyAsync()
     {
@@ -1345,7 +1385,8 @@ public partial class BattleScreen : Control
             if (_cards.ContainsKey("enemy-0") || _state.SelfKredits != resolution.After.SelfKredits || _cards["self-front"].View?.Health != resolution.AttackerAfter?.Health)
                 throw new Exception($"Resolved combat projection failed: {type}");
             if (before.EnemyLine.First(c => c.Uid == "enemy-0").Health != 3 || _combat.LiveEffectCount != 0 || _busy)
-                throw new Exception("Combat mutated old state or retained effects.");
+                throw new Exception($"Combat mutated old state or retained effects. (old={before.EnemyLine.First(c => c.Uid == "enemy-0").Health} " +
+                    $"live={_combat.LiveEffectCount} busy={_busy} type={type})");
         }
         ResetDemo();
         var survives = InteractionActions.AttackPreviews.First(p => !p.DefenderDies && !p.AttackerDies);

@@ -73,6 +73,8 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         }));
         FinishButton = MenuStyles.Button("完成", () => {if(NativeInspector.CommitPendingRaw())Finished?.Invoke();}); heading.AddChild(FinishButton);
         SaveButton=MenuStyles.Button("保存卡牌",SaveNative);heading.AddChild(SaveButton);
+        var compatibility = MenuStyles.Button("兼容工具", () => ShowCompatibility()); heading.AddChild(compatibility);
+        compatibility.TooltipText = "需要处理旧卡数据时再打开结构与检查工具";
         MenuStyles.Primary(SaveButton);
         CapabilitySummary=MenuStyles.Label("正在检查效果…",15,MenuStyles.Gold);AddChild(CapabilitySummary);
         _cardCapability=MenuStyles.Label("",12,new("dca58b"));_cardCapability.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_cardCapability);
@@ -145,7 +147,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     }
 
     /// <summary>打开编辑器：以主编辑器当前草稿为工作副本（结构＋简易行），重置历史。</summary>
-    internal void ShowCompatibility(){_editorTabs.TabsVisible=true;_editorTabs.CurrentTab=1;}
+    internal void ShowCompatibility(){_editorTabs.SetTabHidden(1,false);_editorTabs.SetTabHidden(2,false);_editorTabs.CurrentTab=1;}
     public void Open(DiyCardDraft draft)
     {
         _openedDraft=draft.Snapshot();_counterSignature="";
@@ -163,6 +165,7 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         OrcCheck(); RefreshDsl();
         NativeInspector.Catalog=Catalog;_nativeSync=true;NativeInspector.Open(InspectorCardRecord.FromDraft(draft));_nativeSync=false;
         _editorTabs.TabsVisible=true;
+        _editorTabs.SetTabHidden(1,true); _editorTabs.SetTabHidden(2,true);
         _editorTabs.CurrentTab=0;
     }
 

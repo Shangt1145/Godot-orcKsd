@@ -230,7 +230,7 @@ public sealed partial class NativeWorkshop
         _editor.BeginSession(EditorSessionRequest.Edit(destination));
     }
 
-    public void Create(string id, string name, string dependencyId)
+    public void Create(string id, string name, string dependencyId, string? basePackId = null)
     {
         Idle();
         if (HasSession) throw new InvalidOperationException("请先结束当前编辑会话。");
@@ -239,6 +239,8 @@ public sealed partial class NativeWorkshop
         PrepareAuthoringReference(dependencyId);
         _editor = CreateEditor(ValidateSet(EnabledRoots()));
         _editor.BeginSession(EditorSessionRequest.CreateNew(id, InstalledRoot, [dependencyId], name));
+        var presentation = Presentation(); presentation["basePackId"] = basePackId;
+        SavePresentation(presentation);
     }
     public NativeWorkshopAsset CreateCard(string id)
     {

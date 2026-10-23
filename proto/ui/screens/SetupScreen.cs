@@ -18,6 +18,8 @@ public partial class SetupScreen : VBoxContainer
     internal Button BackButton = null!, ChooseDeckButton = null!, RoomButton = null!;
     public event Action? StartRequested;
     public event Action? ChooseDeckRequested;
+    public event Action? EditDeckRequested;
+    public event Action? ResumeRequested;
     public event Action? BackRequested;
 
     /// <summary>进入作战房间（拉起服务器实例，拉人分配座位）。</summary>
@@ -36,6 +38,7 @@ public partial class SetupScreen : VBoxContainer
     private readonly Dictionary<string, DiscoveredRoom> _discovered = new(StringComparer.Ordinal);
     private VBoxContainer _roomList = null!;
     private double _roomClock;
+    internal Func<string?>? HiddenRoomId { get; set; }
 
     public void Initialize(DeckLibrary library, DeckConstructionService service, TextureCache textures)
     {
@@ -47,23 +50,26 @@ public partial class SetupScreen : VBoxContainer
     /// 有房就显示"谁开了房、还剩几个座"，点「加入」直接跳房间屏并进房——
     /// 不必先知道 IP，也不必先进房间屏。
     /// </summary>
-    private void BuildRoomBrowser()
+    private void BuildRoomBrowser(VBoxContainer parent)
     {
         _listener = new RoomListener();
         _listener.Received += room => _incomingRooms.Enqueue(room);
         _listener.Start();
 
-        var panel = new PanelContainer();
-        panel.AddThemeStyleboxOverride("panel", UiStyles.Box(new Color("232b23"), UiStyles.MenuLine, 10, 14));
-        AddChild(panel);
+        var panel = new PanelContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
+        panel.AddThemeStyleboxOverride("panel", MenuMaterials.Panel(new Color("23282a"),20));
+        parent.AddChild(panel);
         var column = new VBoxContainer();
         column.AddThemeConstantOverride("separation", 6);
         panel.AddChild(column);
-        column.AddChild(UiStyles.Label("//  LAN  ·  局域网房间", 12, UiStyles.Accent));
+        var heading = new HBoxContainer(); column.AddChild(heading);
+        var title = UiStyles.Label("好友的房间", 24, UiStyles.Gold); title.SizeFlagsHorizontal = SizeFlags.ExpandFill; heading.AddChild(title);
+        heading.AddChild(UiStyles.Button("使用房间地址…", OpenAddressDialog));
+        var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; column.AddChild(scroll);
         _roomList = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _roomList.AddThemeConstantOverride("separation", 4);
-        column.AddChild(_roomList);
-        var note = UiStyles.Label("同一虚拟局域网（ZeroTier / n2n 等）里开着的房间会自动出现；也可以进房间后手填地址。", 11, UiStyles.MenuDim);
+        scroll.AddChild(_roomList);
+        var note = UiStyles.Label("同一局域网中的房间会出现在这里。找不到好友时，可使用房间地址连接。", 11, UiStyles.MenuDim);
         note.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         column.AddChild(note);
         RenderRoomList();
@@ -94,24 +100,28 @@ public partial class SetupScreen : VBoxContainer
     {
         if (_roomList is null) return;
         UiStyles.Clear(_roomList);
-        if (_discovered.Count == 0)
+        var rooms = _discovered.Values.Where(room => room.RoomId != HiddenRoomId?.Invoke()).OrderByDescending(room => room.SeenMilliseconds).ToArray();
+        if (rooms.Length == 0)
         {
-            var empty = UiStyles.Label("暂未发现房间。好友创建房间后会出现在这里。", 12, UiStyles.MenuDim);
-            empty.AutowrapMode = TextServer.AutowrapMode.WordSmart; _roomList.AddChild(empty);
+            var empty = new VBoxContainer { CustomMinimumSize = new(0, 280), Alignment = BoxContainer.AlignmentMode.Center }; empty.AddThemeConstantOverride("separation",16); _roomList.AddChild(empty);
+            var title = UiStyles.Label("等待好友的房间", 25, UiStyles.MenuInk); title.HorizontalAlignment = HorizontalAlignment.Center; empty.AddChild(title);
+            var help = UiStyles.Label("好友创建房间后，会自动出现在这里。\n你也可以在右侧创建房间，或使用好友分享的地址。", 15, UiStyles.MenuDim);
+            help.HorizontalAlignment = HorizontalAlignment.Center; help.AutowrapMode = TextServer.AutowrapMode.WordSmart; empty.AddChild(help);
             return;
         }
 
-        foreach (var room in _discovered.Values.OrderByDescending(room => room.SeenMilliseconds))
+        foreach (var room in rooms)
         {
             var row = new HBoxContainer();
             row.AddThemeConstantOverride("separation", 10);
             var label = UiStyles.Label(
-                $"{room.Host}:{room.Port} · 座位 {room.SeatsTaken}/{room.SeatsTotal}", 13, UiStyles.MenuInk);
+                $"{(string.IsNullOrWhiteSpace(room.Name) ? "好友的房间" : room.Name)} · {room.SeatsTaken}/{room.SeatsTotal} 人", 13, UiStyles.MenuInk);
             label.SizeFlagsHorizontal = SizeFlags.ExpandFill;
             label.VerticalAlignment = VerticalAlignment.Center;
             label.ClipText = true;
             row.AddChild(label);
-            var join = UiStyles.Button("加入  →", () => { if (OnlineReady) RoomJoinRequested?.Invoke(room.Host, room.Port); else ChooseDeckRequested?.Invoke(); });
+            var join = UiStyles.Button(room.SeatsTaken >= room.SeatsTotal ? "已满" : "加入 →", () => RequestJoin(room.Host, room.Port));
+            join.Disabled = room.SeatsTaken >= room.SeatsTotal;
             join.CustomMinimumSize = new(84, 30);
             row.AddChild(join);
             row.AddChild(UiStyles.Button("观战", () => RoomSpectateRequested?.Invoke(room.Host, room.Port)));
@@ -144,7 +154,37 @@ public partial class SetupScreen : VBoxContainer
         StartButton.Text = ReadyToPlay ? "进入战场  →" : "选择卡组  →";
         RefreshSelection();
     }
-    private void OnStart() { if (!ReadyToPlay || (_online && !OnlineReady)) ChooseDeckRequested?.Invoke(); else if (_online) RoomRequested?.Invoke(); else StartRequested?.Invoke(); }
+    private (string Host, int Port)? _pendingJoin;
+    internal bool OnlineMode => _online;
+    internal bool HasPendingJoin => _pendingJoin.HasValue;
+    internal void RequestJoin(string host, int port)
+    {
+        if (OnlineReady) { _pendingJoin = null; RoomJoinRequested?.Invoke(host, port); }
+        else { _pendingJoin = (host, port); ChooseDeckRequested?.Invoke(); }
+    }
+    private void OnStart()
+    {
+        if (!ReadyToPlay || (_online && !OnlineReady)) { ChooseDeckRequested?.Invoke(); return; }
+        if (_pendingJoin is { } pending) { RequestJoin(pending.Host, pending.Port); return; }
+        if (_online) RoomRequested?.Invoke(); else StartRequested?.Invoke();
+    }
+    private void OpenAddressDialog()
+    {
+        var dialog = new ConfirmationDialog { Title = "连接好友房间", OkButtonText = "加入房间", CancelButtonText = "取消", DialogHideOnOk = false, MinSize = new(460, 180) }; AddChild(dialog);
+        var form = new VBoxContainer(); dialog.AddChild(form);
+        form.AddChild(UiStyles.Label("粘贴好友分享的地址", 16, UiStyles.MenuInk));
+        var address = new LineEdit { PlaceholderText = "例如 10.147.20.5:4717" }; form.AddChild(address);
+        var error = UiStyles.Label("", 13, UiStyles.Gold); form.AddChild(error);
+        void Connect(bool watch)
+        {
+            if (!RoomScreen.TryParseEndpoint(address.Text, out var host, out var port)) { error.Text = "请输入有效的地址与端口。"; return; }
+            dialog.QueueFree();
+            if (watch) RoomSpectateRequested?.Invoke(host, port); else RequestJoin(host, port);
+        }
+        dialog.AddButton("观战", true, "watch"); dialog.CustomAction += action => { if (action == "watch") Connect(true); };
+        dialog.Confirmed += () => Connect(false); dialog.Canceled += dialog.QueueFree;
+        dialog.PopupCentered(); address.GrabFocus();
+    }
 }
 
 public partial class SetupMapArtwork : Control

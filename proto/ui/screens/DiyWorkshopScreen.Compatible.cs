@@ -15,12 +15,14 @@ public partial class DiyWorkshopScreen
         _native?.Suspend(); NativeWorkspace(); _compatiblePack = pack.Snapshot(); _pack = pack;
         var heading = new HBoxContainer(); _workspace.AddChild(heading);
         var title = MenuStyles.Label(pack.Name, 23, MenuStyles.Gold); title.SizeFlagsHorizontal = SizeFlags.ExpandFill; heading.AddChild(title);
-        heading.AddChild(MenuStyles.Button("修改卡包信息…", () => _editor.GuardNavigation(() => { _workspace.Hide(); _navigation.Show(); OpenSelection(pack.IsExpansion, true); DiyEditorScreen.Select(ModifyPick, pack.Id); ModifyPick.EmitSignal(OptionButton.SignalName.ItemSelected, (long)ModifyPick.Selected); })));
+        heading.AddChild(MenuStyles.Button("‹ 我的卡包", () => _editor.GuardNavigation(ShowNativePackages)));
+        heading.AddChild(MenuStyles.Button("卡包信息…", () => EditCompatiblePackInfo(pack)));
         if (_store.Packs.Any(p => p.Id == pack.Id) && !pack.IsExpansion)
             heading.AddChild(MenuStyles.Button("词条与效果", () =>
             {
                 var dialog = new AcceptDialog { Title = "词条与效果", OkButtonText = "完成", MinSize = new(1000, 680) }; AddChild(dialog);
-                _keywordPane = new VBoxContainer { CustomMinimumSize = new(960, 590) }; dialog.AddChild(_keywordPane); BuildKeywords();
+                var scroll = new ScrollContainer { CustomMinimumSize = new(960, 590), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
+                _keywordPane = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; scroll.AddChild(_keywordPane); BuildKeywords();
                 dialog.Confirmed += () => dialog.QueueFree(); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
             }));
         var tools = new HBoxContainer(); _workspace.AddChild(tools);

@@ -14,7 +14,6 @@ public partial class HomeScreen : VBoxContainer
     internal Button PlayButton = null!;
     internal MenuHero Hero = null!;
     public event Action? PlayRequested;
-    public event Action? StartRequested;
     public event Action<string>? NavigationRequested;
     public void Initialize(DeckLibrary library, DeckConstructionService service, TextureCache textures)
     {
@@ -36,8 +35,6 @@ public partial class HomeScreen : VBoxContainer
         caption.AddChild(new Control { CustomMinimumSize = new(0, 8) });
         PlayButton = MenuStyles.Button("开始对战  →", Play); MenuStyles.Primary(PlayButton);
         PlayButton.CustomMinimumSize = new(252, 58); PlayButton.SizeFlagsHorizontal = SizeFlags.ShrinkBegin; caption.AddChild(PlayButton);
-        var choose = MenuStyles.Button("更换当前卡组", () => NavigationRequested?.Invoke("decklib"));
-        choose.SizeFlagsHorizontal = SizeFlags.ShrinkBegin; caption.AddChild(choose);
         var links = new HBoxContainer(); links.AddThemeConstantOverride("separation", 18); AddChild(links);
         _decks = QuickLink(links, "我的卡组", "decklib");
         _collection = QuickLink(links, "卡牌收藏", "collection");
@@ -65,7 +62,7 @@ public partial class HomeScreen : VBoxContainer
         var errors = deck is null ? null : _service.Validate(deck);
         var status = _library.LoadError ?? (errors is { Count: > 0 } ? errors[0] : ReadyToPlay ? "准备就绪" : "请选择卡组");
         var detail = MenuStyles.Label(summary + "  /  " + status, 14, MenuStyles.Dim); detail.AutowrapMode = TextServer.AutowrapMode.WordSmart; _deckDetail.AddChild(detail);
-        PlayButton.Text = ReadyToPlay ? "开始对战  →" : "选择卡组  →";
+        PlayButton.Text = "作战准备  →";
         _decks.Text = $"我的卡组  →\n{_library.Decks.Count} 副已保存卡组";
         _collection.Text = $"卡牌收藏  →\n{_service.PlayableCards.Count} 张可用卡牌";
         _workshop.Text = "DIY 工坊  →\n制作卡牌、词条与卡包";

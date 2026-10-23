@@ -64,6 +64,12 @@ public partial class Main
             }
             Require(feed.CurrentView?.Phase != "mulligan", "界面确认换牌后仍停在换牌阶段");
             Require(replacedUid is null || !feed.CurrentView!.SelfHand.Any(c => c.Uid == replacedUid), "标记替换的卡仍在手牌中");
+            if (replacedUid is not null)
+            {
+                for (var i = 0; i < 100 && _battle.MulliganMotionActive; i++)
+                    await ToSignal(GetTree().CreateTimer(.1), SceneTreeTimer.SignalName.Timeout);
+                Require(!_battle.MulliganMotionActive, "联机静默补牌演出未结束或输入锁未释放");
+            }
             for (var i = 0; i < 200 && feed.CurrentView?.ActivePlayerSide != "self"; i++)
                 await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
             Require(feed.CurrentView?.ActivePlayerSide == "self", "引擎 AI 未交回回合");
@@ -134,7 +140,7 @@ public partial class Main
             Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
 
             // 第二个房间屏：同一个进程里模拟另一台机器。
-            guestScreen = new RoomScreen();
+            guestScreen = new RoomScreen { AllowSampleDeck = true };
             guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
                 ProjectSettings.GlobalizePath("user://net-room-guest"));
             // 挂到与 _room 同一个宿主（content），但保持隐藏：只是为了 Ui() 能投递到主线程。
@@ -199,7 +205,7 @@ public partial class Main
     /// <para>
     /// 两条路径都要证：
     /// ① 全 <c>pack/</c> id 且 39 张 → 房间用它（PackageId=player），占座成功；
-    /// ② 混进源卡（<c>av76/...</c>）→ 必须**退回**自动组牌，而不是拿一副打不出去的卡组去占座。
+    /// ② 混进源卡（<c>av76/...</c>）→ 阻止进入房间，不替换成另一副自动卡组。
     /// </para>
     /// </summary>
     private async void VerifyDeck()
@@ -220,17 +226,18 @@ public partial class Main
             Require(_room.Deck?.PackageId == "player", "全 pack/ 卡组没有被房间采用");
             Require(feed.SeatToken is { Length: > 0 }, "用玩家卡组占座失败" +
                 (_room.LastError is { } reason ? $"：{reason}" : ""));
-            _room.Close();
+            await _room.CloseAsync();
+            _room.AllowSampleDeck = false;
 
-            // ② 非法卡组：混一张源卡，必须退回自动组牌。
+            // ② 非法卡组：混一张源卡，必须阻止开房且不替换卡组。
             _room.ActiveDeckSource = () => ["av76/command/-1"];
             await _room.OpenAsync();
 
             GD.Print($"[deck] 非法卡组：package={_room.Deck?.PackageId}");
             Require(_room.Deck?.PackageId != "player", "含源卡的卡组居然被当成可用卡组");
-            Require(_room.Feed?.SeatToken is { Length: > 0 }, "退回自动组牌后占座失败");
+            Require(_room.Feed is null && _room.Port == 0, "无效卡组被悄悄替换或留下了房间连接");
 
-            GD.Print("DECK_VERIFY_OK player-deck-wired invalid-falls-back");
+            GD.Print("DECK_VERIFY_OK player-deck-wired invalid-blocked-no-substitution");
         }
         catch (Exception error)
         {
@@ -728,7 +735,7 @@ public partial class Main
             Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
 
             // 第二个房间屏：同一个进程里模拟另一台机器。
-            guestScreen = new RoomScreen();
+            guestScreen = new RoomScreen { AllowSampleDeck = true };
             guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
                 ProjectSettings.GlobalizePath("user://net-room-guest"));
             _room.GetParent().AddChild(guestScreen);
@@ -833,7 +840,7 @@ public partial class Main
             Require(host.SeatToken is { Length: > 0 }, "房主没有拿到 seatToken");
 
             // 客人侧房间屏（隐藏）：它的监听器负责"看到"房主的宣告。
-            guestScreen = new RoomScreen();
+            guestScreen = new RoomScreen { AllowSampleDeck = true };
             guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
                 ProjectSettings.GlobalizePath("user://net-room-guest"));
             _room.GetParent().AddChild(guestScreen);
@@ -844,13 +851,13 @@ public partial class Main
             for (var i = 0; i < 150 && seen is null; i++)
             {
                 await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
-                seen = guestScreen.DiscoveredRooms.FirstOrDefault(room => room.Port == _room.Port);
+                seen = _setup.DiscoveredRooms.FirstOrDefault(room => room.Port == _room.Port);
             }
 
             Require(seen is not null, "客人侧没有发现房主的房间（宣告/监听/环回广播任一环断了）");
             Require(seen!.RoomId.Length > 0, "宣告缺房间号");
             Require(seen.SeatsTaken >= 1 && seen.SeatsTotal == 2, $"座位占用不对：{seen.SeatsTaken}/{seen.SeatsTotal}");
-            Require(_room.DiscoveredRooms.Length == 0, "房主把自己的房间列进了发现列表");
+            Require(_setup.HiddenRoomId?.Invoke() == seen.RoomId, "准备页没有识别自己创建的房间");
             // M4 主流程入口：作战配置页的"局域网房间"列表也必须看到这个房间。
             var setupSeen = await WaitUntil(() => _setup.DiscoveredRooms.Any(room => room.Port == _room.Port), 10);
             Require(setupSeen, "作战配置页的房间列表没有发现房主（M4 主流程入口断了）");
@@ -904,7 +911,7 @@ public partial class Main
             await _room.OpenAsync();
             var host = _room.Feed ?? throw new Exception("房主没有连上：LastError=" + (_room.LastError ?? "（无）"));
 
-            guestScreen = new RoomScreen();
+            guestScreen = new RoomScreen { AllowSampleDeck = true };
             guestScreen.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
                 ProjectSettings.GlobalizePath("user://net-room-guest"));
             _room.GetParent().AddChild(guestScreen);

@@ -10,6 +10,9 @@ param(
     [switch]$NetProbe,
     [switch]$NetPlay,
     [switch]$VerifyRoom,
+    [switch]$VerifyNavigation,
+    [switch]$VerifyPaperMotion,
+    [switch]$VerifyOpening,
     [switch]$VerifyViewerReplay,
     [switch]$VerifyRoomRemote,
     [switch]$VerifyRoomJoin,
@@ -55,6 +58,9 @@ try {
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
+    elseif ($VerifyOpening) { & $Godot --path $BuildRoot '--' --verify-opening }
+    elseif ($VerifyPaperMotion) { & $Godot --path $BuildRoot '--' --verify-paper-motion }
+    elseif ($VerifyNavigation) { & $Godot --path $BuildRoot '--' --verify-navigation }
     elseif ($VerifyViewerReplay) { & $Godot --headless --path $BuildRoot '--' --verify-viewer-replay }
     elseif ($VerifyRoom) { & $Godot --headless --path $BuildRoot '--' --verify-room }
     elseif ($VerifyRoomRemote) { & $Godot --headless --path $BuildRoot '--' --verify-room-remote }

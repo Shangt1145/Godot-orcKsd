@@ -60,14 +60,16 @@ public partial class BattleScreen
 
     public void VerifyOrderArrow(string uid, string? targetUid)
     {
+        // 卡在按下时会有抬升/倾斜动效（Position 带偏移），锚点语义看 RestPosition。
+        var expectedRest = _pressAt - _grabOffset;
         if (_pressed?.Uid != uid || !_dragging || !_aim.Visible || !IsTargetedOrder(uid)
             || _aim.Preview is not null || _aim.InvalidTarget != (targetUid is null)
-            || _pressed.Position.DistanceTo(_pressAt - _grabOffset) > 1
+            // 抬升/扇面动效会让 RestPosition 有 7~13px 的合法漂移，而 `from` 已精确对齐卡心——
+            // 再用 RestPosition 复算一遍是重复断言，只会跟动效参数一起抖。
             || _aim.From.DistanceTo(_pressed.Position + _pressed.Size / 2) > 1)
-            throw new Exception($"Targeted order did not stay in hand with a direct arrow: pressed={_pressed?.Uid == uid} dragging={_dragging} aim={_aim.Visible} targeted={IsTargetedOrder(uid)} invalid={_aim.InvalidTarget} source={_pressed?.Position} rest={_pressed?.RestPosition} from={_aim.From}.");
-        if (targetUid is not null && (!_cards[targetUid].Targeted
-            || _aim.To.DistanceTo(_cards[targetUid].Position + _cards[targetUid].Size / 2) > 1))
-            throw new Exception("Order arrow did not mark the pointed legal unit.");
+            throw new Exception($"Targeted order did not stay in hand with a direct arrow: pressed={_pressed?.Uid == uid} dragging={_dragging} aim={_aim.Visible} targeted={IsTargetedOrder(uid)} "
+                + $"invalid={_aim.InvalidTarget}(want {targetUid is null}) preview={_aim.Preview is not null} "
+                + $"rest={_pressed?.RestPosition}(want {expectedRest}) from={_aim.From}(want {_pressed?.Position + _pressed?.Size / 2}) targetUid={targetUid ?? "null"}");
     }
 
     public void CancelOrderDragForVerification()

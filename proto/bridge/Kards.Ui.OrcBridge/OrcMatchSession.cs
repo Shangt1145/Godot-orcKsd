@@ -806,6 +806,16 @@ public sealed partial class OrcMatchSession : IDisposable
     private Card? Resolve(string uid) =>
         _host.Index.TryGetValue(uid, out var card) && OrcRefs.IsAlive(card) ? card : null;
 
+    /// <summary>按引用键在三条阵线的**当前**空隙里找回玩家拖到的那个落点（找不到＝已失效）。</summary>
+    private FormationGap? FindGap(string gapId)
+    {
+        var board = Match.Battlefield;
+        foreach (var line in new[] { board.PlayerASupportLine, board.FrontLine, board.PlayerBSupportLine })
+            foreach (var gap in line.GetInsertionGaps())
+                if (OrcRefs.KeyOf(gap) == gapId) return gap;
+        return null;
+    }
+
     private async Task<UiSubmitOutcome> PlayAsync(string uid, int? supportIndex, CancellationToken ct)
     {
         if (Resolve(uid) is OrderCard order)
@@ -816,6 +826,15 @@ public sealed partial class OrcMatchSession : IDisposable
         if (Resolve(uid) is CounterCard counter)
             return Report(await Match.PlayManager.UseCounterAsync(counter, ct));
         if (Resolve(uid) is not UnitCard unit) return UiSubmitOutcome.UnknownCard;
+        // 玩家已经拖到了一个具体落点：**直接**用那个 gap 打出，不走"先预打出再被问位置"。
+        // 之前依赖事后再答（AnswerParked），而意图在 SubmitAsync 的 finally 里就被清掉了，
+        // 于是必然落到 PresentTargetChoice → 无人应答 → SelectionRequired（H39 就是这么红的）。
+        if (_pendingGapId is { } chosenGapId)
+        {
+            var gap = FindGap(chosenGapId);
+            if (gap is null) { LastRejectionReason = "FormationGapUnavailable"; return UiSubmitOutcome.Rejected; }
+            return Report(await Match.PlayManager.PlayUnitAsync(unit, gap, ct));
+        }
         // Compatibility for older contract fixtures explicitly naming storage slots. Product drag
         // submits GapId and goes through the canonical native gap selector; these paths never mix.
         if (supportIndex is { } legacy && _pendingGapId is null)

@@ -15,7 +15,13 @@ public sealed class OrcBridgeTests
 {
     private const string InfantryId = "ui-test-infantry";
 
-    private static Match CreateMatch(int? seed = 7, int firstPlayerIndex = 0)
+    /// <summary>引擎 S2 起构造 Match 前必须有默认动作实现集（否则 CommandManager 直接抛）。</summary>
+    static OrcBridgeTests() => Orc.Foundation.Actions.FoundationActions.Register();
+
+    /// <summary>最近一次 CreateMatch 用的选择器桥（AI 部署要靠它应答"落哪个空隙"）。</summary>
+    private OrcTargeterBridge? _bridge;
+
+    private Match CreateMatch(int? seed = 7, int firstPlayerIndex = 0)
     {
         var definitions = new[]
         {
@@ -28,6 +34,7 @@ public sealed class OrcBridgeTests
         var deckB = new CardList(Enumerable.Repeat(InfantryId, 20));
         Match? match = null;
         var bridge = new OrcTargeterBridge();
+        _bridge = bridge;
         match = new Match(deckA, deckB, definitions, seed: seed, firstPlayerIndex: firstPlayerIndex, targeterBridge: bridge, packageActivator: new Orc.Packages.SnapshotPackageActivator(OrcEngineHost.Snapshot()));
         return match;
     }
@@ -253,7 +260,8 @@ public sealed class OrcBridgeTests
 
         // Pass the first turn; the driver plays the enemy turn through the engine's own entry points.
         await match.EndTurn();
-        await OrcOpponentDriver.PlayTurnAsync(match, enemy, message => Console.WriteLine("[driver] " + message));
+        // 走宿主+桥接路径：部署要选空隙（FormationGap），没有桥接就没人应答，AI 只能干瞪眼。
+        await OrcOpponentDriver.PlayTurnAsync(host, _bridge!, enemy, message => Console.WriteLine("[driver] " + message));
         host.Pump();
 
         var view = host.Refresh();

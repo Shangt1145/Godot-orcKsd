@@ -132,6 +132,8 @@ public partial class Main
             await MenuCaptureAsync("decks");
             await DeckClickAsync(_deckLibrary.TileButton(copy.Id));
             await DeckClickAsync(_deckLibrary.ActionButton("start"));
+            Check(_active == "setup" && _runner is null, "Deck management bypassed preparation.");
+            await DeckClickAsync(_setup.StartButton);
             var deadline = Time.GetTicksMsec() + 20_000;
             while (!_battle.MulliganPanelVisible && Time.GetTicksMsec() < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             Check(_active == "battle" && _battle.MulliganPanelVisible && _runner?.CurrentView is { } opening

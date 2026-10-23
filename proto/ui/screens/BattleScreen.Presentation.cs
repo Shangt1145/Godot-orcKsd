@@ -134,6 +134,8 @@ public partial class BattleScreen
     public async Task PresentSequenceAsync(UiPresentationResolution supplied, UiBattleActions afterActions)    {
         if (supplied.MatchId != _state.MatchId || supplied.After.MatchId != supplied.MatchId) return;
         var initialGeneration = _generation;
+        StartMulliganArrival(supplied.After);
+        await _mulliganArrivalTask;
         await WaitForGestureReleaseAsync();
         if (!IsInsideTree() || initialGeneration != _generation || supplied.MatchId != _state.MatchId) return;
         CancelSelection();

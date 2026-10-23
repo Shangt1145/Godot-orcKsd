@@ -136,12 +136,12 @@ public partial class DiyWorkshopScreen
             +(pack.IsBuiltIn?$"\n内置 / 自带 · 已修改 {drafts.Count(c=>c.SourceCardId.Length>0)} 张":"")
             +(pack.IsExpansion?"\n包含基础卡包的继承内容":"");
     }
-    internal void OpenSelection(bool expansion, bool modifying)
+    internal void OpenSelection(bool expansion, bool modifying, bool showAll = false)
     {
         _navigationVersion++; StopChoiceMotion(); _choiceCards.Clear(); MenuStyles.Clear(_navigation);
         _workspace.Hide(); _editor.Hide(); _navigation.Show();
         _notice.Text = modifying ? "选择已有内容，查看卡面与数据后进入编辑。" : expansion ? "先选择基础卡包，再为扩展包命名。" : "为新卡包命名，进入工作区后制作国家、词条与卡牌。";
-        _navigation.AddChild(MenuStyles.Label((modifying ? "修改" : "创建") + (expansion ? "扩展包" : "卡包"), 24, MenuStyles.Ink));
+        _navigation.AddChild(MenuStyles.Label(showAll ? "我的卡包" : (modifying ? "修改" : "创建") + (expansion ? "扩展包" : "卡包"), 24, MenuStyles.Ink));
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddThemeConstantOverride("separation",28); _navigation.AddChild(body);
         var gallery = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; body.AddChild(gallery);
         var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; gallery.AddChild(scroll);
@@ -154,56 +154,72 @@ public partial class DiyWorkshopScreen
         DiyPackDraft draft = new() { Name = expansion ? "新扩展包" : "新卡包" };
         ModifyPick = new OptionButton { Visible = false }; form.AddChild(ModifyPick);
         ModifyPick.AddItem("请选择要修改的内容"); ModifyPick.SetItemMetadata(0,"");
-        PackName = new LineEdit { Text = modifying ? "" : draft.Name, MaxLength = 60, Editable = !modifying }; DiyEditorScreen.Field(form,"名称",PackName);
+        PackName = new LineEdit { Text = modifying ? "" : draft.Name, MaxLength = 60, Editable = !modifying }; if (!modifying) DiyEditorScreen.Field(form,"名称",PackName); else { PackName.Hide(); form.AddChild(PackName); }
         BaseChoice = new OptionButton { Visible = false, FitToLongestItem = false, ClipText = true }; form.AddChild(BaseChoice);
         BaseChoice.AddItem("请选择基础卡包"); BaseChoice.SetItemMetadata(0,"");
         var bases = new Dictionary<string,string> { ["source"] = "太空战争" };
         foreach (var native in OrcEngineHost.PackDescriptors.Where(p => p.BasePackId is null)) bases["pack/"+native.Id] = native.Name;
         foreach (var pack in _store.Packs.Where(p => !p.IsExpansion)) bases[pack.Id] = pack.Name;
         foreach (var pair in bases) { BaseChoice.AddItem(pair.Value); BaseChoice.SetItemMetadata(BaseChoice.ItemCount-1,pair.Key); }
-        if (expansion && modifying)
-        { form.RemoveChild(BaseChoice); BaseChoice.Show(); DiyEditorScreen.Field(form,"基础卡包",BaseChoice); }
+        var packageActions = new VBoxContainer(); form.AddChild(packageActions);
+        var libraryPacks = WorkshopPacks();
+        if (modifying)
+        {
+            var filters = new HBoxContainer(); gallery.AddChild(filters); gallery.MoveChild(filters, 0);
+            filters.AddChild(MenuStyles.Button("全部", () => OpenSelection(false, true, true)));
+            filters.AddChild(MenuStyles.Button("卡包", () => OpenSelection(false, true)));
+            filters.AddChild(MenuStyles.Button("扩展包", () => OpenSelection(true, true)));
+        }
         void UpdateSummary()
         {
             if (!modifying) summary.Text = expansion ? "在左侧选择基础卡包。其国家与词条会继承到扩展包。" : "进入工作区后可创建国家、词条与卡牌。";
             if (expansion && DiyEditorScreen.Value(BaseChoice).Length > 0)
                 summary.Text = (modifying ? PackSummary(draft)+"\n" : "") + "基础卡包："+BaseChoice.GetItemText(BaseChoice.Selected);
-            ConfirmPack.Disabled = string.IsNullOrWhiteSpace(PackName.Text) || (expansion && DiyEditorScreen.Value(BaseChoice).Length == 0)
+            ConfirmPack.Disabled = string.IsNullOrWhiteSpace(PackName.Text) || (expansion && !modifying && DiyEditorScreen.Value(BaseChoice).Length == 0)
                 || (modifying && DiyEditorScreen.Value(ModifyPick).Length == 0);
         }
-        ConfirmPack = MenuStyles.Button(modifying ? "保存并进入编辑  →" : "创建并进入  →", () =>
+        ConfirmPack = MenuStyles.Button(modifying ? "进入编辑  →" : "创建并进入  →", () =>
         {
             try
             {
+                if (modifying) { OpenPack(draft); return; }
                 var parent = expansion ? DiyEditorScreen.Value(BaseChoice) : null;
                 if (expansion && string.IsNullOrEmpty(parent)) throw new InvalidDataException("请先选择基础卡包");
-                if (modifying && DiyEditorScreen.Value(ModifyPick).Length == 0) throw new InvalidDataException("请选择要修改的内容");
-                if (modifying && IsNativePackage(draft.Id) && !_cards.Cards.Any(c => c.PackId == draft.Id && c.SourceCardId.Length > 0))
-                { OpenNativePack(draft.Id[5..]); return; }
+                var reference = expansion ? parent is not null && IsNativePackage(parent) ? parent[5..] : null
+                    : _native?.Packages().Where(p => p.Enabled).OrderByDescending(p => p.Id == "builtin").FirstOrDefault()?.Id;
+                if (reference is not null && _native is not null)
+                {
+                    _native.Suspend(); var id = "user.pack." + Guid.NewGuid().ToString("N");
+                    _native.Create(id, PackName.Text.Trim(), reference, expansion ? reference : null);
+                    OpenNativePack(id); return;
+                }
                 var pack = draft with { Name = PackName.Text.Trim(), BasePackId = parent };
                 _store.Save(pack); _changed(); OpenPack(_store.Packs.Single(p => p.Id == pack.Id));
             }
             catch (Exception error) { _notice.Text = error.Message; }
         }); MenuStyles.Primary(ConfirmPack); form.AddChild(ConfirmPack);
-        form.AddChild(MenuStyles.Button("返回上一步",()=>ShowActionChoices(expansion)));
+        form.AddChild(MenuStyles.Button("返回上一步",()=> { if(showAll) ShowHome(); else ShowActionChoices(expansion); }));
         PackName.TextChanged += _ => UpdateSummary(); BaseChoice.ItemSelected += _ => UpdateSummary();
         ModifyPick.ItemSelected += _ =>
         {
-            var saved = BuiltInWorkshopCatalog.Packs(_store).FirstOrDefault(p => p.Id == DiyEditorScreen.Value(ModifyPick));
+            var saved = libraryPacks.FirstOrDefault(p => p.Id == DiyEditorScreen.Value(ModifyPick));
             if (saved is null) return;
             draft = saved.Snapshot(); PackName.Editable = !IsNativePackage(saved.Id); PackName.Text = saved.Name;
             selectedTitle.Text = saved.Name; summary.Text = PackSummary(saved);
             if (expansion) DiyEditorScreen.Select(BaseChoice,saved.BasePackId!);
             BaseChoice.Disabled=saved.IsBuiltIn;
             if(saved.IsBuiltIn) summary.Text+="\n修改保存在本机，原卡编号保留。";
+            MenuStyles.Clear(packageActions); BuildPackageActions(packageActions, saved);
             UpdateSummary();
         };
         if (modifying)
         {
-            foreach (var pack in BuiltInWorkshopCatalog.Packs(_store).Where(p => p.IsExpansion == expansion))
+            foreach (var pack in libraryPacks.Where(p => showAll || p.IsExpansion == expansion))
             {
                 ModifyPick.AddItem(pack.Name); ModifyPick.SetItemMetadata(ModifyPick.ItemCount-1,pack.Id);
-                var card = Choice(grid,pack.Name,PackSummary(pack),(pack.IsBuiltIn?"内置 / 自带":"已保存") + (expansion?" · 扩展包":" · 卡包"),PackFaces(pack.Id));
+                var native = _native?.Packages().FirstOrDefault(p => "pack/" + p.Id == pack.Id);
+                var origin = native is not null ? native.Installed ? "已安装" : "内置 / 自带" : pack.IsBuiltIn ? "内置 / 自带" : "已保存";
+                var card = Choice(grid,pack.Name,PackSummary(pack),origin + (pack.IsExpansion?" · 扩展包":" · 卡包"),PackFaces(pack.Id));
                 card.Pressed += () => SelectChoice(card,()=>
                 {
                     DiyEditorScreen.Select(ModifyPick,pack.Id); ModifyPick.EmitSignal(OptionButton.SignalName.ItemSelected,(long)ModifyPick.Selected);
@@ -211,6 +227,12 @@ public partial class DiyWorkshopScreen
                     grid.QueueSort();
                 });
             }
+            if (_native is not null)
+                foreach (var recovered in _native.InterruptedDrafts().Where(d => d.IsNew))
+                {
+                    var pending = Choice(grid, recovered.Name, "上次制作的卡包草稿", "继续制作");
+                    pending.Pressed += () => OpenNativePack(recovered.Id);
+                }
             if (_choiceCards.Count == 0) gallery.AddChild(MenuStyles.Label("还没有已保存的内容。返回上一步，选择创建。",16,MenuStyles.Dim));
         }
         else if (expansion)

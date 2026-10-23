@@ -10,7 +10,7 @@ public partial class DeckLibraryScreen : VBoxContainer
     private DeckConstructionService _service = null!;
     internal GridContainer Tiles = null!;
     internal VBoxContainer Details = null!;
-    internal Button ImportButton = null!, NewButton = null!;
+    internal Button ImportButton = null!, NewButton = null!, BackButton = null!;
     private TextureCache _textures = null!;
     private Label _title = null!;
     private string? _selectedId;
@@ -24,6 +24,7 @@ public partial class DeckLibraryScreen : VBoxContainer
     public event Action? NewRequested;
     public event Action? StartRequested;
     public event Action? Changed;
+    public event Action? BackRequested;
     public void Initialize(DeckLibrary library, DeckConstructionService service, TextureCache textures)
     {
         _library = library; _service = service; _textures = textures; SizeFlagsVertical = SizeFlags.ExpandFill;
@@ -31,6 +32,7 @@ public partial class DeckLibraryScreen : VBoxContainer
         var title = new HBoxContainer(); AddChild(title);
         _title = MenuStyles.Label("我的卡组", 30, MenuStyles.MenuInk); title.AddChild(_title);
         title.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+        BackButton = MenuStyles.Button("返回作战准备", () => BackRequested?.Invoke()); title.AddChild(BackButton);
         ImportButton = MenuStyles.Button("导入代码", ImportDialog); title.AddChild(ImportButton);
         _status = MenuStyles.Label("", 13, MenuStyles.MenuDim); AddChild(_status);
         var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddThemeConstantOverride("separation", 24); AddChild(body);
@@ -39,7 +41,7 @@ public partial class DeckLibraryScreen : VBoxContainer
         Tiles.AddThemeConstantOverride("h_separation", 18); Tiles.AddThemeConstantOverride("v_separation", 18);
         scroll.Resized += () => Tiles.Columns = Math.Max(1, (int)((scroll.Size.X + 18) / 214));
         var panel = new PanelContainer { CustomMinimumSize = new(336, 0) }; body.AddChild(panel);
-        panel.AddThemeStyleboxOverride("panel", MenuStyles.Box(MenuStyles.MenuPanel, MenuStyles.MenuLine, 1, 20));
+        panel.AddThemeStyleboxOverride("panel", MenuMaterials.Panel(new Color("22272a"),20));
         var detailScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; panel.AddChild(detailScroll);
         Details = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; detailScroll.AddChild(Details);
         _delete = new ConfirmationDialog { Title = "删除卡组" }; AddChild(_delete);
@@ -51,7 +53,8 @@ public partial class DeckLibraryScreen : VBoxContainer
         var decks = _library.Decks;
         if (!decks.Any(d => d.Id == _selectedId)) _selectedId = _library.ActiveId ?? decks.FirstOrDefault()?.Id;
         _title.Text = PlaySelection ? "选择对战卡组" : "我的卡组";
-        _status.Text = _library.LoadError ?? $"{decks.Count} 副卡组  ·  点击卡组查看详情";
+        BackButton.Visible = PlaySelection;
+        _status.Text = _library.LoadError ?? (PlaySelection ? "选择卡组并确认，随后返回作战准备。" : $"{decks.Count} 副卡组  ·  点击卡组查看详情");
         MenuStyles.Clear(Tiles);
         foreach (var deck in decks.OrderByDescending(d => d.Id == _library.ActiveId).ThenBy(d => d.Name))
         {
@@ -64,7 +67,7 @@ public partial class DeckLibraryScreen : VBoxContainer
             var contents = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore }; tile.AddChild(contents);
             contents.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect); contents.OffsetLeft = contents.OffsetTop = 12; contents.OffsetRight = contents.OffsetBottom = -12; contents.AddThemeConstantOverride("separation", 8);
             var center = new CenterContainer { MouseFilter = MouseFilterEnum.Ignore }; contents.AddChild(center);
-            var cover = new MenuDeckCover(); cover.Initialize(_textures, deck.Options.MainNation, 158); center.AddChild(cover);
+            var cover = new SetupDeckBack { CustomMinimumSize = new(158, 230), MouseFilter = MouseFilterEnum.Ignore, Selected = _selectedId == deck.Id }; cover.Bind(deck, _textures); center.AddChild(cover);
             var name = MenuStyles.Label(deck.Name, 17, MenuStyles.MenuInk); name.ClipText = true; name.HorizontalAlignment = HorizontalAlignment.Center; name.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(name);
             var summary = MenuStyles.Label($"{deck.CardIds.Length + 1} 张  ·  " + (active ? "当前对战" : errors.Count == 0 ? "可对战" : "草稿"), 12, active ? MenuStyles.Gold : MenuStyles.MenuDim); summary.HorizontalAlignment = HorizontalAlignment.Center; summary.MouseFilter = MouseFilterEnum.Ignore; contents.AddChild(summary);
         }
@@ -96,9 +99,9 @@ public partial class DeckLibraryScreen : VBoxContainer
         packs.AutowrapMode = TextServer.AutowrapMode.WordSmart; Details.AddChild(packs);
         var validity = MenuStyles.Label(errors.Count == 0 ? "准备就绪" : string.Join("\n", errors.Take(2)), 12, errors.Count == 0 ? new Color("bdcc9c") : new("dca58b")); validity.AutowrapMode = TextServer.AutowrapMode.WordSmart; validity.TooltipText = string.Join("\n", errors); Details.AddChild(validity);
         var ready = errors.Count == 0 && _library.LoadError is null;
-        var start = AddAction(Details, "start", "开始对战", () => Execute(() => { _library.Activate(deck.Id); StartRequested?.Invoke(); })); start.Disabled = !ready; MenuStyles.Primary(start);
+        var start = AddAction(Details, "start", PlaySelection ? "确认卡组，返回准备" : "带此卡组出战 →", () => Execute(() => { _library.Activate(deck.Id); StartRequested?.Invoke(); })); start.Disabled = !ready; MenuStyles.Primary(start);
         AddAction(Details, "edit", "编辑卡组", () => EditRequested?.Invoke(deck));
-        var use = AddAction(Details, "activate", active ? "已设为首页卡组" : "设为首页卡组", () => Execute(() => _library.Activate(deck.Id))); use.Disabled = active || !ready;
+        var use = AddAction(Details, "activate", active ? "当前卡组" : "设为当前卡组", () => Execute(() => _library.Activate(deck.Id))); use.Disabled = active || !ready; use.Visible = !PlaySelection;
         var utilities = new HBoxContainer(); utilities.AddThemeConstantOverride("separation", 6); Details.AddChild(utilities);
         AddAction(utilities, "copy", "复制", () => Execute(() => { var copy = deck with { Id = Guid.NewGuid().ToString("N"), Name = deck.Name[..Math.Min(deck.Name.Length, 59)] + " 副本" }; _library.Save(copy); _selectedId = copy.Id; }));
         AddAction(utilities, "export", "导出代码", () => ExportDialog(deck));

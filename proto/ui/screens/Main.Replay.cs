@@ -93,10 +93,12 @@ public partial class Main
         {
             var recording = await Task.Run(() => MatchReplayRecorder.Load(path));
             if (loadVersion != _replayLoadVersion) return;
-            StopRealMatch();
-            var feed = new ReplayMatchFeed(recording); _replayFeed = feed;
-            BindFeed(feed); Show("battle");
-            BuildReadOnlyBar(feed, null); feed.Seek(0);
+            ReplaceSession(() =>
+            {
+                var feed = new ReplayMatchFeed(recording); _replayFeed = feed;
+                BindFeed(feed); Show("battle");
+                BuildReadOnlyBar(feed, null); feed.Seek(0);
+            });
         }
         catch (Exception e) when (e is IOException or InvalidDataException or System.Text.Json.JsonException)
         {
@@ -131,7 +133,7 @@ public partial class Main
             row.AddChild(UiStyles.Button("玩家 A 视角", () => observer.SetObserverPerspective(0)));
             row.AddChild(UiStyles.Button("玩家 B 视角", () => observer.SetObserverPerspective(1)));
         }
-        row.AddChild(UiStyles.Button("离开", () => { StopRealMatch(); if (observer is not null) _room.Close(); Show("setup"); }));
+        row.AddChild(UiStyles.Button("离开", () => _ = LeaveSessionAsync()));
         foreach (var button in row.GetChildren().OfType<Button>()) MenuMaterials.Button(button);
     }
     private void UpdateReplayControls()

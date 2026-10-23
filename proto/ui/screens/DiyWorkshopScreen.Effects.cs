@@ -6,6 +6,34 @@ namespace Kards.Ui;
 
 public partial class DiyWorkshopScreen
 {
+    private void OpenKeywordRules(DiyKeywordDraft keyword, string name, Action<OrcEffectDraft[], string> saved, Window owner)
+    {
+        NativeTry(() =>
+        {
+            var effects = keyword.Effects;
+            if (effects.Length == 0 && keyword.EffectText.Length > 0 && keyword.ProgramJson is null)
+            {
+                var parsed = OrcInspector.CompileText(keyword.Id, keyword.EffectText, "unit");
+                if (!parsed.ParseComplete || !parsed.AllCompiled) throw new InvalidDataException("原有效果尚不能完整转换，请先保留它：" + string.Join("；", parsed.Problems));
+                effects = parsed.Parse.Effects.Select(OrcEffectEditing.ToDraft).ToArray();
+            }
+            var seed = new DiyCardDraft { Name = name, OrcEffects = effects, EffectText = keyword.EffectText, UseStructuredEffects = true };
+            var dialog = new ConfirmationDialog { Title = "编排效果", OkButtonText = "应用规则", CancelButtonText = "取消", DialogHideOnOk = false, MinSize = new(1100, 700) }; owner.AddChild(dialog);
+            var scroll = new ScrollContainer { CustomMinimumSize = new(1060, 580), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
+            var inspector = new NativeEffectInspector { CustomMinimumSize = new(1020, 560), SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill, Catalog = () => _service.Cards }; scroll.AddChild(inspector);
+            inspector.Initialize(); inspector.UsePlayerAuthoring(); inspector.Open(InspectorCardRecord.FromDraft(seed));
+            inspector.NewNativeEffectButton.Hide(); inspector.CardKeywordsButton.Hide();
+            dialog.Confirmed += () => NativeTry(() =>
+            {
+                if (!inspector.CommitPendingRaw()) return;
+                var updated = InspectorCardRecord.ApplyRecord(seed, inspector.Document.Element());
+                if (updated.Effects.Length > 0) throw new InvalidDataException("请先将兼容效果转换为可编辑规则。");
+                saved(updated.OrcEffects, updated.EffectText); dialog.QueueFree();
+            });
+            dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
+        });
+    }
+
     internal Button EffectLibraryButton = null!;
     private void OpenEffectLibrary()
     {
