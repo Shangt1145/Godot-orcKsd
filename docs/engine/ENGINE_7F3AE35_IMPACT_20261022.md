@@ -38,3 +38,37 @@ EffectRuntime.cs 原有 5 行选靶诊断与上游涉及同一文件，直接 pu
 4. 回放单独设计记录、版本、播放与拖动定位。新引擎文档仍将观战回放列为非本轮实现范围，不能把观战投影直接等同于可用回放功能。
 
 此次完成更新核查及专项验证，未实现上述 UI 适配、观战或回放，不可打包发布当前源码。
+
+## 追加：a25466c 拉取后的复验（2026-10-23）
+
+引擎侧 a25466c 是**测试适配**（58 个 Orc.Game.Tests 用例对齐 BoardPosition/FormationGap 新契约），
+规则未变。复验结果：
+
+| 项 | 结果 |
+|---|---|
+| 引擎构建 | ✅ |
+| Orc.Game.Tests | ❌ 128 / 1354 红（上一轮 158） |
+| UI 构建 | ✅ |
+| UI 单测 | ❌ 11 / 533 红（全是攻击/总部伤害/移动落点） |
+| `--verify-room` | ✅ 含 `local-art`（AI 座位卡图已修） |
+| `--verify-room-discovery` | ✅ |
+| `--verify-ui` | ❌ 卡在“没有任何单位能攻击任何合法目标” |
+
+### 阻塞根因（引擎侧，一处类型契约）
+
+`CommandManager.BeginMoveAsync` 把选中的移动候选（`FormationGap`）原样作为 `NewPosition` 交给
+`DispatchMoveAsync`，而 `MoveRevalidationJudicator.ValidateLogic` 要求
+`refs[2].Value is BoardPosition`——`FormationGap : Entity` **不是** `BoardPosition`，
+于是每一次“支援线→前线”推进都必然 `ValidationRejected`（UI 侧表现为 `ExecutionRejected`）。
+
+铁证：引擎自己的 `SandboxPrimitiveTests.Move_SupportToFrontline_Allowed` 同样红。
+
+连带效应：单位上不了前线 → 射程矩阵（支援线只能打敌前线）无目标 → `AttackPreviews` 恒为空
+→ 双方全员支援线互瞪，对局软锁。UI 侧无解，必须引擎修（dispatch 前 gap→BoardPosition 映射，
+或复验接受 FormationGap）。
+
+### UI 侧待办（引擎修好后按序）
+
+1. 复跑 `--verify-ui` / `--verify-combat` / `--verify-room-remote` / `--verify-room-segments`；
+2. 11 项 UI 单测按新语义对齐（多数应随引擎修复自动转绿，`MovementLandsWhereThePlayerAsked` 需复核）；
+3. M4 剩余：匹配语义（自动配对/密码房）；M5 剩余：观战（viewer 角色已有引擎支持）、回放（会话日志已有）。
