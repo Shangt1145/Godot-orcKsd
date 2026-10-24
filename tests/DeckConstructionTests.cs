@@ -57,31 +57,43 @@ public sealed class DeckConstructionTests
         Assert.Contains(ConstructionRules.Validate(tooMany, allyCards), s => s.Contains("12 张"));
         Assert.Empty(ConstructionRules.Validate(tooMany with { Options = tooMany.Options with { UnrestrictedNations = true } }, allyCards));
     }
-    // 原始卡池（av76 / deran / USG / UN）是**独立国家**，不是苏/德/美/英的别名：
+    // 每个卡池名（av76 / deran / USG / UN）都是**独立国家**，不是苏/德/美/英的别名：
     // 星盟自己的卡面注释就写着「协约国 = USG + AV76」——两家并列，不是同一家。
     // 归一只能统一写法（USG → usg 的引擎 id），绝不能把两个国家折成一个。
     [Theory]
     [InlineData("av76", "av76")] [InlineData("deran", "deran")]
     [InlineData("USG", "usg")] [InlineData("UN", "un")]
-    public void SourceNationsKeepTheirOwnIdentity(string pool, string engineId)
+    public void PoolNationsKeepTheirOwnIdentity(string pool, string engineId)
     {
-        Assert.True(DeckNations.IsSourceNation(pool));
+        Assert.True(DeckNations.IsCustomNation(pool));
         Assert.Equal(engineId, DeckNations.Canonical(pool));
         Assert.False(DeckNations.Same(pool, Faction.Soviet));
         Assert.False(DeckNations.Same(pool, Faction.Germany));
         Assert.False(DeckNations.Same(pool, Faction.USA));
         Assert.False(DeckNations.Same(pool, Faction.Britain));
     }
-    [Fact]
-    public void SourceNationsAreRegisteredAsEngineMajors()
+    // 唯一该归并的是「同一个国家的同义写法」：中文名与引擎 id。
+    [Theory]
+    [InlineData("苏联", "soviet")] [InlineData("德国", "germany")]
+    [InlineData("美国", "usa")] [InlineData("英国", "britain")]
+    [InlineData("日本", "japan")] [InlineData("意大利", "italy")]
+    public void SynonymsOfOneNationAreTheSameNation(string chinese, string engineId)
     {
-        OrcEngineHost.RegisterSourceNations();
-        foreach (var nation in DeckNations.SourceNations)
+        Assert.Equal(engineId, DeckNations.Canonical(chinese));
+        Assert.True(DeckNations.Same(chinese, engineId));
+        Assert.False(DeckNations.Same(chinese, "av76"));
+    }
+    [Fact]
+    public void PoolNationsAreRegisteredAsEngineMajors()
+    {
+        OrcEngineHost.RegisterCustomNations();
+        foreach (var nation in DeckNations.CustomNations)
         {
-            Assert.True(Faction.IsDefined(nation), $"{nation} 必须是已定义的引擎阵营");
-            Assert.True(FactionRules.IsMajorFaction(nation), $"{nation} 必须能当主国");
+            var engineId = DeckNations.Canonical(nation);
+            Assert.True(Faction.IsDefined(engineId), $"{nation} 必须以 {engineId} 注册为引擎阵营");
+            Assert.True(FactionRules.IsMajorFaction(engineId), $"{nation} 必须能当主国");
             // 独立国家之间互为合法盟国（主国 av76 ＋ 盟国 soviet 是正常组合）。
-            Assert.True(FactionRules.IsValidAlly(Faction.Soviet, nation) || nation == Faction.Soviet);
+            Assert.True(FactionRules.IsValidAlly(Faction.Soviet, engineId));
         }
     }
     [Fact]

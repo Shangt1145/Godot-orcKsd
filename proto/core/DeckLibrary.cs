@@ -57,8 +57,9 @@ public static class DeckCardPacks
 
 public static class ConstructionRules
 {
-    private static readonly string[] BuiltInNations = [ "av76", "deran", "USG", "UN",
-        "germany", "soviet", "usa", "britain", "japan", "france", "italy", "poland", "finland", "anzac" ];
+    // 国家清单唯一真源＝DeckNations：内置阵营之外的独立国家（av76/deran/USG/UN）与内置阵营并列。
+    private static readonly string[] BuiltInNations = [.. DeckNations.CustomNations,
+        "germany", "soviet", "usa", "britain", "japan", "france", "italy", "poland", "finland", "anzac"];
     private static string[] _customNations=[];
     public static IReadOnlyList<string> MainNations=>BuiltInNations.Concat(Volatile.Read(ref _customNations)).Distinct().ToArray();
     public static void ConfigureCustomNations(IEnumerable<string> ids)=>Volatile.Write(ref _customNations,ids.Distinct().ToArray());
@@ -83,8 +84,9 @@ public static class ConstructionRules
         if (deck.CardIds.Length > 511) errors.Add("卡组超出当前支持的容量");
         if (!o.UnrestrictedSize && deck.CardIds.Length != o.TotalCards - 1)
             errors.Add($"已选 {deck.CardIds.Length} / {o.TotalCards - 1} 张卡牌，另加 1 张总部");
-        if (!MainNations.Contains(o.MainNation)) errors.Add("请选择有效的主国");
-        if (!MainNations.Contains(o.AllyNation)) errors.Add("请选择有效的盟国；可以不加入盟国卡牌");
+        // 主盟国必须是已知国家；比较走 DeckNations，同义写法（苏联 / soviet）与大小写都算同一个。
+        if (!MainNations.Any(n => DeckNations.Same(n, o.MainNation))) errors.Add("请选择有效的主国");
+        if (!MainNations.Any(n => DeckNations.Same(n, o.AllyNation))) errors.Add("请选择有效的盟国；可以不加入盟国卡牌");
         // 国家同一性只走 DeckNations：它只统一写法（USG / usg），不跨国家折叠。
         // av76 就是 av76，与 soviet 是两个国家——「主国 av76 ＋ 盟国 soviet」是合法组合。
         var mainNation = DeckNations.Canonical(o.MainNation);

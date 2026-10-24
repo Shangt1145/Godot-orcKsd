@@ -115,8 +115,8 @@ public partial class DeckEditorScreen : VBoxContainer
     {
         var o = new OptionButton { CustomMinimumSize = new(85, 38) };
         if (empty) { o.AddItem("无盟国"); o.SetItemMetadata(0, ""); }
-        // 显示名走 NationLabel：原始卡池国家（av76 / deran / USG / UN）显示自己的名字，
-        // 不冒充苏/德/美/英——它们是独立国家，卡牌也按自己的国籍归属。
+        // 显示名走 NationLabel：av76 / deran / USG / UN 显示自己的名字——
+        // 它们都是独立国家，不冒充苏/德/美/英，卡牌也按自己的国籍归属。
         foreach (var nation in nations) { o.AddItem(SetupDeckBack.NationLabel(nation)); o.SetItemMetadata(o.ItemCount - 1, nation); }
         return o;
     }

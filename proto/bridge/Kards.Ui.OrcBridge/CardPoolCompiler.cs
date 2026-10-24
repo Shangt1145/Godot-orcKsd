@@ -157,7 +157,7 @@ public static class CardPoolCompiler
 
     /// <summary>
     /// The catalog's sets are nations, and the engine's faction axis is a different vocabulary but
-    /// **not a different country list**: the source pools (av76 / deran / usg / un) are their own
+    /// **not a different country list**: every pool name (av76 / deran / usg / un) is its own
     /// nations, registered as engine custom majors by <c>OrcEngineHost.Initialize</c>.
     /// Only the spelling is normalized here; folding one nation onto another would silently change
     /// which cards a main nation may field.

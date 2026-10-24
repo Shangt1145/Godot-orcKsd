@@ -29,17 +29,19 @@ public static class OrcEngineHost
     }
 
     /// <summary>
-    /// 原始卡池国家（av76 / deran / usg / un）是**独立国家**，不是苏/德/美/英的别名——
-    /// 把它们登记为引擎自定义主国。幂等；<see cref="Initialize"/> 会自动调用。
+    /// 登记内置阵营之外的独立国家（av76 / deran / usg / un）为引擎**自定义主国**。
+    /// 它们与苏/德/美/英地位相同，只是不在引擎常量表里。幂等；<see cref="Initialize"/> 会自动调用。
     /// 未登记时卡牌定义会因「国籍未定义」被拒绝编译，构筑配置也过不了对局创建期的校验。
     /// </summary>
-    public static void RegisterSourceNations()
+    public static void RegisterCustomNations()
     {
         lock (Gate)
         {
-            foreach (var nation in DeckNations.SourceNations)
+            foreach (var nation in DeckNations.CustomNations)
             {
-                if (!Faction.IsDefined(nation)) Faction.RegisterCustom(nation);
+                // 引擎 id 必须全小写 ASCII：USG / UN 以 usg / un 注册，DeckNations 负责这一步。
+                var id = DeckNations.Canonical(nation);
+                if (!Faction.IsDefined(id)) Faction.RegisterCustom(id);
             }
         }
     }
@@ -57,7 +59,7 @@ public static class OrcEngineHost
     {
         lock (Gate)
         {
-            RegisterSourceNations();
+            RegisterCustomNations();
 
             if (_host is not null)
             {
