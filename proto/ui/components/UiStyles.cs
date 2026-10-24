@@ -62,7 +62,18 @@ public static class UiStyles
     }
     public static Theme CreateTheme()
     {
-        var t = new Theme { DefaultFontSize = 15, DefaultFont = new SystemFont { FontNames = ["Microsoft YaHei", "Noto Sans CJK SC"], AllowSystemFallback = true } };
+        // 中文字体是跨平台硬依赖：桌面有微软雅黑，Android/iOS 没有——只写雅黑会在手机上满屏方块。
+        // AllowSystemFallback 让引擎自己找 CJK，但把 Android/Linux 常见的字体名显式列出来更稳。
+        var t = new Theme
+        {
+            DefaultFontSize = 15,
+            DefaultFont = new SystemFont
+            {
+                FontNames = ["Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC",
+                             "Droid Sans Fallback", "Noto Sans CJK JP", "Noto Sans CJK TC"],
+                AllowSystemFallback = true,
+            },
+        };
         foreach (var cls in new[] { "Label", "Button", "LineEdit", "OptionButton", "CheckButton", "RichTextLabel" })
             t.SetColor("font_color", cls, Ink);
         t.SetStylebox("normal", "Button", Box(Panel2));

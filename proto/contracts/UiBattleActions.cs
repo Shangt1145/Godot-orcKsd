@@ -1,7 +1,7 @@
 namespace Kards.Ui.Contracts;
 
 /// <summary>Permitted actions and combat forecasts are supplied by an adapter, never calculated by the view.</summary>
-public sealed record UiMoveOption(string Uid, string ToZone, int? SlotIndex = null);
+public sealed record UiMoveOption(string Uid, string ToZone, int? SlotIndex = null, string? GapId = null);
 public sealed record UiAttackPreview(string AttackerUid, string DefenderUid,
     int? DamageToDefender, int? DamageToAttacker, bool DefenderDies, bool AttackerDies);
 /// <summary>A single-target order and its current candidates, supplied by the effect adapter.</summary>

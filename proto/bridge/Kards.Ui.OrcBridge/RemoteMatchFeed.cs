@@ -54,6 +54,9 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private bool _mulliganPending;
     private string? _mulliganRequestId;
     private bool _targetPending;
+    private readonly SortedDictionary<long, JsonNode> _pendingSegments = new();
+    private readonly object _projectionGate = new();
+    private long _lastSegmentSequence;
     private bool _disposed;
     private Task? _pingLoop;
 
@@ -122,6 +125,12 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public event Action<UiPresentationResolution, UiBattleActions>? PresentationReady;
     public event Action<IReadOnlyList<UiOrderImpact>, UiMatchView, UiBattleActions>? CombatReady;
     public event Action? MulliganRequested;
+
+    /// <summary>
+    /// 对局开始（<c>notify/match.started</c>）。界面必须**在这个信号上切战场**，
+    /// 不能等第一帧投影：投影到达的时机取决于服务端推送，晚半拍就会跳过换牌阶段。
+    /// </summary>
+    public event Action? MatchStarted;
     public event Action<UiTargetRequest, IUiTargetResponder>? TargetRequested;
     public event Action? TargetClosed;
     public event Action<UiCommand>? CommandRefused;
@@ -161,6 +170,13 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public bool IsObserver { get; private set; }
     public event Action<string>? AdmissionChanged;
     internal IReadOnlyList<(string Id, string? Version, string? Guid)> PackageDeclaration { get; set; } = [];
+
+    /// <summary>
+    /// 客人侧声明本机卡池（对账用）。装载仍以房主磁盘为唯一权威——声明只影响"能不能放行"和界面展示，
+    /// 不会让客人的包进入 <c>PackDirectories</c>。
+    /// </summary>
+    public void DeclareLocalPackages(IReadOnlyList<(string Id, string? Version, string? Guid)> packages)
+        => PackageDeclaration = packages;
     internal Func<CancellationToken, Task<bool>>? StartHostMatch { get; set; }
     private JsonNode? _observerFrame;
     public event Action<int, UiMatchView>? ObserverProjectionReady;
@@ -191,8 +207,14 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     public void SetObserverPerspective(int seat)
     {
         if (!IsObserver || seat is not (0 or 1)) return;
-        Seat = seat;
-        if (_observerFrame is not null) ApplyViewPayload(_observerFrame);
+        lock (_projectionGate)
+        {
+            if (Seat == seat) return;
+            Seat = seat;
+            _view = null;
+            _pendingSegments.Clear();
+            if (_observerFrame is not null) ApplyViewPayload(_observerFrame);
+        }
     }
     public Task<bool> StartMatchAsync(CancellationToken ct = default)
         => StartHostMatch?.Invoke(ct) ?? Task.FromResult(false);
@@ -338,7 +360,10 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         {
             PlayCard play => play.GapId ?? play.TargetUid,
             AttackUnit attack => attack.DefenderUid,
-            CommandUnit unit => unit.TargetUid,
+            CommandUnit unit => unit.TargetUid ?? _actions.Moves.FirstOrDefault(m => m.Uid == unit.Uid
+                && m.ToZone == "frontline" && m.SlotIndex == unit.SlotIndex)?.GapId,
+            MoveUnit move => _actions.Moves.FirstOrDefault(m => m.Uid == move.Uid && m.ToZone == move.ToZone
+                && (move.SlotIndex is null || m.SlotIndex == move.SlotIndex))?.GapId,
             // MoveUnit 的目标是槽位（ToZone/SlotIndex），不是实体引用键，
             // 而候选里的槽位 ref 是引擎懒分配的、无法从 SlotIndex 反推——
             // 所以移动仍然交给选槽面板，不在这里硬猜。
@@ -396,7 +421,11 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 ApplyViewPayload(notification.Params);
                 break;
             case "notify/match.started":
+                lock (_projectionGate) { _pendingSegments.Clear(); _lastSegmentSequence = 0; }
                 MatchId = notification.Params?["matchId"]?.GetValue<string>() ?? MatchId;
+                // 入场信号必须来自"对局开始了"，不能等第一帧投影——否则慢半拍的客户端
+                // 第一帧可能已经是 play 相位，换牌阶段被整段跳过（2026-10-24 实机复现）。
+                MatchStarted?.Invoke();
                 break;
             case "notify/segment":
                 ApplySegments(notification.Params);
@@ -416,26 +445,23 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     /// 按 `$ref` 在投影里查卡才能翻译成演出步骤。
     ///
     /// <para>
-    /// **已知局限**：段里用的是"当前最新投影"作为 after 状态。若 view 推送比 segment 滞后，
-    /// 个别步骤会因为查不到卡而被跳过（不会乱演，只是少一段）。要彻底解决得让服务端在段里带快照，
-    /// 那是协议层的事，不在客户端硬猜。
+    /// 段先缓存，随后到达的服务端投影作为同批动作的 after；保留上一投影作为 before。
+    /// 同批嵌套段一起翻译，避免对同一个动作重复演出或对尚未更新的盘面查卡。
     /// </para>
     /// </summary>
     private void ApplySegments(JsonNode? payload)
     {
-        if (_view is null) return;
-        if (payload?["segments"] is not JsonArray segments) return;
+        lock (_projectionGate) BufferSegments(payload);
+    }
 
+    private void BufferSegments(JsonNode? payload)
+    {
+        if (payload?["segments"] is not JsonArray segments) return;
         foreach (var segment in segments)
         {
-            if (segment?["entries"] is not JsonArray entries) continue;
-            var nodes = entries.Select(entry => (JsonNode?)entry).ToArray();
-            var steps = RemotePresentationTranslator.Translate(nodes, _view);
-            if (steps.Count == 0) continue;
-
-            var sequence = segment["sequence"]?.GetValue<long>() ?? 0;
-            var resolution = new UiPresentationResolution(MatchId, steps, _view) { Sequence = sequence };
-            PresentationReady?.Invoke(resolution, _actions);
+            var sequence = segment?["sequence"]?.GetValue<long>() ?? 0;
+            if (segment is not null && sequence > _lastSegmentSequence)
+                _pendingSegments[sequence] = segment;
         }
     }
 
@@ -449,6 +475,11 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     }
 
     private void ApplyViewPayload(JsonNode? payload)
+    {
+        lock (_projectionGate) ApplyViewCore(payload);
+    }
+
+    private void ApplyViewCore(JsonNode? payload)
     {
         if (payload is null)
         {
@@ -493,13 +524,28 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         }
 
         view = ResolveArt(view);
+        var before = _view;
         _view = view;
         _actions = IsObserver ? new() : actions;
         actions = _actions;
         MatchId = view.MatchId;
         var wasPending = _mulliganPending;
-        _mulliganPending = !IsObserver && view.Phase == "mulligan";
+        _mulliganPending = !IsObserver && view.Phase == "mulligan" && actions.MulliganOpen;
         ProjectionReady?.Invoke(view, actions);
+
+        // The server sends a batch of causal segments followed by its authoritative view.
+        // Translate once with both snapshots; removed/deployed cards cannot be resolved
+        // correctly against the previous board alone. Silent changes also settle via this queue.
+        var entries = _pendingSegments.Values.SelectMany(s => s["entries"]?.AsArray()
+            ?? new JsonArray()).ToArray();
+        if (_pendingSegments.Count > 0) _lastSegmentSequence = _pendingSegments.Keys.Last();
+        _pendingSegments.Clear();
+        if (before is not null && before.MatchId == view.MatchId)
+        {
+            var steps = RemotePresentationTranslator.Translate(entries, before, view, Seat, ArtPathResolver);
+            PresentationReady?.Invoke(new UiPresentationResolution(MatchId, steps, view)
+                { Before = before, Sequence = _lastSegmentSequence }, actions);
+        }
 
         // 上升沿触发一次：换牌面板只在"刚进入 mulligan"时弹，不能每帧重弹。
         // 必须在 ProjectionReady 之后——面板要用 CurrentView 渲染。

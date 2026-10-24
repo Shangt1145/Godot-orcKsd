@@ -178,6 +178,14 @@ public partial class BattleScreen
 
     public void RefuseCommand(UiCommand command)
     {
+        if (command is ChooseMulligan && _state.Phase == "mulligan")
+        {
+            CancelMulliganMotion();
+            _mulliganSubmitted = false;
+            _mulliganWaitingPhase = false;
+            _mulliganWaiting.Visible = false;
+            ShowMulliganPanel(_state, _mulliganRequestId);
+        }
         _interaction.Refuse(command);
         if (_dispatchingCommand == command) _dispatchRefused = true;
         if (command is EndTurn) { _turnInput.RefuseEndTurn(InteractionView); RefreshTurnInput(); }

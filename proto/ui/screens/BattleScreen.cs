@@ -218,7 +218,7 @@ public partial class BattleScreen : Control
         _orderChoiceCaptions.Clear(); _orderChoiceFaces.Clear(); CloseTargetChoice();
         _liveInputView = null; _liveInputActions = null;
         _frontPlacements.Clear(); ReleaseGestureWaiter();
-        if (_state?.MatchId != state.MatchId) _frontOrder.Clear();
+        if (_state?.MatchId != state.MatchId) { _frontOrder.Clear(); ResetMulliganState(); }
         MulliganProjection(state.Phase);
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
@@ -908,6 +908,8 @@ public partial class BattleScreen : Control
 
     public override void _Input(InputEvent e)
     {
+        // 触屏设备上先把"长按＝右键取消"记下来；桌面直接短路。
+        TrackTouch(e);
         if (!IsVisibleInTree() || _canvas is null) return;
         if (HandleCosmeticInput(e)) return;
         if (!IsFriendlyTurn) return;

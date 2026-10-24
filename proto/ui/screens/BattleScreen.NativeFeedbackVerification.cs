@@ -12,6 +12,15 @@ public partial class BattleScreen
     internal int PendingPresentationEffects => _sequence.LiveCardCount + _combat.LiveEffectCount + _removalActors.Count;
     internal IReadOnlyList<string> ResultLabelsForVerification => _result.GetChildren().OfType<Label>().Select(l => l.Text).ToArray();
     internal Button RestartForVerification => _result.GetChildren().OfType<Button>().Single();
+    internal bool CardMovingForVerification(string uid) => _cards.TryGetValue(uid, out var card)
+        && card.Position.DistanceTo(card.RestPosition) > 1;
+    internal bool CardHasKeywordForVerification(string uid, string keyword) => _cards.TryGetValue(uid, out var card)
+        && card.View?.Keywords.Contains(keyword) == true;
+    internal event Action<string> CombatPhaseForVerification
+    {
+        add => _combat.PhaseChanged += value;
+        remove => _combat.PhaseChanged -= value;
+    }
     internal void OpenConcedeForVerification() => _menu.EmitSignal(PopupMenu.SignalName.IdPressed, 29);
 
     public async Task VerifyNativeFeedbackAsync(NativeStateFeedback fixture, Func<string, Task>? capture = null)

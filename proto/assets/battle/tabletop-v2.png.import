@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://d15u32g0r0epj"
 path.s3tc="res://.godot/imported/tabletop-v2.png-cda5ecc95327ed805e19887302c77815.s3tc.ctex"
+path.etc2="res://.godot/imported/tabletop-v2.png-cda5ecc95327ed805e19887302c77815.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://proto/assets/battle/tabletop-v2.png"
-dest_files=["res://.godot/imported/tabletop-v2.png-cda5ecc95327ed805e19887302c77815.s3tc.ctex"]
+dest_files=["res://.godot/imported/tabletop-v2.png-cda5ecc95327ed805e19887302c77815.s3tc.ctex", "res://.godot/imported/tabletop-v2.png-cda5ecc95327ed805e19887302c77815.etc2.ctex"]
 
 [params]
 

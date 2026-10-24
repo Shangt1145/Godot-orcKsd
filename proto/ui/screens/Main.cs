@@ -31,6 +31,8 @@ public partial class Main : Control
     /// <summary>正式对局的数据源。单机指向同一个 runner，联机指向远端实现；接线逻辑只认这个。</summary>
     private IMatchFeed? _feed;
     private PresentationPlayer? _presentations;
+    private string? _presentationMatchId;
+    private int? _presentationSeat;
     private DeckConstructionService _deckService = null!;
     private DeckLibrary _decks = null!;
     private DeckEditorScreen _deckEditor = null!;
@@ -69,6 +71,8 @@ public partial class Main : Control
         _fx = new AnimationEngine { Clock = _clock, Sfx = sfx, Overlay = overlay, Textures = _textures };
         AddChild(_fx);
         _verificationRun = OS.GetCmdlineUserArgs().Any(a => a.StartsWith("--verify-") || a.StartsWith("--capture-"));
+        // 桌面上的手机模拟（分辨率 + 触屏路径）：必须在建界面之前定，否则布局会先按桌面尺寸算一遍。
+        MobileSim.Initialize();
         _splash = new MenuSplash(); _splash.Initialize(); AddChild(_splash); _splash.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         try { await InitializeInterfaceAsync(sfx); }
         catch (Exception error)
@@ -513,8 +517,19 @@ public partial class Main : Control
     private void ApplyRunnerProjection(IMatchFeed feed, UiMatchView view, UiBattleActions actions)
     {
         if (_feed != feed) return;
+        if (feed is RemoteMatchFeed remoteFeed && _presentations is not null && _presentationMatchId == view.MatchId
+            && _presentationSeat == remoteFeed.Seat)
+        {
+            _battle.UpdateInputProjection(view, actions);
+            if (feed.MulliganPending) _battle.ShowMulliganPanel(view, feed.MulliganRequestId);
+            return;
+        }
         _presentations?.Dispose();
         _battle.ApplyProjection(view, actions);
+        // 换牌是"持续状态"，不是一次性事件：手牌可能比相位晚到，上局残留也可能挡着面板。
+        // 每收到一次投影就对一次账，让"漏掉的那次上升沿"自愈。
+        if (feed is RemoteMatchFeed { MulliganPending: true } remote && !_battle.MulliganPanelVisible)
+            _battle.ShowMulliganPanel(view, remote.MulliganRequestId);
         // Applying a new phase also changes the state pulled by native input judicators.
         // Query again after that transition so a new match does not inherit the old UI lock.
         _battle.UpdateInputProjection(view, feed.CurrentActions);
@@ -523,6 +538,8 @@ public partial class Main : Control
             ct.ThrowIfCancellationRequested();
             return _feed == feed ? _battle.PresentSequenceAsync(resolution, available) : Task.CompletedTask;
         }, view);
+        _presentationMatchId = view.MatchId;
+        _presentationSeat = (feed as RemoteMatchFeed)?.Seat;
         _presentations.Failed += e => GD.PushError($"[presentation] {e}");
     }
 

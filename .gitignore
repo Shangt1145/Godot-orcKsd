@@ -20,3 +20,7 @@ tests/TestResults/
 # Agent workbench memory — local notes, not project source.
 .workbuddy/
 .claude/
+
+# Android 构建模板由 Godot 的 "Install Android Build Template" 生成（约 200 MB），不入库
+/android/
+/dist/android/

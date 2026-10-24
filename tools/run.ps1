@@ -25,7 +25,10 @@
     [switch]$VerifyDeck,
     [switch]$VerifyAppearance,
     [switch]$CaptureRoom,
-    [switch]$Capture
+    [switch]$Capture,
+    # 桌面手机模拟：按手机比例开窗 + 走触屏输入路径（鼠标按住 0.45s = 长按取消）。
+    [switch]$MobileSim,
+    [string]$MobileSize = '1200x540'
 )
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'prepare.ps1') -BuildRoot $BuildRoot -SkipAssets
@@ -81,6 +84,7 @@ try {
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }
     elseif ($Editor) { & $Godot --editor --path $BuildRoot }
+    elseif ($MobileSim) { & $Godot --path $BuildRoot '--' --mobile-sim "--mobile-size=$MobileSize" }
     else { & $Godot --path $BuildRoot }
     if ($LASTEXITCODE -ne 0) { throw "Godot exited with code $LASTEXITCODE" }
 } finally { Pop-Location }

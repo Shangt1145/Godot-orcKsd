@@ -66,7 +66,9 @@ Copy-Item -LiteralPath $combined -Destination $delivered -Force
 $results|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $verification 'compatible-update-verification.json') -Encoding utf8
 Get-ChildItem -LiteralPath $workspace -File -Filter '*.log'|Copy-Item -Destination $verification -Force
 @{version=$version;targetBuild=$target.BuildId;throughBeta=$ThroughBeta;sources=@($sources|Select-Object Version,BuildId);sourceCount=$sources.Count;patch='patches/'+$name;patchBytes=(Get-Item -LiteralPath $delivered).Length;sha256=(Get-FileHash -LiteralPath $delivered -Algorithm SHA256).Hash;workspace=$workspace}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $notes 'compatible-update-report.json') -Encoding utf8
-$checksumLines=Get-ChildItem -LiteralPath (Join-Path $delivery 'full'),$patches -File|ForEach-Object{$hash=Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256;$hash.Hash+'  '+[IO.Path]::GetRelativePath($delivery,$hash.Path).Replace('\','/')}
+$deliveryPrefix=$delivery.TrimEnd('\','/')
+# 同 release.ps1：[IO.Path]::GetRelativePath 在 Windows PowerShell 5.1 下不存在（.NET Framework）。
+$checksumLines=Get-ChildItem -LiteralPath (Join-Path $delivery 'full'),$patches -File|ForEach-Object{$hash=Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256;$relative=$hash.Path;if($relative.StartsWith($deliveryPrefix,[StringComparison]::OrdinalIgnoreCase)){$relative=$relative.Substring($deliveryPrefix.Length).TrimStart('\','/')};$hash.Hash+'  '+$relative.Replace('\','/')}
 [IO.File]::WriteAllLines((Join-Path $delivery 'SHA256.txt'),[string[]]$checksumLines,[Text.UTF8Encoding]::new($false))
 & (Join-Path $PSScriptRoot 'write-dist-index.ps1') -CurrentRelease $version
 Write-Host "COMPATIBLE_UPDATE_OK sources=$($sources.Count) $delivered"

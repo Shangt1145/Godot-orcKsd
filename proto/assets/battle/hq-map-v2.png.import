@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://d1jert6443xjl"
 path.s3tc="res://.godot/imported/hq-map-v2.png-33ec5e4a10755969502953135fb6f451.s3tc.ctex"
+path.etc2="res://.godot/imported/hq-map-v2.png-33ec5e4a10755969502953135fb6f451.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://proto/assets/battle/hq-map-v2.png"
-dest_files=["res://.godot/imported/hq-map-v2.png-33ec5e4a10755969502953135fb6f451.s3tc.ctex"]
+dest_files=["res://.godot/imported/hq-map-v2.png-33ec5e4a10755969502953135fb6f451.s3tc.ctex", "res://.godot/imported/hq-map-v2.png-33ec5e4a10755969502953135fb6f451.etc2.ctex"]
 
 [params]
 

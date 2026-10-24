@@ -42,7 +42,7 @@ public sealed class OrcActionReader
             if (availability.Move.CanUse)
                 foreach (var candidate in availability.Move.Candidates)
                     if (candidate.IsAlive && candidate.Value is FormationGap gap)
-                        moves.Add(new UiMoveOption(uid, ReferenceEquals(match.Battlefield.FrontLine,gap.Line) ? "frontline" : "support", gap.Ordinal));
+                        moves.Add(new UiMoveOption(uid, ReferenceEquals(match.Battlefield.FrontLine,gap.Line) ? "frontline" : "support", gap.Ordinal, OrcRefs.KeyOf(gap)));
             foreach (var candidate in availability.Attack.Candidates)
             {
                 if (!candidate.IsAlive) continue;

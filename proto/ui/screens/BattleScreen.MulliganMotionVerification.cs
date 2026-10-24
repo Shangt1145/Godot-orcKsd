@@ -32,6 +32,8 @@ public partial class BattleScreen
                 var keptCell = _mulliganRow.GetChildren().OfType<Control>().FirstOrDefault(c => !chosen.Contains(c.GetChildren().OfType<BattleCard>().First().Uid));
                 var keptPosition = keptCell?.Position;
                 ConfirmMulligan(); ConfirmMulligan();
+                ApplyProjection(before, new());
+                Check(!ShowMulliganPanel(before), "确认动画期间的投影重新打开换牌");
                 var frozenMark = _mulliganMarks.First(); var wasMarked = frozenMark.Value.Marked;
                 ToggleMulliganMark(frozenMark.Key, frozenMark.Value);
                 Check(frozenMark.Value.Marked == wasMarked, "确认后仍可修改换牌标记");
@@ -44,6 +46,11 @@ public partial class BattleScreen
                 }
                 await Wait(1.1);
                 Check(sent.Count == 1 && sent[0].KeepUids.Count == before.SelfHand.Count - replace, "换牌重复提交或保留列表错误");
+                for (var retry = 0; retry < 3; retry++)
+                {
+                    ApplyProjection(before, new());
+                    Check(!ShowMulliganPanel(before) && !_mulliganOpen, "等待对手期间重新打开换牌");
+                }
                 var after = before with { Phase = "play", Turn = 1, SelfHand = before.SelfHand.Select(c => chosen.Contains(c.Uid) ? c with { Uid = c.Uid + "-replacement" } : c).ToArray() };
                 ApplyProjection(after, new());
                 var turn = PresentSequenceAsync(new(after.MatchId, [new UiTurnPresentation("self", 1)], after), new());

@@ -1,0 +1,119 @@
+diff --git a/src/Orc.Mcp/McpService.Projection.cs b/src/Orc.Mcp/McpService.Projection.cs
+index 31ba287..fd48194 100644
+--- a/src/Orc.Mcp/McpService.Projection.cs
++++ b/src/Orc.Mcp/McpService.Projection.cs
+@@ -246,24 +246,19 @@ public sealed partial class McpService
+ 
+             playable.Add(card.Id.ToString("N"));
+ 
+-            if (card is Orc.Game.Cards.UnitCard unit)
+-            {
+-                var gaps = match.PlayManager.GetDeploymentGaps(unit);
+-                if (gaps.Count > 0)
+-                {
+-                    var refs = new JsonArray();
+-                    foreach (var gap in gaps)
+-                    {
+-                        refs.Add(gap.Id.ToString("N"));
+-                    }
++        }
+ 
+-                    deploymentGaps.Add(new JsonObject
+-                    {
+-                        ["uid"] = unit.Id.ToString("N"),
+-                        ["gaps"] = refs,
+-                    });
+-                }
+-            }
++        // UiBattleActions consumes a flat list of formation gaps, shared by hand units.
++        // Keep the live engine identities and neighbours used by deployment targeting.
++        foreach (var gap in battlefield.GetSupportLine(player).GetInsertionGaps())
++        {
++            deploymentGaps.Add(new JsonObject
++            {
++                ["gapId"] = gap.Id.ToString("N"),
++                ["ordinal"] = gap.Ordinal,
++                ["leftUid"] = gap.Left?.Id.ToString("N"),
++                ["rightUid"] = gap.Right?.Id.ToString("N"),
++            });
+         }
+ 
+         var moves = new JsonArray();
+@@ -362,7 +357,7 @@ public sealed partial class McpService
+             ["deploymentGaps"] = deploymentGaps,
+             ["canEndTurn"] = inPlay,
+             ["attacksEnabled"] = inPlay,
+-            ["mulliganOpen"] = match.Phase == Orc.Game.MatchPhase.Mulligan,
++            ["mulliganOpen"] = match.Phase == Orc.Game.MatchPhase.Mulligan && !match.MulliganManager.IsConfirmed(player),
+         };
+     }
+ 
+diff --git a/tests/Orc.Mcp.Tests/ProjectionTests.cs b/tests/Orc.Mcp.Tests/ProjectionTests.cs
+index 69fb91d..79e314d 100644
+--- a/tests/Orc.Mcp.Tests/ProjectionTests.cs
++++ b/tests/Orc.Mcp.Tests/ProjectionTests.cs
+@@ -58,7 +58,54 @@ public class ProjectionTests
+         Assert.NotNull(actions["mulliganOpen"]);
+     }
+ 
+-    private static async Task CreateMatchAsync(SandboxFixture fixture)
++    [Fact]
++    public async Task DeploymentGaps_AreFlatUiGapsWithLiveReferences()
++    {
++        using var fixture = new SandboxFixture(McpServiceMode.Player);
++        await CreateMatchAsync(fixture);
++        using (ConsumerContext.Enter())
++        {
++            for (var seat = 0; seat < 2; seat++)
++            {
++                fixture.Service.Caller = new CallerView(Seat: seat);
++                var frame = await fixture.InvokeAsync("observe.view");
++                Assert.True(frame.Ok, frame.Message);
++                var gaps = Assert.IsType<System.Text.Json.Nodes.JsonArray>(frame.Details!["actions"]!["deploymentGaps"]);
++                Assert.NotEmpty(gaps);
++                var hq = frame.Details!["view"]!["selfHq"]!["uid"]!.GetValue<string>();
++                for (var i = 0; i < gaps.Count; i++)
++                {
++                    Assert.False(string.IsNullOrEmpty(gaps[i]!["gapId"]?.GetValue<string>()));
++                    Assert.Equal(i, gaps[i]!["ordinal"]!.GetValue<int>());
++                }
++                Assert.Contains(gaps, g => g?["leftUid"]?.GetValue<string>() == hq || g?["rightUid"]?.GetValue<string>() == hq);
++            }
++        }
++    }
++
++    [Theory]
++    [InlineData(0)]
++    [InlineData(1)]
++    public async Task ConfirmedSeatWaitsWithoutReopeningMulligan(int confirmedSeat)
++    {
++        using var fixture = new SandboxFixture(McpServiceMode.Player);
++        await CreateMatchAsync(fixture, skipMulligan: false);
++        using (ConsumerContext.Enter())
++        {
++            var confirmed = await fixture.Service.MulliganDoneAsync(confirmedSeat);
++            Assert.Equal(ActionOutcome.StatusCompleted, confirmed.Status);
++            for (var seat = 0; seat < 2; seat++)
++            {
++                fixture.Service.Caller = new CallerView(Seat: seat);
++                var frame = await fixture.InvokeAsync("observe.view");
++                Assert.True(frame.Ok, frame.Message);
++                Assert.Equal("mulligan", frame.Details!["view"]!["phase"]!.GetValue<string>());
++                Assert.Equal(seat != confirmedSeat, frame.Details["actions"]!["mulliganOpen"]!.GetValue<bool>());
++            }
++        }
++    }
++
++    private static async Task CreateMatchAsync(SandboxFixture fixture, bool skipMulligan = true)
+     {
+         var deck = Enumerable.Repeat("ai.sample.infantry", 39).ToArray();
+         var created = await fixture.Service.CreateMatchAsync(new MatchLaunchOptions
+@@ -67,7 +114,7 @@ public class ProjectionTests
+             SeatA = new MatchSeatConfig(0, deck),
+             SeatB = new MatchSeatConfig(1, deck),
+             Seed = 42,
+-            SkipMulligan = true,
++            SkipMulligan = skipMulligan,
+             EnforceDeckRules = false,
+         });
+ 

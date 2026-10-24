@@ -5,9 +5,9 @@
       if(r.method==='infer')return KG_EFFECT_CONTRACT.editorCatalog(KG_EFFECT_CONTRACT.build({},K.effects,{}),K.effects,{}).infer(r.name);
       if(r.method==='roundtrip')return KG.inspector.fromModel(KG.inspector.toModel(r.value));
       if(r.method==='validate')return KG.inspector.validate(r.value,KG_EFFECT_CONTRACT.build({},K.effects,{}),{engine:K.effects});
-      if(r.method==='parityCorpus')return r.rows.map(row=>K.OrC.compile(row.text,{cardType:row.cardType},{pool:[]}));
+      if(r.method==='parityCorpus'){K.setPool([]);return r.rows.map(row=>K.OrC.compile(row.text,{cardType:row.cardType},{pool:[]}));}
       if(r.method==='merge')return K.inspector.Core.renumberTargets(r.effects,r.used||[]).effects;
-      if(r.method==='corpus')return r.rows.map(row=>{const result=K.OrC.compile(row.text,{cardType:row.cardType},{pool:r.pool||[]});return {id:row.id,complete:result.complete,diagnostics:result.diagnostics};});
+      if(r.method==='corpus'){K.setPool(r.pool||[]);return r.rows.map(row=>{const result=K.OrC.compile(row.text,{cardType:row.cardType},{pool:r.pool||[]});return {id:row.id,complete:result.complete,diagnostics:result.diagnostics};});}
       if(r.method==='importRows'){
         const parsed=K.cardImport.parse(r.text,r.filename||(/^[\\s\\uFEFF]*[\\[{]/.test(r.text)?'cards.json':'cards.csv'));
         return parsed.cards.map(raw=>{

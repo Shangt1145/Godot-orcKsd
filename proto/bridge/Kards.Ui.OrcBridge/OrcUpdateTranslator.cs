@@ -168,7 +168,7 @@ public sealed class OrcUpdateTranslator
 
     // State transitions use the native before/after values. Never replay damage as a status cue,
     // and never invent a removed keyword from the definition printed on the card.
-    private static void AddVisibleChanges(List<UiPresentationStep> steps, UiMatchView before, UiMatchView after)
+    internal static void AddVisibleChanges(List<UiPresentationStep> steps, UiMatchView before, UiMatchView after)
     {
         // 部署链在选择器上暂停时，同一张卡可能短暂同时出现在手牌与阵线（同一 uid）；
         // 这里只比较"这张卡的可见状态变没变"，重复时取已上场的那份。

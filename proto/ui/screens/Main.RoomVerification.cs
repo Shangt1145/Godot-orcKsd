@@ -610,8 +610,10 @@ public partial class Main
     private async void VerifyRoomRemote()
     {
         RemoteMatchFeed? guest = null;
+        var smokeLifecycle = OS.GetCmdlineUserArgs().Contains("--smoke-lifecycle");
         try
         {
+            if (smokeLifecycle) _room.ActiveDeckSource = () => Enumerable.Repeat("pack/builtin/panzer_iia", 39).ToArray();
             Show("room");
             await _room.OpenAsync();
             var host = _room.Feed ?? throw new Exception("房主没有连上");
@@ -652,7 +654,102 @@ public partial class Main
             GD.Print($"[room-remote] host hq={hostHq} guest hq={guestHq} " +
                      $"hostHand={host.CurrentView.SelfHand.Count} guestHand={guest.CurrentView.SelfHand.Count}");
 
-            GD.Print("ROOM_REMOTE_VERIFY_OK guest-claim seat-split view-per-seat");
+            await EnterRemoteMatchAsync();
+            Require(await AwaitBoardAsync(() => _battle.MulliganPanelVisible, 10), "真人换牌面板未打开");
+            if (!OS.GetCmdlineUserArgs().Contains("--keep-opening"))
+                _battle.MarkMulliganReplacement(host.CurrentView!.SelfHand[0].Uid);
+            _battle.ConfirmMulligan();
+            // A projection can arrive during departure, then again while the other human waits.
+            await host.RefreshViewAsync();
+            await ToSignal(GetTree().CreateTimer(1.5), SceneTreeTimer.SignalName.Timeout);
+            await host.RefreshViewAsync();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            Require(!_battle.MulliganPanelVisible, "对手未确认时本方换牌面板重复打开");
+            Require(host.CurrentView?.Phase == "mulligan", "未等待另一位真人确认");
+            await guest.SubmitAsync(new ChooseMulligan(guest.CurrentView!.SelfHand.Select(c => c.Uid).ToArray()));
+            Require(await AwaitBoardAsync(() => host.CurrentView?.Phase == "play" && !_battle.MulliganMotionActive, 15), "换牌未结束或残留输入锁");
+
+            for (var turn = 0; turn < 24; turn++)
+            {
+                if (host.CurrentView!.ActivePlayerSide == "self" && host.CurrentView.SelfHand.Any(c =>
+                    c.Definition.CardType == "unit" && host.CurrentActions.PlayableUids.Contains(c.Uid))) break;
+                var active = host.CurrentView.ActivePlayerSide == "self" ? host : guest;
+                var beforeTurn = host.CurrentView.Turn;
+                await active.SubmitAsync(new EndTurn());
+                Require(await AwaitBoardAsync(() => host.CurrentView!.Turn > beforeTurn, 10), "真人结束回合未推进");
+            }
+            Require(host.CurrentView!.ActivePlayerSide == "self", "没有轮到房主出牌");
+            var playableUnit = host.CurrentView.SelfHand.FirstOrDefault(c => c.Definition.CardType == "unit" && host.CurrentActions.PlayableUids.Contains(c.Uid));
+            Require(playableUnit is not null, "没有可验证的可用单位牌");
+            Require(host.CurrentActions.DeploymentGaps.All(g => !string.IsNullOrEmpty(g.GapId)) && host.CurrentActions.DeploymentGaps.Count > 0,
+                "服务端部署空隙不符合 UI 契约");
+            await ToSignal(GetTree().CreateTimer(1), SceneTreeTimer.SignalName.Timeout);
+            Require(await AwaitIdleAsync(15), "出牌前演出未收尾");
+            var playedPhases = new List<string>();
+            void PlayedPhase(string phase) => playedPhases.Add(phase);
+            _battle.PresentationPhase += PlayedPhase;
+            await _battle.DragAsync(playableUnit!.Uid, new Vector2(945, 535));
+            Require(await AwaitBoardAsync(() => !host.CurrentView!.SelfHand.Any(c => c.Uid == playableUnit.Uid)
+                && host.CurrentView.SelfLine.Any(c => c.Uid == playableUnit.Uid), 10), "换牌后实际拖牌未部署到战场");
+            Require(!host.TargetPending && !_battle.MulliganMotionActive, "出牌后残留选靶或换牌锁");
+            Require(await AwaitBoardAsync(() => playedPhases.Contains("deployment-start"), 10), "联机部署没有播放动画");
+            var playingQueue = _presentations;
+            await host.RefreshViewAsync();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            Require(ReferenceEquals(playingQueue, _presentations), "新投影销毁了正在播放的演出队列");
+            Require(await AwaitIdleAsync(15) && playedPhases.Contains("deployment-settled"), "联机部署动画被投影中断");
+            Require(playedPhases.Count(p => p == "deployment-start") == 1, "同一次部署重复播放动画");
+            if (smokeLifecycle)
+                Require(host.CurrentView!.SelfLine.Single(c => c.Uid == playableUnit.Uid).Keywords.Contains("smokescreen"), "支援线烟幕未保留");
+
+            for (var turn = 0; turn < 8 && !host.CurrentActions.Moves.Any(m => m.Uid == playableUnit.Uid && m.ToZone == "frontline"); turn++)
+            {
+                var active = host.CurrentView!.ActivePlayerSide == "self" ? host : guest;
+                var beforeTurn = host.CurrentView.Turn;
+                await active.SubmitAsync(new EndTurn());
+                Require(await AwaitBoardAsync(() => host.CurrentView!.Turn > beforeTurn, 10), "推进前线前回合未推进");
+                Require(await AwaitIdleAsync(15), "回合演出未收尾");
+            }
+            Require(host.CurrentActions.Moves.Any(m => m.Uid == playableUnit.Uid && m.ToZone == "frontline" && !string.IsNullOrEmpty(m.GapId)),
+                "联机缺少前线移动候选或落点编号");
+            await _battle.DragAsync(playableUnit.Uid, _battle.DropAtRowMiddle(true));
+            Require(await AwaitBoardAsync(() => host.CurrentView!.SelfLine.Any(c => c.Uid == playableUnit.Uid && c.Zone == "frontline"), 10),
+                "实际拖动无法将单位移到前线");
+            Require(await AwaitBoardAsync(() => _battle.SelfFrontUid() == playableUnit.Uid
+                && _battle.CardMovingForVerification(playableUnit.Uid), 15), "前线移动直接瞬移，没有播放位移动画");
+            Require(await AwaitBoardAsync(() => _battle.SelfFrontUid() == playableUnit.Uid && !host.TargetPending, 15)
+                && await AwaitIdleAsync(15),
+                $"前线移动演出未落地或选择请求残留 front={_battle.SelfFrontUid()} target={host.TargetPending} busy={_presentations?.IsBusy}/{_battle.IsBusy}");
+            if (smokeLifecycle)
+            {
+                Require(!host.CurrentView!.SelfLine.Single(c => c.Uid == playableUnit.Uid).Keywords.Contains("smokescreen"), "前线单位仍带烟幕");
+                Require(await AwaitBoardAsync(() => guest.CurrentView!.EnemyLine.Any(c => c.Uid == playableUnit.Uid && c.Zone == "frontline"
+                    && !c.Keywords.Contains("smokescreen")), 10), "客人仍看到前线烟幕");
+                Require(!_battle.CardHasKeywordForVerification(playableUnit.Uid, "smokescreen"), "本方界面残留烟幕标记");
+                GD.Print("ROOM_SMOKESCREEN_VERIFY_OK support-keeps frontline-clears host-and-guest-projections UI-keyword-cleared");
+            }
+
+            var enemyHq = host.CurrentView!.EnemyHq!.Uid;
+            for (var turn = 0; turn < 8 && !host.CurrentActions.AttackPreviews.Any(a => a.AttackerUid == playableUnit.Uid && a.DefenderUid == enemyHq); turn++)
+            {
+                var active = host.CurrentView!.ActivePlayerSide == "self" ? host : guest;
+                var beforeTurn = host.CurrentView.Turn;
+                await active.SubmitAsync(new EndTurn());
+                Require(await AwaitBoardAsync(() => host.CurrentView!.Turn > beforeTurn, 10), "攻击前回合未推进");
+                Require(await AwaitIdleAsync(15), "攻击前回合演出未收尾");
+            }
+            Require(host.CurrentActions.AttackPreviews.Any(a => a.AttackerUid == playableUnit.Uid && a.DefenderUid == enemyHq), "前线单位没有总部攻击候选");
+            var combatPhases = new List<string>();
+            void CombatPhase(string phase) => combatPhases.Add(phase);
+            _battle.CombatPhaseForVerification += CombatPhase;
+            var hqHealth = host.CurrentView.EnemyHq!.Health;
+            await _battle.DragAsync(playableUnit.Uid, _battle.CardPoint(enemyHq));
+            Require(await AwaitBoardAsync(() => host.CurrentView!.EnemyHq!.Health < hqHealth, 10), "联机拖动攻击未造成伤害");
+            Require(await AwaitBoardAsync(() => combatPhases.Contains("assault-impact"), 15) && await AwaitIdleAsync(15),
+                "联机攻击缺少武器轨迹或命中演出：" + string.Join(',', combatPhases));
+            _battle.CombatPhaseForVerification -= CombatPhase;
+            _battle.PresentationPhase -= PlayedPhase;
+            GD.Print("ROOM_REMOTE_VERIFY_OK delayed-human-mulligan actual-drag-deploy deployment-animation-survives-refresh actual-drag-frontline animated-move actual-drag-attack weapon-impact");
         }
         catch (Exception error)
         {

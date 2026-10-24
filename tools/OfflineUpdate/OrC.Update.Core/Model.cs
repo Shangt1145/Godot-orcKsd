@@ -28,7 +28,13 @@ public static class Builds
     {
         var files=Directory.GetFiles(root,"*",SearchOption.AllDirectories)
             .Select(f=>(File:f,Relative:Path.GetRelativePath(root,f).Replace('\\','/')))
-            .Where(f=>f.Relative is "KardsUi.exe" or "KardsUi.pck" || f.Relative.StartsWith("data_Kards.Ui_windows_x86_64/",StringComparison.Ordinal))
+            // 服务端与私有运行时必须进清单：它们不在清单里，增量补丁就不会携带，
+            // 于是"引擎侧修复"永远发不到玩家机器上（2026-10-24 实机事故：
+            // 升级后房主建房报"找不到 Orc.Server.dll"）。顺序无关，这里只做白名单。
+            .Where(f=>f.Relative is "KardsUi.exe" or "KardsUi.pck"
+                || f.Relative.StartsWith("data_Kards.Ui_windows_x86_64/",StringComparison.Ordinal)
+                || f.Relative.StartsWith("OrcServer/",StringComparison.Ordinal)
+                || f.Relative.StartsWith("OrcRuntime/",StringComparison.Ordinal))
             .OrderBy(f=>f.Relative,StringComparer.Ordinal)
             .Select(f=>new FileStamp(f.Relative,new FileInfo(f.File).Length,Hash(f.File))).ToArray();
         if(!files.Any(f=>f.Path=="KardsUi.exe")||!files.Any(f=>f.Path=="KardsUi.pck"))throw new InvalidDataException("选择的目录不是完整的 OrC-KSD Windows 游戏。");
@@ -60,7 +66,10 @@ public static class Builds
         foreach(var f in build.Files)
         {
             Safe(Path.GetTempPath(),f.Path);
-            if(!(f.Path is "KardsUi.exe" or "KardsUi.pck"||f.Path.StartsWith("data_Kards.Ui_windows_x86_64/",StringComparison.Ordinal))
+            if(!(f.Path is "KardsUi.exe" or "KardsUi.pck"
+                ||f.Path.StartsWith("data_Kards.Ui_windows_x86_64/",StringComparison.Ordinal)
+                ||f.Path.StartsWith("OrcServer/",StringComparison.Ordinal)
+                ||f.Path.StartsWith("OrcRuntime/",StringComparison.Ordinal))
                 ||!names.Add(f.Path)||f.Size<0||f.Sha256.Length!=64||!f.Sha256.All(Uri.IsHexDigit))throw new InvalidDataException("补丁的文件清单无效。");
         }
         if(!build.Files.Any(f=>f.Path=="KardsUi.exe")||!build.Files.Any(f=>f.Path=="KardsUi.pck")||Id(build.Files)!=build.BuildId)throw new InvalidDataException("补丁的构建编号不匹配。");

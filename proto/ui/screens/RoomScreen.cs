@@ -332,7 +332,7 @@ public partial class RoomScreen : VBoxContainer
     }
 
     private sealed record RoomSnapshot(
-        string RoomId, string Policy, string Fingerprint, IReadOnlyList<string> Addresses,
+        string RoomId, string Policy, bool PolicyKnown, string Fingerprint, IReadOnlyList<string> Addresses,
         IReadOnlyList<(int Seat, string Kind, string? Name, bool Connected)> Seats);
 
     private async Task RefreshAsync()
@@ -390,10 +390,21 @@ public partial class RoomScreen : VBoxContainer
                     node?["displayName"]?.GetValue<string>(),
                     node?["state"]?.GetValue<string>() == "admitted"));
 
+        // 卡池状态：上游 §6.1 是 pool{generation,fingerprint,packPolicy}，老引擎只有顶层 packFingerprint。
+        // 都没有时不猜——PolicyKnown=false 让开局检查保持乐观（与旧行为一致），但界面显示"—"而不是假话。
+        var pool = details["pool"];
+        var policy = pool?["packPolicy"]?.GetValue<string>()
+                     ?? details["packPolicy"]?.GetValue<string>()
+                     ?? details["policy"]?.GetValue<string>();
+        var fingerprint = pool?["fingerprint"]?.GetValue<string>()
+                          ?? details["packFingerprint"]?.GetValue<string>()
+                          ?? "";
+
         return new RoomSnapshot(
             details["roomId"]?.GetValue<string>() ?? "—",
-            "loaded",
-            details["packFingerprint"]?.GetValue<string>() ?? "",
+            string.IsNullOrWhiteSpace(policy) ? "loaded" : policy!,
+            !string.IsNullOrWhiteSpace(policy),
+            fingerprint,
             addresses, seats);
     }
 
@@ -412,9 +423,12 @@ public partial class RoomScreen : VBoxContainer
             _announcer?.UpdateSeats(snapshot.Seats.Count(s => s.Kind.Length > 0), 2);
         }
 
-        _pool.Text = $"卡池 {_deck?.PackageId ?? "—"} · {snapshot.Policy}"
-                     + (snapshot.Fingerprint.Length >= 8 ? $" · {snapshot.Fingerprint[..8]}" : "")
-                     + (_deckNote is { Length: > 0 } note ? $" · {note}" : "");
+        // 服务端没报卡池状态时显示"—"（不编一个"loaded"出来）；指纹只在真拿到 8 位以上时才显示。
+        var poolParts = new List<string> { $"卡池 {_deck?.PackageId ?? "—"}" };
+        if (snapshot.PolicyKnown && snapshot.Policy.Length > 0) poolParts.Add(snapshot.Policy);
+        if (snapshot.Fingerprint.Length >= 8) poolParts.Add(snapshot.Fingerprint[..8]);
+        if (_deckNote is { Length: > 0 } note) poolParts.Add(note);
+        _pool.Text = string.Join(" · ", poolParts);
         // 客人（房主＝false）看不到对方网卡列表——那对"加入方"没意义，显示自己连的是哪。
         _endpoint.Text = _guest
             ? $"已连接 {_joinEndpoint.Trim()}"
@@ -435,7 +449,8 @@ public partial class RoomScreen : VBoxContainer
 
         var ready0 = snapshot.Seats.Any(s => s.Seat == 0 && s.Connected);
         var ready1 = snapshot.Seats.Any(s => s.Seat == 1 && s.Connected);
-        var poolOk = snapshot.Policy == "loaded";
+        // 服务端没报卡池状态＝未知，不因此拦住开局（旧行为）；报告了才按 loaded 判定。
+        var poolOk = !snapshot.PolicyKnown || snapshot.Policy == "loaded";
 
         SetCheck(_checkSeat0, ready0, "房主就绪");
         SetCheck(_checkSeat1, ready1, "对手就绪");
@@ -520,6 +535,9 @@ public partial class RoomScreen : VBoxContainer
             connectingFeed = feed;
             if (lifecycle != _lifecycle) return;
             feed.ErrorRaised += message => Ui(() => { if (_feed == feed) NoteError(message); });
+            // 客人也要说真话：把本机实际装载的包报上去，房主侧才有东西可对账。
+            // 这不影响装载（服务端只认自己的包集合），只是让"两边卡池不一样"在开局前可见。
+            feed.DeclareLocalPackages(PackDeclarations.Scan(_packsRoot));
             HookPing(feed);
 
             // 两个座位都可能被占：房主通常坐 0，所以先试 1 再试 0。
@@ -927,13 +945,19 @@ public partial class RoomScreen : VBoxContainer
 
     private void HookGuestAutoEnter(RemoteMatchFeed feed)
     {
+        // 主信号＝match.started：先切战场、先订阅，换牌阶段才不会因为"切屏晚了一帧"被跳过。
+        // 兜底＝第一帧投影：重连时服务端不会再发 match.started，只能靠投影补入场。
         var fired = false;
-        feed.ProjectionReady += (_, _) =>
+        void Enter(string reason)
         {
             if (fired) return;
             fired = true;
+            GD.Print($"[room] guest enter battle via {reason}");
             Ui(() => { if (_feed == feed) MatchStarted?.Invoke(); });
-        };
+        }
+
+        feed.MatchStarted += () => Enter("match.started");
+        feed.ProjectionReady += (_, _) => Enter("first-projection");
     }
 
     /// <summary>挂延迟显示（M5）：启动 ping 循环并把结果写进状态栏。</summary>

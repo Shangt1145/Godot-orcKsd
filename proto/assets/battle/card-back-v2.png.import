@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://c37ucs8vv5bdo"
 path.s3tc="res://.godot/imported/card-back-v2.png-a356322079d677022d004c78bfcc4744.s3tc.ctex"
+path.etc2="res://.godot/imported/card-back-v2.png-a356322079d677022d004c78bfcc4744.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://proto/assets/battle/card-back-v2.png"
-dest_files=["res://.godot/imported/card-back-v2.png-a356322079d677022d004c78bfcc4744.s3tc.ctex"]
+dest_files=["res://.godot/imported/card-back-v2.png-a356322079d677022d004c78bfcc4744.s3tc.ctex", "res://.godot/imported/card-back-v2.png-a356322079d677022d004c78bfcc4744.etc2.ctex"]
 
 [params]
 

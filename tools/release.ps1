@@ -13,6 +13,9 @@
     [string[]]$AdditionalBaselineZips=@(),
     # Zero infers previous betas, or all betas through N for a betaN.hotfix release.
     [ValidateRange(0, 1000)][int]$CompatibleThroughBeta=0,
+    # 只产出「指定基线 → 本版」的单补丁（热更新用）：不发现历史基线、不生成兼容合集。
+    # 历史基线跨太多版本时，pck 差异会让每个分片接近 1 GB，合集比完整包还大——那种情况不该发。
+    [switch]$SingleBaseline,
     [string]$UpdaterBuildRoot='H:\g\orc-offline-update',
     # Delivered-version ZIPs are archived so older players can still be patched. They are large
     # (200-300 MB each) and none of them ship, so they live outside the working tree by default;
@@ -66,7 +69,7 @@ if(!$TestPackage){
     $throughBeta=$CompatibleThroughBeta
     if(!$throughBeta -and $version -match '^0\.0\.0beta([1-9]\d*)\.hotfix(?:\.[1-9]\d*)?$'){$throughBeta=[int]$Matches[1]}
     elseif(!$throughBeta -and $version -match '^0\.0\.0-beta\.([1-9]\d*)$'){$throughBeta=[int]$Matches[1]-1}
-    if($throughBeta -gt 0){
+    if($throughBeta -gt 0 -and !$SingleBaseline){
         $archiveSearch=if([IO.Path]::IsPathRooted($BaselineArchiveDir)){$BaselineArchiveDir}else{Join-Path $sourceRoot $BaselineArchiveDir}
         $discovered=@(& (Join-Path $PSScriptRoot 'find-update-baselines.ps1') -SearchRoots @((Join-Path $sourceRoot 'dist/releases'),$archiveSearch) -ThroughBeta $throughBeta)
         foreach($known in $discovered){$baselineVersions[[IO.Path]::GetFullPath($known.Path)]=$known.Version}
@@ -302,7 +305,15 @@ Copy-Item -LiteralPath $workshopLog -Destination (Join-Path $verificationDeliver
 $deliveredZip = Join-Path $fullDelivery ([IO.Path]::GetFileName($zip))
 $deliveredFiles=@($deliveredZip,(Join-Path $updaterDelivery ([IO.Path]::GetFileName($bootstrap))))
 if($patch){$deliveredFiles+=Join-Path $patchDelivery ([IO.Path]::GetFileName($patch))}
-$checksumLines=$deliveredFiles|ForEach-Object{$hash=Get-FileHash -LiteralPath $_ -Algorithm SHA256;$hash.Hash+'  '+[IO.Path]::GetRelativePath($delivery,$hash.Path).Replace('\','/')}
+# [IO.Path]::GetRelativePath 是 .NET Core 的 API，Windows PowerShell 5.1（.NET Framework）没有它——
+# 这行曾在发版最后一步炸掉，前面 9 分钟的导出全白做。这里用 Substring 手算相对路径，5.1/7 都成立。
+$deliveryPrefix=$delivery.TrimEnd('\','/')
+$checksumLines=$deliveredFiles|ForEach-Object{
+    $hash=Get-FileHash -LiteralPath $_ -Algorithm SHA256
+    $relative=$hash.Path
+    if($relative.StartsWith($deliveryPrefix,[StringComparison]::OrdinalIgnoreCase)){$relative=$relative.Substring($deliveryPrefix.Length).TrimStart('\','/')}
+    $hash.Hash+'  '+$relative.Replace('\','/')
+}
 [IO.File]::WriteAllLines((Join-Path $delivery 'SHA256.txt'),[string[]]$checksumLines,[Text.UTF8Encoding]::new($false))
 $fullBytes=(Get-Item -LiteralPath $zip).Length;$bootstrapBytes=(Get-Item -LiteralPath $bootstrap).Length;$patchBytes=if($patch){(Get-Item -LiteralPath $patch).Length}else{0}
 @{version=$version;buildId=$buildInfo.BuildId;fullPackageBytes=$fullBytes;bootstrapBytes=$bootstrapBytes;patchBytes=$patchBytes;firstUpdateDownloadBytes=($bootstrapBytes+$patchBytes);reductionPercent=if($patch){[Math]::Round(100*(1-$patchBytes/[double]$fullBytes),2)}else{$null};baselineSha256=if($BaselineZip){$baseHash}else{$null};patch=if($patch){'patches/'+[IO.Path]::GetFileName($patch)}else{$null}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $notesDelivery 'offline-update-report.json') -Encoding utf8

@@ -1,0 +1,257 @@
+diff --git a/src/Orc.Mcp/McpService.Projection.cs b/src/Orc.Mcp/McpService.Projection.cs
+index 31ba287..defa092 100644
+--- a/src/Orc.Mcp/McpService.Projection.cs
++++ b/src/Orc.Mcp/McpService.Projection.cs
+@@ -246,24 +246,19 @@ public sealed partial class McpService
+ 
+             playable.Add(card.Id.ToString("N"));
+ 
+-            if (card is Orc.Game.Cards.UnitCard unit)
+-            {
+-                var gaps = match.PlayManager.GetDeploymentGaps(unit);
+-                if (gaps.Count > 0)
+-                {
+-                    var refs = new JsonArray();
+-                    foreach (var gap in gaps)
+-                    {
+-                        refs.Add(gap.Id.ToString("N"));
+-                    }
++        }
+ 
+-                    deploymentGaps.Add(new JsonObject
+-                    {
+-                        ["uid"] = unit.Id.ToString("N"),
+-                        ["gaps"] = refs,
+-                    });
+-                }
+-            }
++        // UiBattleActions consumes a flat list of formation gaps, shared by hand units.
++        // Keep the live engine identities and neighbours used by deployment targeting.
++        foreach (var gap in battlefield.GetSupportLine(player).GetInsertionGaps())
++        {
++            deploymentGaps.Add(new JsonObject
++            {
++                ["gapId"] = gap.Id.ToString("N"),
++                ["ordinal"] = gap.Ordinal,
++                ["leftUid"] = gap.Left?.Id.ToString("N"),
++                ["rightUid"] = gap.Right?.Id.ToString("N"),
++            });
+         }
+ 
+         var moves = new JsonArray();
+@@ -299,6 +294,7 @@ public sealed partial class McpService
+                                 ["uid"] = unit.Id.ToString("N"),
+                                 ["toZone"] = "support",
+                                 ["slotIndex"] = index,
++                                ["gapId"] = destination.Id.ToString("N"),
+                             });
+                             continue;
+                         }
+@@ -306,8 +302,9 @@ public sealed partial class McpService
+                         moves.Add(new JsonObject
+                         {
+                             ["uid"] = unit.Id.ToString("N"),
+-                            ["toZone"] = "front",
++                            ["toZone"] = "frontline",
+                             ["slotIndex"] = index,
++                            ["gapId"] = destination.Id.ToString("N"),
+                         });
+                     }
+                 }
+@@ -362,7 +359,7 @@ public sealed partial class McpService
+             ["deploymentGaps"] = deploymentGaps,
+             ["canEndTurn"] = inPlay,
+             ["attacksEnabled"] = inPlay,
+-            ["mulliganOpen"] = match.Phase == Orc.Game.MatchPhase.Mulligan,
++            ["mulliganOpen"] = match.Phase == Orc.Game.MatchPhase.Mulligan && !match.MulliganManager.IsConfirmed(player),
+         };
+     }
+ 
+diff --git a/src/Orc.Protocol/InitializeMessages.cs b/src/Orc.Protocol/InitializeMessages.cs
+index 248ac7d..20dcbd0 100644
+--- a/src/Orc.Protocol/InitializeMessages.cs
++++ b/src/Orc.Protocol/InitializeMessages.cs
+@@ -62,6 +62,12 @@ public static class ProtocolMethods
+     /// <summary>服务端推送：视图 ＋ 动作可用性（同一拍；形状由 <c>perspective</c> 区分）。</summary>
+     public const string NotifyView = "notify/view";
+ 
++    /// <summary>
++    /// 服务端推送：对局已开始。**界面入场必须挂这个信号，不能等第一帧 <c>notify/view</c>**——
++    /// 慢半拍的客户端第一帧可能已经是 play 相位，换牌阶段会被整段跳过（2026-10-24 实机复现）。
++    /// </summary>
++    public const string NotifyMatchStarted = "notify/match.started";
++
+     /// <summary>服务端推送：事件段（绑座＝脱敏；全知＝全量）。</summary>
+     public const string NotifySegment = "notify/segment";
+ 
+diff --git a/src/Orc.Server/Admin/AdminApi.cs b/src/Orc.Server/Admin/AdminApi.cs
+index d5f069c..2d2ed70 100644
+--- a/src/Orc.Server/Admin/AdminApi.cs
++++ b/src/Orc.Server/Admin/AdminApi.cs
+@@ -395,6 +395,10 @@ public sealed class AdminApi
+ 
+             room.MarkInMatch();
+ 
++            // 先告诉界面"开局了"，再推视图：客户端切战场靠这个信号，
++            // 晚半拍的客户端若只能等第一帧，可能第一帧已是 play，换牌被整段跳过。
++            _host.NotifyMatchStarted(room.RoomId);
++
+             var poolReport = new MatchPoolReport(dirs, assembly.Definitions.Count, fallback);
+             service.Pool = poolReport;
+             _host.PublishEvent("pool.assembled", WithDegradation(poolReport, input, degradation));
+diff --git a/src/Orc.Server/Transport/ServerHost.cs b/src/Orc.Server/Transport/ServerHost.cs
+index e732d18..cb48076 100644
+--- a/src/Orc.Server/Transport/ServerHost.cs
++++ b/src/Orc.Server/Transport/ServerHost.cs
+@@ -1155,6 +1155,22 @@ public sealed partial class ServerHost : IAsyncDisposable
+         }
+     }
+ 
++    /// <summary>
++    /// 广播"对局已开始"。收件人筛选与 <see cref="PushViewsAsync"/> 一致（绑座 viewer ＋ 全知），
++    /// 但**先于第一帧视图**发出：客户端靠它切战场，才不会错过换牌相位。
++    /// </summary>
++    internal void NotifyMatchStarted(string roomId)
++    {
++        var payload = new JsonObject { ["roomId"] = roomId };
++        foreach (var session in _sessions.Values)
++        {
++            // 按"谁在对局里"筛，不按 IsViewer 筛：纯 controller 角色（无 viewer）同样是玩家。
++            var receives = session.State is SessionState.Admitted or SessionState.Viewer or SessionState.Omniscient;
++            if (!receives) continue;
++            SendNotification(session, ProtocolMethods.NotifyMatchStarted, payload.DeepClone());
++        }
++    }
++
+     /// <summary>
+     /// 按角色态分发视图帧（S7）：绑座 viewer＝单视角帧；全知 viewer＝两份视角打包帧；
+     /// 其余角色（<c>Pending</c>/<c>Connected</c>/调试面/纯 controller）**不收**对局数据。
+@@ -1302,8 +1318,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+                     omniscientPayload = new JsonArray();
+                     foreach (var segment in segments)
+                     {
+-                        omniscientPayload.Add(JsonNode.Parse(
+-                            Orc.Output.EventSegmentJson.Serialize(segment, indented: false)));
++                        omniscientPayload.Add(PresentationSegment(segment, match, null));
+                     }
+                 }
+ 
+@@ -1329,8 +1344,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+                 payload = new JsonArray();
+                 foreach (var segment in segments)
+                 {
+-                    payload.Add(JsonNode.Parse(Orc.Output.EventSegmentJson.Serialize(
+-                        segment, indented: false, visibility, match.Players[seat])));
++                    payload.Add(PresentationSegment(segment, match, seat));
+                 }
+ 
+                 seatPayloads[seat] = payload;
+@@ -1350,6 +1364,31 @@ public sealed partial class ServerHost : IAsyncDisposable
+         return (segments[0].Sequence, segments[^1].Sequence);
+     }
+ 
++    private JsonNode PresentationSegment(Orc.Output.EventSegment segment, Orc.Game.Match match, int? seat)
++    {
++        var visibility = seat is null ? null : new Orc.Game.Ui.MatchEventVisibility(match);
++        var viewer = match.Players[seat ?? 0];
++        var node = JsonNode.Parse(Orc.Output.EventSegmentJson.Serialize(segment, false, visibility, seat is null ? null : viewer))!;
++        var entries = node["entries"]!.AsArray();
++        var provider = match.UiProjections.CreateProvider(null, Service.Options.MatchId, null);
++        for (var i = 0; i < segment.Entries.Count; i++)
++        {
++            var entry = segment.Entries[i];
++            // Player identity is public even when draw-card identities are redacted.
++            if (entry.Data.GetValueOrDefault("Player") is Orc.Game.Players.Player player)
++                entries[i]!["playerSeat"] = player.Index;
++            // A played order has left the projected board. Supply only this public face;
++            // never project arbitrary event cards (opponent draws/hand remain hidden).
++            if (entry.Message == "card.played" && entry.Data.GetValueOrDefault("Card") is Orc.Game.Cards.OrderCard order
++                && visibility?.IsEntityVisible(order, viewer) != false && provider is not null)
++            {
++                entries[i]!["cardView"] = JsonSerializer.SerializeToNode(provider.ReadCard(match, order, viewer, "hand", 0), ProtocolJson.Options);
++                entries[i]!["ownerSeat"] = order.Owner?.Index;
++            }
++        }
++        return node;
++    }
++
+     private void OnSeatsChanged()
+     {
+         var room = Room;
+@@ -1614,6 +1653,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+                                 var step = await pilot.StepAsync(token).ConfigureAwait(false);
+                                 if (step.Performed)
+                                 {
++                                    DrainSegments();
+                                     await PushViewsAsync(token).ConfigureAwait(false);
+                                 }
+ 
+diff --git a/tests/Orc.Mcp.Tests/ProjectionTests.cs b/tests/Orc.Mcp.Tests/ProjectionTests.cs
+index 69fb91d..79e314d 100644
+--- a/tests/Orc.Mcp.Tests/ProjectionTests.cs
++++ b/tests/Orc.Mcp.Tests/ProjectionTests.cs
+@@ -58,7 +58,54 @@ public class ProjectionTests
+         Assert.NotNull(actions["mulliganOpen"]);
+     }
+ 
+-    private static async Task CreateMatchAsync(SandboxFixture fixture)
++    [Fact]
++    public async Task DeploymentGaps_AreFlatUiGapsWithLiveReferences()
++    {
++        using var fixture = new SandboxFixture(McpServiceMode.Player);
++        await CreateMatchAsync(fixture);
++        using (ConsumerContext.Enter())
++        {
++            for (var seat = 0; seat < 2; seat++)
++            {
++                fixture.Service.Caller = new CallerView(Seat: seat);
++                var frame = await fixture.InvokeAsync("observe.view");
++                Assert.True(frame.Ok, frame.Message);
++                var gaps = Assert.IsType<System.Text.Json.Nodes.JsonArray>(frame.Details!["actions"]!["deploymentGaps"]);
++                Assert.NotEmpty(gaps);
++                var hq = frame.Details!["view"]!["selfHq"]!["uid"]!.GetValue<string>();
++                for (var i = 0; i < gaps.Count; i++)
++                {
++                    Assert.False(string.IsNullOrEmpty(gaps[i]!["gapId"]?.GetValue<string>()));
++                    Assert.Equal(i, gaps[i]!["ordinal"]!.GetValue<int>());
++                }
++                Assert.Contains(gaps, g => g?["leftUid"]?.GetValue<string>() == hq || g?["rightUid"]?.GetValue<string>() == hq);
++            }
++        }
++    }
++
++    [Theory]
++    [InlineData(0)]
++    [InlineData(1)]
++    public async Task ConfirmedSeatWaitsWithoutReopeningMulligan(int confirmedSeat)
++    {
++        using var fixture = new SandboxFixture(McpServiceMode.Player);
++        await CreateMatchAsync(fixture, skipMulligan: false);
++        using (ConsumerContext.Enter())
++        {
++            var confirmed = await fixture.Service.MulliganDoneAsync(confirmedSeat);
++            Assert.Equal(ActionOutcome.StatusCompleted, confirmed.Status);
++            for (var seat = 0; seat < 2; seat++)
++            {
++                fixture.Service.Caller = new CallerView(Seat: seat);
++                var frame = await fixture.InvokeAsync("observe.view");
++                Assert.True(frame.Ok, frame.Message);
++                Assert.Equal("mulligan", frame.Details!["view"]!["phase"]!.GetValue<string>());
++                Assert.Equal(seat != confirmedSeat, frame.Details["actions"]!["mulliganOpen"]!.GetValue<bool>());
++            }
++        }
++    }
++
++    private static async Task CreateMatchAsync(SandboxFixture fixture, bool skipMulligan = true)
+     {
+         var deck = Enumerable.Repeat("ai.sample.infantry", 39).ToArray();
+         var created = await fixture.Service.CreateMatchAsync(new MatchLaunchOptions
+@@ -67,7 +114,7 @@ public class ProjectionTests
+             SeatA = new MatchSeatConfig(0, deck),
+             SeatB = new MatchSeatConfig(1, deck),
+             Seed = 42,
+-            SkipMulligan = true,
++            SkipMulligan = skipMulligan,
+             EnforceDeckRules = false,
+         });
+ 

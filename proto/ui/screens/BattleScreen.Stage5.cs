@@ -21,6 +21,7 @@ public partial class BattleScreen
     private Label _mulliganCaption = null!;
     private Button _mulliganConfirm = null!;
     private bool _mulliganOpen, _mulliganWaitingPhase;
+    private bool _mulliganSubmitted;
 
     /// <summary>True while the panel is up; used by the verify and capture hooks.</summary>
     public bool MulliganPanelVisible => _mulliganOpen;
@@ -57,9 +58,17 @@ public partial class BattleScreen
     }
 
     /// <summary>Opens the panel with the viewer's opening hand. Called when the engine parks a mulligan request.</summary>
-    public void ShowMulliganPanel(UiMatchView? view, string? requestId = null)
+    /// <returns>是否真的打开了；false 时一定写了原因（下次"换牌没出现"不用猜）。</returns>
+    public bool ShowMulliganPanel(UiMatchView? view, string? requestId = null)
     {
-        if (view is null || view.Phase != "mulligan" || view.SelfHand.Count == 0 || _mulliganOpen || _readOnlyMode is not null) return;
+        if (view is null || view.Phase != "mulligan" || _mulliganOpen || _mulliganSubmitted || _readOnlyMode is not null) return false;
+        if (view.SelfHand.Count == 0)
+        {
+            // 相位已经是 mulligan 但手牌还没到（视图早于发牌）。不能弹空面板，也不能就这么算了：
+            // 交给投影对齐在下一帧重试——Main 每收到一次投影都会调一次本方法。
+            GD.PushWarning($"[mulligan] 相位=mulligan 但 SelfHand 为空（match={view.MatchId} turn={view.Turn}），等下一次投影重试。");
+            return false;
+        }
         CancelMulliganMotion();
         _mulliganOpen = true; _mulliganRequestId = requestId;
         _mulliganWaiting.Visible = false;
@@ -90,6 +99,27 @@ public partial class BattleScreen
         _mulligan.Visible = true;
         SetMulliganHandHidden(true);
         BeginOpening(view);
+        return true;
+    }
+
+    /// <summary>
+    /// 换局时清掉换牌残留。上局的 <c>_mulliganOpen</c>／面板／印章若留到新局，
+    /// 新局第一次 ShowMulliganPanel 会被"已经开着"挡掉——换牌就永久不出现了。
+    /// </summary>
+    private void ResetMulliganState()
+    {
+        CancelMulliganMotion();
+        StopMulliganHover();
+        var wasOpen = _mulliganOpen;
+        _mulliganOpen = false;
+        _mulliganSubmitted = false;
+        _mulliganWaitingPhase = false;
+        _mulliganRequestId = null;
+        if (_mulliganWaiting is not null) _mulliganWaiting.Visible = false;
+        if (_mulligan is not null) _mulligan.Visible = false;
+        if (_mulliganRow is not null) UiStyles.Clear(_mulliganRow);
+        _mulliganMarks.Clear();
+        if (wasOpen) SetMulliganHandHidden(false);
     }
 
     private void SetMulliganHandHidden(bool hidden)
@@ -114,6 +144,7 @@ public partial class BattleScreen
         if (!_mulliganOpen) return;
         FinishOpening(); StopMulliganHover();
         var keep = _mulliganMarks.Where(kv => !kv.Value.Marked).Select(kv => kv.Key).ToArray();
+        _mulliganSubmitted = true;
         _mulliganOpen = false;
         BeginMulliganDeparture(new ChooseMulligan(keep, _mulliganRequestId));
     }

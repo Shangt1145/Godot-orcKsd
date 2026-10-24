@@ -63,6 +63,17 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
         while(doc.CanRedo)doc.Redo();Assert.Equal(2,doc.At("/effects/0/actions")!.AsArray().Count);
     }
     [Fact]
+    public void 语料编译不继承上次请求的卡池()
+    {
+        DesktopOrc.Request(new { method="compile", text="抽1张牌。", card=new {cardType="order"},
+            pool=new[] {new {id="production", name="生产", cardType="order"}} });
+        var rows=new[] {new {text="一回合一次，友方使用海军牌时，将 1 张“生产”加入手中。", cardType="unit"}};
+        var result=DesktopOrc.Request(new {method="parityCorpus",rows});
+        var hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(result[0].GetRawText())));
+        Assert.Equal("97A12FCF899DB7772B01E24A52FB15BDA46AFCEBF07F1F753F512D0A56C169B8",hash);
+    }
+
+    [Fact]
     public void 全语料_使用完整原版编译器而非缩减句式表()
     {
         var source=FindSource();var root=Path.GetFullPath(Path.Combine(source,"..","..",".."));

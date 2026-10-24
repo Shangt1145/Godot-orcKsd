@@ -1,0 +1,224 @@
+diff --git a/src/Orc.Foundation.Actions/AttackAction.cs b/src/Orc.Foundation.Actions/AttackAction.cs
+index 4e0e3a6..6b43800 100644
+--- a/src/Orc.Foundation.Actions/AttackAction.cs
++++ b/src/Orc.Foundation.Actions/AttackAction.cs
+@@ -210,6 +210,7 @@ public sealed class AttackAction : IAttackAction
+                 [CommandDataKeys.Resolution] = new AttackDamageResolution(),
+                 [nameof(AttackDamageTriggerView.Result)] = view.Result,
+             };
++            await SmokeScreenRules.RemoveAsync(attacker, ct);
+             if (view.TriggerCard is not null)
+             {
+                 data[CommandDataKeys.TriggerCard] = view.TriggerCard;
+@@ -225,6 +226,7 @@ public sealed class AttackAction : IAttackAction
+                 if (combatCompleted)
+                 {
+                     await KeywordProgramFacade.AttackEvent(attacker, targetEntity as Card, false, ct);
++                    await SmokeScreenRules.RemoveAsync(attacker, ct);
+                 }
+                 else
+                 {
+diff --git a/src/Orc.Game/Actions/MatchActionServices.Board.cs b/src/Orc.Game/Actions/MatchActionServices.Board.cs
+index d399713..3dadc44 100644
+--- a/src/Orc.Game/Actions/MatchActionServices.Board.cs
++++ b/src/Orc.Game/Actions/MatchActionServices.Board.cs
+@@ -53,6 +53,7 @@ internal sealed partial class MatchActionServices
+         }
+ 
+         state.Line = targetLine;
++        await SmokeScreenRules.RemoveOnFrontAsync(unit, ct).ConfigureAwait(false);
+         await GameUpdates.EmitUnitPositionChanged(
+             _engine, unit, oldPosition, new BoardPosition(targetLine, insertAt), ct).ConfigureAwait(false);
+         return true;
+diff --git a/src/Orc.Game/Cards/KeywordManager.cs b/src/Orc.Game/Cards/KeywordManager.cs
+index 19e4fc9..8145ebb 100644
+--- a/src/Orc.Game/Cards/KeywordManager.cs
++++ b/src/Orc.Game/Cards/KeywordManager.cs
+@@ -265,6 +265,7 @@ public sealed class KeywordManager
+     /// </summary>
+     internal bool GrantCore(string keyword, int? value, KeywordLoadContext? context, Effect? content = null)
+     {
++        if (keyword == KeywordIds.SmokeScreen && !SmokeScreenRules.CanGrant(_card, context)) return false;
+         if (_components.ContainsKey(keyword))
+         {
+             return false; // 幂等：重复授予（含不同参值）＝无操作、参值保持
+diff --git a/src/Orc.Game/Cards/KeywordSystem.cs b/src/Orc.Game/Cards/KeywordSystem.cs
+index e533e91..8490f6c 100644
+--- a/src/Orc.Game/Cards/KeywordSystem.cs
++++ b/src/Orc.Game/Cards/KeywordSystem.cs
+@@ -34,7 +34,7 @@ public static class KeywordIds
+     /// <summary>奋战（能力型）：攻击后记账——首次攻击后仍可攻、二次后不可（「本轮已攻次数」由词条组件自维护）。</summary>
+     public const string Fury = "奋战";
+ 
+-    /// <summary>烟幕（标记型）：不可被攻击（对一切攻击者生效；攻击 targeting 中被筛除、不入候选）——轻量组件形态。</summary>
++    /// <summary>烟幕（标记型）：支援线单位不可被攻击；进入前线或主动攻击时移除，前线不能获得烟幕。</summary>
+     public const string SmokeScreen = "烟幕";
+ 
+     /// <summary>伏击（能力型）：「造成攻击伤害」内改写——被攻击单位实时攻击力＞攻击者实时防御力时，改为攻击者死亡、被攻击者不受伤。</summary>
+diff --git a/src/Orc.Game/Cards/UnitCard.cs b/src/Orc.Game/Cards/UnitCard.cs
+index ab9c6b9..272086e 100644
+--- a/src/Orc.Game/Cards/UnitCard.cs
++++ b/src/Orc.Game/Cards/UnitCard.cs
+@@ -317,6 +317,7 @@ public class UnitCard : CardBase
+         unit.AddData(state);
+         unit.AddData(new CommandData());
+         unit.AddData(new ActionRecordData());
++        await SmokeScreenRules.RemoveOnFrontAsync(unit, ct);
+ 
+         // W2b G3 接线：装配完成点请求跑链一次（首轮——以基准状态建立比较基线；本时点无修饰/无损伤＝零变化、零发射）。
+         await unit.Modifiers.RequestRerunAsync(ct);
+diff --git a/tests/Orc.Game.Tests/CommandRulesTests.cs b/tests/Orc.Game.Tests/CommandRulesTests.cs
+index 0bda125..a4e4527 100644
+--- a/tests/Orc.Game.Tests/CommandRulesTests.cs
++++ b/tests/Orc.Game.Tests/CommandRulesTests.cs
+@@ -190,8 +190,8 @@ public class CommandRulesTests
+         await match.Initialize();
+         var playerA = match.Players[0];
+         var playerB = match.Players[1];
+-        var infantry = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.InfantryId, 1);
+-        var artillery = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.ArtilleryId, 2);
++        var infantry = await CommandTestKit.PrepareOnFrontAsync(match, playerA, CommandTestKit.InfantryId, 0);
++        var artillery = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.ArtilleryId, 1);
+         var smokeOwnerSide = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.SmokeId, 1); // 我方烟幕兵
+         CommandTestKit.Activate(infantry);
+         CommandTestKit.Activate(artillery);
+@@ -202,14 +202,17 @@ public class CommandRulesTests
+         var selfReport = match.CommandManager.GetCommandAvailability(smokeOwnerSide);
+         Assert.True(selfReport.Move.CanUse);
+ 
+-        // 敌方烟幕兵（不可被攻击）：放入敌方前线（对步兵/炮兵均在可达范围内——区分度保留）。
+-        var enemySmoke = await CommandTestKit.PrepareOnFrontAsync(match, playerB, CommandTestKit.SmokeId, 0);
++        // 烟幕只能留在支援线。两名攻击者都能到达该线，用无烟幕对照证明排除来自词条。
++        var enemySmoke = await CommandTestKit.PrepareOnSupportAsync(match, playerB, CommandTestKit.SmokeId, 1);
++        var control = await CommandTestKit.PrepareOnSupportAsync(match, playerB, CommandTestKit.InfantryId, 2);
+ 
+         // 烟幕：不可被攻击（对一切攻击者生效——含炮/轰；不进任何攻击目标候选、置黑）。
+         var infantryReport = match.CommandManager.GetCommandAvailability(infantry);
+         Assert.DoesNotContain(enemySmoke.Ref, infantryReport.Attack.Candidates);
++        Assert.Contains(control.Ref, infantryReport.Attack.Candidates);
+         var artilleryReport = match.CommandManager.GetCommandAvailability(artillery);
+         Assert.DoesNotContain(enemySmoke.Ref, artilleryReport.Attack.Candidates);
++        Assert.Contains(control.Ref, artilleryReport.Attack.Candidates);
+     }
+ 
+     // ---------- 守护 ----------
+diff --git a/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs b/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs
+index 1be8f4f..37e1619 100644
+--- a/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs
++++ b/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs
+@@ -134,8 +134,8 @@ public class RandomBattleKeywordChainTests
+         Assert.Equal(2, run.EnemyDefenseAfterAttack);
+         Assert.Equal(3, run.HostDefenseAfterAttack);
+ 
+-        // 行为②（烟幕·被消费真实地点）：敌方攻击候选排除宿主、保留无烟幕对照。
+-        Assert.True(run.EnemyCandidatesExcludeHost);
++        // 宿主已经主动攻击，烟幕应被移除；敌方可攻击宿主和无烟幕对照。
++        Assert.False(run.EnemyCandidatesExcludeHost);
+         Assert.True(run.EnemyCandidatesContainControl);
+     }
+ 
+diff --git a/tests/Orc.Game.Tests/VeteranMechanismTests.cs b/tests/Orc.Game.Tests/VeteranMechanismTests.cs
+index 04cb0a6..d271ce8 100644
+--- a/tests/Orc.Game.Tests/VeteranMechanismTests.cs
++++ b/tests/Orc.Game.Tests/VeteranMechanismTests.cs
+@@ -153,7 +153,7 @@ public class VeteranMechanismTests
+         await match.Initialize();
+         var playerA = match.Players[0];
+ 
+-        var unit = await CommandTestKit.PrepareOnFrontAsync(match, playerA, GuardsId, 0);
++        var unit = await CommandTestKit.PrepareOnSupportAsync(match, playerA, GuardsId, 1);
+         Assert.Equal(1, unit.TurnsInPlay); // 在场回合数（既有读取面——入场即第 1 回合）
+         Assert.True(unit.Keywords.Has(KeywordIds.SmokeScreen));
+         Assert.Equal(1, DefenseOf(unit));
+diff --git a/src/Orc.Game/Cards/SmokeScreenRules.cs b/src/Orc.Game/Cards/SmokeScreenRules.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Orc.Game/Cards/SmokeScreenRules.cs
+@@ -0,0 +1,24 @@
++using Orc.Cards;
++
++namespace Orc.Game.Cards;
++
++/// <summary>Smoke protects support units until they advance or attack; it is not covert.</summary>
++public static class SmokeScreenRules
++{
++    internal static bool CanGrant(Card card, KeywordLoadContext? context) =>
++        !card.TryGetData<UnitStateData>(out var state) || state.Line is null
++        || context?.Battlefield is not { } battlefield || !ReferenceEquals(state.Line, battlefield.FrontLine);
++
++    internal static Task RemoveOnFrontAsync(UnitCard unit, CancellationToken ct = default) =>
++        CanGrant(unit, unit.Keywords.LoadContextProvider?.Invoke()) ? Task.CompletedTask : RemoveAsync(unit, ct);
++
++    /// <summary>Drop the runtime keyword and publish its change for local and remote projections.</summary>
++    public static async Task RemoveAsync(UnitCard unit, CancellationToken ct = default)
++    {
++        if (!unit.TryGetData<UnitStateData>(out var state) || state.IsDestroyed
++            || !unit.Keywords.Has(KeywordIds.SmokeScreen)) return;
++        if (await unit.Keywords.RevokeAsync(KeywordIds.SmokeScreen).ConfigureAwait(false)
++            && unit.Keywords.LoadContextProvider?.Invoke() is { } context)
++            await GameUpdates.EmitCardStatChanged(context.Engine, unit, ["keywords"], ct).ConfigureAwait(false);
++    }
++}
+diff --git a/tests/Orc.Game.Tests/SmokeScreenLifecycleTests.cs b/tests/Orc.Game.Tests/SmokeScreenLifecycleTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/Orc.Game.Tests/SmokeScreenLifecycleTests.cs
+@@ -0,0 +1,58 @@
++using Orc.Game.Cards;
++using Orc.Game.Commanding;
++using Xunit;
++
++namespace Orc.Game.Tests;
++
++public class SmokeScreenLifecycleTests
++{
++    [Fact]
++    public async Task MovingToFrontRemovesSmokeAndRetreatDoesNotRestoreIt()
++    {
++        var bridge = new MockTargeterBridge();
++        var match = CommandTestKit.CreateCommandMatch(bridge);
++        await match.Initialize();
++        var unit = await CommandTestKit.PrepareOnSupportAsync(match, match.Players[0], CommandTestKit.SmokeId, 1);
++        CommandTestKit.Activate(unit);
++        bridge.CollectScript = CommandTestKit.AllRefsScript(match);
++        Assert.True(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        var result = await CommandTestKit.RunCommandAsync(match, bridge, unit, match.Battlefield.FrontLine.GetInsertionGaps()[0].Ref);
++        Assert.Equal(CommandResultStatus.Success, result.Status);
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        Assert.False(await unit.Keywords.GrantAsync(KeywordIds.SmokeScreen));
++        var runtime = Orc.Game.Effects.EffectRuntime.ResolveFor(unit)!;
++        Assert.True(await runtime.MoveAsync(unit, "support"));
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++    }
++
++    [Fact]
++    public async Task DirectFrontPlacementCannotKeepOrGainSmoke()
++    {
++        var match = CommandTestKit.CreateCommandMatch();
++        await match.Initialize();
++        var unit = await CommandTestKit.PrepareOnFrontAsync(match, match.Players[0], CommandTestKit.SmokeId, 0);
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        Assert.False(await unit.Keywords.GrantAsync(KeywordIds.SmokeScreen));
++        while (!ReferenceEquals(match.CurrentPlayer, match.Players[1])) await match.EndTurn();
++        var attacker = await CommandTestKit.PrepareOnSupportAsync(match, match.Players[1], CommandTestKit.ArtilleryId, 1);
++        CommandTestKit.Activate(attacker);
++        Assert.Contains(unit.Ref, match.CommandManager.GetCommandAvailability(attacker).Attack.Candidates);
++    }
++
++    [Fact]
++    public async Task AttackingFromSupportRemovesSmokeButCancellationKeepsIt()
++    {
++        var bridge = new MockTargeterBridge();
++        var match = CommandTestKit.CreateCommandMatch(bridge);
++        await match.Initialize();
++        var unit = await CommandTestKit.PrepareOnSupportAsync(match, match.Players[0], CommandTestKit.SmokeId, 1);
++        var enemy = await CommandTestKit.PrepareOnFrontAsync(match, match.Players[1], CommandTestKit.InfantryId, 0);
++        CommandTestKit.Activate(unit);
++        bridge.CollectScript = CommandTestKit.AllRefsScript(match);
++        await CommandTestKit.CancelCommandAsync(match, bridge, unit);
++        Assert.True(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        var result = await CommandTestKit.RunCommandAsync(match, bridge, unit, enemy.Ref);
++        Assert.Equal(CommandResultStatus.Success, result.Status);
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++    }
++}

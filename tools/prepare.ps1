@@ -43,6 +43,11 @@ if (!$SkipAssets) {
 # Non-destructive synchronization. Generated output never copies back into source.
 & robocopy $sourceRoot $targetRoot /E /NFL /NDL /NJH /NJS /NP /XD .git .godot bin obj artifacts /XF '*.user' '.kards-ui-workspace'
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
+# 代码目录强制覆盖（/IS）：robocopy 默认跳过"目标时间更新"的文件，工作副本一旦被旧版占住，
+# 就会出现"源能编译、副本编译失败"的鬼打墙——2026-10-24 实际踩到（RemotePresentationTranslator 旧版残留）。
+# proto 目录只有几 MB（数据 2 MB），每轮全量覆盖的代价可以忽略。
+& robocopy (Join-Path $sourceRoot 'proto') (Join-Path $targetRoot 'proto') /E /IS /NFL /NDL /NJH /NJS /NP /XD bin obj /XF '*.user'
+if ($LASTEXITCODE -ge 8) { throw "robocopy (code) failed: $LASTEXITCODE" }
 # Package data is generated content. Remove obsolete copies left by the old directory
 # layout so exports contain exactly the source card packs, without touching other assets.
 $packSource = [IO.Path]::GetFullPath((Join-Path $sourceRoot 'proto/data/kards'))

@@ -11,7 +11,9 @@ config_version=5
 [application]
 
 config/name="OrC-KSD · 卡牌指挥部"
-config/version="0.0.0-beta.6"
+config/version="0.0.0beta7.hotfix.3"
+; Android 导出强制要求有项目图标（桌面导出不检查，所以此前一直没暴露）。
+config/icon="res://proto/art/1.png"
 run/main_scene="res://proto/scenes/Main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 
@@ -22,6 +24,8 @@ window/size/viewport_height=900
 window/size/window_width_override=1600
 window/size/window_height_override=900
 window/stretch/mode="canvas_items"
+; 手机版 MVP：保持 16:9 等比（黑边可接受），不错位现有绝对坐标布局。
+window/stretch/aspect="keep"
 
 [dotnet]
 
@@ -37,3 +41,8 @@ texture={
 [rendering]
 
 environment/defaults/default_clear_color=Color(0.055, 0.071, 0.075, 1)
+; 桌面继续 Forward+；Android 只能 Mobile(Vulkan) 或 Compatibility(GLES3)。
+; 先上兼容模式，图形冒烟通过后再评估 mobile。
+renderer/rendering_method.mobile="gl_compatibility"
+; Android 导出强制要求 ETC2/ASTC（Godot 会据此重导入全部贴图）。
+textures/vram_compression/import_etc2_astc=true
