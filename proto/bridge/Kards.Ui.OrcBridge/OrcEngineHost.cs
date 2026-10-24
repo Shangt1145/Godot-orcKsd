@@ -1,3 +1,4 @@
+using Orc.Game.Cards;
 using Orc.Packages;
 using Orc.Plugins.BuiltIn;
 using Orc.UI;
@@ -28,6 +29,22 @@ public static class OrcEngineHost
     }
 
     /// <summary>
+    /// 原始卡池国家（av76 / deran / usg / un）是**独立国家**，不是苏/德/美/英的别名——
+    /// 把它们登记为引擎自定义主国。幂等；<see cref="Initialize"/> 会自动调用。
+    /// 未登记时卡牌定义会因「国籍未定义」被拒绝编译，构筑配置也过不了对局创建期的校验。
+    /// </summary>
+    public static void RegisterSourceNations()
+    {
+        lock (Gate)
+        {
+            foreach (var nation in DeckNations.SourceNations)
+            {
+                if (!Faction.IsDefined(nation)) Faction.RegisterCustom(nation);
+            }
+        }
+    }
+
+    /// <summary>
     /// 初始化（**幂等**；已初始化＝直接返回，不重建）。冷加载失败明细见 <see cref="EngineHost.LoadFailures"/>。
     /// </summary>
     /// <param name="baseDirectory">包基目录（约定：`&lt;base&gt;/plugins` 与 `&lt;base&gt;/packs`；null/不存在＝无磁盘包）。</param>
@@ -40,6 +57,8 @@ public static class OrcEngineHost
     {
         lock (Gate)
         {
+            RegisterSourceNations();
+
             if (_host is not null)
             {
                 return _host;

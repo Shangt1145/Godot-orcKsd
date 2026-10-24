@@ -1,4 +1,5 @@
 ﻿using Kards.Ui.Contracts;
+using Kards.Ui.Core;
 using Orc.Game;
 using Orc.Game.Cards;
 
@@ -155,19 +156,17 @@ public static class CardPoolCompiler
     }
 
     /// <summary>
-    /// The catalog's sets are nations; the engine's faction axis is a different one. Only the four
-    /// engine factions have a mapping, keyed by the two catalog sets that clearly mean each.
+    /// The catalog's sets are nations, and the engine's faction axis is a different vocabulary but
+    /// **not a different country list**: the source pools (av76 / deran / usg / un) are their own
+    /// nations, registered as engine custom majors by <c>OrcEngineHost.Initialize</c>.
+    /// Only the spelling is normalized here; folding one nation onto another would silently change
+    /// which cards a main nation may field.
     /// </summary>
     private static bool TryFaction(string? set, out string faction)
     {
-        switch (set?.ToLowerInvariant())
-        {
-            case "deran": faction = Faction.Germany; return true;
-            case "av76": faction = Faction.Soviet; return true;
-            case "usg": faction = Faction.USA; return true;
-            case "un": faction = Faction.Britain; return true;
-            default: faction = string.Empty; return false;
-        }
+        faction = string.Empty;
+        var canonical = DeckNations.Canonical(set);
+        return canonical.Length > 0 && Faction.TryNormalize(canonical, out faction);
     }
 
     // Confirmed by the source client's card-import.js, rather than inferred from metal colours.

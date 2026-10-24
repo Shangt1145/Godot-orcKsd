@@ -342,8 +342,9 @@ public sealed partial class OrcMatchSession : IDisposable
             else session.AnswerParked(selector);
         });
         // 引擎侧阵营已数据化为 string 常量类（真源＝资产服务）。
-        // 旧卡池 → 所属国家的映射**只在 DeckNations 里维护一份**：这里若自带一张表，
-        // 就会和构筑校验各说各话（UI 说不同国、引擎说同国 → 保存通过但开不了局）。
+        // 国家标识的唯一归一入口＝DeckNations：它只统一写法（大小写 / 引擎规范 id），
+        // **不跨国家折叠**——av76 / deran / usg / un 是独立国家，已在 OrcEngineHost.Initialize
+        // 注册为引擎自定义主国，因此这里能直接 TryNormalize 成功。
         string FactionOf(string nation) => Faction.TryNormalize(DeckNations.Canonical(nation), out var faction)
             ? faction : throw new InvalidDataException($"未知构筑国家：{nation}");
         PlayerDeckConfiguration? Config(DeckOptions? options) => options is null ? null

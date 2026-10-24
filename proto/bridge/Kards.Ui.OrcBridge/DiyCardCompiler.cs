@@ -28,8 +28,8 @@ public static class DiyCardCompiler
             Faction.Germany => "德国", Faction.Soviet => "苏联", Faction.USA => "美国", Faction.Britain => "英国",
             Faction.Japan => "日本", Faction.France => "法国", Faction.Italy => "意大利", Faction.Poland => "波兰",
             Faction.Finland => "芬兰", Faction.Anzac => "澳新联军", Faction.Neutral => "中立", _ => id
-        })).Concat(new UiDiyChoice[] { new("av76", "苏联（旧卡池）"), new("deran", "德国（旧卡池）"),
-            new("USG", "美国（旧卡池）"), new("UN", "英国（旧卡池）") }).ToArray();
+        })).Concat(new UiDiyChoice[] { new("av76", "Av76"), new("deran", "Deran"),
+            new("USG", "USG"), new("UN", "UN") }).ToArray();
     public static IReadOnlyList<UiDiyChoice> Nations=>BuiltInNations.Concat(WorkshopAuthoring.Nations.Select(n=>new UiDiyChoice(n.Id,n.Name))).Concat(OrcEngineHost.NativeNations).DistinctBy(n=>n.Id).ToArray();
     public static IReadOnlyList<UiDiyChoice> Rarities { get; } =
         [new("iron", "基础"), new("bronze", "限定"), new("silver", "特殊"), new("gold", "精英")];
@@ -229,7 +229,9 @@ public static class DiyCardCompiler
             category: draft.CardType == "unit" ? CardCategory.Unit : CardCategory.Command,
             unitTypes: draft.CardType == "unit" ? [unitType] : [],
             keywords: KeywordDecls(draft, textCompile?.Parse),
-            faction: draft.Nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany, "USG" => Faction.USA, "UN"=>Faction.Britain, _=>Faction.TryNormalize(draft.Nation,out var faction)?faction:throw new InvalidDataException("国家未注册") },
+            // 国家标识只归一写法（av76 就是 av76，不是 soviet）；原始卡池已在宿主初始化时
+            // 注册为引擎自定义主国，因此这里能直接归一成功。
+            faction: Faction.TryNormalize(DeckNations.Canonical(draft.Nation), out var faction) ? faction : throw new InvalidDataException("国家未注册"),
             rarity: draft.Rarity switch { "iron" => Rarity.Standard, "bronze" => Rarity.Limited, "silver" => Rarity.Special, _ => Rarity.Elite });
         var snapshots = new List<EffectSnapshot>();
         var components = native.Components.ToList();

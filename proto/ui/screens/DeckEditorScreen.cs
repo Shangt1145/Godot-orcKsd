@@ -115,8 +115,8 @@ public partial class DeckEditorScreen : VBoxContainer
     {
         var o = new OptionButton { CustomMinimumSize = new(85, 38) };
         if (empty) { o.AddItem("无盟国"); o.SetItemMetadata(0, ""); }
-        // 显示名走 NationLabel：旧卡池要显示成「苏联（旧卡池）」而不是裸 av76，
-        // 否则玩家分不清 av76 与 soviet 的关系，只会撞上“它们是同一个国家”。
+        // 显示名走 NationLabel：原始卡池国家（av76 / deran / USG / UN）显示自己的名字，
+        // 不冒充苏/德/美/英——它们是独立国家，卡牌也按自己的国籍归属。
         foreach (var nation in nations) { o.AddItem(SetupDeckBack.NationLabel(nation)); o.SetItemMetadata(o.ItemCount - 1, nation); }
         return o;
     }
@@ -176,8 +176,8 @@ public partial class DeckEditorScreen : VBoxContainer
         var main = MainNation.GetItemMetadata(MainNation.Selected).AsString();
         var ally = AllyNation.GetItemMetadata(AllyNation.Selected).AsString();
         _draft = _draft with { Options = new DeckOptions { MainNation = main, AllyNation = ally, UnrestrictedNations = FreeNations.ButtonPressed, UnrestrictedSize = FreeSize.ButtonPressed, TotalCards = (int)TotalCards.Value } };
-        // 以前这里会静默把盟国换成一个“看起来不同”的国家：主国 soviet 时换到 av76，
-        // UI 认为合法、引擎又把它折回 soviet → 保存成功却开不了局。现在只提示，交给 Validate 拦。
+        // 以前这里会静默把盟国换成一个“看起来不同”的国家，玩家选的被偷偷改掉。
+        // 现在只提示（同一国家的不同写法），剩下的交给 Validate 拦。
         _notice.Text = !FreeNations.ButtonPressed && DeckNations.Same(main, ally)
             ? $"主国与盟国不能是同一个国家：「{SetupDeckBack.NationLabel(main)}」与「{SetupDeckBack.NationLabel(ally)}」同属一国，请换一个盟国。"
             : "点击卡牌加入；右侧 − 移除；长按查看完整卡面。总部单独计数。";

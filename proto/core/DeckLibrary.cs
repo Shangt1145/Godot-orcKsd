@@ -85,8 +85,8 @@ public static class ConstructionRules
             errors.Add($"已选 {deck.CardIds.Length} / {o.TotalCards - 1} 张卡牌，另加 1 张总部");
         if (!MainNations.Contains(o.MainNation)) errors.Add("请选择有效的主国");
         if (!MainNations.Contains(o.AllyNation)) errors.Add("请选择有效的盟国；可以不加入盟国卡牌");
-        // 国家同一性以规范国籍为准：主国 av76（苏联旧卡池）＋ 盟国 soviet 在 UI 里是两个字符串，
-        // 到引擎却是同一个国家（对局创建期 fail-fast 拒绝）。这里提前拦住并说清原因。
+        // 国家同一性只走 DeckNations：它只统一写法（USG / usg），不跨国家折叠。
+        // av76 就是 av76，与 soviet 是两个国家——「主国 av76 ＋ 盟国 soviet」是合法组合。
         var mainNation = DeckNations.Canonical(o.MainNation);
         var allyNation = DeckNations.Canonical(o.AllyNation);
         if (DeckNations.Same(o.MainNation, o.AllyNation))
@@ -103,7 +103,7 @@ public static class ConstructionRules
             if (playable is not null && !playable.Contains(card.CardId)) errors.Add($"{card.Name} 尚未支持实战");
             if (!o.UnrestrictedNations)
             {
-                // 卡牌归属同样按规范国籍判定：主国选“苏联”时，旧卡池 av76 的苏联卡也算主国卡。
+                // 卡牌归属按卡牌自身国家判定：av76 的卡只属于 av76（它不等于 soviet）。
                 var cardNation = DeckNations.Canonical(card.Set);
                 if (cardNation != mainNation && cardNation != allyNation) errors.Add($"{card.Name} 不属于主国或盟国");
                 if (allyNation.Length > 0 && cardNation == allyNation && CopyLimit(card.Rarity) == 1) errors.Add($"盟国不能使用精英卡：{card.Name}");

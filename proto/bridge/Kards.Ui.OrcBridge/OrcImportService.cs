@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Kards.Ui.Contracts;
+using Kards.Ui.Core;
 using Kards.Ui.OrcBridge.OrcText;
 using Orc;
 using Orc.Cards;
@@ -68,7 +69,7 @@ public static class OrcImportService
         var (cardType, unitType) = NormalizeType(row.Type)
             ?? throw new InvalidDataException("反制卡不在当前导入编译面（unit/order）内");
         var compile = DesktopOrc.Compile(row.Text, cardType, catalog,row.DesktopJson);
-        var faction=Faction.Soviet;var rarity=Rarity.Standard;var nation="av76";var rarityToken="iron";
+        var faction=Faction.Soviet;var rarity=Rarity.Standard;var nation=Faction.Soviet;var rarityToken="iron";
         if(row.DesktopJson is { } metadata)
         {
             using var metadataDoc=JsonDocument.Parse(metadata);var raw=metadataDoc.RootElement;
@@ -78,9 +79,11 @@ public static class OrcImportService
                 if(raw.TryGetProperty(mechanism,out _))return OrcImportOutcome.Pending(row,["OrC-KSD 导入机制字段尚无无损适配："+mechanism]);
             if(raw.TryGetProperty("token",out var token)&&token.ValueKind==JsonValueKind.True)return OrcImportOutcome.Pending(row,["衍生卡已保留；普通构筑准入尚未适配衍生标记"]);
             var country=raw.TryGetProperty("nation",out var n)?n.GetString():raw.TryGetProperty("set",out var set)?set.GetString():null;
-            faction=country switch{"德国" or "deran"=>Faction.Germany,"美国" or "USG"=>Faction.USA,"英国" or "UN"=>Faction.Britain,"苏联" or "av76" or "自定义" or null=>Faction.Soviet,_=>country};
-            if(!Faction.All.Contains(faction,StringComparer.Ordinal))return OrcImportOutcome.Pending(row,["OrC-KSD 导入国籍未适配："+country]);
-            nation=faction switch{Faction.Germany=>"deran",Faction.USA=>"USG",Faction.Britain=>"UN",Faction.Soviet=>"av76",_=>faction};
+            // 中文国名→引擎阵营；卡池目录名（av76 / deran / USG / UN）是**独立国家**，
+            // 只做写法归一，不再折到苏/德/美/英。
+            faction=country switch{"德国" or "deran"=>Faction.Germany,"美国" or "USG"=>Faction.USA,"英国" or "UN"=>Faction.Britain,"苏联" or "自定义" or null=>Faction.Soviet,_=>DeckNations.Canonical(country)};
+            if(!Faction.IsDefined(faction))return OrcImportOutcome.Pending(row,["OrC-KSD 导入国籍未适配："+country]);
+            nation=faction;
             rarityToken=raw.TryGetProperty("rarity",out var r)&&r.ValueKind==JsonValueKind.String?r.GetString()!:"iron";
             rarity=rarityToken switch{"iron" or "Standard"=>Rarity.Standard,"bronze" or "Limited"=>Rarity.Limited,"silver" or "Special"=>Rarity.Special,"gold" or "Elite"=>Rarity.Elite,_=>rarityToken};
             if(!Rarity.All.Contains(rarity,StringComparer.Ordinal))return OrcImportOutcome.Pending(row,["OrC-KSD 导入稀有度未适配："+rarityToken]);

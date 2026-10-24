@@ -60,7 +60,9 @@ public static class InspectorCardRecord
             Name=Str("name",draft.Name),CardType=Str("cardType",draft.CardType),UnitType=Str("unitType",draft.UnitType),
             Cost=Num("cost",draft.Cost),OpCost=Num("opCost",draft.OpCost),Attack=Num("attack",draft.Attack),Defense=Num("defense",draft.Defense),
             EffectText=Str("text",draft.EffectText),TextSyncMode=Str(TextModeKey,draft.TextSyncMode),Effects=legacy.ToArray(),UseStructuredEffects=true,
-            Nation=Str("nation",Str("set",draft.Nation)) switch{"苏联"=>"av76","德国"=>"deran","美国"=>"USG","英国"=>"UN",var value=>value},
+            // 中文国名→引擎阵营标识。av76 / deran / USG / UN 是独立国家，不再被当成
+            // 「苏联 / 德国 / 美国 / 英国」的别名（它们各自有 id，原样保留）。
+            Nation=Str("nation",Str("set",draft.Nation)) switch{"苏联"=>"soviet","德国"=>"germany","美国"=>"usa","英国"=>"britain",var value=>value},
             Rarity=Str("rarity",draft.Rarity),Flavor=Str("flavor",draft.Flavor),
             Keywords=keywords,Armor=record.TryGetProperty("kwValues",out var parameters)&&parameters.TryGetProperty("armor",out var armor)?armor.GetInt32():draft.Armor,
             OrcEffects=program.ToArray(),

@@ -57,22 +57,43 @@ public sealed class DeckConstructionTests
         Assert.Contains(ConstructionRules.Validate(tooMany, allyCards), s => s.Contains("12 张"));
         Assert.Empty(ConstructionRules.Validate(tooMany with { Options = tooMany.Options with { UnrestrictedNations = true } }, allyCards));
     }
-    // 旧卡池目录名（av76/deran/USG/UN）与引擎阵营标识指同一个国家。UI 若按裸字符串比较，
-    // 就会放过「主国 av76 ＋ 盟国 soviet」这种组合，保存成功、开局时被引擎 fail-fast 拒绝。
+    // 原始卡池（av76 / deran / USG / UN）是**独立国家**，不是苏/德/美/英的别名：
+    // 星盟自己的卡面注释就写着「协约国 = USG + AV76」——两家并列，不是同一家。
+    // 归一只能统一写法（USG → usg 的引擎 id），绝不能把两个国家折成一个。
     [Theory]
-    [InlineData("av76", Faction.Soviet)] [InlineData("deran", Faction.Germany)]
-    [InlineData("USG", Faction.USA)] [InlineData("UN", Faction.Britain)]
-    public void LegacyPoolNamesNormalizeToTheSameEngineFaction(string pool, string faction)
+    [InlineData("av76", "av76")] [InlineData("deran", "deran")]
+    [InlineData("USG", "usg")] [InlineData("UN", "un")]
+    public void SourceNationsKeepTheirOwnIdentity(string pool, string engineId)
     {
-        Assert.True(DeckNations.IsLegacyPool(pool));
-        Assert.Equal(faction, DeckNations.Canonical(pool));
-        Assert.True(Faction.TryNormalize(DeckNations.Canonical(pool), out var normalized));
-        Assert.Equal(faction, normalized);
+        Assert.True(DeckNations.IsSourceNation(pool));
+        Assert.Equal(engineId, DeckNations.Canonical(pool));
+        Assert.False(DeckNations.Same(pool, Faction.Soviet));
+        Assert.False(DeckNations.Same(pool, Faction.Germany));
+        Assert.False(DeckNations.Same(pool, Faction.USA));
+        Assert.False(DeckNations.Same(pool, Faction.Britain));
+    }
+    [Fact]
+    public void SourceNationsAreRegisteredAsEngineMajors()
+    {
+        OrcEngineHost.RegisterSourceNations();
+        foreach (var nation in DeckNations.SourceNations)
+        {
+            Assert.True(Faction.IsDefined(nation), $"{nation} 必须是已定义的引擎阵营");
+            Assert.True(FactionRules.IsMajorFaction(nation), $"{nation} 必须能当主国");
+            // 独立国家之间互为合法盟国（主国 av76 ＋ 盟国 soviet 是正常组合）。
+            Assert.True(FactionRules.IsValidAlly(Faction.Soviet, nation) || nation == Faction.Soviet);
+        }
+    }
+    [Fact]
+    public void MainNationAv76AndAllySovietIsALegalDeck()
+    {
+        var cards = new[] { Card("m", "av76"), Card("a", "soviet") };
+        var deck = Deck(["m", "m", "a", "a", "m"], new DeckOptions { TotalCards = 6, MainNation = "av76", AllyNation = "soviet" });
+        Assert.Empty(ConstructionRules.Validate(deck, cards));
     }
     [Theory]
-    [InlineData("av76", "soviet")] [InlineData("soviet", "av76")]
-    [InlineData("deran", "germany")] [InlineData("USG", "usa")] [InlineData("UN", "britain")]
-    public void MainAndAllyInDifferentSpellingsOfOneNationAreRejected(string main, string ally)
+    [InlineData("USG", "usg")] [InlineData("usg", "USG")]
+    public void DifferentSpellingsOfOneNationAreStillRejected(string main, string ally)
     {
         var cards = new[] { Card("m", main), Card("a", ally) };
         var deck = Deck(["m", "m"], new DeckOptions { TotalCards = 3, MainNation = main, AllyNation = ally });
@@ -81,26 +102,30 @@ public sealed class DeckConstructionTests
             s => s.Contains("同一个国家")); // 混编也要拦：引擎仍按主国＋盟国建配置。
     }
     [Fact]
-    public void CardsBelongToNationByCanonicalFactionNotByCardPoolFolder()
+    public void CardsBelongToTheirOwnNationNotToAnotherNation()
     {
-        var cards = new[] { Card("legacy", "av76"), Card("packed", "soviet"), Card("ally", Faction.Britain) };
-        // 主国写 pack 口径（soviet），旧卡池 av76 的苏联卡同样是主国卡。
-        var packMain = Deck(["legacy", "legacy", "packed", "packed", "ally"],
-            new DeckOptions { TotalCards = 6, MainNation = "soviet", AllyNation = "britain" });
-        Assert.Empty(ConstructionRules.Validate(packMain, cards));
-        Assert.Null(ConstructionRules.CannotAdd(packMain with { CardIds = packMain.CardIds[..4] }, cards[0]));
-        // 反过来：主国写旧卡池（av76），卡包口径的 soviet 卡也进得来。
-        var poolMain = packMain with { Options = packMain.Options with { MainNation = "av76" } };
-        Assert.Empty(ConstructionRules.Validate(poolMain, cards));
+        var cards = new[] { Card("av", "av76"), Card("su", "soviet"), Card("br", Faction.Britain) };
+        // 主国 soviet ＋ 盟国 britain：av76 的卡**不属于任何一个**，不能进这套卡组。
+        var deck = Deck(["av", "su", "su", "br", "br"], new DeckOptions { TotalCards = 6, MainNation = "soviet", AllyNation = "britain" });
+        Assert.Contains(ConstructionRules.Validate(deck, cards), s => s.Contains("不属于主国或盟国"));
+        Assert.NotNull(ConstructionRules.CannotAdd(deck, cards[0]));
+        // 换成主国 av76、盟国 soviet 就合法（只带这两国的卡）。
+        var av76Main = Deck(["av", "av", "su", "su", "av"],
+            new DeckOptions { TotalCards = 6, MainNation = "av76", AllyNation = "soviet" });
+        Assert.Empty(ConstructionRules.Validate(av76Main, cards));
     }
     [Fact]
-    public void AllyCopyLimitCountsBothSpellingsOfTheAllyNation()
+    public void AllyCopyLimitCountsTheAllyNationOnly()
     {
-        var cards = Enumerable.Range(0, 4).Select(i => Card("a" + i, "av76"))
-            .Concat(Enumerable.Range(0, 4).Select(i => Card("b" + i, "soviet"))).ToArray();
-        var ids = cards.SelectMany(c => Enumerable.Repeat(c.CardId, 4)).Take(13).ToArray();
-        var deck = Deck(ids, new DeckOptions { TotalCards = 14, MainNation = "germany", AllyNation = "soviet" });
-        Assert.Contains(ConstructionRules.Validate(deck, cards), s => s.Contains("12 张"));
+        var cards = Enumerable.Range(0, 4).Select(i => Card("a" + i, "soviet"))
+            .Concat(Enumerable.Range(0, 4).Select(i => Card("b" + i, "av76"))).ToArray();
+        // 12 张 soviet ＋ 1 张 av76：av76 不是盟国，不该把总数顶过 12。
+        var twelve = new[] { "a0", "a0", "a0", "a0", "a1", "a1", "a1", "a1", "a2", "a2", "a2", "a2", "b0" };
+        var deck = Deck(twelve, new DeckOptions { TotalCards = 14, MainNation = "germany", AllyNation = "soviet" });
+        Assert.DoesNotContain(ConstructionRules.Validate(deck, cards), s => s.Contains("12 张"));
+        // 再补一张 soviet 就到 13，超上限。
+        var thirteen = twelve.Append("a3").ToArray();
+        Assert.Contains(ConstructionRules.Validate(Deck(thirteen, deck.Options), cards), s => s.Contains("12 张"));
     }
     [Fact]
     public void RemovedGeneratedAndUnimplementedCardsNeverBecomePlayable()
@@ -172,10 +197,34 @@ public sealed class DeckConstructionTests
         var opponent = session.Host.Match.Players[1];
         Assert.Equal(opponent.Deck.Count, session.View.EnemyDeckCount);
         Assert.Equal(size, opponent.Deck.Count + opponent.Hand.Count);
-        Assert.Equal(Faction.Soviet, player.MainFaction); Assert.Equal(Faction.Germany, player.AllyFaction);
-        Assert.Equal(Faction.Soviet, session.Host.Match.Players[1].MainFaction);
-        Assert.Equal(Faction.Germany, session.Host.Match.Players[1].AllyFaction);
+        // 主国按卡组自己的国家标识写入引擎：av76 是独立国家，不该被折成 soviet。
+        Assert.Equal(DeckNations.Canonical(deck.Options.MainNation), player.MainFaction);
+        Assert.Equal(DeckNations.Canonical(deck.Options.AllyNation), player.AllyFaction);
+        Assert.Equal(DeckNations.Canonical(deck.Options.MainNation), session.Host.Match.Players[1].MainFaction);
+        Assert.Equal(DeckNations.Canonical(deck.Options.AllyNation), session.Host.Match.Players[1].AllyFaction);
         Assert.All(session.View.SelfHand, c => Assert.Contains(c.Definition.CardId, deck.CardIds));
+    }
+    // 用户报的场景：主国 av76 ＋ 盟国 苏联，点出击必须真的能开一局。
+    // 旧实现把 av76 折成 soviet → 引擎判「盟国＝主国」→ fail-fast 拒绝，构筑界面却放行。
+    [Fact]
+    public async Task Av76MainNationWithSovietAllyStartsARealMatch()
+    {
+        const string main = "av76", ally = "soviet";
+        var catalog = Catalog(); var service = new DeckConstructionService(catalog.Cards, Source);
+        var eligible = catalog.Cards.Where(c => service.PlayableIds.Contains(c.CardId) && c.Set == main).ToArray();
+        Assert.True(eligible.Length >= 5, $"{main} 的可实战卡不足以组成卡组");
+        var deck = new ConstructedDeck
+        {
+            Options = new DeckOptions { TotalCards = 17, MainNation = main, AllyNation = ally },
+            CardIds = eligible.SelectMany(c => Enumerable.Repeat(c.CardId, ConstructionRules.CopyLimit(c.Rarity))).Take(16).ToArray(),
+        };
+        Assert.Empty(service.Validate(deck));
+        using var session = await OrcMatchSession.CreateFromCatalogAsync(catalog.Cards, 5, "constructed", "unused",
+            sourceDirectory: Source, constructedDeck: deck, firstPlayerIndex: 0);
+        session.DriveOpponent = false;
+        await session.SettleMulliganAsync(interactive: false); session.Pump();
+        Assert.Equal(DeckNations.Canonical(main), session.Host.Match.Players[0].MainFaction);
+        Assert.Equal(DeckNations.Canonical(ally), session.Host.Match.Players[0].AllyFaction);
     }
     [Fact]
     public async Task FactoryRejectsInvalidDeckInsteadOfFallingBackToRandomCards()
