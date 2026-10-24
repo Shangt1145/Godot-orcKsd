@@ -16,6 +16,8 @@
     # 只产出「指定基线 → 本版」的单补丁（热更新用）：不发现历史基线、不生成兼容合集。
     # 历史基线跨太多版本时，pck 差异会让每个分片接近 1 GB，合集比完整包还大——那种情况不该发。
     [switch]$SingleBaseline,
+    # 更新器版本独立于游戏版本：补丁校验规则变化时必须进位，否则新旧更新器同名、玩家无法区分。
+    [string]$UpdaterVersion='1.2.0',
     [string]$UpdaterBuildRoot='H:\g\orc-offline-update',
     # Delivered-version ZIPs are archived so older players can still be patched. They are large
     # (200-300 MB each) and none of them ship, so they live outside the working tree by default;
@@ -118,6 +120,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Template setup failed.' }
 if (!(Test-Path -LiteralPath (Join-Path $BuildRoot 'Kards.Ui.sln'))) { throw 'Missing Kards.Ui.sln: Godot cannot export C# without a solution.' }
 
 # 2) Gate: the sync + build + unit tests + headless verify the project already trusts.
+#    必须先把引擎路径钉死：本机可能同时存在 OrC-KSD（旧基线）与 OrC-KSD-github（工作副本），
+#    让 MSBuild 自己去猜"同级目录"会挑错引擎，症状是一堆 CS0234 命名空间缺失。
+if (Test-Path -LiteralPath (Join-Path $EngineRoot 'src\Orc.Game\Orc.Game.csproj')) {
+    $env:ORC_ENGINE_ROOT = $EngineRoot
+    Write-Host "ENGINE_ROOT $EngineRoot"
+}
 if (!$SkipGate) {
     $testArgs = @('test', (Join-Path $sourceRoot 'tests/Kards.Ui.Tests.csproj'), '--nologo')
     if (!$FullTests) { $testArgs += @('--filter', 'FullyQualifiedName~WorkshopTests|FullyQualifiedName~IdleTurnDeliveryTests|FullyQualifiedName~TurnInputGateTests|FullyQualifiedName~InspectorCompositionTests|FullyQualifiedName~InspectorBackendBaselineTests|FullyQualifiedName~DiyEditorUpdateTests|FullyQualifiedName~DeckPackTests|FullyQualifiedName~DeckConstructionTests|FullyQualifiedName~DiyCardTests|FullyQualifiedName~DiyInspectorTests|FullyQualifiedName~SourceEffectConverterTests|FullyQualifiedName~DesktopAuthoringTests|FullyQualifiedName~NativeScriptHostIsolationTests|FullyQualifiedName~OfficialCardExpansionTests|FullyQualifiedName~OfflineUpdateTests') }
@@ -240,7 +248,7 @@ if($BaselineZip){
         $patch=$compatible
     }
 }
-$bootstrap=Join-Path (Split-Path -Parent $target) 'OrC-KSD-offline-updater-1.1.0-win-x64.zip'
+$bootstrap=Join-Path (Split-Path -Parent $target) "OrC-KSD-offline-updater-$UpdaterVersion-win-x64.zip"
 if(Test-Path -LiteralPath $bootstrap){Clear-Path $bootstrap}
 Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $updaterOutput|Select-Object -ExpandProperty FullName) -DestinationPath $bootstrap
 $packageSuffix = if($TestPackage){'-test'}else{''}
@@ -295,7 +303,7 @@ $fullDelivery = Join-Path $delivery 'full'
 $patchDelivery = Join-Path $delivery 'patches'
 $notesDelivery = Join-Path $delivery 'notes'
 $verificationDelivery = Join-Path $delivery 'verification'
-$updaterDelivery = Join-Path $distRoot 'updaters/1.1.0'
+$updaterDelivery = Join-Path $distRoot "updaters/$UpdaterVersion"
 New-Item -ItemType Directory -Path $fullDelivery,$patchDelivery,$notesDelivery,$verificationDelivery,$updaterDelivery -Force | Out-Null
 Copy-Item -LiteralPath $zip -Destination $fullDelivery -Force
 Copy-Item -LiteralPath $bootstrap -Destination $updaterDelivery -Force

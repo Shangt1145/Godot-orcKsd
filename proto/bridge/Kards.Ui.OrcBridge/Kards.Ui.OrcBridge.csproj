@@ -20,8 +20,9 @@
   -->
   <PropertyGroup>
     <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and '$(ORC_ENGINE_ROOT)' != ''">$(ORC_ENGINE_ROOT)/src/Orc.Game</OrcEngineRoot>
-    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and Exists('$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game/Orc.Game.csproj')">$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game</OrcEngineRoot>
+    <!-- 先认 -github 后缀：本机同时存在 OrC-KSD（旧基线）与 OrC-KSD-github（工作副本）时，后者才是对的。 -->
     <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and Exists('$(MSBuildThisFileDirectory)../../../../OrC-KSD-github/src/Orc.Game/Orc.Game.csproj')">$(MSBuildThisFileDirectory)../../../../OrC-KSD-github/src/Orc.Game</OrcEngineRoot>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and Exists('$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game/Orc.Game.csproj')">$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game</OrcEngineRoot>
     <OrcEngineRoot Condition="'$(OrcEngineRoot)' == ''">$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game</OrcEngineRoot>
   </PropertyGroup>
 

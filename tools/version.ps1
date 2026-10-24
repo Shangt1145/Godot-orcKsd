@@ -17,9 +17,11 @@ function Set-Version([string]$value) {
     if ($value -notmatch $pattern) {
         throw "版本号格式无效：$value （应为 MAJOR.MINOR.PATCH，可加 -alpha.N / -beta.N / -hotfix[.N]；预发布热修复可用 0.0.0betaN.hotfix[.N]）"
     }
-    # 预发布不占号：alpha/beta 期间三位数字必须恒为 0.0.0，首个正式版才是 0.1.0。
-    if ($value -match '-(alpha|beta)\.\d+$' -and $value -notmatch '^0\.0\.0-') {
-        throw "alpha/beta 不占用版本号：三位数字必须恒为 0.0.0（例如 0.0.0-beta.1）"
+    # 预发布默认不占号：alpha/beta 期间三位数字必须恒为 0.0.0，首个正式版才是 0.1.0。
+    # 例外：整代重写允许用 X.0.0-alpha.N 宣告（如手机版独立成代 → 2.0.0-alpha.1）。
+    # 只放行 MINOR/PATCH 均为 0 的形态，避免 0.1.2-alpha.1 这种"既占号又预发布"的写法。
+    if ($value -match '-(alpha|beta)\.\d+$' -and $value -notmatch '^0\.0\.0-' -and $value -notmatch '^[1-9]\d*\.0\.0-') {
+        throw "alpha/beta 不占用版本号：三位数字须为 0.0.0（例如 0.0.0-beta.1），或用 X.0.0-alpha.N 宣告整代重写"
     }
     if ($value -match '-hotfix' -and $value -match '^0\.0\.0') {
         throw "hotfix 用于已发布版本：0.0.0 尚未发布，不能有 hotfix"

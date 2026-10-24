@@ -32,7 +32,7 @@ public partial class Updater : Control
         var margin=new MarginContainer();AddChild(margin);margin.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         foreach(var edge in new[]{"left","right","top","bottom"})margin.AddThemeConstantOverride("margin_"+edge,30);
         var column=new VBoxContainer();column.AddThemeConstantOverride("separation",16);margin.AddChild(column);
-        var title=Text(column,"OrC-KSD  离线更新 1.1",30);title.Modulate=new Color("d5c28c");
+        var title=Text(column,"OrC-KSD  离线更新 1.2",30);title.Modulate=new Color("d5c28c");
         Text(column,"选择补丁，点击更新。卡组、DIY 卡和导入卡图会保留。",16);
         _folder=Text(column,"",16);_chooseFolder=Button(column,"选择游戏文件夹…",()=>Choose(true));
         _package=Text(column,"尚未选择补丁",16);_choosePatch=Button(column,"选择离线补丁…",()=>Choose(false));
