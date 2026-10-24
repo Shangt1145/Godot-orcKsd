@@ -59,11 +59,67 @@ MAJOR.MINOR.PATCH[-预发布标识]
 
 脚本会校验格式（含 `0.0.0-alpha.N` / `0.0.0-beta.N` / `x.y.z-hotfix[.N]`）并同时更新 `VERSION` 与 `project.godot`。
 
+## 发行规则（全量与增量）
+
+2026-10-24 补。此前这里只规定"版本号叫什么"，没规定"包怎么发"——于是出现 11 个发行目录只有 3 个有 tag、
+单来源补丁 943 MB、tag 与二进制对不上的局面。以下规则由 `tools/check-consistency.ps1` 机器核对。
+
+### 1. 每次发版必须产出四件套
+
+```
+dist/releases/<版本>/
+  full/         OrC-KSD-<版本>-win-x64.zip                                   完整包（新玩家）
+  patches/      OrC-KSD-<版本>-from-<源构建12>-to-<目标构建12>.orcupdate      增量（老玩家）
+  notes/        发行说明 + offline-update-report.json
+  verification/ 导出、离线更新、升级后 EXE、工坊 四份日志
+  SHA256.txt    相对本目录的校验和
+```
+
+**全量与增量每次一起出**，不允许"这次只给补丁"或"这次只给全量"。
+
+### 2. 增量的基线只认上一个已发布版本
+
+- 主基线＝`dist/releases/<上一版>/full/*.zip`（或归档目录 `H:\g\baselines`）。
+- 需要跨版本兼容时显式 `-AdditionalBaselineZips`，**且每个分片 ≤ 150 MB**；超了只发全量，不发补丁。
+- 反例（2026-10-24）：beta.1→beta.6 兼容分片单个 **943 MB**，合集比完整包还大——禁止再这么发。
+
+### 3. 发版顺序是硬约束
+
+| 步 | 动作 | 为什么 |
+|---|---|---|
+| 1 | `git status` 为 0 | 有未提交改动时出的包对应不到任何提交 |
+| 2 | `tools/version.ps1 -Set <版本>` | 版本号唯一真源，同时写 `project.godot` |
+| 3 | `tools/release.ps1 -BaselineZip <上一版 zip> -SingleBaseline` | 出包 |
+| 4 | **提交**（版本号 + 发行说明） | 让包有对应 commit |
+| 5 | `git tag -a v<版本>` | 打标 |
+| 6 | push 分支 + tag | 远端可追溯 |
+| 7 | GitHub Release 指向该 tag | 资产＝补丁 + notes + SHA256；全量 >1 GB 不传，说明里指路 |
+| 8 | `tools/check-consistency.ps1` → `CONSISTENCY_OK` | 收工前最后一道门 |
+
+### 4. 命名一一对应
+
+| 载体 | 形态 | 示例 |
+|---|---|---|
+| `VERSION` | 版本号原文 | `0.0.0beta7.hotfix.3` |
+| 发行目录 | 与 VERSION 完全相同 | `dist/releases/0.0.0beta7.hotfix.3/` |
+| git tag | `v` + VERSION 原文 | `v0.0.0beta7.hotfix.3` |
+| Release 标题 | VERSION 原文 + 摘要 | `0.0.0beta7.hotfix.3 — 烟幕生命周期修复` |
+
+### 5. 禁止事项
+
+- 禁止在未提交的工作区出包（本轮乱象主因）
+- 禁止把 >150 MB 的分片当增量发布
+- 禁止手改 `RELEASE_INDEX.md`（由脚本生成）
+- 禁止同时开两个"正在发版"的树；一次只有一个窗口在改代码
+
 ## 当前状态
 
-2026-10-24 用户指定本次预发布增量热修复为 **`0.0.0beta5.hotfix`**。版本脚本额外支持 `0.0.0betaN.hotfix[.N]`，`VERSION`、游戏显示版本和发行文件名使用同一原文。此为已发布 beta 的热修复命名扩展，不占用三位正式版本号；增量来源仍按实际文件清单哈希匹配，当前来源为 `0.0.0-beta.5`。
+**不要在本文档里记当前版本**——它会过期（本文档曾长期停在 beta.3）。看这两处，都是机器生成的：
 
-当前版本为 `0.0.0-beta.3`（2026-10-20），详见 [Beta.3 发行记录](RELEASE_BETA3_20261020.md)。以下保留历史阶段说明。
+- [发行索引](RELEASE_INDEX.md)：每个版本是否有 tag、包体多大、结构是否完整
+- [项目现状](../planning/STATUS.md)：此刻真实状态与接下来三件事
+
+以下为历史阶段沿革，仅供参考。
 
 `0.0.0-alpha.22`（短写 `A.22`）—— 精简菜单入口、交互动效与收藏连续滚动。
 顶部统一导航，首页一个开局主操作，卡组新建只保留封面入口，构筑从卡组库进入。新增真实阶段 splash、可打断切页、卡牌展开／鼠标跟随和悬停反馈，兼容减弱动效。收藏删除分页，按滚动位置渲染附近行并保留返回位置。验收见 `MENU_INTERACTION_ACCEPTANCE.md`。A.21 的原版视觉研究和独立菜单主题继续沿用，见 `KARDS_MENU_RESEARCH_20261011.md`、`MENU_UI_ACCEPTANCE.md`。

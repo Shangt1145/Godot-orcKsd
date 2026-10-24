@@ -19,7 +19,7 @@ dotnet build -p:OrcEngineRoot="D:\dev\OrC-KSD\src\Orc.Game"
 另需 .NET 8/9 SDK 与 Godot 4.7 **.NET(mono)** 版；编辑器一键入口 `tools\open-editor.bat`，
 构建/验证/运行 `tools\run.ps1`。原版美术不进 Git，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
-**当前发行：0.0.0-beta.7（2026-10-24）**。本版包含机制兼容修复、对局演出修复及原版外观/联机表情；发行文件、升级范围和验证见 [Beta.6 发行说明](docs/release/RELEASE_BETA6_20261024.md)。
+**当前发行：0.0.0beta7.hotfix.3（2026-10-24）**。烟幕生命周期修复；发行文件、升级范围与验证见 [hotfix.3 发行说明](docs/release/RELEASE_BETA7_HOTFIX3_20261024.md)，全部版本状态见 [发行索引](docs/release/RELEASE_INDEX.md)。
 
 **多人能力边界**：本地 DIY 与卡组构筑可用；两人房间目前只接受已装载卡包的 `pack/` 卡，尚不支持各玩家携带 `diy/` 卡及自动分发规则、卡图的完整闭环。原版美术不进入 Git，发行包已携带；源码运行须另行准备这些素材，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
