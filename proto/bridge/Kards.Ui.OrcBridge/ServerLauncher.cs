@@ -17,7 +17,8 @@ public sealed class ServerLauncher : IAsyncDisposable
     public static Task<ServerLauncher> StartAsync(string packsDirectory, string sandboxDirectory, CancellationToken ct = default)
         => StartAsync([packsDirectory], sandboxDirectory, ct);
     public static async Task<ServerLauncher> StartAsync(IReadOnlyList<string> packsDirectories, string sandboxDirectory,
-        CancellationToken ct = default, int? aiSeat = null, IReadOnlyList<string>? aiDeck = null)
+        CancellationToken ct = default, int? aiSeat = null, IReadOnlyList<string>? aiDeck = null,
+        bool fixedDeckForVerification = false)
     {
         EnableBundledRuntime();
         var manager = new ServerManager(ResolveServerDll());
@@ -29,6 +30,7 @@ public sealed class ServerLauncher : IAsyncDisposable
             var id = Guid.NewGuid().ToString("N");
             var reply = await manager.SpawnAsync(new SpawnRequest {
                 InstanceId = id, PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory,
+                DeckRules = fixedDeckForVerification ? "none" : "strict",
                 RunDir = Path.Combine(sandboxDirectory, "instances", id), StartupTimeout = TimeSpan.FromSeconds(60),
                 Seats = Enumerable.Range(0, 2).Select(n => new SeatSpawn {
                     Kind = n == aiSeat ? "ai" : "agent", DisplayName = n == aiSeat ? "引擎 AI" : null,

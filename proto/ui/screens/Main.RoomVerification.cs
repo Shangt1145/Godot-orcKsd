@@ -613,7 +613,11 @@ public partial class Main
         var smokeLifecycle = OS.GetCmdlineUserArgs().Contains("--smoke-lifecycle");
         try
         {
-            if (smokeLifecycle) _room.ActiveDeckSource = () => Enumerable.Repeat("pack/builtin/panzer_iia", 39).ToArray();
+            if (smokeLifecycle)
+            {
+                _room.FixedDeckForVerification = true;
+                _room.ActiveDeckSource = () => Enumerable.Repeat("pack/builtin/panzer_iia", 39).ToArray();
+            }
             Show("room");
             await _room.OpenAsync();
             var host = _room.Feed ?? throw new Exception("房主没有连上");

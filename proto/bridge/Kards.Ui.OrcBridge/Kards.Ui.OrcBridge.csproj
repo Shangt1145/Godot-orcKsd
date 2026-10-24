@@ -8,13 +8,27 @@
 
   <!--
     Engine checkout root. The UI never copies engine sources; it references that checkout.
-    Override with: dotnet build -p:OrcEngineRoot=...
-    Default points at the dedicated GitHub checkout. Its exact revision and pre-existing local
-    changes are recorded in docs/engine/ENGINE_INTEGRATION_BASELINE.md; it is not assumed to be clean.
+
+    解析顺序（任何人 clone 本仓库都不用改文件）：
+      1. dotnet build -p:OrcEngineRoot=<引擎>/src/Orc.Game
+      2. 环境变量 ORC_ENGINE_ROOT=<引擎仓库根>（tools/*.ps1 用的就是这个）
+      3. 同级目录约定：<本仓库上级>/OrC-KSD/src/Orc.Game 或 .../OrC-KSD-github/src/Orc.Game
+
+    此前这里写死成本机绝对路径（H:\Working Folder\OrC-KSD-github\src\Orc.Game），
+    引擎开发者 clone 下来直接构建失败——2026-10-24 反馈。
+    找不到工程时由 VerifyOrcEngineRoot 给出明确提示，而不是让 ProjectReference 静默报错。
   -->
   <PropertyGroup>
-    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == ''">H:\Working Folder\OrC-KSD-github\src\Orc.Game</OrcEngineRoot>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and '$(ORC_ENGINE_ROOT)' != ''">$(ORC_ENGINE_ROOT)/src/Orc.Game</OrcEngineRoot>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and Exists('$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game/Orc.Game.csproj')">$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game</OrcEngineRoot>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == '' and Exists('$(MSBuildThisFileDirectory)../../../../OrC-KSD-github/src/Orc.Game/Orc.Game.csproj')">$(MSBuildThisFileDirectory)../../../../OrC-KSD-github/src/Orc.Game</OrcEngineRoot>
+    <OrcEngineRoot Condition="'$(OrcEngineRoot)' == ''">$(MSBuildThisFileDirectory)../../../../OrC-KSD/src/Orc.Game</OrcEngineRoot>
   </PropertyGroup>
+
+  <Target Name="VerifyOrcEngineRoot" BeforeTargets="PrepareForBuild;ResolveProjectReferences">
+    <Error Condition="!Exists('$(OrcEngineRoot)/Orc.Game.csproj')" Code="ORC001"
+           Text="找不到引擎工程：$(OrcEngineRoot)/Orc.Game.csproj。三种解决办法（任选其一）：① 设环境变量 ORC_ENGINE_ROOT 指向引擎仓库根目录；② dotnet build -p:OrcEngineRoot=&lt;引擎仓库&gt;/src/Orc.Game；③ 把引擎仓库克隆到本仓库的同级目录并命名 OrC-KSD。" />
+  </Target>
 
   <ItemGroup>
     <!-- 中立 UI 契约（view 三件）：全局导入，保持源码零改动。 -->

@@ -17,6 +17,7 @@ public partial class RoomScreen : VBoxContainer
     private int _lifecycle;
     private bool _connecting;
     internal bool AllowSampleDeck { get; set; }
+    internal bool FixedDeckForVerification { get; set; }
     private int? _aiSeat;
     private bool _reconnectObserver;
     private Button? _admissions;
@@ -234,7 +235,8 @@ public partial class RoomScreen : VBoxContainer
                 .Where(directory => File.Exists(Path.Combine(directory, "manifest.json")))
                 .OrderBy(directory => directory, StringComparer.Ordinal)
                 .ToArray();
-            var server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null);
+            var server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null,
+                fixedDeckForVerification: FixedDeckForVerification);
             if (lifecycle != _lifecycle) { await server.DisposeAsync(); return; }
             _server = server;
             Ui(() => Say($"● 就绪 · 端口 {_server.Port}"));
