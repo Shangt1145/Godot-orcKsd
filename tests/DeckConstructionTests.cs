@@ -83,6 +83,31 @@ public sealed class DeckConstructionTests
         Assert.True(DeckNations.Same(chinese, engineId));
         Assert.False(DeckNations.Same(chinese, "av76"));
     }
+    // 星盟＝NSF：卡池目录与卡面 set 写中文「星盟」，引擎 id 取全小写 nsf（引擎只收小写 ASCII）。
+    // 它是独立国家，与苏/德/美/英并列，不是谁的马甲。
+    [Theory]
+    [InlineData("星盟", "nsf")] [InlineData("NSF", "nsf")] [InlineData("nsf", "nsf")]
+    public void StarLeagueIsNsfAndHasOneIdentity(string written, string engineId)
+    {
+        Assert.Equal(engineId, DeckNations.Canonical(written));
+        Assert.True(DeckNations.Same("星盟", "NSF"));
+        Assert.False(DeckNations.Same("星盟", Faction.Soviet));
+    }
+    [Fact]
+    public void StarLeagueIsAMajorNationAndItsCardsCompileToIt()
+    {
+        OrcEngineHost.RegisterCustomNations();
+        Assert.True(DeckNations.IsCustomNation("NSF"));
+        Assert.True(Faction.IsDefined("nsf"));
+        Assert.True(FactionRules.IsMajorFaction("nsf"));
+        // 卡面上的 set 是「星盟」：以前会被 CardPoolCompiler 判成 `set '星盟' is not a faction`。
+        Assert.True(CardPoolCompiler.TryCompile(Card("星盟/c/-1", "星盟") with { Cost = 1 }, out var compiled, out var why), why);
+        Assert.Equal("nsf", compiled!.Definition.Faction);
+        // 主国 NSF ＋ 盟国 soviet 是合法组合，星盟的卡算主国卡。
+        var cards = new[] { Card("x", "星盟"), Card("y", "soviet") };
+        var deck = Deck(["x", "x", "y", "y", "x"], new DeckOptions { TotalCards = 6, MainNation = "NSF", AllyNation = "soviet" });
+        Assert.Empty(ConstructionRules.Validate(deck, cards));
+    }
     [Fact]
     public void PoolNationsAreRegisteredAsEngineMajors()
     {

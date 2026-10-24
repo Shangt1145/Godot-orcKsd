@@ -185,8 +185,11 @@ public partial class Main : Control
         _deckLibrary = new DeckLibraryScreen(); _deckLibrary.Initialize(_decks, _deckService, _textures);
         _deckPackPicker = new DeckPackPicker(); AddChild(_deckPackPicker); _deckPackPicker.Initialize(_deckService);
         void NewDeck() => _deckPackPicker.Open([], packs => {
+            // 卡池里的 set 是书写形式（星盟 / USG …），主国清单里是同一国家的规范名（NSF / USG）：
+            // 两边按 DeckNations 对齐后再取，否则星盟卡组会被判成「没有可用国家」而退回 av76。
             var countries = _deckService.PlayableCards.Where(c => packs.Contains(DeckCardPacks.Of(c.CardId)))
-                .Select(c => c.Set).Where(ConstructionRules.MainNations.Contains).Distinct().ToArray();
+                .Select(c => ConstructionRules.MainNations.FirstOrDefault(n => DeckNations.Same(n, c.Set)))
+                .OfType<string>().Distinct().ToArray();
             // 主盟国按 DeckNations 判同（只认同一国家的不同写法，如 USG / usg）；
             // 直接取“第二个不同的字符串”曾经把 av76 与 soviet 当成一国又当成两国，两头打架。
             var mainNation = countries.FirstOrDefault() ?? "av76";

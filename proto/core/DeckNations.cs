@@ -38,8 +38,9 @@ public static class DeckNations
     /// 内置阵营之外的独立国家（**书写形式**，即界面与存档里用的那个名字）。
     /// 它们与内置阵营地位相同，只是不在引擎的常量表里；引擎 id 由 <see cref="Canonical"/> 归一
     /// （引擎要求全小写 ASCII，故 <c>USG</c> / <c>UN</c> 的引擎 id 是 <c>usg</c> / <c>un</c>）。
+    /// <c>NSF</c>＝星盟（卡池目录名是中文「星盟」，见 <see cref="Synonyms"/>）。
     /// </summary>
-    public static IReadOnlyList<string> CustomNations { get; } = ["av76", "deran", "USG", "UN"];
+    public static IReadOnlyList<string> CustomNations { get; } = ["av76", "deran", "USG", "UN", "NSF"];
 
     /// <summary>同一个国家的另一种写法（中文名 → 引擎 id）。</summary>
     private static readonly Dictionary<string, string> Synonyms = new(StringComparer.Ordinal)
@@ -55,6 +56,9 @@ public static class DeckNations
         ["芬兰"] = "finland",
         ["澳新联军"] = "anzac",
         ["中立"] = "neutral",
+        // 星盟＝NSF（同一个国家的两种写法）。卡池目录与卡面 `set` 用中文「星盟」，
+        // 引擎 id 必须全小写 ASCII，故取 nsf。
+        ["星盟"] = "nsf",
     };
 
     private static readonly Dictionary<string, string> CanonicalIds = BuildCanonical();

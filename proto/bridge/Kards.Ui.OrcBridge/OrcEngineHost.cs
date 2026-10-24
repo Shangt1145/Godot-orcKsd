@@ -50,8 +50,9 @@ public static class OrcEngineHost
     /// 初始化（**幂等**；已初始化＝直接返回，不重建）。冷加载失败明细见 <see cref="EngineHost.LoadFailures"/>。
     /// </summary>
     /// <param name="baseDirectory">包基目录（约定：`&lt;base&gt;/plugins` 与 `&lt;base&gt;/packs`；null/不存在＝无磁盘包）。</param>
-    /// <param name="uiPluginRoot">UI 插件包的插件根（缺省＝程序集输出目录下的 `package/plugins`）。</param>
-    /// <param name="builtInPluginRoot">内置插件的插件根（缺省＝同上）。</param>
+    /// <param name="uiPluginRoot">UI 插件包的插件根（缺省＝同 <paramref name="builtInPluginRoot"/> 的解析结果）。</param>
+    /// <param name="builtInPluginRoot">内置插件的插件根（缺省＝构建输出下的 `package/plugins`；
+    /// 该目录不存在时（Android 导出）改用嵌入清单物化出的目录）。</param>
     public static EngineHost Initialize(
         string? baseDirectory = null,
         string? uiPluginRoot = null,
@@ -75,13 +76,16 @@ public static class OrcEngineHost
                 : new PackageDiscoveryReport(Array.Empty<DiscoveredPackage>(), Array.Empty<string>());
 
             foreach (var package in discovery.Packages) NativeWorkshop.RegisterNations(package.RootDirectory);
+            // 插件根：桌面＝构建输出自带的 package/plugins，移动端＝物化嵌入清单的目录
+            // （Android 导出不带松散文件，只靠 AppContext.BaseDirectory 会直接「清单缺失」）。
+            var pluginRoot = builtInPluginRoot ?? PluginManifests.ResolveRoot();
             _host = EngineHost.FromDiscovery(
                 discovery,
                 evaluator: null,
                 extraPackages:
                 [
-                    BuiltInPluginPackage.Load(builtInPluginRoot),
-                    .. UiPluginPackage.Packages(uiPluginRoot),
+                    BuiltInPluginPackage.Load(pluginRoot),
+                    .. UiPluginPackage.Packages(uiPluginRoot ?? pluginRoot),
                 ]);
 
             var packages = _host.CreateSnapshot().CardPacks;

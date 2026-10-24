@@ -11,7 +11,9 @@ public partial class SetupDeckBack : Control
     private bool _boundResize;
     public bool Selected {get;set;}
     public bool Hovered {get;set;}
-    public static string NationLabel(string id)=>DiyCardCompiler.Nations.FirstOrDefault(n=>string.Equals(n.Id,id,StringComparison.OrdinalIgnoreCase))?.Label??WorkshopVisuals.NationName(id);
+    // 国家显示名：先归一到规范国籍再查（「星盟」与「NSF」是同一个国家，显示同一个名字），
+    // 否则卡池里的中文目录名会显示成中文、下拉框显示成 NSF，看着像两个国家。
+    public static string NationLabel(string id)=>DiyCardCompiler.Nations.FirstOrDefault(n=>string.Equals(n.Id,DeckNations.Canonical(id),StringComparison.OrdinalIgnoreCase))?.Label??WorkshopVisuals.NationName(id);
     public void Bind(ConstructedDeck? deck,TextureCache textures)
     {
         _textures=textures;_deckId=deck?.Id;_mainNation=deck?.Options.MainNation;

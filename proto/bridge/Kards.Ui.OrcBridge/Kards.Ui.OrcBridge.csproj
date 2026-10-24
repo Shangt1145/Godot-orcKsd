@@ -42,6 +42,11 @@
     <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/ops/*.csx.tpl" LogicalName="Kards.Ui.OrcBridge.DiyOps.%(Filename)%(Extension)" />
     <!-- OrC 导入：引擎触发模板（effectHost 语义原版，31 张）——模板 id 与 DslEffectInstance 对齐。 -->
     <EmbeddedResource Include="$(OrcEngineRoot)/EffectParsing/Templates/*.tpl.json" LogicalName="Kards.Ui.OrcBridge.OrcTpl.%(Filename)%(Extension)" />
+    <!-- 内置插件清单（引擎仓库是单一真源，不在本仓库另存副本）：桌面构建把清单复制到
+         <输出>/package/plugins 供引擎读；Android 导出不带这些松散文件，故构建期嵌入，
+         运行期由 PluginManifests 物化到可写目录（否则启动即报「内置插件清单缺失」）。 -->
+    <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/manifest.json" LogicalName="Kards.Ui.OrcBridge.Plugins.orc.builtin.core.manifest.json" />
+    <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.UI/package/plugins/orc.builtin.ui/manifest.json" LogicalName="Kards.Ui.OrcBridge.Plugins.orc.builtin.ui.manifest.json" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
     <!-- 迁移 S8：宿主/包管理（EngineHost / CardPackLoader）、脚本求值器与内置 UI 插件（投影提供者）。 -->
