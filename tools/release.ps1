@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = (Join-Path $PSScriptRoot 'godot-wait.ps1'),
     [string]$Preset = 'Windows Desktop',
@@ -11,6 +11,8 @@ param(
     [string]$BaselineZip='',
     [string]$BaselineVersion='',
     [string[]]$AdditionalBaselineZips=@(),
+    # Zero infers previous betas, or all betas through N for a betaN.hotfix release.
+    [ValidateRange(0, 1000)][int]$CompatibleThroughBeta=0,
     [string]$UpdaterBuildRoot='H:\g\orc-offline-update',
     # Delivered-version ZIPs are archived so older players can still be patched. They are large
     # (200-300 MB each) and none of them ship, so they live outside the working tree by default;
@@ -50,13 +52,43 @@ function Clear-Path([string]$Path) {
 $sourceRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
 $version = (Get-Content -LiteralPath (Join-Path $sourceRoot 'VERSION') -Raw).Trim()
+# Keep the previous same-version delivery even when compatibility selects an older primary source.
+$previousDelivery=Join-Path $sourceRoot "dist/releases/$version/full/OrC-KSD-$version-win-x64.zip"
+if(!$TestPackage -and (Test-Path -LiteralPath $previousDelivery)){
+    $preservedDir=if([IO.Path]::IsPathRooted($BaselineArchiveDir)){[IO.Path]::GetFullPath($BaselineArchiveDir)}else{Join-Path $sourceRoot $BaselineArchiveDir}
+    New-Item -ItemType Directory -Path $preservedDir -Force|Out-Null
+    $previousHash=(Get-FileHash -LiteralPath $previousDelivery -Algorithm SHA256).Hash
+    $preservedZip=Join-Path $preservedDir ($previousHash+'.zip')
+    if(!(Test-Path -LiteralPath $preservedZip)){Copy-Item -LiteralPath $previousDelivery -Destination $preservedZip}
+}
+$baselineVersions=@{}
+if(!$TestPackage){
+    $throughBeta=$CompatibleThroughBeta
+    if(!$throughBeta -and $version -match '^0\.0\.0beta([1-9]\d*)\.hotfix(?:\.[1-9]\d*)?$'){$throughBeta=[int]$Matches[1]}
+    elseif(!$throughBeta -and $version -match '^0\.0\.0-beta\.([1-9]\d*)$'){$throughBeta=[int]$Matches[1]-1}
+    if($throughBeta -gt 0){
+        $archiveSearch=if([IO.Path]::IsPathRooted($BaselineArchiveDir)){$BaselineArchiveDir}else{Join-Path $sourceRoot $BaselineArchiveDir}
+        $discovered=@(& (Join-Path $PSScriptRoot 'find-update-baselines.ps1') -SearchRoots @((Join-Path $sourceRoot 'dist/releases'),$archiveSearch) -ThroughBeta $throughBeta)
+        foreach($known in $discovered){$baselineVersions[[IO.Path]::GetFullPath($known.Path)]=$known.Version}
+        if(!$BaselineZip){$BaselineZip=$discovered[-1].Path;$BaselineVersion=$discovered[-1].Version}
+        $primary=[IO.Path]::GetFullPath($BaselineZip)
+        $AdditionalBaselineZips=@(@($AdditionalBaselineZips)+@($discovered.Path)|Where-Object{[IO.Path]::GetFullPath($_) -ne $primary}|Sort-Object -Unique)
+        if($AdditionalBaselineZips.Count -gt 63){throw 'At most 64 source archives are supported.'}
+        Write-Host "COMPATIBLE_BASELINES_FOUND through=beta.$throughBeta archives=$($discovered.Count)"
+    }
+}
 # Preserve the previously delivered archive before publishing another build with the same display version.
 if($TestPackage){
     $SkipGate = $true
     if(!(Test-Path -LiteralPath (Join-Path $sourceRoot $KnownIssuesFile))){throw 'A test package must include its known-issues document.'}
     $BaselineZip = ''; $AdditionalBaselineZips = @()
 }
-if(!$TestPackage -and !$BaselineZip){$candidate=Join-Path $sourceRoot "dist/OrC-KSD-$version-win-x64.zip";if(Test-Path -LiteralPath $candidate){$BaselineZip=$candidate}}
+if(!$TestPackage -and !$BaselineZip){
+    foreach($candidate in @(
+        (Join-Path $sourceRoot "dist/releases/$version/full/OrC-KSD-$version-win-x64.zip"),
+        (Join-Path $sourceRoot "dist/OrC-KSD-$version-win-x64.zip")
+    )){if(Test-Path -LiteralPath $candidate){$BaselineZip=$candidate;break}}
+}
 if($BaselineZip){
     $BaselineZip=[IO.Path]::GetFullPath($BaselineZip)
     if(!(Test-Path -LiteralPath $BaselineZip)){throw 'Baseline ZIP does not exist.'}
@@ -187,7 +219,7 @@ if($BaselineZip){
     if($AdditionalBaselineZips.Count){
         $parts=@($patch);$sourceIds=@($patchInfo.Source.BuildId)
         foreach($additional in $AdditionalBaselineZips){
-            $additionalVersion=$BaselineVersion
+            $additionalVersion=if($baselineVersions.ContainsKey($additional)){$baselineVersions[$additional]}else{$BaselineVersion}
             $archive=[IO.Compression.ZipFile]::OpenRead($additional)
             try{
                 $entry=$archive.GetEntry('.orcksd-build.json')
@@ -254,18 +286,26 @@ if($patch){
     Write-Host "OFFLINE_UPGRADE_EXE_VERIFY_OK $upgrade"
   }
 }
-$delivery = Join-Path $sourceRoot 'dist'
-New-Item -ItemType Directory -Path $delivery -Force | Out-Null
-Copy-Item -LiteralPath $zip -Destination $delivery -Force
-Copy-Item -LiteralPath $bootstrap -Destination $delivery -Force
-if($patch){Copy-Item -LiteralPath $patch -Destination $delivery -Force;Copy-Item -LiteralPath $patchLog -Destination (Join-Path $delivery 'verify-offline-update.log') -Force;Copy-Item -LiteralPath $upgradedLog -Destination (Join-Path $delivery 'verify-upgraded-game.log') -Force}
-Copy-Item -LiteralPath $smokeLog -Destination (Join-Path $delivery 'verify-export.log') -Force
-Copy-Item -LiteralPath $workshopLog -Destination (Join-Path $delivery 'verify-workshop.log') -Force
-$deliveredZip = Join-Path $delivery ([IO.Path]::GetFileName($zip))
-$deliveredFiles=@($deliveredZip,(Join-Path $delivery ([IO.Path]::GetFileName($bootstrap))))
-if($patch){$deliveredFiles+=Join-Path $delivery ([IO.Path]::GetFileName($patch))}
-Get-FileHash -LiteralPath $deliveredFiles -Algorithm SHA256 | Format-List | Out-File (Join-Path $delivery 'SHA256.txt') -Encoding utf8
+$distRoot = Join-Path $sourceRoot 'dist'
+$delivery = Join-Path $distRoot "releases/$version$packageSuffix"
+$fullDelivery = Join-Path $delivery 'full'
+$patchDelivery = Join-Path $delivery 'patches'
+$notesDelivery = Join-Path $delivery 'notes'
+$verificationDelivery = Join-Path $delivery 'verification'
+$updaterDelivery = Join-Path $distRoot 'updaters/1.1.0'
+New-Item -ItemType Directory -Path $fullDelivery,$patchDelivery,$notesDelivery,$verificationDelivery,$updaterDelivery -Force | Out-Null
+Copy-Item -LiteralPath $zip -Destination $fullDelivery -Force
+Copy-Item -LiteralPath $bootstrap -Destination $updaterDelivery -Force
+if($patch){Copy-Item -LiteralPath $patch -Destination $patchDelivery -Force;Copy-Item -LiteralPath $patchLog -Destination (Join-Path $verificationDelivery 'verify-offline-update.log') -Force;Copy-Item -LiteralPath $upgradedLog -Destination (Join-Path $verificationDelivery 'verify-upgraded-game.log') -Force}
+Copy-Item -LiteralPath $smokeLog -Destination (Join-Path $verificationDelivery 'verify-export.log') -Force
+Copy-Item -LiteralPath $workshopLog -Destination (Join-Path $verificationDelivery 'verify-workshop.log') -Force
+$deliveredZip = Join-Path $fullDelivery ([IO.Path]::GetFileName($zip))
+$deliveredFiles=@($deliveredZip,(Join-Path $updaterDelivery ([IO.Path]::GetFileName($bootstrap))))
+if($patch){$deliveredFiles+=Join-Path $patchDelivery ([IO.Path]::GetFileName($patch))}
+$checksumLines=$deliveredFiles|ForEach-Object{$hash=Get-FileHash -LiteralPath $_ -Algorithm SHA256;$hash.Hash+'  '+[IO.Path]::GetRelativePath($delivery,$hash.Path).Replace('\','/')}
+[IO.File]::WriteAllLines((Join-Path $delivery 'SHA256.txt'),[string[]]$checksumLines,[Text.UTF8Encoding]::new($false))
 $fullBytes=(Get-Item -LiteralPath $zip).Length;$bootstrapBytes=(Get-Item -LiteralPath $bootstrap).Length;$patchBytes=if($patch){(Get-Item -LiteralPath $patch).Length}else{0}
-@{version=$version;buildId=$buildInfo.BuildId;fullPackageBytes=$fullBytes;bootstrapBytes=$bootstrapBytes;patchBytes=$patchBytes;firstUpdateDownloadBytes=($bootstrapBytes+$patchBytes);reductionPercent=if($patch){[Math]::Round(100*(1-$patchBytes/[double]$fullBytes),2)}else{$null};baselineSha256=if($BaselineZip){$baseHash}else{$null};patch=if($patch){[IO.Path]::GetFileName($patch)}else{$null}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $delivery 'offline-update-report.json') -Encoding utf8
+@{version=$version;buildId=$buildInfo.BuildId;fullPackageBytes=$fullBytes;bootstrapBytes=$bootstrapBytes;patchBytes=$patchBytes;firstUpdateDownloadBytes=($bootstrapBytes+$patchBytes);reductionPercent=if($patch){[Math]::Round(100*(1-$patchBytes/[double]$fullBytes),2)}else{$null};baselineSha256=if($BaselineZip){$baseHash}else{$null};patch=if($patch){'patches/'+[IO.Path]::GetFileName($patch)}else{$null}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $notesDelivery 'offline-update-report.json') -Encoding utf8
+& (Join-Path $PSScriptRoot 'write-dist-index.ps1') -DistRoot $distRoot -CurrentRelease "$version$packageSuffix"
 Write-Host "EXPORTED_PLAYER_VERIFY_OK $smokeLog"
 Write-Host "$(if($TestPackage){'TEST_PACKAGE_OK'}else{'RELEASE_OK'}) $deliveredZip"

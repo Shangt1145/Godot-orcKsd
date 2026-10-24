@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using Kards.Ui.Contracts;
 
 namespace Kards.Ui;
@@ -21,6 +21,8 @@ public partial class BattleCard : Control
     public float DeploymentElevation { get; set; }
     public string? ChoiceCaption { get; set; }
     public bool DrawFaceDown { get; set; }
+    public string BackOwnerSide { get; set; } = "enemy";
+    private TextureCache? _appearanceTextures;
     public bool HoldHoverHitArea { get; set; }
     public override bool _HasPoint(Vector2 point) => new Rect2(Vector2.Zero, Size).HasPoint(point)
         || HoldHoverHitArea && Mode == BattleCardMode.Hand && new Rect2(RestPosition - Position, Size).HasPoint(point);
@@ -50,12 +52,13 @@ public partial class BattleCard : Control
     private bool _inputBound;
     public void Bind(UiCardView? view, BattleCardMode mode, TextureCache cache)
     {
+        _appearanceTextures = cache;
         _texture = null; _illustration = null; _unitIcon = null; _nationIcon = null;
         View = view;
         Mode = view?.Visibility != Visibility.Full ? BattleCardMode.Hidden : mode;
         MouseDefaultCursorShape = CursorShape.PointingHand;
-        _back = cache.Get("res://proto/assets/battle/card-back-v2.png");
-        if (Mode == BattleCardMode.Hq) _hqMap = cache.Get("res://proto/assets/battle/hq-map-v2.png");
+        _back = AppearanceRuntime.Image(OriginalCosmetics.DefaultBack(view?.Definition.Set),cache);
+        if (Mode == BattleCardMode.Hq) _hqMap = AppearanceRuntime.Image(OriginalCosmetics.DefaultHq(view?.Definition.Set),cache);
         if (Mode != BattleCardMode.Hidden && view is not null)
         {
             _texture = cache.Get(view.Definition.ArtPath);
@@ -73,7 +76,7 @@ public partial class BattleCard : Control
             if (_faceRoot is null)
             {
                 _faceRoot = new Node2D(); AddChild(_faceRoot);
-                _generatedFace = new CardFace { MouseFilter = MouseFilterEnum.Ignore }; _faceRoot.AddChild(_generatedFace);
+                _generatedFace = new CardFace { MouseFilter = MouseFilterEnum.Ignore, NumericBaselineOffset = 10 }; _faceRoot.AddChild(_generatedFace);
                 _faceOverlay = new Control { MouseFilter = MouseFilterEnum.Ignore }; _faceRoot.AddChild(_faceOverlay);
                 _faceOverlay.Draw += () => DrawHandOverlays(_faceOverlay);
             }
@@ -117,6 +120,8 @@ public partial class BattleCard : Control
         DrawStyleBox(paper, bounds);
         if (Mode == BattleCardMode.Hidden || DrawFaceDown)
         {
+            if (_appearanceTextures is {} appearance && AppearanceRuntime.Image(AppearanceRuntime.Profile(View?.OwnerSide ?? BackOwnerSide).CardBack,appearance) is {} customBack)
+            { CosmeticPaper.DrawBack(this,customBack,bounds); return; }
             if (_back is not null) { DrawTextureRect(_back, bounds, false); return; }
             DrawRect(new Rect2(5, 5, Size.X - 10, Size.Y - 10), new Color("303b37"));
             DrawRect(new Rect2(10, 10, Size.X - 20, Size.Y - 20), new Color("b0a578"), false, 1);
@@ -177,11 +182,20 @@ public partial class BattleCard : Control
     {
         if (Mode == BattleCardMode.Hq)
         {
+            var profile = AppearanceRuntime.Profile(View?.OwnerSide ?? "self");
+            var customHq = _appearanceTextures is {} appearance ? AppearanceRuntime.Image(profile.Headquarters,appearance) : null;
             DrawRect(bounds.Grow(-5), new Color("b8b298"));
-            if (_hqMap is not null) DrawTextureRect(_hqMap, bounds.Grow(-5), false);
-            Text(View?.Definition.Name ?? "总部", new Rect2(6, 10, Size.X - 10, 22), 14, new Color("494738"));
-            Text(View?.Definition.Name ?? "总部", new Rect2(5, 9, Size.X - 10, 22), 14, new Color("eee6cc"));
-            BattleSymbols.Compass(this, new(Size.X / 2, Size.Y * .42f), Size.X * .23f, new("e9e4ce"));
+            if (customHq is not null) DrawTextureRect(customHq,bounds.Grow(-5),false);
+            else if (_hqMap is {} hqTexture) DrawTextureRect(hqTexture, bounds.Grow(-5), false);
+            var name = profile.HeadquartersName.Length>0 ? profile.HeadquartersName : View?.Definition.Name ?? "总部";
+            if(profile.HeadquartersName.Length>0||customHq is not null&&!OriginalCosmetics.IsHeadquarters(profile.Headquarters)) DrawRect(new Rect2(5,5,Size.X-10,32),new Color(0,0,0,.55f));
+            var title=name.Length>12?name[..11]+"…":name;
+            var titleSize=title.Length>7?10:14;
+            if(profile.HeadquartersName.Length>0 || customHq is not null&&!OriginalCosmetics.IsHeadquarters(profile.Headquarters))
+            {
+                Text(title,new Rect2(6,10,Size.X-10,22),titleSize,new Color("494738"));
+                Text(title,new Rect2(5,9,Size.X-10,22),titleSize,new Color("eee6cc"));
+            }
             Badge(Size.X / 2, Size.Y - 42, View?.Health ?? View?.EffectiveDefense, true, 24);
             return;
         }
@@ -219,12 +233,8 @@ public partial class BattleCard : Control
         var ink = new Color("3f4538");
         if (shield)
         {
-            if (Mode == BattleCardMode.Hq)
-            {
-                var outer = r + 2;
-                DrawColoredPolygon([center + new Vector2(-outer, -outer), center + new Vector2(outer, -outer), center + new Vector2(outer, outer * .38f), center + new Vector2(0, outer), center + new Vector2(-outer, outer * .38f)], new("e2dcc3"));
-            }
-            DrawColoredPolygon([center + new Vector2(-r, -r), center + new Vector2(r, -r), center + new Vector2(r, r * .38f), center + new Vector2(0, r), center + new Vector2(-r, r * .38f)], ink);
+            if(OriginalCosmetics.Ui("IconDefenceBase") is {} shieldTexture)
+                DrawTextureRect(shieldTexture,new(x-r,y-r,r*2,r*2),false);
         }
         else
         {
@@ -241,9 +251,10 @@ public partial class BattleCard : Control
 
     private static void TextOn(Control canvas, string text, Rect2 box, int size, Color color)
     {
-        var font = text.All(c => char.IsDigit(c) || c is '—') ? Numbers : canvas.GetThemeDefaultFont();
+        var numeric = text.All(c => char.IsDigit(c) || c is '—');
+        var font = numeric ? Numbers : canvas.GetThemeDefaultFont();
         var width = font.GetStringSize(text, HorizontalAlignment.Left, -1, size).X;
-        canvas.DrawString(font, new Vector2(box.Position.X + Math.Max(0, (box.Size.X - width) / 2), box.Position.Y + size), text, HorizontalAlignment.Left, box.Size.X, size, color);
+        canvas.DrawString(font, new Vector2(box.Position.X + Math.Max(0, (box.Size.X - width) / 2), box.Position.Y + size + (numeric ? 3 : 0)), text, HorizontalAlignment.Left, box.Size.X, size, color);
     }
     public override void _GuiInput(InputEvent e)
     {

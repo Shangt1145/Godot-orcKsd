@@ -1,4 +1,4 @@
-using Orc.Cards;
+﻿using Orc.Cards;
 using Orc.Core;
 using Orc.Game;
 using Orc.Game.Cards;
@@ -540,6 +540,7 @@ public sealed partial class OrcMatchSession : IDisposable
     public void AnswerParked(ISelectorInstance selector)
     {
         if (_disposed || _activeCommandToken.IsCancellationRequested) { selector.Submit(new CancelEvent()); return; }
+        if(_desktopTargets?.TryReplayNativeSelection(selector)==true)return;
         var data = selector.Presentation;
         if (data.Identifiers is not null)
         {

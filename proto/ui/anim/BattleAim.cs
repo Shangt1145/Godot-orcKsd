@@ -48,9 +48,9 @@ public partial class BattleAim : Control
         var text = fatal ? "" : damage?.ToString() ?? "?";
         var font = GetThemeDefaultFont();
         var width = font.GetStringSize(text, HorizontalAlignment.Left, -1, 25).X;
-        DrawString(font, at + new Vector2(-width / 2, 8), text, HorizontalAlignment.Left, -1, 25, new Color("f0ead4"));
+        DrawString(font, at + new Vector2(-width / 2, 11), text, HorizontalAlignment.Left, -1, 25, new Color("f0ead4"));
         if (fatal) BattleSymbols.Skull(this, at, 26, new("f0ead4"));
         if (fatal && damage is not null)
-            DrawString(font, at + new Vector2(23, 8), damage.ToString(), HorizontalAlignment.Left, -1, 19, new Color("f0ead4"));
+            DrawString(font, at + new Vector2(23, 11), damage.ToString(), HorizontalAlignment.Left, -1, 19, new Color("f0ead4"));
     }
 }

@@ -1,0 +1,114 @@
+{
+  "Packs": [
+    {
+      "Id": "pack/diy-demo-mechanics",
+      "Name": "机制示范包",
+      "BasePackId": null,
+      "Nations": [],
+      "Keywords": [
+        {
+          "Id": "kw-demo-youji",
+          "Name": "游击",
+          "Description": "",
+          "EffectText": "使用此牌时，将 1 张不具有游击的复制加入手牌，回合结束从手中移除复制。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"card.played\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"copy.hand\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": true,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-zengyuan",
+          "Name": "增援",
+          "Description": "",
+          "EffectText": "第一次进入战场不触发；再次进入战场时获得 +X+X（X＝词条参数）。也算部署效果。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": true,\r\n      \"event\": \"unit.deployed\",\r\n      \"subject\": \"self\",\r\n      \"when\": [\r\n        {\r\n          \"left\": \"entries\",\r\n          \"op\": \"gte\",\r\n          \"right\": \"value\"\r\n        }\r\n      ],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"buff\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"value\",\r\n          \"second\": \"value\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-jidong",
+          "Name": "机动",
+          "Description": "",
+          "EffectText": "本单位可以攻击两次，完成第二次攻击后失去机动。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [\r\n    {\r\n      \"scope\": \"self\",\r\n      \"rule\": \"attack.limit\",\r\n      \"value\": \"2\",\r\n      \"priority\": 0,\r\n      \"when\": []\r\n    }\r\n  ],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"unit.attack.after\",\r\n      \"subject\": \"self\",\r\n      \"when\": [\r\n        {\r\n          \"left\": \"attacks\",\r\n          \"op\": \"gte\",\r\n          \"right\": \"2\"\r\n        }\r\n      ],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"keyword.remove\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-buqu",
+          "Name": "不屈",
+          "Description": "",
+          "EffectText": "第一次将被消灭时取消并保留 1 点防御；己方回合开始时被消灭。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {\r\n    \"owed\": 0\r\n  },\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"unit.destroy.before\",\r\n      \"subject\": \"self\",\r\n      \"when\": [\r\n        {\r\n          \"left\": \"state.owed\",\r\n          \"op\": \"eq\",\r\n          \"right\": \"0\"\r\n        }\r\n      ],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"state.set\",\r\n          \"target\": \"self\",\r\n          \"key\": \"owed\",\r\n          \"value\": \"1\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        },\r\n        {\r\n          \"op\": \"death.cancel\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        },\r\n        {\r\n          \"op\": \"health.set\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"1\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    },\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"turn.start\",\r\n      \"subject\": \"owner\",\r\n      \"when\": [\r\n        {\r\n          \"left\": \"state.owed\",\r\n          \"op\": \"eq\",\r\n          \"right\": \"1\"\r\n        }\r\n      ],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"kill\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-zhanlve",
+          "Name": "战略",
+          "Description": "",
+          "EffectText": "将被消灭时转化为溃军（口径：以消灭介入完成转化，本体不实际死亡）。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"unit.destroy.before\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"death.cancel\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        },\r\n        {\r\n          \"op\": \"replace\",\r\n          \"target\": \"self\",\r\n          \"key\": \"diy/demo-kuijun\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-hushi",
+          "Name": "虎视",
+          "Description": "",
+          "EffectText": "本单位攻击后，仍存活的被攻击敌方单位转换为溃军。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"unit.attack.after\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"replace\",\r\n          \"target\": \"attack.target\",\r\n          \"key\": \"diy/demo-kuijun\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-fuyuan",
+          "Name": "复员",
+          "Description": "",
+          "EffectText": "非消灭离场时，将本单位的复制加入手牌且费用 +X（X＝词条参数）；复制品无复员，本体失去复员。口径：被消灭不算复员。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"card.leaving\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"copy.hand\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"value\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        },\r\n        {\r\n          \"op\": \"keyword.remove\",\r\n          \"target\": \"self\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-chandou",
+          "Name": "缠斗",
+          "Description": "",
+          "EffectText": "部署时指定 1 个敌军，双方无法移动或攻击；缠斗方回合开始时双方进行 1 次战斗，直到一方离开战场。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [\r\n    {\r\n      \"scope\": \"pair\",\r\n      \"rule\": \"move.allowed\",\r\n      \"value\": \"0\",\r\n      \"priority\": 1,\r\n      \"when\": []\r\n    },\r\n    {\r\n      \"scope\": \"pair\",\r\n      \"rule\": \"attack.allowed\",\r\n      \"value\": \"0\",\r\n      \"priority\": 1,\r\n      \"when\": []\r\n    }\r\n  ],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"unit.deployed\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"link\",\r\n          \"target\": \"choose.enemy.unit\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    },\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"turn.start\",\r\n      \"subject\": \"owner\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"attack\",\r\n          \"target\": \"linked\",\r\n          \"key\": \"\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": true,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-kuijun",
+          "Name": "溃退",
+          "Description": "",
+          "EffectText": "本单位可以消耗正常移动机会和行动花费，从前线移动回己方支援线。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [\r\n    {\r\n      \"scope\": \"self\",\r\n      \"rule\": \"move.retreat\",\r\n      \"value\": \"1\",\r\n      \"priority\": 0,\r\n      \"when\": []\r\n    }\r\n  ],\r\n  \"handlers\": [],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-zhuangtian",
+          "Name": "装填",
+          "Description": "",
+          "EffectText": "打出时记录 1 个单位的攻击力，将 1 张「发射」加入手牌。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"card.played\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"capture\",\r\n          \"target\": \"choose.unit\",\r\n          \"key\": \"loaded\",\r\n          \"value\": \"target.attack\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        },\r\n        {\r\n          \"op\": \"create.hand\",\r\n          \"target\": \"self\",\r\n          \"key\": \"diy/demo-fashe\",\r\n          \"value\": \"0\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {\r\n            \"damage\": \"data.loaded\"\r\n          },\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        },
+        {
+          "Id": "kw-demo-fashe",
+          "Name": "发射",
+          "Description": "",
+          "EffectText": "打出时对 1 个单位造成等同于记录值的伤害。",
+          "Battle": true,
+          "Effects": [],
+          "ProgramJson": "{\r\n  \"schema\": 1,\r\n  \"defaultValue\": 1,\r\n  \"state\": {},\r\n  \"rules\": [],\r\n  \"handlers\": [\r\n    {\r\n      \"deploymentEffect\": false,\r\n      \"event\": \"card.played\",\r\n      \"subject\": \"self\",\r\n      \"when\": [],\r\n      \"actions\": [\r\n        {\r\n          \"op\": \"damage\",\r\n          \"target\": \"choose.unit\",\r\n          \"key\": \"\",\r\n          \"value\": \"data.damage\",\r\n          \"second\": \"0\",\r\n          \"temporary\": false,\r\n          \"keepHistory\": false,\r\n          \"bypassRange\": false,\r\n          \"bindings\": {},\r\n          \"cards\": [],\r\n          \"when\": [],\r\n          \"then\": [],\r\n          \"else\": []\r\n        }\r\n      ]\r\n    }\r\n  ],\r\n  \"skills\": []\r\n}"
+        }
+      ],
+      "IsExpansion": false,
+      "IsBuiltIn": false
+    }
+  ],
+  "Schema": 1
+}

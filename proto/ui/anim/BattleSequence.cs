@@ -85,6 +85,7 @@ public partial class BattleSequence : Control
         var visible = self && draw.Card?.Visibility == Visibility.Full ? draw.Card : null;
         var size = self ? new Vector2(144, 202) : new Vector2(110, 154);
         var paper = interactiveCard ?? Paper(null, self ? new(1156, 618) : new(1120, -96), size, self ? .7f : -.7f);
+        paper.BackOwnerSide = self ? "self" : "enemy";
         var flight = interactiveCard is null ? null : new DrawFlight(paper);
         _drawFlight = flight;
         if (interactiveCard is not null)
@@ -527,16 +528,16 @@ public partial class BattleSequence : Control
         var cue = new BattleStatusCue { Size = Size, Center = card.Position + (card.Mode == BattleCardMode.Hand ? new Vector2(card.Size.X / 2, 20) : card.Size / 2), Caption = caption,
             Ink = change.Status is UiStatusKind.Heal or UiStatusKind.Buff ? new("a2b67d")
                 : change.Status == UiStatusKind.Damaged ? new("d66142") : new("ded2a7"),
-            Duration = Time(.80), Quiet = _clock.ReducedMotion, Stamp = change.Status is UiStatusKind.Suppressed or UiStatusKind.Cleared };
+            Duration = Time(.34), Quiet = _clock.ReducedMotion, Stamp = change.Status is UiStatusKind.Suppressed or UiStatusKind.Cleared };
         AddChild(cue); _sfx.Play(change.Status == UiStatusKind.Veteran ? "veteran" : "intel");
         PhaseChanged?.Invoke("status-" + change.Status.ToString().ToLowerInvariant());
         if (!_clock.ReducedMotion)
         {
             var pulse = CreateTween().SetTrans(Tween.TransitionType.Sine); _tweens.Add(pulse);
-            pulse.TweenProperty(card, "scale", Vector2.One * 1.025f, Time(.14));
-            pulse.TweenProperty(card, "scale", Vector2.One, Time(.24));
+            pulse.TweenProperty(card, "scale", Vector2.One * 1.025f, Time(.08));
+            pulse.TweenProperty(card, "scale", Vector2.One, Time(.16));
         }
-        await Wait(.80, epoch);
+        await Wait(.34, epoch);
         if (GodotObject.IsInstanceValid(cue) && cue.GetParent() == this) { RemoveChild(cue); cue.QueueFree(); }
     }
     public async Task ShuffleAsync(string side)

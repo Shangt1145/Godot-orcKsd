@@ -17,6 +17,7 @@ public enum CardFaceMaster { Unit, Order, Counter }
 /// </summary>
 public sealed partial class CardFace : Control
 {
+    public float NumericBaselineOffset { get; set; }
     /// <summary>设计尺寸（模板画布）。</summary>
     public static readonly Vector2 Design = new(500, 701);
 
@@ -124,7 +125,7 @@ public sealed partial class CardFace : Control
             StretchMode = TextureRect.StretchModeEnum.Scale, MouseFilter = MouseFilterEnum.Ignore };
         AddChild(_unitBadge);
 
-        _typography = new CardFaceTypography(); AddChild(_typography);
+        _typography = new CardFaceTypography { NumericBaselineOffset = NumericBaselineOffset }; AddChild(_typography);
 
         Layout();
         if (_definition is not null) Apply(_definition);

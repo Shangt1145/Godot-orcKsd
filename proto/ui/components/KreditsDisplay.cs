@@ -74,14 +74,14 @@ public partial class KreditsDisplay : Control
         if (_animating)
             ink = _cause == UiResourceCause.Spend ? new Color("c9603f") : new Color("f2c14a");
         var width = Stencil.GetStringSize(text, HorizontalAlignment.Left, -1, 60).X;
-        DrawString(Stencil, new(3, 62), text, HorizontalAlignment.Left, -1, 60, new Color(0, 0, 0, .65f));
-        DrawString(Stencil, new(1, 60), text, HorizontalAlignment.Left, -1, 60, ink);
+        DrawString(Stencil, new(3, 66), text, HorizontalAlignment.Left, -1, 60, new Color(0, 0, 0, .65f));
+        DrawString(Stencil, new(1, 64), text, HorizontalAlignment.Left, -1, 60, ink);
         DrawString(Stencil, new(width + 2, 33), "K", HorizontalAlignment.Left, -1, 22, ink);
         DrawLine(new(-10, 73), new(34, 73), new("dedac4"), 3);
         DrawLine(new(-5, 75), new(8, 75), new("dedac4"), 1);
         var slots = Slots?.ToString() ?? "?";
         var slotsWidth = Stencil.GetStringSize(slots, HorizontalAlignment.Left, -1, 20).X;
-        DrawString(Stencil, new(12 - slotsWidth / 2, 93), slots, HorizontalAlignment.Left, -1, 20, new("e9e4ce"));
+        DrawString(Stencil, new(12 - slotsWidth / 2, 96), slots, HorizontalAlignment.Left, -1, 20, new("e9e4ce"));
         DrawString(GetThemeDefaultFont(), new(Math.Max(66, width + 27), Bottom ? 73 : 43), PlayerName, HorizontalAlignment.Left, 140, 16, new("e9e4ce"));
     }
 }

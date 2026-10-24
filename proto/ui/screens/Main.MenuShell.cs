@@ -22,7 +22,7 @@ public partial class Main
         MenuStyles.Navigation(brand); brand.CustomMinimumSize = new(0, 72); bar.AddChild(brand); _nav["home"] = brand;
         bar.AddChild(MenuStyles.Label("   卡牌作战", 12, MenuStyles.MenuDim));
         bar.AddChild(new Control { CustomMinimumSize = new(0, 24) });
-        foreach (var (id, text) in new[] { ("decklib", "我的卡组"), ("collection", "卡牌收藏"), ("editor", "DIY 工坊") })
+        foreach (var (id, text) in new[] { ("decklib", "我的卡组"), ("collection", "卡牌收藏"), ("editor", "DIY 工坊"), ("appearance", "外观装扮") })
         {
             var key = id; var button = MenuStyles.Button(text, () => NavigateMenu(key)); button.ToggleMode = true;
             MenuStyles.Navigation(button); bar.AddChild(button); _nav[id] = button;
@@ -56,7 +56,7 @@ public partial class Main
     // 首页「出击」＝作战准备页：卡组就绪状态、组建房间、局域网房间列表（M4）都在这，
     // 它是开战前的唯一枢纽——此前直接跳 decklib，把作战准备页绕成了孤岛（用户找不到）。
     private void OpenPlaySelection() { _setup.Refresh(); Show("setup"); }
-    private void RefreshMenuData() { _deckLibrary.Refresh(); _home?.Refresh(); UpdateMenuNavigation(); }
+    private void RefreshMenuData() { _cosmetics.SetContext(_decks.ActiveDeck?.Id,_decks.ActiveDeck?.Options.MainNation); _deckLibrary.Refresh(); _home?.Refresh(); UpdateMenuNavigation(); }
     private void UpdateMenuNavigation()
     {
         foreach (var (id, button) in _nav) button.SetPressedNoSignal(id == _active || (id == "decklib" && _active == "deck"));

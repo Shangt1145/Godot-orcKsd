@@ -1,0 +1,342 @@
+diff --git a/src/Orc.Client/OrcClient.cs b/src/Orc.Client/OrcClient.cs
+index f13abd1..fb9579d 100644
+--- a/src/Orc.Client/OrcClient.cs
++++ b/src/Orc.Client/OrcClient.cs
+@@ -1,4 +1,4 @@
+-using System.Net.Sockets;
++﻿using System.Net.Sockets;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Orc.Protocol;
+@@ -79,7 +79,7 @@ public sealed class OrcClient : IAsyncDisposable
+         _tcp = tcp;
+         _options = options;
+         var stream = tcp.GetStream();
+-        _reader = new NdjsonReader(stream);
++        _reader = new NdjsonReader(stream, maxLineLength: 4 << 20);
+         _writer = new NdjsonWriter(stream);
+         Volatile.Write(ref _lastInbound, Environment.TickCount64);
+         _readLoop = Task.Run(() => ReadLoopAsync(_shutdown.Token), CancellationToken.None);
+diff --git a/src/Orc.Protocol/NdjsonFraming.cs b/src/Orc.Protocol/NdjsonFraming.cs
+index 12fd0d5..c1a4141 100644
+--- a/src/Orc.Protocol/NdjsonFraming.cs
++++ b/src/Orc.Protocol/NdjsonFraming.cs
+@@ -1,4 +1,4 @@
+-using System.Text;
++﻿using System.Text;
+ using System.Text.Json.Nodes;
+ 
+ namespace Orc.Protocol;
+@@ -38,9 +38,13 @@ public sealed class NdjsonReader : IAsyncDisposable
+     private bool _firstLine = true;
+     private bool _eof;
+ 
+-    public NdjsonReader(Stream stream, bool leaveOpen = true)
++    private readonly int _maxLineLength;
++
++    public NdjsonReader(Stream stream, bool leaveOpen = true, int maxLineLength = Ndjson.MaxLineLength)
+     {
+         ArgumentNullException.ThrowIfNull(stream);
++        if(maxLineLength<1)throw new ArgumentOutOfRangeException(nameof(maxLineLength));
++        _maxLineLength=maxLineLength;
+         _stream = stream;
+         _leaveOpen = leaveOpen;
+     }
+@@ -98,9 +102,9 @@ public sealed class NdjsonReader : IAsyncDisposable
+             return;
+         }
+ 
+-        if (_line.Length + count > Ndjson.MaxLineLength)
++        if (_line.Length + count > _maxLineLength)
+         {
+-            throw new InvalidDataException($"单帧长度超过上限 {Ndjson.MaxLineLength} 字节。");
++            throw new InvalidDataException($"单帧长度超过上限 {_maxLineLength} 字节。");
+         }
+ 
+         _line.Write(buffer, offset, count);
+diff --git a/src/Orc.Server/Transport/ServerHost.cs b/src/Orc.Server/Transport/ServerHost.cs
+index 28feb0c..e732d18 100644
+--- a/src/Orc.Server/Transport/ServerHost.cs
++++ b/src/Orc.Server/Transport/ServerHost.cs
+@@ -1,4 +1,4 @@
+-using System.Collections.Concurrent;
++﻿using System.Collections.Concurrent;
+ using System.Collections.Frozen;
+ using System.Net;
+ using System.Net.Sockets;
+@@ -55,7 +55,7 @@ public enum SessionState
+ /// <c>Pending</c>/<c>Connected</c>/调试面不收对局数据。
+ /// </para>
+ /// </summary>
+-public sealed class ServerHost : IAsyncDisposable
++public sealed partial class ServerHost : IAsyncDisposable
+ {
+     private readonly ServerOptions _options;
+     private readonly SerialWorkQueue _queue;
+@@ -285,7 +285,7 @@ public sealed class ServerHost : IAsyncDisposable
+         try
+         {
+             var stream = client.GetStream();
+-            await using var reader = new NdjsonReader(stream);
++            await using var reader = new NdjsonReader(stream, maxLineLength: 4 << 20);
+             await using var writer = new NdjsonWriter(stream);
+ 
+             session = new ClientSession(sessionId, client, writer, ct);
+@@ -396,6 +396,7 @@ public sealed class ServerHost : IAsyncDisposable
+             ProtocolMethods.SessionDetach => HandleDetach(request, session),
+             ProtocolMethods.ToolsList => HandleToolsList(request, session),
+             ProtocolMethods.ToolsCall => await HandleToolsCallAsync(request, session, ct).ConfigureAwait(false),
++            "cosmetics.get" or "cosmetics.set" or "cosmetics.asset" or "cosmetics.image" or "cosmetics.emote" => HandleCosmetics(request, session),
+             _ => RpcResponse.Failure(request.Id, RpcErrorCodes.MethodNotFound, $"未知方法 '{request.Method}'。"),
+         };
+     }
+@@ -427,7 +428,7 @@ public sealed class ServerHost : IAsyncDisposable
+         {
+             ProtocolVersion = ProtocolInfo.ProtocolVersion,
+             SchemaVersion = Service.Options.ContractSchemaVersion,
+-            Capabilities = ["push", "targeting", "session", "admin-channel"],
++            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1"],
+             ConnectionId = session.Id,
+             Label = session.Label,
+             RoomId = Room.RoomId,
+diff --git a/tests/Orc.Server.Tests/NdjsonFramingTests.cs b/tests/Orc.Server.Tests/NdjsonFramingTests.cs
+index 42668f2..de0c963 100644
+--- a/tests/Orc.Server.Tests/NdjsonFramingTests.cs
++++ b/tests/Orc.Server.Tests/NdjsonFramingTests.cs
+@@ -1,4 +1,4 @@
+-using System.Net.Sockets;
++﻿using System.Net.Sockets;
+ using System.Text;
+ using System.Text.Json.Nodes;
+ using Orc.Protocol;
+@@ -60,7 +60,7 @@ public class NdjsonFramingTests
+             await raw.ConnectAsync("127.0.0.1", host.Port);
+             var stream = raw.GetStream();
+ 
+-            var junk = new byte[2 * 1024 * 1024];
++            var junk = new byte[5 * 1024 * 1024];
+             Array.Fill(junk, (byte)'a');
+             await stream.WriteAsync(junk);
+ 
+diff --git a/src/Orc.Server/Transport/ServerHost.Cosmetics.cs b/src/Orc.Server/Transport/ServerHost.Cosmetics.cs
+new file mode 100644
+index 0000000..60a71ca
+--- /dev/null
++++ b/src/Orc.Server/Transport/ServerHost.Cosmetics.cs
+@@ -0,0 +1,117 @@
++﻿using System.Buffers.Binary;
++using System.Security.Cryptography;
++using System.Text.Json.Nodes;
++using Orc.Protocol;
++
++namespace Orc.Server.Transport;
++
++public sealed partial class ServerHost
++{
++    // Presentation-only room data. Never enters the match executor, card pool or replay actions.
++    private readonly object _cosmeticSync = new();
++    private string _cosmeticRoom = "";
++    private readonly Dictionary<int, CosmeticSeat> _cosmeticSeats = new();
++    private long _emoteSequence;
++    private long _cosmeticRevision;
++    private sealed class CosmeticSeat
++    {
++        public string? Token;
++        public JsonObject? Profile;
++        public readonly Dictionary<string,byte[]> Images = new();
++        public long LastEmote;
++        public long Revision;
++    }
++    private static bool CosmeticReader(ClientSession s) => s.State is not (SessionState.Connected or SessionState.Pending or SessionState.Revoked)
++        && (s.IsViewer || s.IsController || s.IsDebug);
++    private RpcResponse HandleCosmetics(RpcRequest request, ClientSession session)
++    {
++        if (!CosmeticReader(session)) return RpcResponse.Failure(request.Id,RpcErrorCodes.InvalidRequest,"外观通道需要已批准的房间会话。");
++        try
++        {
++            lock (_cosmeticSync)
++            {
++                var roomId = Room.RoomId;
++                if (_cosmeticRoom != roomId) { _cosmeticRoom=roomId; _cosmeticSeats.Clear(); _emoteSequence=0; _cosmeticRevision=0; }
++                if (request.Method == "cosmetics.get")
++                {
++                    var profiles = new JsonArray();
++                    foreach (var (seat,data) in _cosmeticSeats)
++                        if (data.Profile is not null) profiles.Add(new JsonObject { ["seat"]=seat,["revision"]=data.Revision,["profile"]=data.Profile.DeepClone() });
++                    return RpcResponse.Success(request.Id,new JsonObject { ["roomId"]=roomId,["profiles"]=profiles });
++                }
++                var args = request.Params as JsonObject ?? throw new ArgumentException("缺少外观参数。");
++                if (request.Method == "cosmetics.image")
++                {
++                    var seat = args["seat"]!.GetValue<int>(); var hash = args["hash"]!.GetValue<string>();
++                    if (!_cosmeticSeats.TryGetValue(seat,out var owner) || owner.Profile is null || !ProfileImages(owner.Profile).Contains(hash)
++                        || !owner.Images.TryGetValue(hash,out var bytes)) throw new ArgumentException("外观图片不存在。");
++                    return RpcResponse.Success(request.Id,new JsonObject { ["hash"]=hash,["png"]=Convert.ToBase64String(bytes) });
++                }
++                if (!session.IsController || session.Seat is not { } ownSeat || string.IsNullOrEmpty(session.SeatToken))
++                    return RpcResponse.Failure(request.Id,RpcErrorCodes.InvalidRequest,"只有已批准的座位控制者可以装备外观或发送表情。");
++                if (!_cosmeticSeats.TryGetValue(ownSeat,out var own) || own.Token != session.SeatToken)
++                    _cosmeticSeats[ownSeat] = own = new CosmeticSeat { Token=session.SeatToken };
++                if (request.Method == "cosmetics.asset")
++                {
++                    var base64 = args["png"]!.GetValue<string>();
++                    if (base64.Length > 2800000) throw new ArgumentException("外观图片过大。");
++                    var bytes = Convert.FromBase64String(base64);
++                    if (bytes.Length is <33 or >2097152 || !bytes.AsSpan(0,8).SequenceEqual(new byte[] {137,80,78,71,13,10,26,10})
++                        || !bytes.AsSpan(12,4).SequenceEqual("IHDR"u8)) throw new ArgumentException("需要 PNG 外观图片。");
++                    var width = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(16,4)); var height = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(20,4));
++                    if (width is <1 or >4096 || height is <1 or >4096) throw new ArgumentException("外观图片尺寸超限。");
++                    var hash = Convert.ToHexString(SHA256.HashData(bytes));
++                    if (!own.Images.ContainsKey(hash))
++                    {
++                        if (own.Images.Count >= 24 || own.Images.Values.Sum(b => b.Length)+bytes.Length > 24*1024*1024) throw new ArgumentException("房间外观缓存已满，请先完成装备或重新加入房间。");
++                        own.Images[hash]=bytes;
++                    }
++                    return RpcResponse.Success(request.Id,new JsonObject { ["hash"]=hash });
++                }
++                if (request.Method == "cosmetics.set")
++                {
++                    var profile = (args["profile"] as JsonObject)?.DeepClone() as JsonObject ?? throw new ArgumentException("缺少外观资料。");
++                    if (profile.Any(p => p.Key is not ("CardBack" or "Decoration" or "Headquarters" or "HeadquartersName" or "Emotes")))
++                        throw new ArgumentException("外观通道不接受规则字段。");
++                    static void Text(string? s,int max,bool multiline=false) { if (s is null || s.Length>max || s.Any(c=>char.IsControl(c)&&!(multiline&&c=='\n'))) throw new ArgumentException("外观文字无效。"); }
++                    Text(profile["HeadquartersName"]?.GetValue<string>(),24);
++                    foreach (var key in new[]{"CardBack","Decoration","Headquarters"}) Text(profile[key]?.GetValue<string>(),64);
++                    if (profile["Emotes"] is not JsonArray emotes || emotes.Count is <1 or >8) throw new ArgumentException("表情须为 1–8 个。");
++                    var ids = new HashSet<string>();
++                    foreach (var e in emotes)
++                    {
++                        if (e is not JsonObject emote || emote.Any(p => p.Key is not ("Id" or "Label" or "Image" or "Style" or "Tint" or "EnemyImage"))) throw new ArgumentException("表情格式无效。");
++                        var id=emote["Id"]?.GetValue<string>(); Text(id,48); Text(emote["Label"]?.GetValue<string>(),160,true); Text(emote["Image"]?.GetValue<string>(),64);
++                        if(emote["EnemyImage"] is {} variant)Text(variant.GetValue<string>(),64);
++                        if(emote["Style"] is {} style && style.GetValue<string>() is not ("paper" or "special" or "diy"))throw new ArgumentException("未知表情样式。");
++                        if(emote["Tint"] is {} tint && (tint.GetValue<string>().Length!=6 || !tint.GetValue<string>().All(Uri.IsHexDigit)))throw new ArgumentException("表情颜色无效。");
++                        if (string.IsNullOrWhiteSpace(id) || id.Any(c => !char.IsAsciiLetterOrDigit(c) && c!='-') || !ids.Add(id)
++                            || string.IsNullOrWhiteSpace(emote["Label"]!.GetValue<string>())) throw new ArgumentException("表情编号或文字无效。");
++                    }
++                    var used = ProfileImages(profile).ToHashSet();
++                    if (used.Any(hash => hash.Length!=64 || !hash.All(Uri.IsHexDigit) || !own.Images.ContainsKey(hash))) throw new ArgumentException("请先上传已装备的外观图片。");
++                    own.Profile=profile;own.Revision=++_cosmeticRevision;
++                    foreach (var hash in own.Images.Keys.Where(h => !used.Contains(h)).ToArray()) own.Images.Remove(hash);
++                    CosmeticBroadcast("notify/cosmetics",new JsonObject { ["roomId"]=roomId,["seat"]=ownSeat,["revision"]=own.Revision,["profile"]=profile.DeepClone() });
++                    return RpcResponse.Success(request.Id,new JsonObject { ["ok"]=true });
++                }
++                var emoteId=args["id"]!.GetValue<string>();
++                if (own.Profile?["Emotes"] is not JsonArray equipped || !equipped.Any(e => e?["Id"]?.GetValue<string>()==emoteId)) throw new ArgumentException("请先装备此表情。");
++                var now=Environment.TickCount64;
++                if (own.LastEmote!=0 && now-own.LastEmote<2000) throw new ArgumentException("表情发送间隔为 2 秒。");
++                own.LastEmote=now;
++                var chosen=equipped.Single(e=>e?["Id"]?.GetValue<string>()==emoteId)!;
++                CosmeticBroadcast("notify/emote",new JsonObject { ["roomId"]=roomId,["seat"]=ownSeat,["id"]=emoteId,["label"]=chosen["Label"]!.GetValue<string>(),["image"]=chosen["Image"]!.GetValue<string>(),["style"]=chosen["Style"]?.GetValue<string>()??"diy",["tint"]=chosen["Tint"]?.GetValue<string>()??"433a29",["enemyImage"]=chosen["EnemyImage"]?.GetValue<string>()??"",["sequence"]=++_emoteSequence });
++                return RpcResponse.Success(request.Id,new JsonObject { ["ok"]=true });
++            }
++        }
++        catch (Exception e) when (e is ArgumentException or InvalidOperationException or FormatException or NullReferenceException)
++        { return RpcResponse.Failure(request.Id,RpcErrorCodes.InvalidParams,e.Message); }
++    }
++    private static IEnumerable<string> ProfileImages(JsonObject profile) => new[]{"CardBack","Decoration","Headquarters"}
++        .Select(k => profile[k]!.GetValue<string>()).Concat(((JsonArray)profile["Emotes"]!).SelectMany(e => new[]{e!["Image"]!.GetValue<string>(),e!["EnemyImage"]?.GetValue<string>()??""})).Where(s => s.Length>0).Distinct();
++    private void CosmeticBroadcast(string method,JsonObject payload)
++    {
++        foreach(var target in _sessions.Values) if(CosmeticReader(target)) SendNotification(target,method,payload.DeepClone());
++    }
++}
+diff --git a/tests/Orc.Server.Tests/CosmeticChannelTests.cs b/tests/Orc.Server.Tests/CosmeticChannelTests.cs
+new file mode 100644
+index 0000000..b39a5ce
+--- /dev/null
++++ b/tests/Orc.Server.Tests/CosmeticChannelTests.cs
+@@ -0,0 +1,93 @@
++﻿using System.Text.Json.Nodes;
++using Orc.Client;
++using Orc.Server.Admin;
++using Xunit;
++
++namespace Orc.Server.Tests;
++
++public sealed class CosmeticChannelTests
++{
++    private static JsonObject Profile(string image="")=>new(){["CardBack"]=image,["Decoration"]="",["Headquarters"]=image,["HeadquartersName"]="我的总部",
++        ["Emotes"]=new JsonArray(new JsonObject{["Id"]="hello",["Label"]="你好",["Image"]=image})};
++    private static async Task Admit(HostFixture fixture,OrcClient client,int seat)
++    {
++        await HostFixture.AttachControllerAsync(client,seat);
++        Assert.True((await fixture.AdminAsync(AdminOps.ConnectionAdmit,new JsonObject{["connectionId"]=client.ConnectionId})).Ok);
++    }
++    [Fact] public async Task PendingCannotPublishOrReadAndNeverReceivesCosmetics()
++    {
++        await using var f=await HostFixture.StartAsync();await using var pending=await f.ConnectAsync();await using var player=await f.ConnectAsync();
++        await HostFixture.AttachControllerAsync(pending,1);await using var notifications=new NotificationCollector(pending);
++        Assert.NotNull((await pending.CallRawAsync("cosmetics.get",new JsonObject())).Error);
++        Assert.NotNull((await pending.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=Profile()})).Error);
++        await Admit(f,player,0);
++        Assert.Null((await player.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=Profile()})).Error);
++        await pending.CallAsync("room.info");
++        Assert.False(notifications.Has("notify/cosmetics"));
++    }
++    [Fact] public async Task ProfilesAndImagesAreSharedAndSeatCannotBeForgedEmotesAreRateLimited()
++    {
++        await using var f=await HostFixture.StartAsync();await using var first=await f.ConnectAsync();await using var second=await f.ConnectAsync();
++        await Admit(f,first,0);await Admit(f,second,1);await using var notifications=new NotificationCollector(second);
++        var png=Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=");
++        Array.Resize(ref png,1100000); // Original artwork may exceed the former 1 MiB framing budget.
++        var uploaded=await first.CallRawAsync("cosmetics.asset",new JsonObject{["png"]=Convert.ToBase64String(png)});
++        Assert.Null(uploaded.Error);var hash=uploaded.Result!["hash"]!.GetValue<string>();
++        var profile=Profile(hash);profile["Emotes"]![0]!["EnemyImage"]=hash;
++        Assert.Null((await first.CallRawAsync("cosmetics.set",new JsonObject{["seat"]=1,["profile"]=profile})).Error);
++        var changed=await notifications.WaitAsync("notify/cosmetics");Assert.Equal(0,changed.Params!["seat"]!.GetValue<int>());
++        var snapshot=await second.CallRawAsync("cosmetics.get",new JsonObject());Assert.Single(snapshot.Result!["profiles"]!.AsArray());
++        Assert.True(snapshot.Result["profiles"]![0]!["revision"]!.GetValue<long>()>0);
++        var image=await second.CallRawAsync("cosmetics.image",new JsonObject{["seat"]=0,["hash"]=hash});Assert.Equal(png,Convert.FromBase64String(image.Result!["png"]!.GetValue<string>()));
++        Assert.Null((await first.CallRawAsync("cosmetics.emote",new JsonObject{["id"]="hello",["seat"]=1})).Error);
++        var emote=await notifications.WaitAsync("notify/emote");Assert.Equal(0,emote.Params!["seat"]!.GetValue<int>());Assert.Equal(hash,emote.Params["enemyImage"]!.GetValue<string>());
++        Assert.NotNull((await first.CallRawAsync("cosmetics.emote",new JsonObject{["id"]="hello"})).Error);
++        Assert.NotNull((await second.CallRawAsync("cosmetics.emote",new JsonObject{["id"]="hello"})).Error);
++    }
++    [Fact] public async Task RejectsRuleFieldsMissingAssetsAndOversizedImages()
++    {
++        await using var f=await HostFixture.StartAsync();await using var player=await f.ConnectAsync();await Admit(f,player,0);
++        var rules=Profile();rules["InitialDefense"]=999;
++        Assert.NotNull((await player.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=rules})).Error);
++        Assert.NotNull((await player.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=Profile(new string('A',64))})).Error);
++        Assert.NotNull((await player.CallRawAsync("cosmetics.asset",new JsonObject{["png"]=Convert.ToBase64String(new byte[2097153])})).Error);
++        var snapshot=await player.CallRawAsync("cosmetics.get",new JsonObject());Assert.Empty(snapshot.Result!["profiles"]!.AsArray());
++    }
++    [Fact] public async Task ApprovedViewerCanReadButCannotPublishOrEmote()
++    {
++        await using var f=await HostFixture.StartAsync();await using var player=await f.ConnectAsync();await using var viewer=await f.ConnectAsync();await Admit(f,player,0);
++        Assert.Null((await player.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=Profile()})).Error);
++        await HostFixture.AttachViewerAsync(viewer,null);
++        Assert.True((await f.AdminAsync(AdminOps.ConnectionAdmit,new JsonObject{["connectionId"]=viewer.ConnectionId})).Ok);
++        var snapshot=await viewer.CallRawAsync("cosmetics.get",new JsonObject());Assert.Null(snapshot.Error);Assert.Single(snapshot.Result!["profiles"]!.AsArray());
++        Assert.NotNull((await viewer.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=Profile()})).Error);
++        Assert.NotNull((await viewer.CallRawAsync("cosmetics.emote",new JsonObject{["id"]="hello"})).Error);
++    }
++    [Fact] public async Task EightEquippedEmotesAreAcceptedAndNinthIsRejected()
++    {
++        await using var f=await HostFixture.StartAsync();await using var player=await f.ConnectAsync();await Admit(f,player,0);
++        var profile=Profile();var emotes=new JsonArray();
++        for(var i=0;i<8;i++)emotes.Add(new JsonObject{["Id"]="emote-"+i,["Label"]="表情 "+i,["Image"]=""});
++        profile["Emotes"]=emotes;
++        Assert.Null((await player.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=profile.DeepClone()})).Error);
++        Assert.Null((await player.CallRawAsync("cosmetics.emote",new JsonObject{["id"]="emote-7"})).Error);
++        emotes.Add(new JsonObject{["Id"]="emote-8",["Label"]="第九条",["Image"]=""});
++        Assert.NotNull((await player.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=profile})).Error);
++    }
++    [Fact] public async Task OriginalEmoteStyleAndColorSurviveBroadcastAndInvalidStyleIsRejected()
++    {
++        await using var f=await HostFixture.StartAsync();await using var first=await f.ConnectAsync();await using var peer=await f.ConnectAsync();
++        await Admit(f,first,0);await Admit(f,peer,1);await using var notifications=new NotificationCollector(peer);
++        var profile=Profile();var emote=profile["Emotes"]![0]!.AsObject();
++        emote["Style"]="special";emote["Tint"]="132A40";emote["Label"]="第一行\n第二行";
++        Assert.Null((await first.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=profile.DeepClone()})).Error);
++        Assert.Null((await first.CallRawAsync("cosmetics.emote",new JsonObject{["id"]="hello"})).Error);
++        var sent=await notifications.WaitAsync("notify/emote");
++        Assert.Equal("special",sent.Params!["style"]!.GetValue<string>());Assert.Equal("132A40",sent.Params["tint"]!.GetValue<string>());
++        emote["EnemyImage"]=new string('A',64);
++        Assert.NotNull((await first.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=profile.DeepClone()})).Error);
++        emote.Remove("EnemyImage");
++        emote["Style"]="unknown";
++        Assert.NotNull((await first.CallRawAsync("cosmetics.set",new JsonObject{["profile"]=profile.DeepClone()})).Error);
++    }
++}

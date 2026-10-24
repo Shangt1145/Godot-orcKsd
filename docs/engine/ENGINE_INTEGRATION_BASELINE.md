@@ -1,5 +1,11 @@
 # OrC-KSD 接入基线
 
+## 当前开发依赖（2026-10-24）
+
+新增外观联机通道依赖服务端本地修改：[展示通道补丁](../engine-patches/cosmetics-channel-20261024.patch)、[功能及验证记录](../acceptance/COSMETICS_20261024.md)。补丁基于下述整合 HEAD，独立于机制兼容修复；服务端全套 117/117，未推送、未重打发行包。
+
+远端 `main` 为 `dc13b96`；本地整合 HEAD 为 `0f98685`，另保留未提交的机制兼容补丁（虎视引用与发射参数回退及回归）。本次远端只有同步交接文档变更，没有新增引擎代码。构建继续引用 `H:/Working Folder/OrC-KSD-github/src/Orc.Game`。[整合记录与验证](../acceptance/ENGINE_DC13B96_INTEGRATION_20261024.md)。下方 Beta.3 及更早小节为历史发布依赖。
+
 ## 当前 Beta.3 发布依赖（2026-10-20）
 
 引擎基线为 [hitman-OLD6/OrC-KSD 的 6d72eac0d30d40e870a4d881be01d7b784d7fb31](https://github.com/hitman-OLD6/OrC-KSD/commit/6d72eac0d30d40e870a4d881be01d7b784d7fb31)，本地引擎工作区干净。`OrcEngineRoot` 指向该版本的 `src/Orc.Game`。本次客户端发布没有修改或推送引擎源码。

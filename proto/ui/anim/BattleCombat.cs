@@ -108,7 +108,7 @@ public partial class BattleCombat : Control
             PhaseChanged?.Invoke("counter");
         }
         else if (r.AttackerAfter is not null) attacker.UpdateView(r.AttackerAfter);
-        var tail = r.Defender.IsHq && r.DefenderAfter is null ? 1.6 : r.DefenderAfter is null ? .68 : .28;
+        var tail = r.Defender.IsHq && r.DefenderAfter is null ? 1.6 : r.DefenderAfter is null ? .40 : .22;
         tail = Math.Max(0, tail - await LandAircraftAsync(epoch));
         await Delay(tail, epoch);
         if (epoch != _epoch) throw new OperationCanceledException();
@@ -188,7 +188,7 @@ public partial class BattleCombat : Control
         foreach (var (impact, card) in targets.Where(t => t.Card == attacker))
             Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage);
         PhaseChanged?.Invoke("assault-impact");
-        var tail = victims.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : victims.Any(t => t.Impact.After is null) ? .68 : .30;
+        var tail = victims.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : victims.Any(t => t.Impact.After is null) ? .40 : .22;
         await Delay(Math.Max(0, tail - await LandAircraftAsync(epoch)), epoch);
         ResetMotion();
     }
@@ -204,42 +204,45 @@ public partial class BattleCombat : Control
             Hit(impact.Before, impact.After, card, CenterOf(card), impact.Damage);
         }
         PhaseChanged?.Invoke("order-impact");
-        await Delay(targets.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : targets.Any(t => t.Impact.After is null) ? .68 : .30, epoch);
+        await Delay(targets.Any(t => t.Impact.Before.IsHq && t.Impact.After is null) ? 1.6 : targets.Any(t => t.Impact.After is null) ? .40 : .22, epoch);
         ResetMotion();
     }
     private void Flash(Vector2 at, float diameter)
     {
         AddEffect(new CombatMuzzle { Position = at, Radius = diameter / 2, Duration = Time(.09), Quiet = _clock.ReducedMotion, ZIndex = 3 });
     }
-    public async Task PresentRemovalAsync(UiCardView supplied, BattleCard card)
+    public Task PresentRemovalAsync(UiCardView supplied, BattleCard card) => PresentRemovalsAsync([(supplied, card)]);
+    public async Task PresentRemovalsAsync(IReadOnlyList<(UiCardView View, BattleCard Card)> cards)
     {
-        ResetMotion(); var epoch = _epoch; IsPlaying = true; _actors.Add(card);
-        Hit(supplied, null, card, CenterOf(card), null);
-        PhaseChanged?.Invoke("unit-destroyed"); await Delay(supplied.IsHq ? 1.6 : .68, epoch); ResetMotion();
+        if (cards.Count == 0) return;
+        ResetMotion(); var epoch = _epoch; IsPlaying = true;
+        foreach (var (view, card) in cards)
+        { _actors.Add(card); Hit(view, null, card, CenterOf(card), null); PhaseChanged?.Invoke("unit-destroyed"); }
+        await Delay(cards.Any(c => c.View.IsHq) ? 1.6 : .40, epoch); ResetMotion();
     }
     private void Hit(UiCardView before, UiCardView? after, BattleCard card, Vector2 at, int? damage, Vector2? source = null)
     {
         _sfx.Play("hit", before, target: before);
-        if (damage is { } amount) AddEffect(new CombatDamage { Position = at + new Vector2(0, -23), Amount = amount, Duration = Time(.78), Quiet = _clock.ReducedMotion, ZIndex = 10 });
+        if (damage is { } amount) AddEffect(new CombatDamage { Position = at + new Vector2(0, -20), Amount = amount, Duration = Time(.40), Quiet = _clock.ReducedMotion, ZIndex = 10 });
         var dead = after is null; var hq = before.IsHq && dead;
         var aircraft = before.Definition.UnitType is "fighter" or "bomber" or "spacefighter";
         var armored = before.Definition.UnitType is "tank" or "cruiser" or "landcruiser";
         var radius = hq ? 270 : dead ? 147 : 73;
         // Infantry leaves dust; aircraft and fuel-bearing vehicles leave a longer fireball.
         AddCloud(at, hq ? radius : aircraft ? radius : armored ? radius * .8f : radius * .5f,
-            hq ? 1.08 : aircraft && dead ? .65 : armored && dead ? .38 : .16, false, Colors.White, .13f);
+            hq ? 1.08 : aircraft && dead ? .32 : armored && dead ? .24 : .16, false, Colors.White, .13f);
         for (var i = 0; i < (hq ? 7 : dead ? 4 : 2); i++)
         {
             var angle = i * 2.399963f;
             var offset = Vector2.FromAngle(angle) * (hq ? 42 : 17);
-            AddCloud(at + offset, radius * .82f, hq ? 1.6 : 1.15, true, new Color(.83f, .8f, .72f, .65f), angle);
+            AddCloud(at + offset, radius * .82f, hq ? 1.6 : .38, true, new Color(.83f, .8f, .72f, .65f), angle);
         }
         if (!_clock.ReducedMotion)
             for (var i = 0; i < (hq ? 25 : dead ? 14 : 6); i++)
             {
                 var direction = Vector2.FromAngle(i * 2.399963f + MathF.Sin(i * 4.76f) * .31f);
                 AddEffect(new CombatDebris { Position = at, Direction = direction, Distance = (hq ? 150 : dead ? 78 : 32) * (.65f + MathF.Abs(MathF.Sin(i * 13.71f)) * .8f),
-                    Duration = Time(hq ? 1.2 : .65), Fragment = dead && i % 3 == 0, Index = i });
+                    Duration = Time(hq ? 1.2 : .35), Fragment = dead && i % 3 == 0, Index = i });
             }
         if (after is not null)
         {

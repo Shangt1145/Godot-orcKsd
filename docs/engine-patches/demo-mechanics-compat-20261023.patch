@@ -1,0 +1,75 @@
+diff --git a/src/Orc.Game/Cards/ProgramKeywordComponent.cs b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
+index 730a2f7..274e0b9 100644
+--- a/src/Orc.Game/Cards/ProgramKeywordComponent.cs
++++ b/src/Orc.Game/Cards/ProgramKeywordComponent.cs
+@@ -48,7 +48,9 @@ public sealed class ProgramKeywordComponent : KeywordComponent
+         "target.cost"=>target is CardBase cost?cost.Modifiers.GetEffectiveValue(CardStatFields.DeployCost):0,
+         "target.opCost"=>target is UnitCard operation?OperateCosts.Effective(operation):0,
+         _ when expression.StartsWith("event.",StringComparison.Ordinal)=>actor is null?throw new InvalidOperationException("当前没有事件单位"):NumberFor("target."+expression[6..],actor),
+-        _ when expression.StartsWith("data.",StringComparison.Ordinal)=>_host.TryGetData<KeywordProgramData>(out var data)&&data.Values.TryGetValue(expression[5..],out var recorded)?recorded:throw new InvalidOperationException("卡牌缺少实例记录："+expression[5..]),
++        // Generated instances carry captured values; standalone cards use their declared
++        // keyword parameter (or program default). A recorded zero remains a real value.
++        _ when expression.StartsWith("data.",StringComparison.Ordinal)=>_host.TryGetData<KeywordProgramData>(out var data)&&data.Values.TryGetValue(expression[5..],out var recorded)?recorded:Value??_program.DefaultValue,
+         _ when expression.StartsWith("state.",StringComparison.Ordinal)=>_state[expression[6..]],_=>int.Parse(expression,System.Globalization.CultureInfo.InvariantCulture)};
+     private bool Matches(KeywordCondition[] conditions,Card? actor=null,Card? target=null)=>conditions.All(c=>c.Op switch
+     {"eq"=>NumberFor(c.Left,target??_host,actor)==NumberFor(c.Right,target??_host,actor),"ne"=>NumberFor(c.Left,target??_host,actor)!=NumberFor(c.Right,target??_host,actor),"gt"=>NumberFor(c.Left,target??_host,actor)>NumberFor(c.Right,target??_host,actor),"gte"=>NumberFor(c.Left,target??_host,actor)>=NumberFor(c.Right,target??_host,actor),"lt"=>NumberFor(c.Left,target??_host,actor)<NumberFor(c.Right,target??_host,actor),"lte"=>NumberFor(c.Left,target??_host,actor)<=NumberFor(c.Right,target??_host,actor),_=>false});
+diff --git a/src/Orc.Game/Commanding/CommandManager.cs b/src/Orc.Game/Commanding/CommandManager.cs
+index a2a3217..c006b8a 100644
+--- a/src/Orc.Game/Commanding/CommandManager.cs
++++ b/src/Orc.Game/Commanding/CommandManager.cs
+@@ -1203,7 +1203,9 @@ public sealed class CommandManager
+         }
+ 
+         // 指向：指挥攻击成功发起后，对目标各触发一次（复验拒绝/取消不触发；效果发起的攻击不走本路径）。
+-        if (targetRef.Value is Card targeted)
++        // Attack-after effects may replace and destroy the original target. The attack has
++        // already applied; a stale target must not abort payment and action finalization.
++        if (targetRef.IsAlive && targetRef.Value is Card targeted)
+         {
+             await TargetingRules.NotifyAsync(
+                 _engine, targeted, unit, TargetingRules.KindCommand, triggerCard, ct);
+diff --git a/tests/Orc.Game.Tests/KeywordProgramTests.cs b/tests/Orc.Game.Tests/KeywordProgramTests.cs
+index 77d865e..518d141 100644
+--- a/tests/Orc.Game.Tests/KeywordProgramTests.cs
++++ b/tests/Orc.Game.Tests/KeywordProgramTests.cs
+@@ -10,6 +10,40 @@ namespace Orc.Game.Tests;
+ 
+ public sealed class KeywordProgramTests
+ {
++    [Theory]
++    [InlineData(null, 7)]
++    [InlineData(3, 3)]
++    public async Task MissingInstanceRecordUsesTheDeclaredParameterButRecordedZeroIsPreserved(int? value, int expected)
++    {
++        var (_, unit, _) = await Create(new() { DefaultValue = 7 }, value);
++        var component = Assert.Single(KeywordProgramRuntime.Components(unit));
++        Assert.Equal(expected, component.Number("data.damage"));
++        var data = new KeywordProgramData(); data.Values["other"] = 99; unit.AddData(data);
++        Assert.Equal(expected, component.Number("data.damage"));
++        data.Values["damage"] = 0; Assert.Equal(0, component.Number("data.damage"));
++        data.Values["damage"] = 5; Assert.Equal(5, component.Number("data.damage"));
++    }
++
++    [Fact]
++    public async Task CommandAttackThatReplacesItsTargetStillPaysAndConsumesTheAttack()
++    {
++        const string routed = "program-replacement-finalization";
++        var bridge = new MockTargeterBridge();
++        var (m, unit, _, _) = await CreateWithExtra(new()
++        {
++            Handlers = [new() { Event = "unit.attack.after", Actions = [new() { Op = "replace", Target = "attack.target", Key = routed }] }]
++        }, UnitDef(routed, "replacement", 0, 1, 1), bridge);
++        Assert.Equal(PlayResultStatus.Success, (await m.PlayManager.JoinUnitAsync(unit, m.Battlefield.FrontLine.GetInsertionGaps().First())).Status);
++        var enemy = await CommandTestKit.PrepareOnSupportAsync(m, m.Players[1], CommandTestKit.InfantryId, 0);
++        CommandTestKit.Activate(unit); bridge.CollectScript = CommandTestKit.AllRefsScript(m);
++        var points = m.Players[0].Points;
++        Assert.True((await CommandTestKit.RunCommandAsync(m, bridge, unit, enemy.Ref)).IsSuccess);
++        Assert.False(enemy.Life.IsAlive); Assert.DoesNotContain(enemy, m.Battlefield.PlayerBSupportLine.Members);
++        Assert.Equal("replacement", Assert.Single(m.Battlefield.PlayerBSupportLine.Members.OfType<UnitCard>()).Name);
++        Assert.Equal(points - unit.Modifiers.GetEffectiveValue(CardStatFields.OperateCost), m.Players[0].Points);
++        Assert.False(unit.GetData<CommandData>().CanAttack);
++    }
++
+     private static readonly List<string> Registered=[];
+     private static async Task<(Match Match,UnitCard Unit,string Keyword)> Create(KeywordProgram program,int? value=null,MockTargeterBridge? bridge=null)
+     {

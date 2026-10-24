@@ -94,7 +94,7 @@ public partial class BattleScreen : Control
         _canvas = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Stop };
         AddChild(_canvas);
         var background = new TextureRect { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore,
-            Texture = textures.Get("res://proto/assets/battle/tabletop-v2.png"),
+            Texture = OriginalCosmetics.Ui("T_nui-board-render-default-2048"),
             ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.Scale };
         _canvas.AddChild(background);
         _paper = new BattlePaper { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore };
@@ -111,6 +111,7 @@ public partial class BattleScreen : Control
         popup.AddItem("返回主菜单", 31); popup.AddItem("卡组构筑", 27); popup.AddItem("我的卡组", 28); popup.AddItem("开始新对局", 25);
         popup.AddItem("认输", 29);
         popup.AddItem("DIY 卡牌", 30);
+        popup.AddItem("外观装扮", 32);
         _concedeDialog = new ConfirmationDialog { Title = "认输", DialogText = "确认认输并结束本局？", Exclusive = true };
         _concedeDialog.GetOkButton().Text = "认输"; _concedeDialog.GetCancelButton().Text = "继续对局";
         AddChild(_concedeDialog);
@@ -122,6 +123,7 @@ public partial class BattleScreen : Control
             else if (id == 28) NavigationRequested?.Invoke("decklib");
             else if (id == 31) NavigationRequested?.Invoke("home");
             else if (id == 30) NavigationRequested?.Invoke("editor");
+            else if (id == 32) NavigationRequested?.Invoke("appearance");
             else if (id == 25 && _readOnlyMode is null) RealMatchRequested?.Invoke();
             else if (id == 0) NavigationRequested?.Invoke("collection");
             else if (id == 1) NavigationRequested?.Invoke("settings");
@@ -141,10 +143,10 @@ public partial class BattleScreen : Control
         _endTurn.Pressed += EndTurnClicked; _canvas.AddChild(_endTurn);
         for (var i = 0; i < 4; i++)
         {
-            var deck = new BattleCard { Position = new(1150 + i * 2, 624 - i * 2), Size = new(110, 154), Rotation = .70f, MouseFilter = MouseFilterEnum.Ignore };
+            var deck = new BattleCard { BackOwnerSide = "self", Position = new(1150 + i * 2, 624 - i * 2), Size = new(110, 154), Rotation = .70f, MouseFilter = MouseFilterEnum.Ignore };
             deck.PivotOffset = deck.Size / 2; deck.Bind(null, BattleCardMode.Hidden, textures); _canvas.AddChild(deck);
         }
-        _deckCount = Text("", new(1235, 651), new(38, 28), 17, "e9e4d0"); _canvas.AddChild(_deckCount);
+        _deckCount = Text("", new(1235, 654), new(38, 28), 17, "e9e4d0"); _canvas.AddChild(_deckCount);
         _netTag = Text("", new(1160, 62), new(96, 22), 12, "c7c1ad");
         _netTag.HorizontalAlignment = HorizontalAlignment.Right; _netTag.Visible = false; _canvas.AddChild(_netTag);
         _hint = Text("", new(430, 594), new(420, 26), 14, "ece5ce");
@@ -167,6 +169,7 @@ public partial class BattleScreen : Control
         // still receives them because it is its own control.
         InitializeMulligan();
         InitializeTargetChoices();
+        InitializeCosmetics();
         _canvas.GuiInput += BoardInput;
         Resized += FitBoard;
         VisibilityChanged += () => { if (!IsVisibleInTree()) CancelSelection(); };
@@ -324,6 +327,7 @@ public partial class BattleScreen : Control
             {
                 // The dedicated deployment sequence owns this card's visual until landing.
                 if (uid == deploymentActorUid) continue;
+                if (_deploymentOrigins.ContainsKey(uid) && _deploymentChoiceCenters.ContainsKey(uid)) continue;
                 if (!previous.TryGetValue(uid, out var old))
                 {
                     if (card.Mode == BattleCardMode.Field)
@@ -905,6 +909,7 @@ public partial class BattleScreen : Control
     public override void _Input(InputEvent e)
     {
         if (!IsVisibleInTree() || _canvas is null) return;
+        if (HandleCosmeticInput(e)) return;
         if (!IsFriendlyTurn) return;
         if (_arrowSlot is not null)
         {
@@ -923,10 +928,13 @@ public partial class BattleScreen : Control
                     CancelTargetChoice(); return;
                 case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } press:
                     _arrowPressAt=_canvas.GetGlobalTransformWithCanvas().AffineInverse()*press.Position;
-                    // A board arrow starts at the source actor, not by clicking the chosen target.
-                    _arrowPressed=_choiceRequest?.SourceCard is { } arrowSource&&_cards.TryGetValue(arrowSource.Uid,out var arrowActor)
+                    // A fresh source drag or target click confirms on release; the placement
+                    // gesture's old release must never answer a newly opened target request.
+                    var targetPressed = _arrowSlot.Allowed.Any(a => _cards.TryGetValue(a.Id, out var candidate)
+                        && new Rect2(candidate.Position, candidate.Size).HasPoint(_arrowPressAt));
+                    _arrowPressed=targetPressed || _choiceRequest?.SourceCard is { } arrowSource&&_cards.TryGetValue(arrowSource.Uid,out var arrowActor)
                         &&new Rect2(arrowActor.Position,arrowActor.Size).HasPoint(_arrowPressAt);
-                    _arrowDragged=false;
+                    _arrowDragged=targetPressed;
                     UpdateArrowAim(_arrowPressAt);
                     GetViewport().SetInputAsHandled();
                     return;

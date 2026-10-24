@@ -1,0 +1,386 @@
+{
+  "Schema": 1,
+  "Cards": [
+    {
+      "Id": "diy/demo-mijia",
+      "Name": "米佳游击队",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 1,
+      "OpCost": 1,
+      "Attack": 2,
+      "Defense": 2,
+      "Keywords": [
+        "kw-demo-zengyuan",
+        "kw-demo-youji"
+      ],
+      "KeywordValues": {
+        "kw-demo-zengyuan": 2
+      },
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "增援：获得 +2+2。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-youji",
+      "Name": "游击侦察兵",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 1,
+      "OpCost": 1,
+      "Attack": 2,
+      "Defense": 2,
+      "Keywords": [
+        "kw-demo-youji"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "打了就跑。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-jidong",
+      "Name": "机动骑兵",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 3,
+      "OpCost": 1,
+      "Attack": 3,
+      "Defense": 3,
+      "Keywords": [
+        "kw-demo-jidong"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "再来一次冲锋。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-buqu",
+      "Name": "不屈老兵",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 4,
+      "OpCost": 2,
+      "Attack": 2,
+      "Defense": 5,
+      "Keywords": [
+        "kw-demo-buqu"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "还不到时候。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-zhanlve",
+      "Name": "战略军团",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 5,
+      "OpCost": 2,
+      "Attack": 4,
+      "Defense": 4,
+      "Keywords": [
+        "kw-demo-zhanlve"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "转化＝不实际死亡，原地换为溃军。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-hushi",
+      "Name": "虎视猎手",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 4,
+      "OpCost": 2,
+      "Attack": 3,
+      "Defense": 3,
+      "Keywords": [
+        "kw-demo-hushi"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "被打剩的都归溃军。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-fuyuan",
+      "Name": "复员卫戍队",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 3,
+      "OpCost": 1,
+      "Attack": 3,
+      "Defense": 3,
+      "Keywords": [
+        "kw-demo-fuyuan"
+      ],
+      "KeywordValues": {
+        "kw-demo-fuyuan": 1
+      },
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "回家，但更贵了。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-chandou",
+      "Name": "缠斗步兵",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 2,
+      "OpCost": 1,
+      "Attack": 2,
+      "Defense": 3,
+      "Keywords": [
+        "kw-demo-chandou"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "死磕到底。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-kuijun",
+      "Name": "溃军",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "unit",
+      "UnitType": "infantry",
+      "Cost": 0,
+      "OpCost": 1,
+      "Attack": 1,
+      "Defense": 1,
+      "Keywords": [
+        "kw-demo-kuijun"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "士气崩溃的残部。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-zhuangtian",
+      "Name": "装填",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "order",
+      "UnitType": "infantry",
+      "Cost": 2,
+      "OpCost": 1,
+      "Attack": 2,
+      "Defense": 3,
+      "Keywords": [
+        "kw-demo-zhuangtian"
+      ],
+      "KeywordValues": {},
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "记录 1 个单位的攻击力，将 1 张「发射」加入手牌。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    },
+    {
+      "Id": "diy/demo-fashe",
+      "Name": "发射",
+      "Nation": "av76",
+      "PackId": "pack/diy-demo-mechanics",
+      "Rarity": "iron",
+      "CardType": "order",
+      "UnitType": "infantry",
+      "Cost": 2,
+      "OpCost": 1,
+      "Attack": 2,
+      "Defense": 3,
+      "Keywords": [
+        "kw-demo-fashe"
+      ],
+      "KeywordValues": {
+        "kw-demo-fashe": 2
+      },
+      "Armor": 1,
+      "ArtCardId": "",
+      "ArtFile": "",
+      "ArtSourceFile": "",
+      "ArtImportMode": "illustration",
+      "ArtRegion": {
+        "X": 0,
+        "Y": 0,
+        "Width": 1,
+        "Height": 1
+      },
+      "ArtScale": 100,
+      "Flavor": "对 1 个单位造成等同于记录值的伤害（无记录时＝2）。",
+      "Effects": [],
+      "EffectText": "",
+      "OrcEffects": [],
+      "DesktopCardJson": null
+    }
+  ]
+}

@@ -118,7 +118,7 @@ public partial class BattleScreen
         finally { ResetDemo(); _clock.SetSpeed(speed); _clock.SetReducedMotion(reduced); }
     }
 
-    /// <summary>Battlefield targets accept only source-to-target drag; never clicks or paper choices.</summary>
+    /// <summary>Battlefield choices confirm on fresh release, by source drag or direct target click.</summary>
     public async Task VerifyArrowChoicesAsync()
     {
         try
@@ -173,8 +173,10 @@ public partial class BattleScreen
             if (clickResponder.Calls != 0) throw new Exception("Target press confirmed before release.");
             GetViewport().PushInput(new InputEventMouseButton { Position = targetPoint, GlobalPosition = targetPoint,
                 ButtonIndex = MouseButton.Left, Pressed = false }, true);
-            if (clickResponder.Calls != 0 || !TargetChoiceVisible || _choicePanel.Visible)
-                throw new Exception("A target click submitted a board choice.");
+            if (clickResponder.Calls != 1 || TargetChoiceVisible || _choicePanel.Visible)
+                throw new Exception("A fresh target click did not confirm on release.");
+            clickResponder = new MockTargetResponder(clickRequest);
+            ShowTargetChoice(clickRequest, clickResponder);
             ChooseTargetOption("pick",units[0].Uid);
             if(clickResponder.Calls!=0)throw new Exception("Programmatic paper selection submitted a board choice.");
             await DragTargetChoiceAsync(CardPoint(units[0].Uid));await WaitChoiceClosedAsync();
@@ -249,7 +251,7 @@ public partial class BattleScreen
                 await ClickTargetChoiceAsync(0); await WaitChoiceClosedAsync();
                 if (picked.Calls != 1) throw new Exception($"The {zone} card picker did not accept its mouse choice.");
             }
-            GD.Print("ARROW_CHOICE_VERIFY_OK no-panel drag-only clicks-and-paper-blocked invalid-release-retry two-slots-no-click-through landing-preview no-placement-click-through right-cancel hand-deck-discard-pickers-preserved");
+            GD.Print("ARROW_CHOICE_VERIFY_OK no-panel source-drag-or-target-click release-only paper-blocked invalid-release-retry two-slots-no-click-through landing-preview no-placement-click-through right-cancel hand-deck-discard-pickers-preserved");
         }
         finally { ResetDemo(); }
     }

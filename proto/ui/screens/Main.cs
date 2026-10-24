@@ -79,6 +79,7 @@ public partial class Main : Control
     }
     private async Task InitializeInterfaceAsync(SfxPlayer sfx)
     {
+        InitializeAppearance();
         await StartupStageAsync(.08f, "整理卡牌收藏…");
         try
         {
@@ -213,8 +214,9 @@ public partial class Main : Control
         // 作战房间：进屏即拉起服务器实例，拉人后分配座位，开局交给远端 feed 驱动。
         _room = new RoomScreen();
         _room.Initialize(Path.Combine(RuntimeGameData.Directory("kards"), "packs"),
-            ProjectSettings.GlobalizePath("user://net-room"));
+            ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/net-room/{Guid.NewGuid():N}":"user://net-room"));
         _room.AllowSampleDeck = _verificationRun;
+        _room.Cosmetics = _cosmetics;
         _setup.HiddenRoomId = () => _room.HostedRoomId;
         // 联机优先用玩家自己在卡组库里选的构筑卡组（全部为 pack/ 应用层 id 时才采用）。
         _room.ActiveDeckSource = () => _decks.ActiveDeck?.CardIds;
@@ -287,6 +289,7 @@ public partial class Main : Control
         _helpTabs.TabChanged += _ => _fx.InterruptAll();
         AddScreen(content, "help", _helpTabs);
         AddScreen(content, "settings", Settings());
+        AddAppearanceScreen(content);
         var footer = new PanelContainer();
         _shellFooter = footer;
         footer.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("141c17"), new("354032"), 0, 6));
@@ -305,7 +308,8 @@ public partial class Main : Control
         Show("home");
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
-        if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
+        if (args.Contains("--verify-appearance")) Callable.From(VerifyAppearance).CallDeferred();
+        else if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
         else if (args.Contains("--net-play")) Callable.From(NetPlay).CallDeferred();
         else if (args.Contains("--verify-setup-selection")) Callable.From(VerifySetupSelection).CallDeferred();
         else if (args.Contains("--verify-navigation")) Callable.From(VerifyNavigation).CallDeferred();
@@ -382,6 +386,8 @@ public partial class Main : Control
             CallDeferred(MethodName.CapturePlacement);
         else if (args.Contains("--verify-orders"))
             CallDeferred(MethodName.VerifyOrders);
+        else if (args.Contains("--verify-battle-feedback"))
+            CallDeferred(MethodName.VerifyBattleFeedback);
         else if (args.Contains("--verify-target-drag"))
             CallDeferred(MethodName.VerifyTargetDrag);
         else if (args.Contains("--verify-keyword-movement"))
@@ -419,6 +425,7 @@ public partial class Main : Control
         }
         StopRealMatch();
         _trialDeck = trialDeck?.Snapshot();
+        _battleAppearanceDeck=selected?.Snapshot()??_decks.ActiveDeck?.Snapshot();
         var matchArt = _artById.ToDictionary(p => p.Key, p => p.Value);
         var runner = new OrcMatchRunner
         {
@@ -473,6 +480,7 @@ public partial class Main : Control
     private void BindFeed(IMatchFeed feed)
     {
         _feed = feed;
+        BindAppearance(feed);
         _battle.SetReadOnlyMode(feed is ReplayMatchFeed ? "回放中" : feed is RemoteMatchFeed { IsObserver: true } ? "观战中" : null);
         AttachRecording(feed);
         // 单机＝主线程，保持同步；远端＝协议线程，必须 deferred。
@@ -566,6 +574,7 @@ public partial class Main : Control
         var runner = _runner;
         _runner = null;
         _feed = null;
+        AppearanceRuntime.ResetRemote();
         _presentations?.Dispose();
         _presentations = null;
         runner?.Stop();
@@ -856,6 +865,7 @@ public partial class Main : Control
         if (id == "decklib") _deckLibrary.Refresh();
         if (id == "home") _home.Refresh();
         if (id == "setup") _setup.Refresh();
+        if (id == "appearance") PrepareAppearanceScreen();
         // 换屏统一走快门：盖住 → 切可见性 → 揭开。战场与菜单同一套过场（此前战场是硬切）。
         var curtained = changed && !_clock.ReducedMotion;
         if (curtained) CoverScreen();

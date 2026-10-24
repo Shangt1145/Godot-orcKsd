@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Orc.Cards;
 using Orc.Core;
@@ -18,6 +18,7 @@ public sealed class DesktopTargetContext : IDisposable
 {
     private static readonly ConditionalWeakTable<Player,DesktopTargetContext> Owners=new();
     private readonly ConditionalWeakTable<Card,Dictionary<string,Card[]>> _captured=new();
+    private readonly ConditionalWeakTable<Card,HashSet<string>> _consumed=new();
     private readonly List<(Orc.Core.Trigger<CardTriggerView> Trigger,TriggerRegistration Handle)> _registrations=[];
     private readonly Match _match;
     private readonly IReadOnlyDictionary<string,string[]> _plans;
@@ -39,7 +40,7 @@ public sealed class DesktopTargetContext : IDisposable
             if(trigger is null)continue;
             var handle=trigger.Register("desktop/capture",async(view,_,ct)=>
             {
-                _captured.Remove(card);var selection=new Dictionary<string,Card[]>(StringComparer.Ordinal);
+                _captured.Remove(card);_consumed.Remove(card);var selection=new Dictionary<string,Card[]>(StringComparer.Ordinal);
                 foreach(var declaration in declarations)
                 {
                     var result=await SelectCore(card,declaration.Declaration,ct);
@@ -49,7 +50,7 @@ public sealed class DesktopTargetContext : IDisposable
                     if(result.Length==0){view.CaptureBox?.CancelPrePlay();return;}
                     selection[declaration.Scope+"|"+declaration.Declaration]=result;
                 }
-                _captured.Add(card,selection);
+                _captured.Add(card,selection);_consumed.Add(card,new());
             });
             _registrations.Add((trigger,handle));
         }
@@ -66,8 +67,26 @@ public sealed class DesktopTargetContext : IDisposable
     public static async Task<Card[]> SelectAsync(CardBase source,string declaration,string scope,CancellationToken ct)
     {
         if(source.Owner is null||!Owners.TryGetValue(source.Owner,out var context))throw new InvalidOperationException("原生声明选靶上下文未装配");
-        if(context._captured.TryGetValue(source,out var selection)&&selection.TryGetValue(scope+"|"+declaration,out var captured))return captured;
+        if(context._captured.TryGetValue(source,out var selection)&&selection.TryGetValue(scope+"|"+declaration,out var captured))
+        {if(context._consumed.TryGetValue(source,out var consumed))consumed.Add(scope+"|"+declaration);return captured;}
         return await context.SelectCore(source,declaration,ct);
+    }
+    /// <summary>Older native snapshots request their own selector after desktop pre-play capture.
+    /// Re-submit that captured choice through the native selector once, preserving its validation
+    /// and targeted notifications instead of asking the player to choose a second time.</summary>
+    internal bool TryReplayNativeSelection(ISelectorInstance selector)
+    {
+        var data=selector.Presentation;
+        if(data.Parameter is not Card source||data.Identifiers is not null||data.Min!=1||data.Max!=1
+            ||!_captured.TryGetValue(source,out var captured)||!_consumed.TryGetValue(source,out var consumed))return false;
+        foreach(var (key,targets) in captured)
+        {
+            if(consumed.Contains(key)||targets.Length!=1)continue;
+            var candidate=data.Candidates.FirstOrDefault(r=>r.IsAlive&&ReferenceEquals(r.Value,targets[0]));
+            if(candidate is null)continue;
+            consumed.Add(key);selector.Submit(new PickEvent([candidate]));return true;
+        }
+        return false;
     }
     private async Task<Card[]> SelectCore(CardBase source,string declaration,CancellationToken ct)
     {

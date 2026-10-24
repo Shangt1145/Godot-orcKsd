@@ -32,6 +32,10 @@
 
 ## 开发与发布
 
+预发布热修复现在自动收集旧版基线：`0.0.0betaN.hotfix` 默认覆盖 beta.1～beta.N，常规 beta.N 则收集此前 beta；每版必须存在原始基线，缺失时报错。可显式指定 `-CompatibleThroughBeta N`。已有导出不需重导游戏，可运行 `tools/build-compatible-update.ps1 -ThroughBeta 5` 生成并验证统一补丁。具体来源、去重和验证见 [beta.5 hotfix 兼容更新](BETA5_HOTFIX_COMPATIBLE_UPDATE_20261024.md)。
+
+2026-10-24 起，交付目录按版本归档：`dist/releases/<版本>/full/` 放完整 ZIP，`patches/` 放增量，`notes/` 放报告和说明，`verification/` 放日志；版本根目录 `SHA256.txt` 使用相对路径。独立更新器放 `dist/updaters/<版本>/`，总入口为 `dist/README.md`。以下历史记录里的旧 `dist/文件名` 已归档到对应版本目录，文件内容不变。`release.ps1` 自动按此结构输出，寻找同版本基线时优先新路径并兼容旧根目录；跨版本升级仍通过 `-BaselineZip` 指定来源。
+
 ```powershell
 # 默认保留上次交付的 ZIP 作为来源；也可明确指定旧包和旧显示版本。
 ./tools/release.ps1 -BaselineZip "旧版完整包.zip" -BaselineVersion "0.0.0-beta.1"

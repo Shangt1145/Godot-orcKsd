@@ -52,6 +52,9 @@ public partial class BattleScreen
     {
         foreach (var (uid, pose) in _deploymentOrigins.Concat(_orderOrigins))
         {
+            if (_deploymentOrigins.ContainsKey(uid) && _cards.TryGetValue(uid, out var preview) && preview.View is { } source
+                && _deploymentChoiceCenters.ContainsKey(uid))
+            { RestoreDeploymentPreview(uid, source); continue; }
             if (!_cards.TryGetValue(uid, out var card) || card.Mode != BattleCardMode.Hand) continue;
             StopHandMotion(uid);
             card.Size = pose.Size; card.PivotOffset = pose.Size / 2;
@@ -247,9 +250,17 @@ public partial class BattleScreen
                             Record(counter.Card, counter.Card.Definition.Name);
                         break;
                     case UiRemovalPresentation removed when removed.Card.Visibility == Visibility.Full:
-                        var removedActor = _cards.GetValueOrDefault(removed.Card.Uid) ?? _removalActors.GetValueOrDefault(removed.Card.Uid);
-                        if (removedActor?.View?.Visibility == Visibility.Full)
-                            await _combat.PresentRemovalAsync(removed.Card, removedActor);
+                        var removals = new List<(UiCardView View, BattleCard Card)>();
+                        var seenRemovals = new HashSet<string>();
+                        for (var index = stepIndex; index < resolution.Steps.Count && resolution.Steps[index] is UiRemovalPresentation nextRemoval; index++)
+                        {
+                            if (!seenRemovals.Add(nextRemoval.Card.Uid)) break;
+                            var removedActor = _cards.GetValueOrDefault(nextRemoval.Card.Uid) ?? _removalActors.GetValueOrDefault(nextRemoval.Card.Uid);
+                            if (nextRemoval.Card.Visibility == Visibility.Full && removedActor?.View?.Visibility == Visibility.Full)
+                                removals.Add((nextRemoval.Card, removedActor));
+                            stepIndex = index;
+                        }
+                        await _combat.PresentRemovalsAsync(removals);
                         break;
                     case UiDiscardPresentation discard:
                         // Discarded and hand-limit-burned cards leave the table. The bridge has always
@@ -269,8 +280,17 @@ public partial class BattleScreen
                         await _sequence.TurnBannerAsync(turn);
                         break;
                     case UiStatusPresentation status when status.Before.Uid == status.After.Uid && status.Before.Visibility == Visibility.Full && status.After.Visibility == Visibility.Full:
-                        if (_cards.TryGetValue(status.Before.Uid, out var statusCard) && statusCard.View?.Visibility == Visibility.Full)
-                            await _sequence.StatusAsync(statusCard, status, PresentationCard(resolution.After, status.After.Uid));
+                        var statusTasks = new List<Task>(); var seenStatuses = new HashSet<string>();
+                        for (var index = stepIndex; index < resolution.Steps.Count && resolution.Steps[index] is UiStatusPresentation nextStatus; index++)
+                        {
+                            if (!seenStatuses.Add(nextStatus.After.Uid)) break;
+                            if (nextStatus.Before.Uid == nextStatus.After.Uid && nextStatus.Before.Visibility == Visibility.Full
+                                && nextStatus.After.Visibility == Visibility.Full && _cards.TryGetValue(nextStatus.After.Uid, out var statusCard)
+                                && statusCard.View?.Visibility == Visibility.Full)
+                                statusTasks.Add(_sequence.StatusAsync(statusCard, nextStatus, PresentationCard(resolution.After, nextStatus.After.Uid)));
+                            stepIndex = index;
+                        }
+                        await Task.WhenAll(statusTasks);
                         break;
                     case UiResourcePresentation resource:
                         // The bar counts to its new value; the authoritative render below re-binds it.

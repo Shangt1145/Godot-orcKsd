@@ -23,13 +23,14 @@ internal sealed record AstralFieldMetrics(string Field, string FontPath, Vector2
 /// <summary>Draws PSD point text from extracted baselines, fonts and leading. No Label minimum-size drift.</summary>
 public sealed partial class CardFaceTypography : Control
 {
+    public float NumericBaselineOffset { get; set; }
     private const string Root = "res://proto/assets/cardface/fonts/";
     private static readonly Dictionary<string, Font> Fonts = [];
     private static readonly Dictionary<(string Path, int Spacing), FontVariation> Variations = [];
     private static readonly Lazy<AstralTypeCatalog> Catalog = new(() => JsonSerializer.Deserialize<AstralTypeCatalog>(
         Godot.FileAccess.GetFileAsString("res://proto/assets/cardface/astral/typography.json"),
         new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!);
-    private sealed record Run(TextParagraph Paragraph, AstralTypeStyle Style, float Scale, float Leading, int VisibleLines);
+    private sealed record Run(TextParagraph Paragraph, AstralTypeStyle Style, float Scale, float Leading, int VisibleLines, bool Numeric);
     private readonly List<Run> _runs = [];
     private readonly List<AstralFieldMetrics> _metrics = [];
     internal IReadOnlyList<AstralFieldMetrics> Metrics => _metrics;
@@ -129,7 +130,7 @@ public sealed partial class CardFaceTypography : Control
             p.Dispose(); p = Shape(text, font, size, width * 2 / (style.HorizontalScale * fit), false);
         }
         count = p.GetLineCount(); p.MaxLinesVisible = visible;
-        _runs.Add(new(p, style, fit, leading, Math.Min(count, visible)));
+        _runs.Add(new(p, style, fit, leading, Math.Min(count, visible), field is "cost" or "opCost" or "attack" or "defense"));
         _metrics.Add(new(field, FontPath(style.Fonts[0]), new(style.Baseline[0], style.Baseline[1]), size * fit,
             leading, width, Math.Min(count, visible), count > visible || (!body && p.GetLineWidth(0) * fit * style.HorizontalScale / 2 > width + 1)));
     }
@@ -143,7 +144,7 @@ public sealed partial class CardFaceTypography : Control
             var color = new Color(r.Style.Color[0], r.Style.Color[1], r.Style.Color[2], r.Style.Color[3]);
             for (var i = 0; i < r.VisibleLines; i++)
             {
-                var at = new Vector2(r.Style.Baseline[0], r.Style.Baseline[1] + i * r.Leading);
+                var at = new Vector2(r.Style.Baseline[0], r.Style.Baseline[1] + i * r.Leading + (r.Numeric ? NumericBaselineOffset : 0));
                 DrawSetTransform(origin + at * ratio, 0, new Vector2(ratio * r.Scale * r.Style.HorizontalScale / 2, ratio * r.Scale / 2));
                 var server = TextServerManager.GetPrimaryInterface();
                 var line = r.Paragraph.GetLineRid(i);

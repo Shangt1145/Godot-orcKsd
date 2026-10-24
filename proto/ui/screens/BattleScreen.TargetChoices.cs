@@ -45,7 +45,10 @@ public partial class BattleScreen
         {
             StopHandMotion(source.Uid);
             _choiceSourcePose = DeploymentPose.From(hand);
-            _choiceReturnPose = new(hand.RestPosition, hand.Size, Vector2.One, hand.RestRotation);
+            var handPose = HandPose(source.SlotIndex, _state.SelfHand.Count, true);
+            _choiceReturnPose = source.Zone == "hand"
+                ? new(handPose.Position, new(144, 202), Vector2.One, handPose.Rotation)
+                : new(hand.RestPosition, hand.Size, Vector2.One, hand.RestRotation);
             hand.Visible = false;
         }
         OpenChoiceSlot();
@@ -70,7 +73,7 @@ public partial class BattleScreen
             if (slot.Max < 1 || slot.Allowed.Count < Math.Max(1,slot.Min))
             { CancelTargetChoice(); return; }
             UpdateArrowAim(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * GetViewport().GetMousePosition());
-            Hint("从单位拖出箭头，在目标上松手；右键取消"); return;
+            Hint("拖出箭头或点击目标，松手确认；右键取消"); return;
         }
         _aim.Visible = false;
         var origin = request.SourceCard is { } card && _orderOrigins.TryGetValue(card.Uid, out var pose) ? pose : (DeploymentPose?)null;
@@ -165,8 +168,13 @@ public partial class BattleScreen
     {
         if (_choiceRequest?.SourceCard is not { } source || !_cards.TryGetValue(source.Uid, out var card)) return;
         card.Visible = _arrowSlot is not null;
-        if (_arrowSlot is null || source.Definition.CardType != "unit"
-            || !_deploymentChoiceCenters.TryGetValue(source.Uid, out var center)) return;
+        if (_arrowSlot is not null) RestoreDeploymentPreview(source.Uid, source);
+    }
+    private void RestoreDeploymentPreview(string uid, UiCardView source)
+    {
+        if (source.Definition.CardType != "unit" || !_cards.TryGetValue(uid, out var card)
+            || !_deploymentChoiceCenters.TryGetValue(uid, out var center)) return;
+        StopHandMotion(uid);
         // This is only a placement preview. The engine still owns payment and deployment.
         var row = _cards.Values.Where(c => c.Uid != source.Uid && c.View?.OwnerSide == "self"
             && (c.View.Zone == "support" || c.View.IsHq)).OrderBy(c => c.RestPosition.X).ToArray();
@@ -182,7 +190,7 @@ public partial class BattleScreen
         card.Bind(source, BattleCardMode.Field, _textures);
         card.Size = FieldCardSize; card.PivotOffset = FieldCardSize / 2;
         card.Position = center - FieldCardSize / 2; card.Scale = Vector2.One; card.Rotation = 0;
-        card.MouseFilter = MouseFilterEnum.Ignore;
+        card.MouseFilter = MouseFilterEnum.Ignore; card.Visible = true;
     }
     /// <summary>Called after a fresh press releases on a candidate supplied by the engine.</summary>
     private void CommitArrowChoice(Vector2 at)
@@ -211,15 +219,18 @@ public partial class BattleScreen
         if (_choicePanel is null) return;
         _arrowSlot = null;
         _arrowPressed = false; _arrowDragged = false; _arrowPicks.Clear(); _aim.Visible = false;
+        var keepDeployment = _choiceRequest?.SourceCard is { } pending
+            && _deploymentOrigins.ContainsKey(pending.Uid) && _deploymentChoiceCenters.ContainsKey(pending.Uid);
         foreach (var (uid, pose) in _choiceFormationPoses)
-            if (_cards.TryGetValue(uid, out var neighbour)) neighbour.Position = pose.Position;
+            if (!keepDeployment && _cards.TryGetValue(uid, out var neighbour)) neighbour.Position = pose.Position;
         _choiceFormationPoses.Clear();
         foreach (var pair in _cards)
             if (pair.Value.Targeted) { pair.Value.Targeted = false; pair.Value.QueueRedraw(); }
         if (_choiceRequest?.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand))
         {
-            if (_choiceSourcePose is { } original)
+            if (!keepDeployment && _choiceSourcePose is { } original)
             {
+                if (source.Zone == "hand" && _choiceReturnPose is { } returned) original = returned;
                 hand.Bind(source, source.Zone == "hand" ? BattleCardMode.Hand : BattleCardMode.Field, _textures);
                 hand.Size = original.Size; hand.PivotOffset = original.Size / 2;
                 hand.Position = original.Position; hand.Scale = original.Scale; hand.Rotation = original.Rotation;
@@ -230,7 +241,7 @@ public partial class BattleScreen
                     hand.ZIndex = 20 + source.SlotIndex;
                 }
             }
-            if (_orderChoiceFaces.TryGetValue(source.Uid, out var chosen)) hand.Bind(chosen, BattleCardMode.Hand, _textures);
+            if (!keepDeployment && _orderChoiceFaces.TryGetValue(source.Uid, out var chosen)) hand.Bind(chosen, BattleCardMode.Hand, _textures);
             hand.ChoiceCaption = _orderChoiceCaptions.GetValueOrDefault(source.Uid);
             hand.Visible = true;
         }

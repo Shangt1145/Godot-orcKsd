@@ -104,9 +104,20 @@ public sealed class PresentationPlayer : IDisposable
         {
             var first = i;
             // A triggered counter holds its reveal through the attached removal. That visual
-            // dependency is one beat; independent draws/removals remain separate scheduling points.
+            // dependency is one beat; draws remain separate scheduling points.
             if (resolution.Steps[i] is UiCounterPresentation { Stage: UiCounterStage.Triggered }
                 && i + 1 < resolution.Steps.Count && resolution.Steps[i + 1] is UiRemovalPresentation) i++;
+            else if (resolution.Steps[i] is UiStatusPresentation or UiRemovalPresentation)
+            {
+                // Independent units in one engine result share a beat. Repeated changes to
+                // the same unit still retain their causal order (for example suppress/clear).
+                static string? Actor(UiPresentationStep step) => step switch
+                { UiStatusPresentation status => status.After.Uid, UiRemovalPresentation removal => removal.Card.Uid, _ => null };
+                var actors = new HashSet<string> { Actor(resolution.Steps[i])! };
+                var kind = resolution.Steps[i].GetType();
+                while (i + 1 < resolution.Steps.Count && resolution.Steps[i + 1].GetType() == kind
+                    && Actor(resolution.Steps[i + 1]) is { } actor && actors.Add(actor)) i++;
+            }
             var steps = resolution.Steps.Skip(first).Take(i - first + 1).ToArray();
             var after = WithoutFeedbackChanges(resolution, resolution.Steps.Skip(i + 1).ToArray());
             Add(resolution with { Steps = steps, Before = before, After = after }, actions, false);

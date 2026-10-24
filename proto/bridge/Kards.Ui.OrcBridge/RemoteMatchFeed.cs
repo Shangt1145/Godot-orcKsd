@@ -19,7 +19,7 @@ namespace Kards.Ui.OrcBridge;
 public sealed record RemoteToolResult(bool Ok, string Code, string? Message, JsonNode? Details);
 
 /// <summary>Remote projection and command adapter. Sessions require approval; no-seat viewers stay read-only.</summary>
-public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
+public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 {
     private readonly OrcClient _client;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -135,16 +135,18 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     {
         var client = await OrcClient.ConnectAsync(new ClientOptions { Host = host, Port = port }, ct)
             .ConfigureAwait(false);
+        var supportsCosmetics = false;
         try
         {
-            await client.InitializeAsync(new InitializeParams { ClientName = "godot" }, ct).ConfigureAwait(false);
+            var initialized = await client.InitializeAsync(new InitializeParams { ClientName = "godot" }, ct).ConfigureAwait(false);
+            supportsCosmetics = initialized.Capabilities.Contains("cosmetics-v1");
         }
         catch
         {
             await client.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-        return new RemoteMatchFeed(client, seat);
+        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics };
     }
 
     /// <summary>读房间快照（座位、可连地址、卡包状态）。</summary>
@@ -375,6 +377,7 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 
     private void OnNotification(RpcNotification notification)
     {
+        if (HandleCosmeticNotification(notification)) return;
         switch (notification.Method)
         {
             case "notify/admission":
@@ -383,6 +386,7 @@ public sealed class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 _seatToken = notification.Params?["seatToken"]?.GetValue<string>();
                 if (admitted != "admitted") { _actions = new(); _mulliganPending = false; _targetPending = false; _view = null; _observerFrame = null; TargetClosed?.Invoke(); }
                 AdmissionChanged?.Invoke(admitted);
+                if (admitted == "admitted") _ = InitializeCosmeticsAsync();
                 break;
             case "notify/room.rotated":
                 AdmissionState = "revoked"; _seatToken = null; _actions = new(); _mulliganPending = false; _targetPending = false; _view = null; _observerFrame = null; TargetClosed?.Invoke();

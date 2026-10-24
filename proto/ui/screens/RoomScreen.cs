@@ -7,6 +7,7 @@ namespace Kards.Ui;
 /// <summary>房间申请与房主审批界面；生命周期由管理器控制，普通业务连接没有管理权限。</summary>
 public partial class RoomScreen : VBoxContainer
 {
+    public CosmeticLibrary? Cosmetics { get; set; }
     private string _packsRoot = "", _sandbox = "";
     private ServerLauncher? _server;
     private RemoteMatchFeed? _feed;
@@ -938,6 +939,7 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>挂延迟显示（M5）：启动 ping 循环并把结果写进状态栏。</summary>
     private void HookPing(RemoteMatchFeed feed)
     {
+        if(Cosmetics is not null)feed.ConfigureCosmetics(Cosmetics,_deckPresentation?.Id,_deckPresentation?.Options.MainNation);
         feed.StartPingLoop();
         feed.AdmissionChanged += state => Ui(() => {
             if (_feed != feed) return;

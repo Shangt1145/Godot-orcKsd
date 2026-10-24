@@ -21,6 +21,7 @@ public partial class DeckLibraryScreen : VBoxContainer
     private ConfirmationDialog _delete = null!;
     private string? _deleteId;
     public event Action<ConstructedDeck>? EditRequested;
+    public event Action<ConstructedDeck>? CustomizeRequested;
     public event Action? NewRequested;
     public event Action? StartRequested;
     public event Action? Changed;
@@ -101,6 +102,7 @@ public partial class DeckLibraryScreen : VBoxContainer
         var ready = errors.Count == 0 && _library.LoadError is null;
         var start = AddAction(Details, "start", PlaySelection ? "确认卡组，返回准备" : "带此卡组出战 →", () => Execute(() => { _library.Activate(deck.Id); StartRequested?.Invoke(); })); start.Disabled = !ready; MenuStyles.Primary(start);
         AddAction(Details, "edit", "编辑卡组", () => EditRequested?.Invoke(deck));
+        AddAction(Details, "customize", "自定义外观", () => CustomizeRequested?.Invoke(deck));
         var use = AddAction(Details, "activate", active ? "当前卡组" : "设为当前卡组", () => Execute(() => _library.Activate(deck.Id))); use.Disabled = active || !ready; use.Visible = !PlaySelection;
         var utilities = new HBoxContainer(); utilities.AddThemeConstantOverride("separation", 6); Details.AddChild(utilities);
         AddAction(utilities, "copy", "复制", () => Execute(() => { var copy = deck with { Id = Guid.NewGuid().ToString("N"), Name = deck.Name[..Math.Min(deck.Name.Length, 59)] + " 副本" }; _library.Save(copy); _selectedId = copy.Id; }));

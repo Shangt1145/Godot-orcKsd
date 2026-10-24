@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64_console.exe',
     # 引擎源码副本：房间屏要拉起 Orc.Server；构建产物缺 OrcServer/ 时按 ORC_ENGINE_ROOT 兜底解析。
@@ -23,6 +23,7 @@ param(
     [switch]$VerifyTarget,
     [switch]$VerifyCombat,
     [switch]$VerifyDeck,
+    [switch]$VerifyAppearance,
     [switch]$CaptureRoom,
     [switch]$Capture
 )
@@ -36,6 +37,9 @@ try {
     if (($probeOutput -join "`n") -notmatch 'csharp=true') { throw 'Godot has no C# support. Use the .NET build.' }
     & dotnet build 'Kards.Ui.csproj' --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+    # Development runs use the engine just built, rather than an older server beside a prior export.
+    $developmentServerDll = Join-Path $EngineRoot 'src\Orc.Server\bin\Debug\net8.0\Orc.Server.dll'
+    if (-not $env:ORC_SERVER_DLL -and (Test-Path -LiteralPath $developmentServerDll)) { $env:ORC_SERVER_DLL = $developmentServerDll }
     # Godot's build copies project assemblies only, but the engine's scripting satellite
     # (Orc.Script) needs its Roslyn runtime closure next to the game assembly. Publish the bridge
     # once to resolve the full closure and sync whatever the Godot output is missing.
@@ -72,6 +76,7 @@ try {
     elseif ($VerifyTarget) { & $Godot --headless --path $BuildRoot '--' --verify-target }
     elseif ($VerifyCombat) { & $Godot --headless --path $BuildRoot '--' --verify-combat }
     elseif ($VerifyDeck) { & $Godot --headless --path $BuildRoot '--' --verify-deck }
+    elseif ($VerifyAppearance) { & $Godot --path $BuildRoot '--' --verify-appearance }
     elseif ($CaptureRoom) { & $Godot --path $BuildRoot '--' --capture-room }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }

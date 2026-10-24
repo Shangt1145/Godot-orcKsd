@@ -115,27 +115,26 @@ public partial class Main
             GD.Print($"SAVED_DEMO_GRAPPLE_TICK enemyHpBefore={enemyBeforeTurn} enemyHpAfter={Health(enemyUid)} selfHpBefore={grapplerBeforeTurn} selfHpAfter={Health(grapple.Uid)} errors={string.Join(" | ", turnErrors)}");
             if (enemyBeforeTurn == Health(enemyUid) && grapplerBeforeTurn == Health(grapple.Uid))
                 findings.Add("Linked support-line units did not fight at the controller's next turn start.");
-            // Run last: a standalone launch damages its target, which would end the very fight the
-            // grapple check above is about to observe.
-            var standalone = session.View.SelfHand.FirstOrDefault(c => existingFire.Contains(c.Uid));
-            // 上面的 grapple 检测会把目标打到 0 血；对着死目标开火只会得到 SelectedTargetUnavailable，
-            // 那是验证自伤，不是卡的问题。目标已倒就跳过，别把噪声当结论。
-            if (standalone is not null && Health(enemyUid) > 0)
+            // Check the independently constructed launch separately from the generated instance.
+            var standalone = session.View.SelfHand.Single(c => existingFire.Contains(c.Uid));
+            // Give standalone launch its own living target; grapple must never skip this check.
+            var launchTarget = await OrcDragVerification.JoinSupportAsync(session, 1, "diy/demo-buqu");
+            session.SettleProjection(); await Render();
             {
                 var pointsBefore = session.View.SelfKredits;
-                var hpBefore = Health(enemyUid);
+                var hpBefore = Health(launchTarget);
+                var savedFire = demo.Single(c => c.RuntimeId == standalone.CardId);
+                var expectedDamage = savedFire.KeywordValues.GetValueOrDefault("kw-demo-fashe",
+                    WorkshopAuthoring.ParameterDefault("kw-demo-fashe"));
                 GD.Print($"SAVED_DEMO_STANDALONE_FIRE hasRecord={OrcDragVerification.HasRecord(session,standalone.Uid)} playable={session.Actions.PlayableUids.Contains(standalone.Uid)}");
                 try
                 {
-                    var outcome = await session.SubmitAsync(new PlayCard(standalone.Uid, TargetUid: enemyUid));
-                    session.SettleProjection();
-                    var damage = hpBefore - Health(enemyUid);
-                    GD.Print($"SAVED_DEMO_STANDALONE_FIRE_RESULT outcome={outcome} pointsSpent={pointsBefore-session.View.SelfKredits} stillInHand={session.View.SelfHand.Any(c=>c.Uid==standalone.Uid)} damage={damage}");
-                    // 打出却没伤害是问题；直接拒绝同样是问题（以前只查前者，后者会静默漏过）。
-                    if (outcome != UiSubmitOutcome.Applied)
-                        findings.Add($"Standalone launch was rejected: {outcome}.");
-                    else if (damage == 0)
-                        findings.Add("Standalone launch has no captured record but is consumed and charged without damage.");
+                    await Direct(standalone, launchTarget, "demo-pack-standalone-fire-arrow");
+                    var damage = hpBefore - Health(launchTarget);
+                    var pointsSpent = pointsBefore - session.View.SelfKredits;
+                    GD.Print($"SAVED_DEMO_STANDALONE_FIRE_RESULT outcome=Applied pointsSpent={pointsSpent} stillInHand={session.View.SelfHand.Any(c=>c.Uid==standalone.Uid)} damage={damage} expected={expectedDamage}");
+                    if (damage != expectedDamage || pointsSpent != savedFire.Cost || session.View.SelfHand.Any(c => c.Uid == standalone.Uid))
+                        findings.Add("Standalone launch did not consume exactly one card, its cost and its declared damage.");
                 }
                 catch (Exception e) { findings.Add("Standalone launch fault: " + e.Message); GD.Print($"SAVED_DEMO_STANDALONE_FIRE_FAULT {e.GetType().Name}: {e.Message}"); }
             }
@@ -147,6 +146,7 @@ public partial class Main
         }
         foreach (var finding in findings) GD.Print("SAVED_DEMO_PACK_FINDING " + finding);
         GD.Print($"SAVED_DEMO_PACK_AUDIT_COMPLETE targeting=pass findings={findings.Count} workshop-files-unchanged");
+        if (findings.Count > 0) throw new Exception(string.Join(" | ", findings));
     }
 
     /// <summary>

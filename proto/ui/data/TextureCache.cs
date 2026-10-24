@@ -45,6 +45,8 @@ public sealed class TextureCache
             return found.Texture;
         }
         // diyart:// 自导入卡图：运行时图像（不经 Godot 资源导入管线），由 DiyArtStore 解析。
+        if (path.StartsWith("cosmetic://", StringComparison.Ordinal))
+            return Store(path, AppearanceRuntime.Load(path[11..]));
         if (path.StartsWith("diyart://", StringComparison.Ordinal))
             return Store(path, DiyArtStore.Load(path[9..]));
         if (path.StartsWith("packart://", StringComparison.Ordinal) || path.StartsWith("packfull://", StringComparison.Ordinal))

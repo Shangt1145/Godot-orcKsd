@@ -42,9 +42,9 @@ public static class OrcDragVerification
         var mobile=(UnitCard)await match.CardService.CreateAsync("diy/demo-jidong",match.Players[0]);
         await match.PlayManager.JoinUnitAsync(routed,match.Battlefield.FrontLine.GetInsertionGaps().First());
         await match.PlayManager.JoinUnitAsync(mobile,match.Battlefield.FrontLine.GetInsertionGaps().Last());
-        // 引擎把 CanMove/CanAttack 改成只读：可动/可攻从布尔变成配额（1＝可，0＝否）。
+        // Restore through the native quota policy; forcing attack quota to 1 disables mobility.
         foreach(var unit in new[]{routed,mobile})
-        {var data=unit.GetData<CommandData>();data.SetMoveQuota(1);data.SetAttackQuota(1);}
+            KeywordRules.ResetActionQuotas(unit);
         session.SettleProjection();session.Pump();
         return (OrcRefs.KeyOf(routed),OrcRefs.KeyOf(mobile));
     }

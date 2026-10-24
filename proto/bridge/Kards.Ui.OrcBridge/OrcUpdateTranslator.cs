@@ -75,6 +75,8 @@ public sealed class OrcUpdateTranslator
                         // a single card animates into the hand twice.
                         var arrival = PayloadCard(payload);
                         if (arrival is null || !arrived.Add(OrcRefs.KeyOf(arrival))) break;
+                        if (arrival is CardBase arrivalCard && ReferenceEquals(arrivalCard.Owner, viewer)
+                            && previous.SelfHand.Any(c => c.Uid == OrcRefs.KeyOf(arrival))) break;
                         AddDraw(steps, payload, viewer, after);
                         break;
                     }
@@ -149,6 +151,13 @@ public sealed class OrcUpdateTranslator
         foreach (var armed in previous.SelfHand.Where(c => c.IsCounterArmed))
             if (after.SelfHand.Any(c => c.Uid == armed.Uid && !c.IsCounterArmed))
                 steps.Add(new UiCounterPresentation("self", UiCounterStage.Disarmed, armed));
+        // A completed nested segment can already project the turn's new hand before its
+        // draw signal is drained. Animate the first visible arrival, never reveal it early
+        // and then replay the later hand.add/drawn signal over the same card.
+        var known = VisibleCards(previous).Select(c => c.Uid).ToHashSet(StringComparer.Ordinal);
+        var presentedDraws = steps.OfType<UiDrawPresentation>().Select(s => s.Card?.Uid).ToHashSet();
+        foreach (var card in after.SelfHand.Where(c => !known.Contains(c.Uid) && !presentedDraws.Contains(c.Uid)))
+            steps.Add(new UiDrawPresentation("self", card.SlotIndex, card));
         AddVisibleChanges(steps, previous, after);
         return new OrcTranslation(steps, impacts);
     }
