@@ -1,55 +1,62 @@
 # 2.0.0-alpha.2（2026-10-24）
 
-## 性质：热修复（只发补丁）
+## 性质：热修复（只发补丁，且**只有这一条**）
 
-修的是一个联机对战里的**卡死**问题，属于就地修复，因此按发行规则**只出增量补丁，不出全量包**；
-新玩家请先装 [2.0.0-alpha.1](https://github.com/Shangt1145/Godot-orcKsd/releases/tag/v2.0.0-alpha.1) 的完整包，再应用本补丁。
+本版是 `2.0.0-alpha.1` 的热修复。按发行规则，**同一版本号下只维护一条补丁**：
+起点永远是 alpha.1 的完整包，终点是当前最新构建。此前的补丁已被这条**覆盖**，不再提供中间版本。
+
+- 新玩家：先装 [alpha.1 完整包](https://github.com/Shangt1145/Godot-orcKsd/releases/tag/v2.0.0-alpha.1)，再打本补丁
+- 老玩家：直接用更新器 1.2.0 应用本补丁（覆盖安装，可重复应用）
 
 ## 修了什么
 
-**现象**：联机对战中，把单位攻击指向非法目标松开后，这个单位**再也无法攻击**，直到它自己的状态更新。
+### ① 指向性指令空放（例：德国 1 费「抑制」）
 
-**根因**（通知链断了一环）：
+**现象**：把指令拖到没有单位的支援阵线，播了释放动画，但没有任何效果，卡也没了。
 
-1. 攻击是两段式：`command.begin{ref}` → 服务端回 `targeting` → 玩家选定 → `target.submit{sessionId,picks}`。
-2. UI 发起时会把该单位记为"待定"（`BattleInteractionStateMachine.Reserve`）。
-3. 第二段 `target.submit` 被引擎拒绝时，只打了 `ErrorRaised`，**从未发 `CommandRefused`**。
-4. 待定标记没人清 → `Submit` 开头的 `IsPending(actor)` 守卫把该单位后续所有命令**静默丢弃**。
-5. 只有该单位产生演出（`Presented`）或投影刷新时才清 —— 这就是"直到它状态更新才恢复"。
+**根因**：引擎投影里的 `orderTargets` **恒为空数组**（`McpService.Projection.cs`，注释写明"指令目标在打出后由选靶请求提供"）。
+于是 UI 的"指向性指令"判定永远为假 → 箭头永远不画 → 所有指令都按"无目标"提交 → 引擎照常打出 → 卡内脚本找不到目标 → 静默空放。
 
-同一条链路还有两个同类漏洞：玩家右键取消（`target.cancel`）与选靶超时（`notify/target.expired`）也都不清待定。
+**修法**：落点上站着单位时，把该单位作为 `TargetUid` 一并提交；服务端开选靶时可自动命中它，
+不再落到"候选第一个"（打错人）或空放。**拖到空地仍会提交**——因为引擎没有提前告知哪些指令需要目标，这一点需引擎侧补
+`orderTargets` 或"选靶完成前不落子"才能真正拦住。
 
-**修法**：记录发起选靶的命令（`_targetCommand`），在 `target.submit` 失败、`target.cancel`（无论成败）、
-`notify/target.expired` 三处统一调用 `RefuseTargeting` → 补发 `CommandRefused`；提交成功时不拒绝，
-交给演出清理。另加一行可检索日志：
+### ② 单位攻击有概率卡住
 
-```
-[net] targeting refused -> unlock CommandUnit actor=<uid>
-```
+两条通路：
+
+1. 选靶第二段（`target.submit`）被拒时**从不通知 UI**，该单位永久"待定"，后续命令被静默丢弃。
+2. 引擎对某些动作**返回成功却不产生任何演出**，`Presented` 与 `CommandRefused` 都不来 —— 没有任何回调可等。
+   新增派发看门狗：命令发出 8 秒后若仍是待定，则本地解锁并提示可重试（服务端若稍后真执行，投影会纠正画面）。
+
+### ③ 验证流程被噪声掐断
+
+Godot headless 打印 `EditorSettings not instantiated yet …` 会让 PowerShell 的 `Stop` 策略中断验证脚本；
+已降级为按退出码判定。
 
 ## 发行文件
 
 | 文件 | 说明 |
 |---|---|
-| `patches/OrC-KSD-2.0.0-alpha.2-from-4DDCFE28C54E-to-27592182B321.orcupdate`（9.4 MB） | 增量补丁（仅此一项对外分发） |
+| `patches/OrC-KSD-2.0.0-alpha.2-from-4DDCFE28C54E-to-3B0301B6A703.orcupdate` | 增量补丁（10.7 MB，**唯一对外补丁**） |
 | `SHA256.txt` | 校验和 |
 
-更新器仍用 **1.2.0**（本版未改动更新器，沿用 [alpha.1 的资产](https://github.com/Shangt1145/Godot-orcKsd/releases/tag/v2.0.0-alpha.1)）。
-用 1.1.0 会报「补丁的文件清单无效」，这是校验规则代差，不是补丁损坏。
+更新器沿用 **1.2.0**（[alpha.1 资产](https://github.com/Shangt1145/Godot-orcKsd/releases/tag/v2.0.0-alpha.1)）。用 1.1.0 会报「补丁的文件清单无效」。
 
 ## 构建
 
-- 来源构建：`4DDCFE28C54E0B3A6496BCF366B2536FECA9BED88E4D7298ACF72E3B008286D6`（alpha.1）
-- 本版构建：`27592182B32173FFD6EFBBBCEECFB3F914259637F4BA2E196DE59114503F138A`（alpha.2）
+- 基线（alpha.1）：`4DDCFE28C54E0B3A6496BCF366B2536FECA9BED88E4D7298ACF72E3B008286D6`
+- 本版（alpha.2）：`3B0301B6A7038990DFE0768B3FAA920679E892AB4C034035403FF8E6AE7BC4D0`
 
 ## 验证
 
-- `dotnet build` 0 错误；UI 单测 **571/571**（全量，`-FullTests`）
-- `PATCH_EXACT_FILES_OK`：补丁应用后逐文件哈希与目标构建一致
-- `OFFLINE_UPGRADE_EXE_VERIFY_OK`：用更新器 1.2.0 实测从 alpha.1 升级，并复验升级后的 EXE
+- `dotnet build` 0 错误；UI 单测 **571/571**
+- `--verify-ui` → `UI_VERIFY_OK screens=12`（看门狗在正常流程中未误触发）
+- `PATCH_EXACT_FILES_OK`：应用后逐文件哈希与目标构建一致
+- `OFFLINE_UPGRADE_EXE_VERIFY_OK`：用更新器 1.2.0 实测从 alpha.1 升级并复验升级后的 EXE
 
 ## 边界
 
-- 这是**联机专属路径**，单机不存在该问题（单机取消时本来就会 `RefuseCommand`）。
-- 双端实机仍建议复验一次：把单位拖向非法目标 → 松开 → 再用同一单位攻击合法目标，应能正常出手。
+- 指令空放的**根本拦截**需要引擎改：`orderTargets` 真实发布，或 `play.command` 在选靶完成前不落子。
+- 攻击卡住的看门狗是**兜底**，不是修复服务端静默成功；若频繁触发，说明引擎侧有动作返回成功却不产生步骤。
 - 补丁只覆盖 `2.0.0-alpha.1` → `2.0.0-alpha.2`。
