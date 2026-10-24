@@ -54,6 +54,9 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private bool _mulliganPending;
     private string? _mulliganRequestId;
     private bool _targetPending;
+
+    /// <summary>发起当前这次选靶请求的命令。第二段失败时要拿它去判被拒，否则该单位会永久"待定"。</summary>
+    private UiCommand? _targetCommand;
     private readonly SortedDictionary<long, JsonNode> _pendingSegments = new();
     private readonly object _projectionGate = new();
     private long _lastSegmentSequence;
@@ -280,6 +283,8 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             return;
         }
         RememberDesiredTarget(command);
+        // 记下发起者：这套动作可能走到第二段（选靶），那一段失败时必须知道该判谁被拒。
+        _targetCommand = command;
         var (tool, arguments) = Map(command);
         if (tool is null)
         {
@@ -298,7 +303,10 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 // targeting ≠ 失败：指挥动作是两段式，第一段结束时服务端一定回 targeting。
                 // 若在这里发 CommandRefused，UI 会把刚发起的动作当成被拒、就地回滚。
                 if (result.Code is not "targeting")
+                {
                     CommandRefused?.Invoke(command);
+                    if (ReferenceEquals(command, _targetCommand)) _targetCommand = null;
+                }
                 if (result.Code is not ("targeting" or "cancelled"))
                     HintRequested?.Invoke(result.Message ?? result.Code);
             }
@@ -434,8 +442,12 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 ApplyTargetRequest(notification.Params);
                 break;
             case "notify/target.expired":
+                // 过期＝这次动作不会发生了，必须连同"待定"一起清，否则该单位被永久锁住。
+                var expired = _targetCommand;
+                _targetCommand = null;
                 _targetPending = false;
                 TargetClosed?.Invoke();
+                if (expired is not null) CommandRefused?.Invoke(expired);
                 break;
         }
     }
@@ -680,6 +692,7 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
 
     private async Task SubmitTargetAsync(string sessionId, IReadOnlyList<int> picks)
     {
+        var command = _targetCommand;
         try
         {
             var result = await _client.CallAsync("target.submit", new JsonObject
@@ -687,16 +700,53 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 ["sessionId"] = sessionId,
                 ["picks"] = new JsonArray([.. picks.Select(pick => (JsonNode)JsonValue.Create(pick)!)]),
             }).ConfigureAwait(false);
-            if (!result.Ok) ErrorRaised?.Invoke($"target.submit: {result.Code} {result.Message}");
+            if (result.Ok)
+            {
+                // 动作已被接受：后续演出会把该单位的"待定"清掉（Presented），这里只 relinquish 记账。
+                if (ReferenceEquals(command, _targetCommand)) _targetCommand = null;
+                return;
+            }
+            ErrorRaised?.Invoke($"target.submit: {result.Code} {result.Message}");
+            RefuseTargeting(command);
         }
         catch (Exception error)
         {
             ErrorRaised?.Invoke("target.submit: " + error.Message);
+            RefuseTargeting(command);
         }
     }
 
+    /// <summary>
+    /// 第二段（选靶）没成，必须把「发起它的那条命令」判为被拒。
+    /// <para>
+    /// 否则 UI 的 <c>BattleInteractionStateMachine</c> 会一直把该单位当"待定"，
+    /// 之后这名单位的所有命令都在 <c>Submit</c> 开头被静默丢弃——表现为"点到非法目标后这个单位再也打不了，
+    /// 直到它自己的状态更新（投影刷新）才恢复"。2026-10-24 实机反馈。
+    /// </para>
+    /// </summary>
+    private void RefuseTargeting(UiCommand? command)
+    {
+        if (command is null) return;
+        if (ReferenceEquals(command, _targetCommand)) _targetCommand = null;
+        // 留一行可检索的日志：实机"这个单位再也打不了"时，先看有没有这条。
+        Console.WriteLine($"[net] targeting refused -> unlock {command.GetType().Name} actor={BattleInteractionActorName(command)}");
+        CommandRefused?.Invoke(command);
+    }
+
+    private static string BattleInteractionActorName(UiCommand command) => command switch
+    {
+        CommandUnit unit => unit.Uid,
+        AttackUnit attack => attack.AttackerUid,
+        MoveUnit move => move.Uid,
+        RetreatUnit retreat => retreat.Uid,
+        UseKeywordSkill skill => skill.Uid,
+        PlayCard play => play.Uid,
+        _ => "-",
+    };
+
     private async Task CancelTargetAsync(string sessionId)
     {
+        var command = _targetCommand;
         try
         {
             var result = await _client.CallAsync("target.cancel",
@@ -707,6 +757,8 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         {
             ErrorRaised?.Invoke("target.cancel: " + error.Message);
         }
+        // 取消＝这次动作没有发生，同样要判被拒（无论 cancel 本身成功与否）。
+        RefuseTargeting(command);
     }
 
     /// <summary>
