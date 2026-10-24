@@ -627,6 +627,11 @@ public partial class BattleScreen : Control
         if (_selected is null) return;
         if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" } order)
         {
+            // 引擎不发布 orderTargets（恒为空，见 McpService.Projection），所以"指向性指令"在拖拽前
+            // 无法判定，箭头也画不出来。落点上正好站着单位＝玩家指了它：把 TargetUid 带上，
+            // 服务端开选靶时就能自动命中；不带的话会落到"候选第一个"甚至直接空放（抑制就是这样白扔的）。
+            var aimed = _cards.Values.FirstOrDefault(c => c.View is { } aimedView && aimedView.Zone != "hand"
+                && new Rect2(c.Position, c.Size).HasPoint(at));
             if (IsTargetedOrder(_selected))
             {
                 var target = OrderTargetAt(_selected, at);
@@ -638,7 +643,7 @@ public partial class BattleScreen : Control
             if (new Rect2(0, 120, BoardSize.X, 480).HasPoint(at) && InteractionActions.PlayableUids.Contains(_selected))
             {
                 RememberOrderPose(_selected, releasedPose);
-                Submit(new PlayCard(_selected));
+                Submit(new PlayCard(_selected, TargetUid: aimed?.View?.Uid));
             }
             else { CancelGesture(); Hint("已取消，卡牌返回原位"); }
             return;
@@ -1006,6 +1011,27 @@ public partial class BattleScreen : Control
             ReleaseGestureWaiter();
         }
     }
+    /// <summary>
+    /// 派发超时兜底：命令发出后，该单位会被记为"待定"，只有两种事能解开它——演出到达
+    /// （<c>Presented</c>）或被拒（<c>CommandRefused</c>）。引擎对某些动作会**返回成功却不产生任何步骤**
+    /// （目标在提交瞬间失效、规则把它抵消掉），这时两个回调都不来，该单位就永久卡住——
+    /// 表现就是"单位攻击时有概率卡住，只能等它下次状态更新"。
+    /// <para>没有任何回调可等，只能超时解锁；服务端若稍后真的执行了，投影会把画面纠正回来。</para>
+    /// </summary>
+    private async void ArmDispatchWatchdog(UiCommand command)
+    {
+        if (BattleInteractionStateMachine.Actor(command) is not { } actor) return;
+        await ToSignal(GetTree().CreateTimer(8.0), SceneTreeTimer.SignalName.Timeout);
+        if (!GodotObject.IsInstanceValid(this) || !IsInsideTree()) return;
+        if (!_interaction.IsPending(actor)) return;   // 已被演出或被拒解开，正常路径
+        if (!_cards.ContainsKey(actor)) return;       // 单位已经不在了，没什么可解锁的
+        _interaction.Refuse(command);
+        GD.Print($"[battle] dispatch timeout -> unlock actor={actor} ({command.GetType().Name})");
+        Hint("动作没有返回结果，已解锁该单位；可以重试");
+        CancelGesture();
+        UpdateSelection();
+    }
+
     private void Submit(UiCommand command)
     {
         if (!IsFriendlyTurn) { if (command is not EndTurn) RefuseCommand(command); CancelGesture(); return; }
@@ -1022,6 +1048,7 @@ public partial class BattleScreen : Control
             finally { _dispatchingActor = null; _dispatchingCommand = null; }
             // Native admission runs before the turn-presentation lock is armed.
             if (command is EndTurn && !_dispatchRefused) { _turnInput.EndTurnRequested(submittedView); RefreshTurnInput(); }
+            ArmDispatchWatchdog(command);
             return;
         }
         if (command is EndTurn) { _turnInput.EndTurnRequested(InteractionView); RefreshTurnInput(); }

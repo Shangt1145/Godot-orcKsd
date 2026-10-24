@@ -60,7 +60,13 @@ try {
         & dotnet test 'tests\Kards.Ui.Tests.csproj' --nologo
         if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     }
-    & $Godot --headless --editor --path $BuildRoot --quit
+    # Godot 的 headless 编辑器会往 stderr 打一条 "EditorSettings not instantiated yet …"（配置了
+    # Android SDK 路径后必现）。$ErrorActionPreference='Stop' 会把它当成致命错误，把整个验证流程掐断，
+    # 所以这里显式降级为 Continue，只看退出码。
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Godot --headless --editor --path $BuildRoot --quit 2>&1 | Out-Null }
+    finally { $ErrorActionPreference = $previousPreference }
     if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
