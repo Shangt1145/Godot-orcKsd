@@ -85,9 +85,12 @@ foreach ($dir in $dirs) {
 
     $flags = New-Object System.Collections.ArrayList
     if (!$hasTag) { [void]$flags.Add('无tag') }
-    # 只有最新版必须留全量包；历史全量包按约定归档到 BaselineArchiveDir，不在工作树里。
+    # 热修复按规则不发全量包（见 VERSIONING「热修复」）：缺 full/ 但补丁在，记作正常。
+    $isHotfix = $name -match 'hotfix' -or ($name -match '-(alpha|beta)\.' -and $patches.Count -gt 0)
     if ($full.Count -eq 0) {
-        if ($name -eq $latest) { [void]$flags.Add('缺全量包') } else { [void]$flags.Add('全量已归档') }
+        if ($name -eq $latest -and !$isHotfix) { [void]$flags.Add('缺全量包') }
+        elseif ($isHotfix -and $patches.Count -gt 0) { [void]$flags.Add('热修(无全量)') }
+        else { [void]$flags.Add('全量已归档') }
     }
     if (!$hasSha) { [void]$flags.Add('缺SHA256') }
     if (!$hasNotes) { [void]$flags.Add('缺notes') }
@@ -99,10 +102,12 @@ foreach ($dir in $dirs) {
     }
 
     $state = if ($flags.Count -eq 0) { 'ok' } else { ($flags -join ',') }
-    # 历史版本的"无tag/全量已归档/超大补丁"是既成事实，不阻塞发版；只有最新版的问题算红。
     $isLatest = $name -eq $latest
-    if ($isLatest -and $flags.Count -gt 0) { foreach ($f in $flags) { [void]$red.Add("最新版 $name：$f") } }
-    elseif ($flags.Count -gt 0 -and ($flags -notcontains '全量已归档')) { [void]$warn.Add("$name：$state") }
+    # 历史版本的"无tag/全量已归档/超大补丁"是既成事实，不阻塞发版；只有最新版的问题算红。
+    # "热修(无全量)"是规则允许的形态，任何情况下都不算问题。
+    $blocking = @($flags | Where-Object { $_ -ne '热修(无全量)' -and $_ -ne '全量已归档' })
+    if ($isLatest -and $blocking.Count -gt 0) { foreach ($f in $blocking) { [void]$red.Add("最新版 $name：$f") } }
+    elseif ($blocking.Count -gt 0) { [void]$warn.Add("$name：$state") }
     Write-Host ("  {0,-24} 全量{1,5}MB  补丁{2,4}MB  {3}" -f $name, $fullMb, $patchMb, $state)
 
     [void]$index.Add([pscustomobject]@{

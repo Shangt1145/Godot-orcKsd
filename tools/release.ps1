@@ -318,9 +318,10 @@ if($patch){$deliveredFiles+=Join-Path $patchDelivery ([IO.Path]::GetFileName($pa
 $deliveryPrefix=$delivery.TrimEnd('\','/')
 $checksumLines=$deliveredFiles|ForEach-Object{
     $hash=Get-FileHash -LiteralPath $_ -Algorithm SHA256
-    $relative=$hash.Path
-    if($relative.StartsWith($deliveryPrefix,[StringComparison]::OrdinalIgnoreCase)){$relative=$relative.Substring($deliveryPrefix.Length).TrimStart('\','/')}
-    $hash.Hash+'  '+$relative.Replace('\','/')
+    # 用 Uri.MakeRelativeUri 而不是 Substring：更新器在 delivery 之外（dist/updaters/…），
+    # 手算会退化成绝对路径，而校验和必须相对本发行目录。两种位置都能得到正确相对路径。
+    $relative=([Uri]($deliveryPrefix+'/')).MakeRelativeUri([Uri]$hash.Path).ToString().Replace('\','/')
+    $hash.Hash+'  '+$relative
 }
 [IO.File]::WriteAllLines((Join-Path $delivery 'SHA256.txt'),[string[]]$checksumLines,[Text.UTF8Encoding]::new($false))
 $fullBytes=(Get-Item -LiteralPath $zip).Length;$bootstrapBytes=(Get-Item -LiteralPath $bootstrap).Length;$patchBytes=if($patch){(Get-Item -LiteralPath $patch).Length}else{0}

@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="OrC-KSD · 卡牌指挥部"
-config/version="2.0.0-alpha.1"
+config/version="2.0.0-alpha.2"
 ; Android 导出强制要求有项目图标（桌面导出不检查，所以此前一直没暴露）。
 config/icon="res://proto/art/1.png"
 run/main_scene="res://proto/scenes/Main.tscn"
