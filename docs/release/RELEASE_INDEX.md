@@ -4,6 +4,7 @@
 
 | 版本 | tag | 全量 | 补丁 | 说明/验证/校验和 | 状态 |
 |---|---|---|---|---|---|
+| 2.0.0-alpha.1 | 有 | 1165 MB | 1 个 / 9 MB | notes/verify/sha256 | ok |
 | 0.0.0beta7.hotfix.3 | 有 | 1173 MB | 1 个 / 12 MB | notes/verify/sha256 | ok |
 | 0.0.0beta7.hotfix.2 | 无 | 1173 MB | 2 个 / 111 MB | notes/verify/sha256 | 无tag |
 | 0.0.0beta7.hotfix | 无 | 1173 MB | 1 个 / 96 MB | notes/verify/sha256 | 无tag |
