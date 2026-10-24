@@ -187,8 +187,12 @@ public partial class Main : Control
         void NewDeck() => _deckPackPicker.Open([], packs => {
             var countries = _deckService.PlayableCards.Where(c => packs.Contains(DeckCardPacks.Of(c.CardId)))
                 .Select(c => c.Set).Where(ConstructionRules.MainNations.Contains).Distinct().ToArray();
-            var options = new DeckOptions { MainNation = countries.FirstOrDefault() ?? "av76",
-                AllyNation = countries.Skip(1).FirstOrDefault() ?? ConstructionRules.MainNations.First(n => n != (countries.FirstOrDefault() ?? "av76")) };
+            // 主盟国必须按规范国籍互斥：包内只有苏联卡时，旧卡池 av76 与 soviet 是同一个国家，
+            // 直接取“第二个不同的字符串”会组出主国＝盟国的默认卡组（能保存、开不了局）。
+            var mainNation = countries.FirstOrDefault() ?? "av76";
+            var options = new DeckOptions { MainNation = mainNation,
+                AllyNation = countries.FirstOrDefault(c => !DeckNations.Same(c, mainNation))
+                    ?? ConstructionRules.MainNations.First(n => !DeckNations.Same(n, mainNation)) };
             _deckEditor.Open(new ConstructedDeck { PackIds = packs, Options = options }); Show("deck");
         });
         _deckLibrary.NewRequested += NewDeck; _deckEditor.NewRequested += NewDeck;

@@ -85,7 +85,14 @@ public static class ConstructionRules
             errors.Add($"已选 {deck.CardIds.Length} / {o.TotalCards - 1} 张卡牌，另加 1 张总部");
         if (!MainNations.Contains(o.MainNation)) errors.Add("请选择有效的主国");
         if (!MainNations.Contains(o.AllyNation)) errors.Add("请选择有效的盟国；可以不加入盟国卡牌");
-        if (o.MainNation == o.AllyNation) errors.Add("主国和盟国不能相同");
+        // 国家同一性以规范国籍为准：主国 av76（苏联旧卡池）＋ 盟国 soviet 在 UI 里是两个字符串，
+        // 到引擎却是同一个国家（对局创建期 fail-fast 拒绝）。这里提前拦住并说清原因。
+        var mainNation = DeckNations.Canonical(o.MainNation);
+        var allyNation = DeckNations.Canonical(o.AllyNation);
+        if (DeckNations.Same(o.MainNation, o.AllyNation))
+            errors.Add(string.Equals(o.MainNation, o.AllyNation, StringComparison.Ordinal)
+                ? "主国和盟国不能相同"
+                : $"主国和盟国不能是同一个国家：「{o.MainNation}」与「{o.AllyNation}」是同一国的两种写法");
         var definitions = catalog.ToDictionary(c => c.CardId, StringComparer.Ordinal);
         foreach (var group in deck.CardIds.GroupBy(id => id, StringComparer.Ordinal))
         {
@@ -96,11 +103,14 @@ public static class ConstructionRules
             if (playable is not null && !playable.Contains(card.CardId)) errors.Add($"{card.Name} 尚未支持实战");
             if (!o.UnrestrictedNations)
             {
-                if (card.Set != o.MainNation && card.Set != o.AllyNation) errors.Add($"{card.Name} 不属于主国或盟国");
-                if (card.Set == o.AllyNation && CopyLimit(card.Rarity) == 1) errors.Add($"盟国不能使用精英卡：{card.Name}");
+                // 卡牌归属同样按规范国籍判定：主国选“苏联”时，旧卡池 av76 的苏联卡也算主国卡。
+                var cardNation = DeckNations.Canonical(card.Set);
+                if (cardNation != mainNation && cardNation != allyNation) errors.Add($"{card.Name} 不属于主国或盟国");
+                if (allyNation.Length > 0 && cardNation == allyNation && CopyLimit(card.Rarity) == 1) errors.Add($"盟国不能使用精英卡：{card.Name}");
             }
         }
-        if (!o.UnrestrictedNations && deck.CardIds.Count(id => definitions.TryGetValue(id, out var c) && c.Set == o.AllyNation) > 12)
+        if (!o.UnrestrictedNations && allyNation.Length > 0 && allyNation != mainNation
+            && deck.CardIds.Count(id => definitions.TryGetValue(id, out var c) && DeckNations.Canonical(c.Set) == allyNation) > 12)
             errors.Add("盟国卡牌最多 12 张");
         return errors.AsReadOnly();
     }
@@ -112,8 +122,11 @@ public static class ConstructionRules
         if (deck.CardIds.Length >= (deck.Options.UnrestrictedSize ? 511 : deck.Options.TotalCards - 1)) return "卡组张数已满";
         if (!deck.Options.UnrestrictedNations)
         {
-            if (card.Set != deck.Options.MainNation && card.Set != deck.Options.AllyNation) return "仅可加入主国和盟国卡牌";
-            if (card.Set == deck.Options.AllyNation && CopyLimit(card.Rarity) == 1) return "盟国不能使用精英卡";
+            var mainNation = DeckNations.Canonical(deck.Options.MainNation);
+            var allyNation = DeckNations.Canonical(deck.Options.AllyNation);
+            var cardNation = DeckNations.Canonical(card.Set);
+            if (cardNation != mainNation && cardNation != allyNation) return "仅可加入主国和盟国卡牌";
+            if (allyNation.Length > 0 && cardNation == allyNation && CopyLimit(card.Rarity) == 1) return "盟国不能使用精英卡";
         }
         return null;
     }

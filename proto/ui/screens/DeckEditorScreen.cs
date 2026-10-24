@@ -36,7 +36,7 @@ public partial class DeckEditorScreen : VBoxContainer
     public void RefreshCatalog()
     {
         _loading=true;var main=_draft.Options.MainNation;var ally=_draft.Options.AllyNation;
-        foreach(var option in new[]{MainNation,AllyNation}){option.Clear();foreach(var nation in ConstructionRules.MainNations){option.AddItem(WorkshopAuthoring.NationLabel(nation));option.SetItemMetadata(option.ItemCount-1,nation);}}
+        foreach(var option in new[]{MainNation,AllyNation}){option.Clear();foreach(var nation in ConstructionRules.MainNations){option.AddItem(SetupDeckBack.NationLabel(nation));option.SetItemMetadata(option.ItemCount-1,nation);}}
         Select(MainNation,main);Select(AllyNation,ally);_loading=false;Render();
     }
     public void Initialize(DeckConstructionService service, DeckLibrary library, TextureCache textures)
@@ -77,7 +77,7 @@ public partial class DeckEditorScreen : VBoxContainer
         searchRow.AddChild(MenuStyles.Label("仅显示所选卡包内可实战的卡牌", 12, MenuStyles.Dim));
         Search.TextChanged += _ => { _page = 0; RenderPool(); };
         var filters = new HBoxContainer(); pool.AddChild(filters);
-        Filter(filters, "全部国家", service.Cards.Select(c => c.Set), s => s);
+        Filter(filters, "全部国家", service.Cards.Select(c => DeckNations.Canonical(c.Set)), SetupDeckBack.NationLabel);
         Filter(filters, "全部卡类", service.Cards.Select(c => c.CardType), MenuStyles.TypeName);
         Filter(filters, "全部稀有度", service.Cards.Select(c => c.Rarity), MenuStyles.RarityName);
         Filter(filters, "全部费用", service.Cards.Select(c => c.Cost?.ToString() ?? ""), s => s + " 费");
@@ -115,7 +115,9 @@ public partial class DeckEditorScreen : VBoxContainer
     {
         var o = new OptionButton { CustomMinimumSize = new(85, 38) };
         if (empty) { o.AddItem("无盟国"); o.SetItemMetadata(0, ""); }
-        foreach (var nation in nations) { o.AddItem(nation); o.SetItemMetadata(o.ItemCount - 1, nation); }
+        // 显示名走 NationLabel：旧卡池要显示成「苏联（旧卡池）」而不是裸 av76，
+        // 否则玩家分不清 av76 与 soviet 的关系，只会撞上“它们是同一个国家”。
+        foreach (var nation in nations) { o.AddItem(SetupDeckBack.NationLabel(nation)); o.SetItemMetadata(o.ItemCount - 1, nation); }
         return o;
     }
     private void Filter(HBoxContainer row, string all, IEnumerable<string> values, Func<string, string> label)
@@ -171,17 +173,22 @@ public partial class DeckEditorScreen : VBoxContainer
     private void ReadOptions()
     {
         if (_loading) return;
-        if (AllyNation.GetItemMetadata(AllyNation.Selected).AsString() == MainNation.GetItemMetadata(MainNation.Selected).AsString())
-            AllyNation.Select(MainNation.Selected == 0 ? 1 : 0);
-        _draft = _draft with { Options = new DeckOptions { MainNation = MainNation.GetItemMetadata(MainNation.Selected).AsString(), AllyNation = AllyNation.GetItemMetadata(AllyNation.Selected).AsString(), UnrestrictedNations = FreeNations.ButtonPressed, UnrestrictedSize = FreeSize.ButtonPressed, TotalCards = (int)TotalCards.Value } };
+        var main = MainNation.GetItemMetadata(MainNation.Selected).AsString();
+        var ally = AllyNation.GetItemMetadata(AllyNation.Selected).AsString();
+        _draft = _draft with { Options = new DeckOptions { MainNation = main, AllyNation = ally, UnrestrictedNations = FreeNations.ButtonPressed, UnrestrictedSize = FreeSize.ButtonPressed, TotalCards = (int)TotalCards.Value } };
+        // 以前这里会静默把盟国换成一个“看起来不同”的国家：主国 soviet 时换到 av76，
+        // UI 认为合法、引擎又把它折回 soviet → 保存成功却开不了局。现在只提示，交给 Validate 拦。
+        _notice.Text = !FreeNations.ButtonPressed && DeckNations.Same(main, ally)
+            ? $"主国与盟国不能是同一个国家：「{SetupDeckBack.NationLabel(main)}」与「{SetupDeckBack.NationLabel(ally)}」同属一国，请换一个盟国。"
+            : "点击卡牌加入；右侧 − 移除；长按查看完整卡面。总部单独计数。";
         Changed();
     }
     internal bool AddCard(UiCardDefinition card)
     {
         if (!_service.PlayableIds.Contains(card.CardId)) { _notice.Text = "此卡尚未通过实战准入，不能加入卡组。"; return false; }
         var reason = ConstructionRules.CannotAdd(_draft, card);
-        if (reason is null && !_draft.Options.UnrestrictedNations && card.Set == _draft.Options.AllyNation
-            && _draft.CardIds.Count(id => _service.Cards.Any(c => c.CardId == id && c.Set == card.Set)) >= 12) reason = "盟国卡牌最多 12 张";
+        if (reason is null && !_draft.Options.UnrestrictedNations && DeckNations.Same(card.Set, _draft.Options.AllyNation)
+            && _draft.CardIds.Count(id => _service.Cards.Any(c => c.CardId == id && DeckNations.Same(c.Set, card.Set))) >= 12) reason = "盟国卡牌最多 12 张";
         if (reason is not null) { _notice.Text = reason; return false; }
         _draft = _draft with { CardIds = _draft.CardIds.Append(card.CardId).ToArray() };
         Changed(); return true;
@@ -198,8 +205,8 @@ public partial class DeckEditorScreen : VBoxContainer
         if (Grid is null) return;
         var vals = _filters.Select(f => f.GetItemMetadata(f.Selected).AsString()).ToArray();
         var all = _service.Pool(_draft).Where(c =>
-            (FreeNations.ButtonPressed || c.Set == _draft.Options.MainNation || c.Set == _draft.Options.AllyNation)
-            && (vals[0].Length == 0 || c.Set == vals[0]) && (vals[1].Length == 0 || c.CardType == vals[1])
+            (FreeNations.ButtonPressed || DeckNations.Same(c.Set, _draft.Options.MainNation) || DeckNations.Same(c.Set, _draft.Options.AllyNation))
+            && (vals[0].Length == 0 || DeckNations.Same(c.Set, vals[0])) && (vals[1].Length == 0 || c.CardType == vals[1])
             && (vals[2].Length == 0 || c.Rarity == vals[2]) && (vals[3].Length == 0 || c.Cost?.ToString() == vals[3])
             && (Search.Text.Length == 0 || $"{c.Name} {c.CardId} {c.Text}".Contains(Search.Text, StringComparison.OrdinalIgnoreCase)))
             .OrderBy(c => c.Cost).ThenBy(c => c.Set).ThenBy(c => c.CardId).ToArray();
@@ -219,7 +226,7 @@ public partial class DeckEditorScreen : VBoxContainer
             var b = MenuStyles.Button($"{copies}/{limit}  ＋", () => AddCard(c));
             b.Name = "AddCard"; b.Disabled = ConstructionRules.CannotAdd(_draft, c) is not null;
             item.AddChild(b);
-            var support = MenuStyles.Label($"{c.Set} · {MenuStyles.RarityName(c.Rarity)}", 11, MenuStyles.Dim);
+            var support = MenuStyles.Label($"{SetupDeckBack.NationLabel(c.Set)} · {MenuStyles.RarityName(c.Rarity)}", 11, MenuStyles.Dim);
             support.ClipText = true; support.TooltipText = support.Text; item.AddChild(support);
         }
         if (all.Length == 0) Grid.AddChild(MenuStyles.Label("没有符合筛选条件的卡牌", 16, MenuStyles.Dim));
@@ -234,7 +241,7 @@ public partial class DeckEditorScreen : VBoxContainer
         var definitions = _service.Cards.ToDictionary(c => c.CardId);
         var chosen = _draft.CardIds.Where(definitions.ContainsKey).Select(id => definitions[id]).ToArray();
         _summary.Text = $"单位 {chosen.Count(c => c.CardType == "unit")} · 指令 {chosen.Count(c => c.CardType == "order")} · 反制 {chosen.Count(c => c.CardType == "counter")}\n"
-            + string.Join(" · ", chosen.GroupBy(c => c.Set).Select(g => $"{g.Key} {g.Count()}"));
+            + string.Join(" · ", chosen.GroupBy(c => DeckNations.Canonical(c.Set)).Select(g => $"{SetupDeckBack.NationLabel(g.Key)} {g.Count()}"));
         MenuStyles.Clear(_curve);
         for (var cost = 0; cost <= 7; cost++)
         {
@@ -247,7 +254,7 @@ public partial class DeckEditorScreen : VBoxContainer
             var text = MenuStyles.Label($"{cost}{(cost == 7 ? "+" : "")}", 11, MenuStyles.Dim); text.HorizontalAlignment = HorizontalAlignment.Center; column.AddChild(text);
         }
         MenuStyles.Clear(Rows);
-        Rows.AddChild(MenuStyles.Label($"总部 · {_draft.Options.MainNation} × 1", 13, MenuStyles.Gold));
+        Rows.AddChild(MenuStyles.Label($"总部 · {SetupDeckBack.NationLabel(_draft.Options.MainNation)} × 1", 13, MenuStyles.Gold));
         foreach (var group in _draft.CardIds.GroupBy(id => id).OrderBy(g => definitions.GetValueOrDefault(g.Key)?.Cost ?? 999).ThenBy(g => g.Key))
         {
             var id = group.Key; var c = definitions.GetValueOrDefault(id);
@@ -281,7 +288,7 @@ public partial class DeckEditorScreen : VBoxContainer
         var dialog = new AcceptDialog { Title = card.Name, MinSize = new(560, 500), Exclusive = false }; AddChild(dialog);
         var body = new HBoxContainer(); dialog.AddChild(body);
         var face = new CardControl(); face.Bind(card, _textures, 240); body.AddChild(face);
-        var text = MenuStyles.Label($"{card.Set} · {MenuStyles.TypeName(card.CardType)} · {MenuStyles.RarityName(card.Rarity)}\n\n{card.Text}\n\n{card.Flavor}", 15);
+        var text = MenuStyles.Label($"{SetupDeckBack.NationLabel(card.Set)} · {MenuStyles.TypeName(card.CardType)} · {MenuStyles.RarityName(card.Rarity)}\n\n{card.Text}\n\n{card.Flavor}", 15);
         text.CustomMinimumSize = new(250, 0); text.AutowrapMode = TextServer.AutowrapMode.WordSmart; text.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         var scroll = new ScrollContainer { CustomMinimumSize = new(260, 336), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddChild(scroll); scroll.AddChild(text);
         dialog.CloseRequested += () => dialog.QueueFree(); dialog.Canceled += () => dialog.QueueFree(); dialog.Confirmed += () => dialog.QueueFree(); dialog.PopupCentered();

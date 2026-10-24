@@ -342,8 +342,10 @@ public sealed partial class OrcMatchSession : IDisposable
             else session.AnswerParked(selector);
         });
         // 引擎侧阵营已数据化为 string 常量类（真源＝资产服务）。
-        string FactionOf(string nation) => nation switch { "av76" => Faction.Soviet, "deran" => Faction.Germany,
-            "USG" => Faction.USA, "UN" => Faction.Britain, _ => Faction.TryNormalize(nation, out var faction) ? faction : throw new InvalidDataException("未知构筑国家") };
+        // 旧卡池 → 所属国家的映射**只在 DeckNations 里维护一份**：这里若自带一张表，
+        // 就会和构筑校验各说各话（UI 说不同国、引擎说同国 → 保存通过但开不了局）。
+        string FactionOf(string nation) => Faction.TryNormalize(DeckNations.Canonical(nation), out var faction)
+            ? faction : throw new InvalidDataException($"未知构筑国家：{nation}");
         PlayerDeckConfiguration? Config(DeckOptions? options) => options is null ? null
             : new PlayerDeckConfiguration(FactionOf(options.MainNation), FactionOf(options.AllyNation));
         var packSet = packs ?? PackSet.FromSnapshot(OrcEngineHost.Snapshot());

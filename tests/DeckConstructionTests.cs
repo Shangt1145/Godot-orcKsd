@@ -57,6 +57,51 @@ public sealed class DeckConstructionTests
         Assert.Contains(ConstructionRules.Validate(tooMany, allyCards), s => s.Contains("12 张"));
         Assert.Empty(ConstructionRules.Validate(tooMany with { Options = tooMany.Options with { UnrestrictedNations = true } }, allyCards));
     }
+    // 旧卡池目录名（av76/deran/USG/UN）与引擎阵营标识指同一个国家。UI 若按裸字符串比较，
+    // 就会放过「主国 av76 ＋ 盟国 soviet」这种组合，保存成功、开局时被引擎 fail-fast 拒绝。
+    [Theory]
+    [InlineData("av76", Faction.Soviet)] [InlineData("deran", Faction.Germany)]
+    [InlineData("USG", Faction.USA)] [InlineData("UN", Faction.Britain)]
+    public void LegacyPoolNamesNormalizeToTheSameEngineFaction(string pool, string faction)
+    {
+        Assert.True(DeckNations.IsLegacyPool(pool));
+        Assert.Equal(faction, DeckNations.Canonical(pool));
+        Assert.True(Faction.TryNormalize(DeckNations.Canonical(pool), out var normalized));
+        Assert.Equal(faction, normalized);
+    }
+    [Theory]
+    [InlineData("av76", "soviet")] [InlineData("soviet", "av76")]
+    [InlineData("deran", "germany")] [InlineData("USG", "usa")] [InlineData("UN", "britain")]
+    public void MainAndAllyInDifferentSpellingsOfOneNationAreRejected(string main, string ally)
+    {
+        var cards = new[] { Card("m", main), Card("a", ally) };
+        var deck = Deck(["m", "m"], new DeckOptions { TotalCards = 3, MainNation = main, AllyNation = ally });
+        Assert.Contains(ConstructionRules.Validate(deck, cards), s => s.Contains("同一个国家"));
+        Assert.Contains(ConstructionRules.Validate(deck with { Options = deck.Options with { UnrestrictedNations = true } }, cards),
+            s => s.Contains("同一个国家")); // 混编也要拦：引擎仍按主国＋盟国建配置。
+    }
+    [Fact]
+    public void CardsBelongToNationByCanonicalFactionNotByCardPoolFolder()
+    {
+        var cards = new[] { Card("legacy", "av76"), Card("packed", "soviet"), Card("ally", Faction.Britain) };
+        // 主国写 pack 口径（soviet），旧卡池 av76 的苏联卡同样是主国卡。
+        var packMain = Deck(["legacy", "legacy", "packed", "packed", "ally"],
+            new DeckOptions { TotalCards = 6, MainNation = "soviet", AllyNation = "britain" });
+        Assert.Empty(ConstructionRules.Validate(packMain, cards));
+        Assert.Null(ConstructionRules.CannotAdd(packMain with { CardIds = packMain.CardIds[..4] }, cards[0]));
+        // 反过来：主国写旧卡池（av76），卡包口径的 soviet 卡也进得来。
+        var poolMain = packMain with { Options = packMain.Options with { MainNation = "av76" } };
+        Assert.Empty(ConstructionRules.Validate(poolMain, cards));
+    }
+    [Fact]
+    public void AllyCopyLimitCountsBothSpellingsOfTheAllyNation()
+    {
+        var cards = Enumerable.Range(0, 4).Select(i => Card("a" + i, "av76"))
+            .Concat(Enumerable.Range(0, 4).Select(i => Card("b" + i, "soviet"))).ToArray();
+        var ids = cards.SelectMany(c => Enumerable.Repeat(c.CardId, 4)).Take(13).ToArray();
+        var deck = Deck(ids, new DeckOptions { TotalCards = 14, MainNation = "germany", AllyNation = "soviet" });
+        Assert.Contains(ConstructionRules.Validate(deck, cards), s => s.Contains("12 张"));
+    }
     [Fact]
     public void RemovedGeneratedAndUnimplementedCardsNeverBecomePlayable()
     {
@@ -98,8 +143,7 @@ public sealed class DeckConstructionTests
         finally { Directory.Delete(dir, true); }
     }
     [Fact]
-    public void CodesPreserveRulesAndCardsButImportGetsNewIdentity()
-    {
+    public void CodesPreserveRulesAndCardsButImportGetsNewIdentity()    {
         var original = Deck(["a", "b", "a"], new DeckOptions { TotalCards = 28, UnrestrictedSize = true, UnrestrictedNations = true });
         var imported = DeckLibrary.Import(DeckLibrary.Export(original)); Assert.NotEqual(original.Id, imported.Id);
         Assert.Equal(original.CardIds, imported.CardIds); Assert.Equal(original.Options, imported.Options);
