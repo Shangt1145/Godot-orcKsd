@@ -38,7 +38,7 @@ Godot headless 打印 `EditorSettings not instantiated yet …` 会让 PowerShel
 
 | 文件 | 说明 |
 |---|---|
-| `patches/OrC-KSD-2.0.0-alpha.2-from-4DDCFE28C54E-to-3B0301B6A703.orcupdate` | 增量补丁（10.7 MB，**唯一对外补丁**） |
+| `patches/OrC-KSD-2.0.0-alpha.2-from-4DDCFE28C54E-to-72971A0DECD1.orcupdate` | 增量补丁（12.5 MB，**唯一对外补丁**） |
 | `SHA256.txt` | 校验和 |
 
 更新器沿用 **1.2.0**（[alpha.1 资产](https://github.com/Shangt1145/Godot-orcKsd/releases/tag/v2.0.0-alpha.1)）。用 1.1.0 会报「补丁的文件清单无效」。
@@ -46,7 +46,27 @@ Godot headless 打印 `EditorSettings not instantiated yet …` 会让 PowerShel
 ## 构建
 
 - 基线（alpha.1）：`4DDCFE28C54E0B3A6496BCF366B2536FECA9BED88E4D7298ACF72E3B008286D6`
-- 本版（alpha.2）：`3B0301B6A7038990DFE0768B3FAA920679E892AB4C034035403FF8E6AE7BC4D0`
+- 本版（alpha.2）：`72971A0DECD12EEA5E39D9276A873DA24AA13EDA27E101D82B63B5A0D23A91D0`
+
+## 2026-10-25 重出（同一版本、同一条补丁，覆盖前一条）
+
+按「一版一补丁」，本版不涨版本号、不新增补丁链：起点仍是 alpha.1 完整包，
+终点换成当前最新构建，旧补丁 `…-to-3B0301B6A703` 已下线。
+
+这次补丁额外带上：
+
+- **手机版启动即失败**：内置插件清单（`orc.builtin.core` / `orc.builtin.ui`）改为构建期嵌入、
+  运行期物化到可写目录。Android 上 `AppContext.BaseDirectory` 是空串，原先拼出的相对路径
+  `package/plugins/…` 恒不存在，游戏在启动阶段直接失败。
+- **国家口径**：`av76` / `deran` / `USG` / `UN` / `NSF`（星盟）都是**独立国家**，
+  不再被折成苏/德/美/英；`Faction.RegisterCustom` 注册为引擎自定义主国。
+  同义写法（中文名 ↔ 引擎 id、大小写）仍归并。
+  连带修好「主盟国一致时开不了局」与「星盟的卡进不了构筑」。
+- 卡组构筑界面的国家显示、主盟国互斥、盟国 12 张上限统一走一个真源。
+
+同批的 Windows 导出复核：`EXPORTED_PLAYER_VERIFY_OK`、`OFFLINE_UPGRADE_EXE_VERIFY_OK`、
+`PATCH_EXACT_FILES_OK`、`PATCH_BUILD_OK changes=4`。
+
 
 ## 验证
 
