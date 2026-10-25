@@ -103,13 +103,24 @@ public static class VerifiedCardPool
                 var entry = compiled!;
                 if (drafts is not null)
                 {
-                    (entry, var snapshot) = AssembleConverted(card.CardId, card.CardType, entry, drafts);
-                    convertedEffects.Add(card.CardId, snapshot);
-                    reason = "Converted non-interactive source effects compiled and instantiated through the engine DSL.";
+                    // 转换卡要先在本机现场编译效果脚本。宿主拿不到程序集文件时会失败（安卓的托管程序集
+                    // 装在 APK 里，Assembly.Location 只是个假路径），单卡失败不能连坐整局启动：
+                    // 降级成“本机不支持”，由卡池报告说明原因，其余卡照常开局。
+                    try
+                    {
+                        (entry, var snapshot) = AssembleConverted(card.CardId, card.CardType, entry, drafts);
+                        convertedEffects.Add(card.CardId, snapshot);
+                        reason = "Converted non-interactive source effects compiled and instantiated through the engine DSL.";
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException)
+                    {
+                        support = UiCardSupport.Unsupported;
+                        reason = "Converted effects unavailable on this host: " + ex.Message;
+                    }
                 }
                 else
                     reason = source.Effects ? "Reviewed source effects assembled through engine targeting and runtime." : "Reviewed base stats and engine keywords.";
-                accepted.Add(entry);
+                if (support != UiCardSupport.Unsupported) accepted.Add(entry);
                 // Only hand-reviewed interactive adapters get plans; converted cards run on their
                 // own effects component, and adding plans here would fire the effect twice.
                 if (source.Effects && SourceEffectAssembly.Supports(card.CardId))
