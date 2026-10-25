@@ -39,8 +39,7 @@ internal static class PluginManifests
     }
 
     private static bool Complete(string root)
-        => File.Exists(Path.Combine(root, BuiltInPluginPackage.DirectoryName, "manifest.json"))
-           && File.Exists(Path.Combine(root, UiPluginPackage.DirectoryName, "manifest.json"));
+        => Entries.All(entry => File.Exists(Path.Combine(root, entry.Plugin, entry.File)));
 
     /// <summary>
     /// 把嵌入的两份清单写到可写目录并返回该插件根。目录名按内容取哈希——清单升级后自然换目录，
@@ -48,19 +47,20 @@ internal static class PluginManifests
     /// </summary>
     public static string Materialize()
     {
-        var manifests = Read();
+        var assembly = typeof(PluginManifests).Assembly;
+        var files = Entries.Select(entry => (entry.Plugin, entry.File, Json: Text(assembly, entry.Resource))).ToArray();
         var content = new StringBuilder();
-        foreach (var (id, json) in manifests) content.Append(id).Append(':').Append(json).Append('\n');
+        foreach (var file in files) content.Append(file.Plugin).Append('/').Append(file.File).Append(':').Append(file.Json).Append('\n');
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content.ToString())))[..16].ToLowerInvariant();
         var root = Path.Combine(ScratchRoot(), key);
-        foreach (var (id, json) in manifests)
+        foreach (var file in files)
         {
-            var directory = Path.Combine(root, id);
+            var directory = Path.Combine(root, file.Plugin);
             Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, "manifest.json");
-            if (File.Exists(path) && File.ReadAllText(path) == json) continue;
+            var path = Path.Combine(directory, file.File);
+            if (File.Exists(path) && File.ReadAllText(path) == file.Json) continue;
             // 先写临时文件再换名：中途被杀不会留下半份 JSON 让下次启动误判。
-            File.WriteAllText(path + ".tmp", json, new UTF8Encoding(false));
+            File.WriteAllText(path + ".tmp", file.Json, new UTF8Encoding(false));
             File.Move(path + ".tmp", path, overwrite: true);
         }
         return root;
@@ -97,15 +97,18 @@ internal static class PluginManifests
         throw new InvalidOperationException("内置插件清单无处可写：临时目录与程序目录均不可写。");
     }
 
-    private static (string Id, string Json)[] Read()
-    {
-        var assembly = typeof(PluginManifests).Assembly;
-        return
-        [
-            (BuiltInPluginPackage.DirectoryName, Text(assembly, CoreResource)),
-            (UiPluginPackage.DirectoryName, Text(assembly, UiResource)),
-        ];
-    }
+    /// <summary>
+    /// 插件目录的完整文件表。引擎除了清单还要读资产锁与元数据；只物化 manifest.json 时
+    /// 会报「插件 'orc.builtin.core' 缺少 lock.formal.json——请运行插件资产重锁」。
+    /// </summary>
+    private static readonly (string Plugin, string File, string Resource)[] Entries =
+    [
+        (BuiltInPluginPackage.DirectoryName, "manifest.json", CoreResource),
+        (BuiltInPluginPackage.DirectoryName, "lock.formal.json", "Kards.Ui.OrcBridge.Plugins.core.lock.formal.json"),
+        (BuiltInPluginPackage.DirectoryName, "lock.test.json", "Kards.Ui.OrcBridge.Plugins.core.lock.test.json"),
+        (BuiltInPluginPackage.DirectoryName, "assets.meta.json", "Kards.Ui.OrcBridge.Plugins.core.assets.meta.json"),
+        (UiPluginPackage.DirectoryName, "manifest.json", UiResource),
+    ];
 
     private static string Text(System.Reflection.Assembly assembly, string resourceName)
     {

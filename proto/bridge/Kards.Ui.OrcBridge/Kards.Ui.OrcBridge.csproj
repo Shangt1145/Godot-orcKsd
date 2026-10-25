@@ -46,6 +46,12 @@
          <输出>/package/plugins 供引擎读；Android 导出不带这些松散文件，故构建期嵌入，
          运行期由 PluginManifests 物化到可写目录（否则启动即报「内置插件清单缺失」）。 -->
     <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/manifest.json" LogicalName="Kards.Ui.OrcBridge.Plugins.orc.builtin.core.manifest.json" />
+    <!-- 插件目录不只有清单。引擎还要读 lock.formal.json（资产锁）/ lock.test.json / assets.meta.json，
+         安卓没有磁盘插件目录，只物化 manifest 就会报
+         「插件 'orc.builtin.core' 缺少 lock.formal.json——请运行插件资产重锁」。 -->
+    <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/lock.formal.json" LogicalName="Kards.Ui.OrcBridge.Plugins.core.lock.formal.json" />
+    <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/lock.test.json" LogicalName="Kards.Ui.OrcBridge.Plugins.core.lock.test.json" />
+    <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/assets.meta.json" LogicalName="Kards.Ui.OrcBridge.Plugins.core.assets.meta.json" />
     <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.UI/package/plugins/orc.builtin.ui/manifest.json" LogicalName="Kards.Ui.OrcBridge.Plugins.orc.builtin.ui.manifest.json" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />

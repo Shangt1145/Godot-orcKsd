@@ -58,4 +58,24 @@ public sealed class PluginManifestTests
             OrcEngineHost.Reset();
         }
     }
+
+    /// <summary>
+    /// 插件目录不只有清单：引擎的 PluginAssetLockVerifier 读 &lt;根&gt;/&lt;包id&gt;/lock.formal.json，
+    /// 只物化 manifest.json 会报 missing-lock「请运行插件资产重锁」。
+    /// </summary>
+    [Fact]
+    public void MaterializedCorePluginCarriesAssetLocksNotJustTheManifest()
+    {
+        var root = PluginManifests.Materialize();
+        var core = Path.Combine(root, BuiltInPluginPackage.DirectoryName);
+        foreach (var file in new[] { "manifest.json", "lock.formal.json", "lock.test.json", "assets.meta.json" })
+            Assert.True(File.Exists(Path.Combine(core, file)), "插件目录缺文件：" + file);
+
+        // 空壳同样会被判 missing-lock：锁里必须真有资产条目。
+        var @lock = System.Text.Json.Nodes.JsonNode
+            .Parse(File.ReadAllText(Path.Combine(core, "lock.formal.json")))!.AsObject();
+        Assert.Equal(BuiltInPluginPackage.PackageId, @lock["packageId"]?.ToString());
+        Assert.Equal("formal", @lock["domain"]?.ToString());
+        Assert.NotEmpty(@lock["assets"]!.AsArray());
+    }
 }
