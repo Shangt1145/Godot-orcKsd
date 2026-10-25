@@ -16,12 +16,13 @@ dotnet build -p:OrcEngineRoot="D:\dev\OrC-KSD\src\Orc.Game"
 ```
 
 找不到引擎时构建会直接报 `error ORC001` 并列出这三种办法，不会静默失败。
+alpha.5 的引擎版本及累计配套补丁见 [接入基线](docs/engine/ENGINE_INTEGRATION_BASELINE.md)；只克隆引擎主干尚不足以构建本版。
 另需 .NET 8/9 SDK 与 Godot 4.7 **.NET(mono)** 版；编辑器一键入口 `tools\open-editor.bat`，
 构建/验证/运行 `tools\run.ps1`。原版美术不进 Git，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
-**当前发行：2.0.0-alpha.2（2026-10-24）**。热修复：联机选靶被拒后单位锁死。**热修复只发补丁**，新玩家先装 [alpha.1 完整包](docs/release/RELEASE_2.0.0_ALPHA1_20261024.md) 再打补丁；必须使用更新器 1.2.0。说明见 [2.0.0-alpha.2 发行说明](docs/release/RELEASE_2.0.0_ALPHA2_20261024.md)。
+**当前发行：2.0.0-alpha.5（2026-10-25）**。PC 与 Android 同步更新：图形化调试台、部署选靶与取消不扣费、跨段目标复用及工坊联机同步。Windows 增量从已发布 alpha.2 构建升级，使用更新器 1.2.0；Android 使用完整 APK。安装路径与验证见 [发行说明](docs/release/RELEASE_2.0.0_ALPHA5_20261025.md)。
 
-**多人能力边界**：本地 DIY 与卡组构筑可用；两人房间目前只接受已装载卡包的 `pack/` 卡，尚不支持各玩家携带 `diy/` 卡及自动分发规则、卡图的完整闭环。原版美术不进入 Git，发行包已携带；源码运行须另行准备这些素材，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
+**多人能力边界**：已接通启用的原生工坊卡包、扩展包及可编译 DIY 卡的会话打包、规则/卡图同步与开局校验；无法编译的机制保留为草稿，不进入对战。双方客户端及服务端需一同更新，详见 [工坊联机说明](docs/acceptance/NETWORK_WORKSHOP_20261025.md)。原版美术不进入 Git，发行包已携带；源码运行须另行准备这些素材，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
 Beta.3（2026-10-20）：接入引擎 `6d72eac`，DIY 卡面按单位、指令、反制切换 Astral 模板，提供卡图对齐工具；Inspector 使用组合编辑窗口，效果文本解析入口调用后端编译器。发布说明、兼容补丁与验证范围见 [Beta.3 发行记录](docs/release/RELEASE_BETA3_20261020.md)。
 
