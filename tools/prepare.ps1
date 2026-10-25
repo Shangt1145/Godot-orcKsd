@@ -43,12 +43,12 @@ if (!$SkipAssets) {
 # Non-destructive synchronization. Generated output never copies back into source.
 # dist 是发布产物目录（现已是指向 G:\orc-dist 的目录联接）：生成物不该进运行副本，
 # 而 robocopy /E 会跟进联接，把几十 GB 的发行包重抄一遍——同步会卡死在这。
-& robocopy $sourceRoot $targetRoot /E /NFL /NDL /NJH /NJS /NP /XD .git .godot bin obj artifacts dist /XF '*.user' '.kards-ui-workspace'
+& robocopy $sourceRoot $targetRoot /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD .git .godot .gradle bin obj artifacts dist (Join-Path $sourceRoot 'android') /XF '*.user' '.kards-ui-workspace'
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
 # 代码目录强制覆盖（/IS）：robocopy 默认跳过"目标时间更新"的文件，工作副本一旦被旧版占住，
 # 就会出现"源能编译、副本编译失败"的鬼打墙——2026-10-24 实际踩到（RemotePresentationTranslator 旧版残留）。
-# proto 目录只有几 MB（数据 2 MB），每轮全量覆盖的代价可以忽略。
-& robocopy (Join-Path $sourceRoot 'proto') (Join-Path $targetRoot 'proto') /E /IS /NFL /NDL /NJH /NJS /NP /XD bin obj /XF '*.user'
+# 只强制覆盖文本源码；美术已由上面的增量同步负责，不能每次重抄约 2 GB 图片/模型。
+& robocopy (Join-Path $sourceRoot 'proto') (Join-Path $targetRoot 'proto') '*.cs' '*.csproj' '*.props' '*.targets' '*.js' '*.json' '*.tscn' '*.tres' '*.gd' '*.cfg' '*.svg' /E /IS /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD bin obj /XF '*.user'
 if ($LASTEXITCODE -ge 8) { throw "robocopy (code) failed: $LASTEXITCODE" }
 # Package data is generated content. Remove obsolete copies left by the old directory
 # layout so exports contain exactly the source card packs, without touching other assets.

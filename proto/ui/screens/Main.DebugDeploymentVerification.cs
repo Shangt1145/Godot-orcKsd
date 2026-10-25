@@ -23,6 +23,9 @@ public partial class Main
     }
     private async Task VerifyDebugDeploymentAsync()
     {
+        // Switch the fixture policy only after startup; Android verification libraries must stay
+        // in user:// rather than the desktop verification directories under read-only res://.
+        _verificationRun=true;
         const string hostId="pack/builtin/4_pioneer_battalion",deployId="pack/builtin/17th_infantry_regiment";
         Show("battle");await StartRealMatchAsync(interactiveMulligan:false,manualOpponentForVerification:true,deckSeed:7,verificationHand:[deployId]);
         var runner=_runner??throw new Exception("No runner.");

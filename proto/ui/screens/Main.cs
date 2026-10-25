@@ -91,7 +91,6 @@ public partial class Main : Control
         _fx = new AnimationEngine { Clock = _clock, Sfx = sfx, Overlay = overlay, Textures = _textures };
         AddChild(_fx);
         _verificationRun = OS.GetCmdlineUserArgs().Any(a => a.StartsWith("--verify-") || a.StartsWith("--capture-"));
-        _verificationRun |= OS.IsDebugBuild() && Godot.FileAccess.FileExists("user://verify-debug-deployment.flag");
         // 桌面上的手机模拟（分辨率 + 触屏路径）：必须在建界面之前定，否则布局会先按桌面尺寸算一遍。
         MobileSim.Initialize();
         if (OS.HasFeature("mobile")) { DisplayServer.ScreenSetKeepOn(true); GetTree().QuitOnGoBack = false; }
