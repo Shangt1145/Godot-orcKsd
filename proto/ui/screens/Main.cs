@@ -59,7 +59,6 @@ public partial class Main : Control
 #else
         const string managedConfiguration = "Release";
 #endif
-        NativeScriptHost.ConfigureAssemblyDirectory(ProjectSettings.GlobalizePath($"res://.godot/mono/temp/bin/{managedConfiguration}"));
         Theme = UiStyles.CreateTheme();
         _clock = new AnimClock();
         AddChild(_clock);
@@ -73,8 +72,15 @@ public partial class Main : Control
         _verificationRun = OS.GetCmdlineUserArgs().Any(a => a.StartsWith("--verify-") || a.StartsWith("--capture-"));
         // 桌面上的手机模拟（分辨率 + 触屏路径）：必须在建界面之前定，否则布局会先按桌面尺寸算一遍。
         MobileSim.Initialize();
+        if (OS.HasFeature("mobile")) { DisplayServer.ScreenSetKeepOn(true); GetTree().QuitOnGoBack = false; }
         _splash = new MenuSplash(); _splash.Initialize(); AddChild(_splash); _splash.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        try { await InitializeInterfaceAsync(sfx); }
+        try
+        {
+            NativeScriptHost.ConfigureAssemblyDirectory(MobilePlatform.IsAndroid ? MobilePlatform.ScriptReferences()
+                : ProjectSettings.GlobalizePath($"res://.godot/mono/temp/bin/{managedConfiguration}"));
+            if (MobilePlatform.IsAndroid) MobilePlatform.SetDiscovery(true);
+            await InitializeInterfaceAsync(sfx);
+        }
         catch (Exception error)
         {
             GD.PushError(error.ToString());
@@ -351,7 +357,8 @@ public partial class Main : Control
         Show("home");
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
-        if (args.Contains("--verify-appearance")) Callable.From(VerifyAppearance).CallDeferred();
+        if (args.Contains("--verify-android-parity") || (OS.IsDebugBuild() && Godot.FileAccess.FileExists("user://verify-android-parity.flag"))) Callable.From(VerifyAndroidParity).CallDeferred();
+        else if (args.Contains("--verify-appearance")) Callable.From(VerifyAppearance).CallDeferred();
         else if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
         else if (args.Contains("--net-play")) Callable.From(NetPlay).CallDeferred();
         else if (args.Contains("--verify-setup-selection")) Callable.From(VerifySetupSelection).CallDeferred();
@@ -639,7 +646,7 @@ public partial class Main : Control
         if (GodotObject.IsInstanceValid(_battle)) _battle.SuspendMatchInput();
     }
 
-    public override void _ExitTree() => StopRealMatch();
+    public override void _ExitTree() { StopRealMatch(); MobilePlatform.SetDiscovery(false); }
 
     private async Task VerifyBridgeAsync()
     {

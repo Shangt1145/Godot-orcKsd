@@ -1,5 +1,6 @@
 (()=>{
       const r=request,K=KG;
+      if(r.method==='nativeActions')return K.effects.composition.expand(r.actions||[],'native',{preserveComposites:true}).actions;
       if(r.method==='catalog')return {contract:KG_EFFECT_CONTRACT.build({},K.effects,{}),keywords:K.KEYWORDS,
         vocabulary:KG_EFFECT_CONTRACT.editorCatalog(KG_EFFECT_CONTRACT.build({},K.effects,{}),K.effects,{}),primitiveCatalog:K.effects.composition.catalog,labels:K.inspector.Core,behaviorActions:K.BEHAVIOR_ACTIONS,behaviorPhases:K.BEHAVIOR_PHASES};
       if(r.method==='infer')return KG_EFFECT_CONTRACT.editorCatalog(KG_EFFECT_CONTRACT.build({},K.effects,{}),K.effects,{}).infer(r.name);

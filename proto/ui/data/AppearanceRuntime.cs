@@ -35,8 +35,8 @@ public static class AppearanceRuntime
     }
     public static byte[] ImportImage(string path)
     {
-        if(new FileInfo(path).Length>20*1024*1024) throw new InvalidDataException("请选择不超过 20 MB 的图片。");
-        var image=Godot.Image.LoadFromFile(path);
+        if(!path.StartsWith("content://",StringComparison.OrdinalIgnoreCase)&&new FileInfo(path).Length>20*1024*1024) throw new InvalidDataException("请选择不超过 20 MB 的图片。");
+        var image=PlatformFiles.LoadImage(path);
         if(image is null || image.IsEmpty()) throw new InvalidDataException("图片无法读取，请使用 PNG、JPG 或 WebP。");
         var scale=Math.Min(1,1024f/Math.Max(image.GetWidth(),image.GetHeight()));
         if(scale<1) image.Resize(Math.Max(1,(int)(image.GetWidth()*scale)),Math.Max(1,(int)(image.GetHeight()*scale)),Godot.Image.Interpolation.Lanczos);

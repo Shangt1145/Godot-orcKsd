@@ -91,6 +91,7 @@ public partial class Main
         var loadVersion = ++_replayLoadVersion;
         try
         {
+            path = PlatformFiles.ReadLocalCopy(path, ".orcreplay");
             var recording = await Task.Run(() => MatchReplayRecorder.Load(path));
             if (loadVersion != _replayLoadVersion) return;
             ReplaceSession(() =>

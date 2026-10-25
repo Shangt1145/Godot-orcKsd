@@ -1,6 +1,9 @@
 using Kards.Ui.Contracts;
 using Orc.Cards;
 using Orc.Core;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Collections.Concurrent;
 
 namespace Kards.Ui.OrcBridge;
 
@@ -10,6 +13,26 @@ public sealed record DiyCapabilityRow(int EffectIndex,DiyPlayability State,IRead
 /// <summary>Compiler-backed diagnostics. Effect admission and card-level validation remain separate.</summary>
 public static class DiyCapability
 {
+    private static readonly ConcurrentDictionary<string,string> OperationProblems=new();
+    public static string OperationProblem(string op)=>OperationProblems.GetOrAdd(op,id=>
+    {
+        try { DesktopNativeLowering.Lower(new JsonObject{["trigger"]="deploy",["actions"]=new JsonArray(InspectorVocabulary.Action(id))}.ToJsonString());return ""; }
+        catch(Exception error) when(error is InvalidDataException or ArgumentException or InvalidOperationException){return error.Message;}
+    });
+    public static IReadOnlyList<string> CheckEffect(JsonElement effect)
+    {
+        try
+        {
+            var draft=effect.TryGetProperty(InspectorCardRecord.NativeKey,out var native)?JsonSerializer.Deserialize<OrcEffectDraft>(native.GetRawText())!:
+                new OrcEffectDraft{DesktopJson=effect.GetRawText()};
+            if(effect.TryGetProperty(InspectorCardRecord.LegacyKey,out var legacy))
+            {DiyCardCompiler.CompileEffects("unit",[JsonSerializer.Deserialize<DiyEffectDraft>(legacy.GetRawText())!],"diy.inspector.legacy");return [];}
+            var program=OrcEffectEditing.Compile("diy.inspector.preview",[draft]);
+            return program.Where(p=>p.Error is not null).Select(p=>p.Error!).ToArray();
+        }
+        catch(Exception error) when(error is InvalidDataException or ArgumentException or InvalidOperationException)
+        {return [error.Message];}
+    }
     public static IReadOnlyList<DiyCapabilityRow> Probe(DiyCardDraft draft,IReadOnlyList<UiCardDefinition> catalog)
     {
         var rows=new List<DiyCapabilityRow>();

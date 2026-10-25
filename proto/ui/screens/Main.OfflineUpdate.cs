@@ -7,6 +7,7 @@ public partial class Main
 {
     private bool ResumeInterruptedUpdate()
     {
+        if(MobilePlatform.IsAndroid)return false;
         if(OS.HasFeature("editor"))return false;
         var root=OS.GetExecutablePath().GetBaseDir();
         if(!System.IO.Directory.Exists(System.IO.Path.Combine(root,".orcksd-update/pending")))return false;
@@ -14,6 +15,17 @@ public partial class Main
     }
     private void OpenOfflineUpdater()
     {
+        if (MobilePlatform.IsAndroid)
+        {
+            var picker = new FileDialog { Title = "安装新版 APK（保留卡组和工坊）", Access = FileDialog.AccessEnum.Filesystem,
+                FileMode = FileDialog.FileModeEnum.OpenFile, UseNativeDialog = true, Filters = ["*.apk ; Android 安装包"] };
+            AddChild(picker); picker.FileSelected += path => {
+                try { MobilePlatform.InstallApk(path); }
+                catch(Exception error) { var message = new AcceptDialog { Title = "无法开始安装", DialogText = error.Message }; AddChild(message); message.Confirmed += message.QueueFree; message.PopupCentered(); }
+                finally { picker.QueueFree(); }
+            };
+            picker.Canceled += picker.QueueFree; picker.PopupCentered(); return;
+        }
         var confirm=new ConfirmationDialog{Title="离线更新",DialogText="更新需要退出游戏。请先结束当前对局；更新器会保留卡组、DIY 卡和导入卡图。",OkButtonText="退出并打开更新器",CancelButtonText="返回游戏"};
         AddChild(confirm);confirm.Confirmed+=()=>{confirm.QueueFree();StartUpdater(OS.GetExecutablePath().GetBaseDir());};
         confirm.Canceled+=()=>confirm.QueueFree();confirm.PopupCentered();

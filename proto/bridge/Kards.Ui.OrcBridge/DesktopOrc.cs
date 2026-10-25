@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge.OrcText;
+using Jint;
 
 namespace Kards.Ui.OrcBridge;
 
@@ -11,6 +12,9 @@ public static class DesktopOrc
 {
     private static readonly object Gate = new();
     private static Microsoft.ClearScript.V8.V8ScriptEngine? _runtime;
+    private static Jint.Engine? _managedRuntime;
+    public static bool UsesManagedRuntime => OperatingSystem.IsAndroid() || OperatingSystem.IsIOS()
+        || Environment.GetEnvironmentVariable("ORC_MANAGED_JS") == "1";
     private static readonly string[] Sources = ["engine", "primitives-extra", "primitives", "effects", "effect-primitives",
         "compiler", "effect-contract", "orc", "card-import", "effect-inspector"];
     private static string Resource(string name)
@@ -24,6 +28,7 @@ public static class DesktopOrc
     public static string TutorialText=>Resource("inspector-tutorial.txt");
     public static JsonElement Request(object request)
     {
+        if (UsesManagedRuntime) return RequestManaged(request);
         lock(Gate)
         {
             if(_runtime is null)
@@ -48,7 +53,29 @@ public static class DesktopOrc
             catch(Microsoft.ClearScript.ScriptEngineException e){throw new InvalidDataException("OrC 解析失败："+e.Message,e);}
         }
     }
-    public static void Stop(){lock(Gate){_runtime?.Dispose();_runtime=null;}}
+    internal static JsonElement RequestManaged(object request)
+    {
+        lock (Gate)
+        {
+            try
+            {
+                if (_managedRuntime is null)
+                {
+                    // Same compiler sources as PC; no CLR interop, filesystem or network access.
+                    var engine = new Jint.Engine(options => options.TimeoutInterval(TimeSpan.FromSeconds(60)).LimitMemory(256_000_000));
+                    engine.Execute("var console={log(){},warn(){},error(){}};");
+                    foreach (var name in Sources) engine.Execute(Resource("js/" + name + ".js"));
+                    _managedRuntime = engine;
+                }
+                _managedRuntime.Execute("var request=JSON.parse(" + JsonSerializer.Serialize(JsonSerializer.Serialize(request)) + ");");
+                var json = _managedRuntime.Evaluate("JSON.stringify(" + Resource("request.js") + ")").AsString();
+                using var result = JsonDocument.Parse(json); return result.RootElement.Clone();
+            }
+            catch (Exception error) when (error is not InvalidDataException)
+            { _managedRuntime = null; throw new InvalidDataException("OrC 跨平台解析失败：" + error.Message, error); }
+        }
+    }
+    public static void Stop(){lock(Gate){_runtime?.Dispose();_runtime=null;_managedRuntime=null;}}
     public static JsonElement CompileGraph(string text,string cardType,IReadOnlyList<UiCardDefinition>? catalog=null,string? cardJson=null) =>
         Request(new {method="compile",text,card=cardJson is null?(object)new {cardType}:JsonSerializer.Deserialize<JsonElement>(cardJson),pool=(catalog??[]).Select(CardMetadata).ToArray()});
     internal static object CardMetadata(UiCardDefinition c) => new
@@ -73,20 +100,6 @@ public static class DesktopOrc
         }
         return new(root.GetProperty("source").GetString()!,effects,keywords,diagnostics) {DesktopResultJson=root.GetRawText()};
     }
-    // 结构完整但内容为空的目录：安卓没有 ClearScript 的 V8 原生库（csproj 只带 win-x64），
-    // 目录取不到时让 DIY 编辑器退化成「空动作列表」，而不是把整个启动流程带崩。
-    private const string EmptyCatalogJson =
-        """{"contract":{"ops":{},"conditions":{}},"labels":{"SEED_OP":{},"SEED_COND":{},"TRIGGERS":{},"SEED_VALUE":{},"SEED_FIELD":{}},"vocabulary":{"ops":{},"conditions":{}},"behaviorActions":{},"keywords":{}}""";
-    private static readonly Lazy<JsonElement> CatalogValue=new(LazyCatalog);
-    private static JsonElement LazyCatalog()
-    {
-        try{return Request(new {method="catalog"});}
-        catch(Exception error)
-        {
-            Console.Error.WriteLine("OrC 目录不可用，DIY 编辑器已降级为空目录："+error.Message);
-            using var document=JsonDocument.Parse(EmptyCatalogJson);
-            return document.RootElement.Clone();
-        }
-    }
+    private static readonly Lazy<JsonElement> CatalogValue=new(() => Request(new {method="catalog"}));
     public static JsonElement Catalog=>CatalogValue.Value;
 }

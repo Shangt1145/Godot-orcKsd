@@ -108,6 +108,7 @@ internal static class PluginManifests
         (BuiltInPluginPackage.DirectoryName, "lock.test.json", "Kards.Ui.OrcBridge.Plugins.core.lock.test.json"),
         (BuiltInPluginPackage.DirectoryName, "assets.meta.json", "Kards.Ui.OrcBridge.Plugins.core.assets.meta.json"),
         (UiPluginPackage.DirectoryName, "manifest.json", UiResource),
+        ("orc.foundation.actions", "manifest.json", "Kards.Ui.OrcBridge.Plugins.foundation.manifest.json"),
     ];
 
     private static string Text(System.Reflection.Assembly assembly, string resourceName)

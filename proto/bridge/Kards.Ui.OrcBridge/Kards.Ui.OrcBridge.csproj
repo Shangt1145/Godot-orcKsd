@@ -27,8 +27,7 @@
   </PropertyGroup>
 
   <Target Name="VerifyOrcEngineRoot" BeforeTargets="PrepareForBuild;ResolveProjectReferences">
-    <Error Condition="!Exists('$(OrcEngineRoot)/Orc.Game.csproj')" Code="ORC001"
-           Text="找不到引擎工程：$(OrcEngineRoot)/Orc.Game.csproj。三种解决办法（任选其一）：① 设环境变量 ORC_ENGINE_ROOT 指向引擎仓库根目录；② dotnet build -p:OrcEngineRoot=&lt;引擎仓库&gt;/src/Orc.Game；③ 把引擎仓库克隆到本仓库的同级目录并命名 OrC-KSD。" />
+    <Error Condition="!Exists('$(OrcEngineRoot)/Orc.Game.csproj')" Code="ORC001" Text="找不到引擎工程：$(OrcEngineRoot)/Orc.Game.csproj。三种解决办法（任选其一）：① 设环境变量 ORC_ENGINE_ROOT 指向引擎仓库根目录；② dotnet build -p:OrcEngineRoot=&lt;引擎仓库&gt;/src/Orc.Game；③ 把引擎仓库克隆到本仓库的同级目录并命名 OrC-KSD。" />
   </Target>
 
   <ItemGroup>
@@ -53,6 +52,7 @@
     <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/lock.test.json" LogicalName="Kards.Ui.OrcBridge.Plugins.core.lock.test.json" />
     <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Plugins.BuiltIn/package/plugins/orc.builtin.core/assets.meta.json" LogicalName="Kards.Ui.OrcBridge.Plugins.core.assets.meta.json" />
     <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.UI/package/plugins/orc.builtin.ui/manifest.json" LogicalName="Kards.Ui.OrcBridge.Plugins.orc.builtin.ui.manifest.json" />
+    <EmbeddedResource Include="$(OrcEngineRoot)/../Orc.Foundation.Actions/package/plugins/orc.foundation.actions/manifest.json" LogicalName="Kards.Ui.OrcBridge.Plugins.foundation.manifest.json" />
     <ProjectReference Include="../../core/Kards.Ui.Core.csproj" />
     <ProjectReference Include="$(OrcEngineRoot)/Orc.Game.csproj" />
     <!-- 迁移 S8：宿主/包管理（EngineHost / CardPackLoader）、脚本求值器与内置 UI 插件（投影提供者）。 -->
@@ -70,6 +70,7 @@
          否则 Kards.Ui.dll 的 AssemblyRef 会出现 Orc.Client／Orc.Protocol，
          被 UI_BOUNDARY_VERIFY_OK 判为越界（UI 只许经本桥接层的公开面说话）。 -->
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Client/Orc.Client.csproj" PrivateAssets="all" />
+    <ProjectReference Include="$(OrcEngineRoot)/../Orc.Server/Orc.Server.csproj" PrivateAssets="all" />
     <ProjectReference Include="$(OrcEngineRoot)/../Orc.Manager/Orc.Manager.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <!-- Manager is an executable assembly; explicit runtime reference keeps it in Godot's deps manifest. -->
     <Reference Include="Orc.Manager">
@@ -79,6 +80,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Jint" Version="4.10.1" />
     <PackageReference Include="Microsoft.ClearScript.V8" Version="7.5.1.1" />
     <PackageReference Include="Microsoft.ClearScript.V8.Native.win-x64" Version="7.5.1.1" />
   </ItemGroup>

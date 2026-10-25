@@ -88,6 +88,7 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
         var full=DesktopOrc.Request(new {method="parityCorpus",rows});
         var index=0;
         var changes=new List<string>();
+        var drifted=new List<string>();
         foreach(var expected in reference.RootElement.EnumerateArray())
         {
             Assert.Equal(expected.GetProperty("id").GetString(),rows[index].id);
@@ -99,8 +100,10 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
                 Assert.Equal(extension.GetProperty("sha256").GetString(),hash);
                 Assert.NotEqual(expected.GetProperty("sha256").GetString(),hash);changes.Add(id);
             }
-            else Assert.Equal(expected.GetProperty("sha256").GetString(),hash);
+            else if(expected.GetProperty("sha256").GetString() is { } want&&want!=hash)
+                drifted.Add(id+"|"+want+"|"+hash);
         }
+        Assert.True(drifted.Count==0,$"与基准不符 {drifted.Count} 条：{string.Join("、",drifted)}");
         File.WriteAllText(Path.Combine(root,"artifacts","desktop-parser-deltas.json"),JsonSerializer.Serialize(changes));
         Assert.Equal(reviewed.Keys.Order(),changes.Order());Assert.Equal(13,changes.Count);
         var complete=result.EnumerateArray().Count(c=>c.GetProperty("complete").GetBoolean());
@@ -134,7 +137,9 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
     [Fact]
     public void 完整解析_引擎缺口不冒充编译通过()
     {
-        var compiled=OrcInspector.CompileText("test.full","使1个友方单位返回手牌。","order");
+        // 返回牌库能解析出来，但引擎没有无损执行适配（moveCard），必须如实报缺口而不是冒充通过。
+        // （返回手牌原本也是缺口，现在由 csx 调 AuthoringRuntime.ReturnAsync 补齐了，这里换成牌库。）
+        var compiled=OrcInspector.CompileText("test.full","使 1 个友方单位返回牌库。","order");
         Assert.True(compiled.ParseComplete);Assert.False(compiled.AllCompiled);Assert.NotEmpty(compiled.Problems);
         var draft=OrcEffectEditing.ToDraft(Assert.Single(compiled.Parse.Effects));Assert.NotNull(draft.DesktopJson);
     }

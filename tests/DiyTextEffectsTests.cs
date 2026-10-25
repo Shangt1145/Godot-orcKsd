@@ -49,8 +49,9 @@ public class DiyTextEffectsTests(ITestOutputHelper output)
     [Fact]
     public void 文本模式_解析不了的句子诚实拒绝()
     {
-        // 引擎真面外（返回手牌）：拒绝并给诊断，不静默降级空效果。
-        var draft = TextCard("使 1 个友方单位返回手牌");
+        // 引擎真面外（返回牌库＝moveCard 无无损适配）：拒绝并给诊断，不静默降级空效果。
+        // 返回手牌原本也在这条线上，现在由 csx 调 AuthoringRuntime.ReturnAsync 补齐了。
+        var draft = TextCard("使 1 个友方单位返回牌库");
         var validation = DiyCardCompiler.Validate(draft, []);
         Assert.False(validation.Success);
         Assert.NotEmpty(validation.Errors);

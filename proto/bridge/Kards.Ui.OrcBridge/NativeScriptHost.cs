@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Scripting;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Scripting;
 using Orc.Core;
 using Orc.Script;
@@ -15,7 +15,10 @@ public static class NativeScriptHost
 
     /// <summary>Only the UI host supplies the directory of its current managed build.</summary>
     public static void ConfigureAssemblyDirectory(string directory)
-        => Volatile.Write(ref _evaluator, new HostEvaluator(Path.GetFullPath(directory)));
+    {
+        ScriptAssemblyReferences.ConfigureDirectory(directory);
+        Volatile.Write(ref _evaluator, new HostEvaluator(Path.GetFullPath(directory)));
+    }
 
     internal static IScriptEvaluator Evaluator => Volatile.Read(ref _evaluator);
 
@@ -40,8 +43,14 @@ public static class NativeScriptHost
             {
                 using var reflectionScope = System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(typeof(NativeScriptHost).Assembly)
                     ?.EnterContextualReflection();
-                var script = CSharpScript.Create(request.Source, _runtime.Value);
-                var compilation = script.GetCompilation();
+                // Scripting's convenience API unconditionally reopens object.Assembly.Location,
+                // which is a relative/nonexistent path in Android Mono. Supply all metadata directly.
+                var options = _runtime.Value;
+                var tree = CSharpSyntaxTree.ParseText(request.Source, new CSharpParseOptions(kind: SourceCodeKind.Script));
+                var compilation = CSharpCompilation.CreateScriptCompilation("OrcEffect_" + Guid.NewGuid().ToString("N"), tree,
+                    references: options.MetadataReferences,
+                    options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, scriptClassName: "Submission",
+                        usings: options.Imports, allowUnsafe: false), returnType: typeof(object));
                 using var binary = new MemoryStream();
                 var emitted = compilation.Emit(binary);
                 var errors = emitted.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
@@ -91,13 +100,10 @@ public static class NativeScriptHost
                 }
                 if (assembly is null) throw new InvalidDataException($"缺少已加载的程序集 {name}");
                 var path = assembly.Location;
-                if (string.IsNullOrEmpty(path))
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
                 {
-                    if (directory is null) throw new InvalidDataException($"程序集 {name} 缺少宿主文件路径");
-                    path = Path.Combine(directory, name + ".dll");
-                    if (!File.Exists(path)) path = Path.Combine(AppContext.BaseDirectory, name + ".dll");
-                    if (!File.Exists(path) || AssemblyName.GetAssemblyName(path).FullName != assembly.GetName().FullName)
-                        throw new InvalidDataException($"程序集 {name} 的编译文件与当前宿主不一致，请重新构建项目");
+                    references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+                    continue;
                 }
                 references.Add(MetadataReference.CreateFromFile(path));
             }

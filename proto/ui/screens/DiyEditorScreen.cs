@@ -612,7 +612,7 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         try
         {
-            var image = Image.LoadFromFile(path);
+            var image = PlatformFiles.LoadImage(path);
             if (image is null) { _notice.Text = "无法解码该图片（支持 PNG/JPEG/WebP）。"; return; }
             if (image.GetWidth() is < 16 or > 4096 || image.GetHeight() is < 16 or > 4096)
             { _notice.Text = $"图片尺寸须在 16–4096 像素（当前 {image.GetWidth()}×{image.GetHeight()}）。"; return; }
@@ -622,77 +622,31 @@ public partial class DiyEditorScreen : VBoxContainer
         { _notice.Text = $"导入失败：{e.Message}"; }
     }
 
-    /// <summary>规则文本实时解析状态（600ms 防抖，只读提示——落结构必须点解析按钮）。</summary>
-    private void RefreshTextNotice()    {
+    /// <summary>Both editor entry points use the same complete parser and native admission checks.</summary>
+    private void RefreshTextNotice()
+    {
         var text = EffectTextInput.Text.Trim();
         if (text.Length == 0) { TextNotice.Text = ""; return; }
-        // 与「解析并替换」同一条后端链：这里只探测，不改结构。
-        var probe = BackendTextAuthoring.Parse(_draft.Id.Replace('/', '.'), text, Value(CardType));
-        if (probe.Success)
-        {
-            TextNotice.Text = $"引擎解析：{probe.Effects.Length} 条效果。点解析按钮保留完整结构。";
-            TextNotice.AddThemeColorOverride("font_color", MenuStyles.Dim);
-        }
-        else
-        {
-            TextNotice.Text = string.Join("\n", probe.Problems.Take(3));
-            TextNotice.AddThemeColorOverride("font_color", new Color("dca58b"));
-        }
+        var probe = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType), _catalog());
+        var accepted = probe.ParseComplete && probe.AllCompiled;
+        TextNotice.Text = accepted ? $"已解析并通过效果编译：{probe.Effects.Count} 条。点击解析按钮应用。"
+            : string.Join("\n", probe.Problems.Take(3));
+        TextNotice.AddThemeColorOverride("font_color", accepted ? MenuStyles.Dim : new Color("dca58b"));
     }
-
-    /// <summary>规则文本 → 结构（替换/追加）。解析只走引擎（CardTextEffectCompiler），失败时不动结构。</summary>
     private void ParseApply(bool replace)
     {
         var text = EffectTextInput.Text.Trim();
         if (text.Length == 0) { TextNotice.Text = "规则文本为空。"; return; }
-        // 引擎是唯一真源：解析与编译都经 BackendTextAuthoring 调后端 CardTextEffectCompiler。
-        var backend = BackendTextAuthoring.Parse(_draft.Id.Replace('/', '.'), text, Value(CardType));
-        if (!backend.Success)
+        var result = DiyTextAuthoring.Parse(Read(), text, _catalog(), append: !replace);
+        if (!result.Success)
         {
-            TextNotice.Text = "引擎不支持这段语法，结构未改动：\n" + string.Join("\n", backend.Problems.Take(4));
-            TextNotice.AddThemeColorOverride("font_color", new Color("dca58b"));
-            return;
+            TextNotice.Text = "未应用，原有效果保持完整：\n" + string.Join("\n", result.Problems.Take(4));
+            TextNotice.AddThemeColorOverride("font_color", new Color("dca58b")); return;
         }
-        var drafts = backend.Effects.ToList();
-        // 词条名不在后端 op 语法里，仍从旧的解析面取；取不到不影响效果结构。
-        IReadOnlyList<OrcKeywordDecl> textKeywords = [];
-        try { textKeywords = OrcInspector.CompileText(_draft.Id.Replace('/', '.'), text, Value(CardType), _catalog()).Parse.Keywords; }
-        catch (Exception) { /* 词条只是附加信息 */ }
-        // 文本词条并入勾选：量化重甲落到重甲参值，其余参值保留在完整声明中。
-        var notes = new List<string>();
-        foreach (var keyword in textKeywords)
-        {
-            var token = DiyCardCompiler.KeywordToken(keyword.Id);
-            if (_keywords.TryGetValue(token, out var box))
-            {
-                box.ButtonPressed = true;
-                if (keyword.Quantified && token == "armor") Armor.Value = keyword.Value;
-                else if (keyword.Quantified)
-                    notes.Add($"词条「{keyword.Id}」的参值 {keyword.Value} 已保留，可在完整 Inspector 的 kwValues 中修改。");
-            }
-            else notes.Add($"词条「{keyword.Id}」保留在完整声明中，可在完整 Inspector 的 kwMap 中修改。");
-        }
-        if (!replace)
-        {
-            // 追加＝同触发合并 op（后端模型是「一条触发 + op 序列」，不再走 V8 的 merge 指令）。
-            var merged = new List<OrcEffectDraft>(_draft.OrcEffects);
-            foreach (var incoming in drafts)
-            {
-                var hit = merged.FindIndex(e => e.Template == incoming.Template && e.Hook == incoming.Hook && e.Guard == incoming.Guard);
-                if (hit < 0) merged.Add(incoming);
-                else merged[hit] = merged[hit] with { Ops = [.. merged[hit].Ops, .. incoming.Ops] };
-            }
-            drafts = merged;
-        }
-        if (replace) ApplyEffects([.. drafts], []);
-        else ApplyEffects([.. drafts], _draft.Effects);
-        // 后端不产出桌面卡机制字段（那是 V8 链的私有产物），这里只把文本词条并入卡牌词条。
-        if (textKeywords.Count > 0)
-            _draft = _draft with { Keywords = _draft.Keywords.Concat(textKeywords.Select(k => DiyCardCompiler.KeywordToken(k.Id))).Distinct(StringComparer.Ordinal).ToArray() };
-        TextNotice.Text = $"已解析 {drafts.Count} 条效果并{(replace ? "替换" : "追加")}到效果结构（点「打开效果编辑器」查看）。" + (notes.Count > 0 ? "\n" + string.Join("\n", notes) : "");
+        ApplyInspectorDraft(result.Draft!);
+        TextNotice.Text = $"已解析并{(replace ? "替换" : "追加")}到效果结构，可继续编辑和训练。";
         TextNotice.AddThemeColorOverride("font_color", MenuStyles.Dim);
     }
-
     private void Run(Action action)
     {
         try { action(); }

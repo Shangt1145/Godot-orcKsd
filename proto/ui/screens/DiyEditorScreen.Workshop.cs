@@ -85,7 +85,7 @@ public partial class DiyEditorScreen
         {
                 try
                 {
-                    var image=Image.LoadFromFile(path);if(image is null||image.GetWidth()>4096||image.GetHeight()>4096)throw new InvalidDataException("图标最大 4096×4096");
+                    var image=PlatformFiles.LoadImage(path);if(image is null||image.GetWidth()>4096||image.GetHeight()>4096)throw new InvalidDataException("图标最大 4096×4096");
                     var scale=256f/Math.Max(image.GetWidth(),image.GetHeight());image.Resize(Math.Max(1,(int)(image.GetWidth()*scale)),Math.Max(1,(int)(image.GetHeight()*scale)),Image.Interpolation.Lanczos);
                     var canvas=Image.CreateEmpty(256,256,false,Image.Format.Rgba8);canvas.Fill(Colors.Transparent);image.Convert(Image.Format.Rgba8);canvas.BlitRect(image,new Rect2I(0,0,image.GetWidth(),image.GetHeight()),new Vector2I((256-image.GetWidth())/2,(256-image.GetHeight())/2));
                     pendingIcon=canvas.SavePngToBuffer();preview.Texture=ImageTexture.CreateFromImage(canvas);iconText.Text="图标已选中，保存国家后生效";

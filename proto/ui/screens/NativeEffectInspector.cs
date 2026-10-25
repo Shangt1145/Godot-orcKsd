@@ -95,8 +95,8 @@ internal partial class NativeEffectInspector : VBoxContainer
         Composer.Hide();
         _expanded.Clear();_selectedEffect=0;_renderedEffect=-1;_advancedRoot.Visible=false;_friendlyRoot.Visible=true;
         Document=new InspectorDocument(card){NormalizeBeforeCommit=InspectorCardRecord.SynchronizeText};_path="/effects";
-        Document.Changed+=()=>{RefreshTree();RawEditor.Text=Document.Root.ToJsonString(Pretty);SyncHistory();UpdateFriendlySummary();Edited?.Invoke();};
-        Refresh();
+        Document.Changed+=()=>{RefreshTree();RawEditor.Text=Document.Root.ToJsonString(Pretty);SyncHistory();UpdateFriendlySummary();RefreshSourceCheck();Edited?.Invoke();};
+        Refresh();RefreshSourceCheck();
     }
     internal bool TryApplyRaw(string json)
     {
@@ -118,7 +118,12 @@ internal partial class NativeEffectInspector : VBoxContainer
             var desktop=new JsonArray(effects.AsArray().Where(e=>!InspectorCardRecord.IsNative(e)&&!InspectorCardRecord.IsLegacy(e)).Select(e=>e?.DeepClone()).ToArray());
             var report=DesktopOrc.Request(new {method="validate",value=JsonSerializer.SerializeToElement(desktop)});
             var issues=report.GetProperty("errors").EnumerateArray().Concat(report.GetProperty("warnings").EnumerateArray()).Select(e=>e.GetProperty("path").GetString()+"："+e.GetProperty("msg").GetString()).ToArray();
-            _status.Text=issues.Length==0?"设置已填写完整。可以继续添加动作，或保存卡牌。":$"还有 {issues.Length} 处设置需要检查："+string.Join("；",issues.Take(2).Select(x=>x[(x.IndexOf('：')+1)..]));
+            var capabilities=effects.AsArray().Select((effect,index)=> {
+                var problems=DiyCapability.CheckEffect(JsonSerializer.SerializeToElement(effect)).ToArray();
+                return new DiyCapabilityRow(index,problems.Length==0?DiyPlayability.Playable:DiyPlayability.DraftOnly,problems);
+            }).ToArray();SetCapabilities(capabilities);
+            var problems=issues.Concat(capabilities.SelectMany(c=>c.Reasons)).ToArray();
+            _status.Text=problems.Length==0?"效果已通过结构与执行编译检查，可以继续编辑或保存。":$"还有 {problems.Length} 处需要检查："+string.Join("；",problems.Take(2));
         }
         catch(InvalidDataException e){_status.Text=e.Message;}
     }

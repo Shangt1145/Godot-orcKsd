@@ -15,6 +15,7 @@ namespace Kards.Ui;
 /// </summary>
 public partial class BattleScreen
 {
+    internal bool HasCancelableInteraction => _selected is not null || _pressed is not null || _dragging || TargetChoiceVisible || MulliganPanelVisible;
     private const double LongPressSeconds = 0.45;
     private const float TouchSlopPixels = 12f;
 

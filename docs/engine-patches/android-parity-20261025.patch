@@ -1,0 +1,816 @@
+diff --git a/src/Orc.Game/Cards/KeywordEffectAssembly.cs b/src/Orc.Game/Cards/KeywordEffectAssembly.cs
+index 15b9214..f33f675 100644
+--- a/src/Orc.Game/Cards/KeywordEffectAssembly.cs
++++ b/src/Orc.Game/Cards/KeywordEffectAssembly.cs
+@@ -65,7 +65,7 @@ public static class KeywordEffectAssembly
+     /// <param name="libraryDirectory">库目录（缺省＝<see cref="KeywordPrefabLibrary.DefaultDirectory"/>；测试以临时目录取证）。</param>
+     /// <exception cref="ArgumentNullException">engine 为 null。</exception>
+     /// <exception cref="InvalidOperationException">绑定核验失败（键缺失——配置错误）。</exception>
+-    public static KeywordEffectAssemblyResult Assemble(LogicEngine engine, string? libraryDirectory = null)
++    public static KeywordEffectAssemblyResult Assemble(LogicEngine engine, string? libraryDirectory = null, KeywordSnapshot? keywords = null)
+     {
+         ArgumentNullException.ThrowIfNull(engine);
+ 
+@@ -84,7 +84,7 @@ public static class KeywordEffectAssembly
+         }
+ 
+         // ③ 绑定核验（词条声明绑定 → 库键；缺失＝配置错误——装配期 fail-fast，不得静默跳过）。
+-        VerifyBindings(engine.Prefabs);
++        VerifyBindings(engine.Prefabs, keywords);
+ 
+         return new KeywordEffectAssemblyResult(handlers, report.Loaded, report.Failures);
+     }
+@@ -105,10 +105,13 @@ public static class KeywordEffectAssembly
+     }
+ 
+     /// <summary>绑定核验（全部绑定：词条声明绑定 → 库键可解析；缺失清单非空＝fail-fast）。</summary>
+-    private static void VerifyBindings(PrefabManager prefabs)
++    private static void VerifyBindings(PrefabManager prefabs, KeywordSnapshot? keywords)
+     {
+         var missing = new List<string>();
+-        foreach (var (keyword, binding) in KeywordRegistry.EnumerateEffectBindings())
++        IEnumerable<(string Keyword, KeywordEffectBinding Binding)> bindings = keywords is null
++            ? KeywordRegistry.EnumerateEffectBindings()
++            : keywords.Registered.SelectMany(k => keywords.GetEffectBindings(k).Select(b => (k, b)));
++        foreach (var (keyword, binding) in bindings)
+         {
+             if (!prefabs.TryGetPrefab(binding.PrefabId, out _))
+             {
+diff --git a/src/Orc.Game/Cards/KeywordRegistry.cs b/src/Orc.Game/Cards/KeywordRegistry.cs
+index 193ca6d..26d8a7f 100644
+--- a/src/Orc.Game/Cards/KeywordRegistry.cs
++++ b/src/Orc.Game/Cards/KeywordRegistry.cs
+@@ -359,6 +359,15 @@ public sealed class KeywordSnapshot
+     /// <summary>冻结时点的已注册标识清单（登记序近似——字典序展开，仅诊断用）。</summary>
+     public IReadOnlyList<string> Registered => _order;
+ 
++    /// <summary>Limit a hosted match to built-ins and vocabulary from its selected packages.</summary>
++    public KeywordSnapshot ForKeywords(IEnumerable<string> keywords)
++    {
++        var ids = keywords.ToHashSet(StringComparer.Ordinal);
++        return new KeywordSnapshot(_factories.Where(p => ids.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value),
++            _battleKeywords.Where(ids.Contains).ToHashSet(StringComparer.Ordinal),
++            _bindings.Where(p => ids.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value));
++    }
++
+     /// <summary>标识是否在快照内注册。</summary>
+     public bool IsDefined(string keyword)
+         => !string.IsNullOrWhiteSpace(keyword) && _factories.ContainsKey(keyword);
+diff --git a/src/Orc.Game/Match/Match.cs b/src/Orc.Game/Match/Match.cs
+index 379985d..5f63d2a 100644
+--- a/src/Orc.Game/Match/Match.cs
++++ b/src/Orc.Game/Match/Match.cs
+@@ -730,11 +730,11 @@ public sealed class Match
+             // A.20：行动输入准入通道——查询与提交每次读取前端状态（末位位置参数绑定 inputAllowed）。
+             CanAcceptInput,
+             // 前端资产迁移 S5：**冻结本局词条快照**（运行期"覆盖"只改引擎持有引用，不影响进行中的对局）。
+-            keywordSnapshot: Orc.Game.Cards.KeywordRegistry.Snapshot());
++            keywordSnapshot: _options.Keywords ?? Orc.Game.Cards.KeywordRegistry.Snapshot());
+         // 资产化 P11（甲）：四类内置流程触发器登记**不再硬编码**——由内置插件声明、在本相经绑定面执行。
+         if (_packageActivator is not null)
+         {
+-            var binding = new Orc.Game.Plugins.MatchBindingServices(() => _commandManager, TriggerRegistry, Engine);
++            var binding = new Orc.Game.Plugins.MatchBindingServices(() => _commandManager, TriggerRegistry, Engine, _options.Keywords);
+             var activation = _packageActivator.Activate(
+                 Orc.Core.AssetActivationPhase.PostCommand,
+                 matchServices,
+diff --git a/src/Orc.Game/Match/MatchOptions.cs b/src/Orc.Game/Match/MatchOptions.cs
+index 8d373f4..3e0995f 100644
+--- a/src/Orc.Game/Match/MatchOptions.cs
++++ b/src/Orc.Game/Match/MatchOptions.cs
+@@ -5,6 +5,7 @@ namespace Orc.Game;
+ /// <summary>对局级规则/开局配置（创建参数形态：配置对象；含指挥点上限、起手张数与首回合抽牌等开局规则）。</summary>
+ public sealed class MatchOptions
+ {
++    public Orc.Game.Cards.KeywordSnapshot? Keywords { get; init; }
+     /// <summary>指挥点上限（默认 12；须为正整数，非法配置于创建期抛参数校验异常）。</summary>
+     public int MaxPointSlots { get; init; } = ResourceManager.DefaultMaxPointSlots;
+ 
+diff --git a/src/Orc.Game/Plugins/MatchBindingServices.cs b/src/Orc.Game/Plugins/MatchBindingServices.cs
+index b0049db..c2a06bb 100644
+--- a/src/Orc.Game/Plugins/MatchBindingServices.cs
++++ b/src/Orc.Game/Plugins/MatchBindingServices.cs
+@@ -13,15 +13,17 @@ internal sealed class MatchBindingServices : IMatchBindingServices
+     private readonly Func<Commanding.CommandManager?> _commandManager;
+     private readonly TriggerRegistry _triggerRegistry;
+     private readonly LogicEngine _engine;
++    private readonly KeywordSnapshot? _keywords;
+ 
+     internal MatchBindingServices(
+         Func<Commanding.CommandManager?> commandManager,
+         TriggerRegistry triggerRegistry,
+-        LogicEngine engine)
++        LogicEngine engine, KeywordSnapshot? keywords = null)
+     {
+         _commandManager = commandManager;
+         _triggerRegistry = triggerRegistry;
+         _engine = engine;
++        _keywords = keywords;
+     }
+ 
+     /// <inheritdoc />
+@@ -37,5 +39,5 @@ internal sealed class MatchBindingServices : IMatchBindingServices
+     }
+ 
+     /// <inheritdoc />
+-    public void AssembleKeywordEffectLibrary() => KeywordEffectAssembly.Assemble(_engine);
++    public void AssembleKeywordEffectLibrary() => KeywordEffectAssembly.Assemble(_engine, keywords: _keywords);
+ }
+diff --git a/src/Orc.Mcp/Match/MatchLaunchOptions.cs b/src/Orc.Mcp/Match/MatchLaunchOptions.cs
+index 08daba5..7ebdfb7 100644
+--- a/src/Orc.Mcp/Match/MatchLaunchOptions.cs
++++ b/src/Orc.Mcp/Match/MatchLaunchOptions.cs
+@@ -18,6 +18,7 @@ public sealed record MatchSeatConfig(
+ /// </summary>
+ public sealed class MatchLaunchOptions
+ {
++    public Orc.Game.Cards.KeywordSnapshot? Keywords { get; init; }
+     /// <summary>
+     /// 卡包目录列表（按顺序注册与装载；**加载严格按元数据**——每个目录须含 <c>manifest.json</c>）。
+     /// S7 起目录链（无 manifest 的裸卡目录）已退役：无元数据即无资产身份，不能进入中间层与 lock 定版。
+diff --git a/src/Orc.Mcp/McpService.MatchLaunch.cs b/src/Orc.Mcp/McpService.MatchLaunch.cs
+index 78225ae..85889a3 100644
+--- a/src/Orc.Mcp/McpService.MatchLaunch.cs
++++ b/src/Orc.Mcp/McpService.MatchLaunch.cs
+@@ -135,6 +135,7 @@ public sealed partial class McpService
+                 seed: options.Seed,
+                 options: new MatchOptions
+                 {
++                    Keywords = options.Keywords,
+                     SkipMulligan = options.SkipMulligan,
+                     OpeningHandSizeFirstPlayer = options.OpeningHandSizeFirstPlayer,
+                     OpeningHandSizeSecondPlayer = options.OpeningHandSizeSecondPlayer,
+@@ -154,6 +155,7 @@ public sealed partial class McpService
+         }
+ 
+         EffectRegistry = effectRegistry;
++        if (Options.ScriptEvaluator is { } evaluator) match.Engine.ScriptEvaluator = evaluator;
+ 
+         // 内联预制体与效果库须在 Initialize 前注册（卡装载链在 Initialize 内解析效果引用）。
+         foreach (var snapshot in assembly.InlinePrefabs)
+diff --git a/src/Orc.Mcp/McpServiceOptions.cs b/src/Orc.Mcp/McpServiceOptions.cs
+index d491f5f..18b1256 100644
+--- a/src/Orc.Mcp/McpServiceOptions.cs
++++ b/src/Orc.Mcp/McpServiceOptions.cs
+@@ -31,6 +31,7 @@ public sealed class McpServiceOptions
+ 
+     /// <summary>插件根（只读；缺省＝null）。</summary>
+     public string? PluginsRoot { get; init; }
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
+ 
+     /// <summary>
+     /// 是否启用产物提升（沙盒 → 正式卡包）。**默认关闭**；开启后仍要求"无活跃沙盒局"且目标卡包已存在。
+diff --git a/src/Orc.Script/CSharpPluginScriptEvaluator.cs b/src/Orc.Script/CSharpPluginScriptEvaluator.cs
+index 7e41e38..8c3622c 100644
+--- a/src/Orc.Script/CSharpPluginScriptEvaluator.cs
++++ b/src/Orc.Script/CSharpPluginScriptEvaluator.cs
+@@ -155,20 +155,7 @@ public sealed class CSharpPluginScriptEvaluator : IPluginScriptEvaluator
+                 continue;
+             }
+ 
+-            string location;
+-            try
+-            {
+-                location = assembly.Location;
+-            }
+-            catch (Exception)
+-            {
+-                continue; // 单文件发布等无路径场景：跳过
+-            }
+-
+-            if (!string.IsNullOrEmpty(location))
+-            {
+-                references.Add(MetadataReference.CreateFromFile(location));
+-            }
++            references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+         }
+ 
+         return ScriptOptions.Default.WithReferences(references).WithImports(_options.AllowedImports);
+diff --git a/src/Orc.Script/CSharpScriptEvaluator.cs b/src/Orc.Script/CSharpScriptEvaluator.cs
+index 9da9d43..0c5e47a 100644
+--- a/src/Orc.Script/CSharpScriptEvaluator.cs
++++ b/src/Orc.Script/CSharpScriptEvaluator.cs
+@@ -151,20 +151,7 @@ public sealed class CSharpScriptEvaluator : IScriptEvaluator
+                 continue;
+             }
+ 
+-            string location;
+-            try
+-            {
+-                location = assembly.Location;
+-            }
+-            catch (Exception)
+-            {
+-                continue; // 单文件发布等无路径场景：跳过
+-            }
+-
+-            if (!string.IsNullOrEmpty(location))
+-            {
+-                references.Add(MetadataReference.CreateFromFile(location));
+-            }
++            references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+         }
+ 
+         return ScriptOptions.Default.WithReferences(references).WithImports(_options.AllowedImports);
+diff --git a/src/Orc.Script/CSharpSyncScriptEvaluator.cs b/src/Orc.Script/CSharpSyncScriptEvaluator.cs
+index 65578b8..55d6e20 100644
+--- a/src/Orc.Script/CSharpSyncScriptEvaluator.cs
++++ b/src/Orc.Script/CSharpSyncScriptEvaluator.cs
+@@ -132,22 +132,7 @@ public sealed class CSharpSyncScriptEvaluator : ISyncScriptEvaluator
+                 continue;
+             }
+ 
+-            string location;
+-            try
+-            {
+-                location = assembly.Location;
+-            }
+-            catch
+-            {
+-                continue;
+-            }
+-
+-            if (string.IsNullOrWhiteSpace(location) || !File.Exists(location))
+-            {
+-                continue;
+-            }
+-
+-            references.Add(MetadataReference.CreateFromFile(location));
++            references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+         }
+ 
+         return ScriptOptions.Default
+diff --git a/src/Orc.Script/Orc.Script.csproj b/src/Orc.Script/Orc.Script.csproj
+index 9849fbd..425d4a6 100644
+--- a/src/Orc.Script/Orc.Script.csproj
++++ b/src/Orc.Script/Orc.Script.csproj
+@@ -5,6 +5,7 @@
+     <LangVersion>12.0</LangVersion>
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
++    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+     <AssemblyName>Orc.Script</AssemblyName>
+     <RootNamespace>Orc.Script</RootNamespace>
+   </PropertyGroup>
+diff --git a/src/Orc.Server/Admin/AdminApi.cs b/src/Orc.Server/Admin/AdminApi.cs
+index 2d2ed70..96ff830 100644
+--- a/src/Orc.Server/Admin/AdminApi.cs
++++ b/src/Orc.Server/Admin/AdminApi.cs
+@@ -62,6 +62,7 @@ public sealed class AdminApi
+             AdminOps.PoolList => PoolList(),
+             AdminOps.PoolRegister => await PoolRegisterAsync(args, ct).ConfigureAwait(false),
+             AdminOps.PoolUnregister => await PoolUnregisterAsync(args, ct).ConfigureAwait(false),
++            "pool.transfer.policy" => await _host.SetPackTransferPolicyAsync(args["allowGuestPacks"]?.GetValue<bool>() == true, args["requireAlignment"]?.GetValue<bool>() == true, ct).ConfigureAwait(false),
+             _ => AdminOutcome.Fail(ResultCodes.InvalidArguments, $"未知管理操作 '{op}'。"),
+         };
+     }
+@@ -233,6 +234,9 @@ public sealed class AdminApi
+             return AdminOutcome.Fail(ResultCodes.RoomNotReady, "仍有空座或未批准的座位，不能开局（引擎 1v1 需要两个 controller）。");
+         }
+ 
++        if (_host.PackAlignmentFailure() is { } alignmentFailure)
++            return AdminOutcome.Fail("pool-mismatch", alignmentFailure);
++
+         if (!room.TryBeginStart())
+         {
+             return AdminOutcome.Fail(ResultCodes.RoomStarted, "房间正在开局中。");
+@@ -244,6 +248,8 @@ public sealed class AdminApi
+             var input = _host.Packs.PrepareAssembly();
+             var dirs = input.Directories;
+ 
++            foreach (var directory in dirs) _host.RegisterNetworkVocabulary(directory);
++
+             if (dirs.Count == 0)
+             {
+                 // 空集合是合法状态，但开局必然失败：必须特化说明（不能输出笼统的"卡池装配失败"）。
+@@ -370,6 +376,7 @@ public sealed class AdminApi
+ 
+             var options = new MatchLaunchOptions
+             {
++                Keywords = _host.MatchKeywords(),
+                 PackDirectories = dirs,
+                 Assembly = assembly,
+                 SeatA = new MatchSeatConfig(0, seatDecks[0]!, Name: room.SeatAt(0)?.DisplayName, DeckConfiguration: seatConfigs[0]),
+diff --git a/src/Orc.Server/Pool/PackPool.cs b/src/Orc.Server/Pool/PackPool.cs
+index 28be8cc..f084bab 100644
+--- a/src/Orc.Server/Pool/PackPool.cs
++++ b/src/Orc.Server/Pool/PackPool.cs
+@@ -119,6 +119,16 @@ public sealed class PackPool : IPoolControl
+     /// <summary>spawn 初值（历史信息；已剔除沙盒固定包、保留 spawn 顺序）。</summary>
+     public IReadOnlyList<string> InitialDirectories => _initialDirectories.ToArray();
+ 
++    /// <summary>Room rotation, after drain: received session packages must not enter the next lobby.</summary>
++    internal void RemoveSessionDirectories(IReadOnlySet<string> directories)
++    {
++        lock (_sync)
++        {
++            _entries.RemoveAll(entry => directories.Contains(entry.Directory));
++            if (_lastGood?.Any(directory => directories.Contains(directory)) == true) _lastGood = null;
++        }
++    }
++
+     /// <summary>最后一次**成功**装配的输入（R9 回退用；<c>null</c>＝尚未有过成功装配）。</summary>
+     public IReadOnlyList<string>? LastGood
+     {
+diff --git a/src/Orc.Server/ServerOptions.cs b/src/Orc.Server/ServerOptions.cs
+index 02cd26d..d18d1f7 100644
+--- a/src/Orc.Server/ServerOptions.cs
++++ b/src/Orc.Server/ServerOptions.cs
+@@ -52,6 +52,10 @@ public sealed record SeatConfig(
+ /// </summary>
+ public sealed class ServerOptions
+ {
++    /// <summary>Embedded/mobile hosts materialize plugin assets in their private writable directory.</summary>
++    public string? PluginsRoot { get; init; }
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
++    public bool ReuseProcessVocabulary { get; init; }
+     /// <summary>卡包目录列表（管理器按资产库解析后下发；服务端只校验"可索引"）。</summary>
+     public required IReadOnlyList<string> PackDirectories { get; init; }
+ 
+diff --git a/src/Orc.Server/Transport/ServerHost.cs b/src/Orc.Server/Transport/ServerHost.cs
+index cb48076..f6473b1 100644
+--- a/src/Orc.Server/Transport/ServerHost.cs
++++ b/src/Orc.Server/Transport/ServerHost.cs
+@@ -199,6 +199,8 @@ public sealed partial class ServerHost : IAsyncDisposable
+         {
+             Mode = _options.Mode == ServerMode.Sandbox ? McpServiceMode.Authoring : McpServiceMode.Player,
+             SandboxRoot = _options.SandboxRoot,
++            PluginsRoot = _options.PluginsRoot,
++            ScriptEvaluator = _options.ScriptEvaluator,
+             MatchId = room.RoomId,
+             TargetSelectionTimeout = _options.TargetSelectionTimeout,
+             Seed = _options.Seed,
+@@ -397,6 +399,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+             ProtocolMethods.ToolsList => HandleToolsList(request, session),
+             ProtocolMethods.ToolsCall => await HandleToolsCallAsync(request, session, ct).ConfigureAwait(false),
+             "cosmetics.get" or "cosmetics.set" or "cosmetics.asset" or "cosmetics.image" or "cosmetics.emote" => HandleCosmetics(request, session),
++            "pool.manifest" or "pool.fetch" or "pool.offer" or "pool.chunk" or "pool.commit" or "pool.ack" => await HandlePackTransferAsync(request, session, ct).ConfigureAwait(false),
+             _ => RpcResponse.Failure(request.Id, RpcErrorCodes.MethodNotFound, $"未知方法 '{request.Method}'。"),
+         };
+     }
+@@ -428,7 +431,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+         {
+             ProtocolVersion = ProtocolInfo.ProtocolVersion,
+             SchemaVersion = Service.Options.ContractSchemaVersion,
+-            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1"],
++            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1", "pack-transfer-v1"],
+             ConnectionId = session.Id,
+             Label = session.Label,
+             RoomId = Room.RoomId,
+@@ -1531,6 +1534,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+             oldService.Bridge.FailAll("room-rotated");
+             DetachService(oldService, oldRoom);
+             oldService.DisposeMatch();
++            ResetPackTransfers();
+ 
+             // 5/6/7. 建新房间与新服务层，**原子交换**引用并递增纪元。
+             var room = CreateRoom();
+diff --git a/src/Orc.Protocol/NetworkPackageArchive.cs b/src/Orc.Protocol/NetworkPackageArchive.cs
+new file mode 100644
+index 0000000..4faef0a
+--- /dev/null
++++ b/src/Orc.Protocol/NetworkPackageArchive.cs
+@@ -0,0 +1,104 @@
++using System.IO.Compression;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json.Nodes;
++
++namespace Orc.Protocol;
++
++/// <summary>Bounded card-pack transport. Receiving bytes never installs or executes a package.</summary>
++public static class NetworkPackageArchive
++{
++    public const long MaxBytes = 256L * 1024 * 1024;
++    public const int ChunkBytes = 256 * 1024;
++    public static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
++    public static string Key(string value) => Hash(Encoding.UTF8.GetBytes(value));
++    public static string Child(string root, string relative)
++    {
++        var parts = relative.Replace('\\', '/').Split('/');
++        if (parts.Any(p => p.Length == 0 || p is "." or ".." || p.EndsWith(' ') || p.EndsWith('.')
++            || p.Any(c => c < 32 || "<>:\"|?*".Contains(c))
++            || new[] { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" }.Contains(p.Split('.')[0], StringComparer.OrdinalIgnoreCase)))
++            throw new InvalidDataException("卡包包含非法路径：" + relative);
++        var path = Path.GetFullPath(Path.Combine(root, Path.Combine(parts)));
++        if (!path.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
++            throw new InvalidDataException("卡包路径越界。");
++        return path;
++    }
++    public static IEnumerable<string> Files(string root)
++    {
++        foreach (var entry in Directory.EnumerateFileSystemEntries(root).OrderBy(p => p, StringComparer.Ordinal))
++        {
++            var attributes = File.GetAttributes(entry);
++            if ((attributes & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("卡包不能包含链接。");
++            if ((attributes & FileAttributes.Directory) != 0)
++            { foreach (var file in Files(entry)) yield return file; }
++            else yield return entry;
++        }
++    }
++    public static string Digest(string root)
++    {
++        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
++        long total = 0; int count = 0;
++        foreach (var file in Files(root))
++        {
++            if (++count > 8192 || (total += new FileInfo(file).Length) > MaxBytes) throw new InvalidDataException("卡包超过传输大小限制。");
++            hash.AppendData(Encoding.UTF8.GetBytes(Path.GetRelativePath(root, file).Replace('\\', '/')));
++            hash.AppendData([0]); hash.AppendData(File.ReadAllBytes(file)); hash.AppendData([0]);
++        }
++        return Convert.ToHexString(hash.GetHashAndReset());
++    }
++    public static byte[] Zip(string root)
++    {
++        _ = Digest(root);
++        using var stream = new MemoryStream();
++        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, true))
++            foreach (var file in Files(root))
++            {
++                var entry = zip.CreateEntry(Path.GetRelativePath(root, file).Replace('\\', '/'), CompressionLevel.Fastest);
++                entry.LastWriteTime = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
++                using var output = entry.Open(); using var input = File.OpenRead(file); input.CopyTo(output);
++            }
++        if (stream.Length > MaxBytes) throw new InvalidDataException("卡包压缩文件过大。");
++        return stream.ToArray();
++    }
++    public static void Extract(byte[] bytes, string root)
++    {
++        if (bytes.LongLength > MaxBytes) throw new InvalidDataException("卡包压缩文件过大。");
++        using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
++        if (zip.Entries.Count > 8192) throw new InvalidDataException("卡包文件过多。");
++        long total = 0; var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        Directory.CreateDirectory(root);
++        foreach (var entry in zip.Entries)
++        {
++            var path = Child(root, entry.FullName);
++            var type = (entry.ExternalAttributes >> 16) & 0xF000;
++            if (!seen.Add(path) || type is not 0 and not 0x8000 || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
++                throw new InvalidDataException("卡包包含重复路径或链接。");
++            total = checked(total + entry.Length);
++            if (total > MaxBytes) throw new InvalidDataException("卡包解压后过大。");
++            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
++            using var input = entry.Open(); using var output = File.Create(path);
++            var buffer = new byte[81920]; long written = 0; int read;
++            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
++            {
++                if ((written += read) > entry.Length) throw new InvalidDataException("卡包文件大小异常。");
++                output.Write(buffer, 0, read);
++            }
++            if (written != entry.Length) throw new InvalidDataException("卡包文件不完整。");
++        }
++        if (!File.Exists(Path.Combine(root, "manifest.json"))) throw new InvalidDataException("卡包缺少 manifest.json。");
++    }
++    public static JsonObject Describe(string root)
++    {
++        var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "manifest.json")))!;
++        if (manifest["kind"]?.ToString() != "cardpack") throw new InvalidDataException("联机只能传输 cardpack 卡包。");
++        var bytes = Zip(root);
++        var name = manifest["name"]?.ToString() ?? manifest["id"]!.ToString();
++        if (name.Length > 160) name = name[..160];
++        return new JsonObject { ["id"] = manifest["id"]!.ToString(), ["name"] = name,
++            ["version"] = manifest["version"]!.ToString(), ["guid"] = manifest["guid"]!.ToString(),
++            ["digest"] = Digest(root), ["bytes"] = bytes.Length, ["sha256"] = Hash(bytes) };
++    }
++    public static string Fingerprint(IEnumerable<JsonObject> packages) => Key(string.Join("\n", packages.OrderBy(p => p["id"]!.ToString(), StringComparer.Ordinal)
++        .Select(p => p["id"] + ":" + p["digest"])));
++}
+diff --git a/src/Orc.Script/ScriptAssemblyReferences.cs b/src/Orc.Script/ScriptAssemblyReferences.cs
+new file mode 100644
+index 0000000..4a8223c
+--- /dev/null
++++ b/src/Orc.Script/ScriptAssemblyReferences.cs
+@@ -0,0 +1,24 @@
++using System.Reflection;
++using System.Reflection.Metadata;
++using Microsoft.CodeAnalysis;
++
++namespace Orc.Script;
++
++/// <summary>Uses the loaded assembly's metadata when APK/single-file hosts have no physical DLL.</summary>
++public static class ScriptAssemblyReferences
++{
++    private static string? _directory;
++    /// <summary>Host-owned copies of the same runtime assemblies, for Mono without raw metadata access.</summary>
++    public static void ConfigureDirectory(string directory) => Volatile.Write(ref _directory, Path.GetFullPath(directory));
++    public static unsafe MetadataReference FromAssembly(Assembly assembly)
++    {
++        if (!string.IsNullOrEmpty(assembly.Location) && File.Exists(assembly.Location))
++            return MetadataReference.CreateFromFile(assembly.Location);
++        var directory = Volatile.Read(ref _directory);
++        if (directory is not null && File.Exists(Path.Combine(directory, assembly.GetName().Name + ".dll")))
++            return MetadataReference.CreateFromFile(Path.Combine(directory, assembly.GetName().Name + ".dll"));
++        if (assembly.TryGetRawMetadata(out var blob, out var length))
++            return AssemblyMetadata.Create(ModuleMetadata.CreateFromMetadata((IntPtr)blob, length)).GetReference(filePath: assembly.GetName().Name + ".dll");
++        throw new InvalidDataException("无法取得脚本编译引用：" + assembly.FullName);
++    }
++}
+diff --git a/src/Orc.Server/Transport/ServerHost.NetworkVocabulary.cs b/src/Orc.Server/Transport/ServerHost.NetworkVocabulary.cs
+new file mode 100644
+index 0000000..5f5dcb9
+--- /dev/null
++++ b/src/Orc.Server/Transport/ServerHost.NetworkVocabulary.cs
+@@ -0,0 +1,57 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Orc.Cards;
++using Orc.Game.Cards;
++using Orc.Packages;
++
++namespace Orc.Server.Transport;
++
++public sealed partial class ServerHost
++{
++    private readonly Dictionary<string, string> NetworkKeywords = new(StringComparer.Ordinal);
++    private static readonly HashSet<string> BuiltInKeywordIds = typeof(KeywordIds).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
++        .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToHashSet(StringComparer.Ordinal);
++    internal KeywordSnapshot? MatchKeywords()
++    {
++        if (!_options.ReuseProcessVocabulary) return null;
++        lock (NetworkKeywords) return KeywordRegistry.Snapshot().ForKeywords(BuiltInKeywordIds.Concat(NetworkKeywords.Keys));
++    }
++    internal void RegisterNetworkVocabulary(string root)
++    {
++        var presentation = Path.Combine(root, "workshop.presentation.json");
++        if (File.Exists(presentation))
++            foreach (var n in JsonNode.Parse(File.ReadAllText(presentation))?["nations"] as JsonArray ?? new())
++                if (n?["id"]?.GetValue<string>() is { Length: > 0 } id) Faction.RegisterCustom(id);
++        // Built-in legacy nations are also used by the compatibility editor.
++        foreach (var id in new[] { "av76", "deran", "usg", "un" }) Faction.RegisterCustom(id);
++        var declarations = PackageScanner.ReadKeywords(root);
++        var runtime = Path.Combine(root, "network-vocabulary.json");
++        var legacy = File.Exists(runtime) ? JsonNode.Parse(File.ReadAllText(runtime))!.AsArray() : new JsonArray();
++        lock (NetworkKeywords)
++        {
++            foreach (var keyword in declarations)
++            {
++                var signature = JsonSerializer.Serialize(keyword);
++                if (NetworkKeywords.TryGetValue(keyword.Id, out var existing))
++                { if (existing != signature) throw new InvalidDataException("卡包词条冲突：" + keyword.Id); continue; }
++                if (KeywordRegistry.IsDefined(keyword.Id) && (!_options.ReuseProcessVocabulary || BuiltInKeywordIds.Contains(keyword.Id))) throw new InvalidDataException("卡包词条与既有词条重名：" + keyword.Id);
++                if (keyword.Program is { } program) ProgramKeywordComponent.Register(keyword.Id, KeywordProgram.Parse(program), keyword.IsBattleKeyword);
++                else KeywordRegistry.RegisterOrReplace(keyword.Id, (_, value) => new PlainKeywordComponent(keyword.Id, value), keyword.IsBattleKeyword);
++                if (keyword.Bindings.Count > 0) KeywordRegistry.DeclareEffectBindings(keyword.Id, keyword.Bindings);
++                NetworkKeywords.Add(keyword.Id, signature);
++            }
++            foreach (var node in legacy.OfType<JsonObject>())
++            {
++                var id = node["id"]!.ToString(); var signature = node.ToJsonString();
++                if (!id.StartsWith("kw-", StringComparison.Ordinal)) throw new InvalidDataException("工坊词条标识无效。");
++                if (NetworkKeywords.TryGetValue(id, out var existing))
++                { if (signature != existing) throw new InvalidDataException("工坊词条内容冲突：" + id); continue; }
++                if (KeywordRegistry.IsDefined(id) && !_options.ReuseProcessVocabulary) throw new InvalidDataException("工坊词条与既有词条重名：" + id);
++                var battle = node["battle"]?.GetValue<bool>() == true;
++                if (node["program"] is { } program) ProgramKeywordComponent.Register(id, KeywordProgram.Parse(program.ToJsonString()), battle);
++                else DeclarativeKeywordComponent.Register(id, node["snapshots"]!.AsArray().Select(s => PrefabJson.Deserialize(s!.ToJsonString())).ToArray(), battle);
++                NetworkKeywords.Add(id, signature);
++            }
++        }
++    }
++}
+diff --git a/src/Orc.Server/Transport/ServerHost.PackTransfer.cs b/src/Orc.Server/Transport/ServerHost.PackTransfer.cs
+new file mode 100644
+index 0000000..0372cdc
+--- /dev/null
++++ b/src/Orc.Server/Transport/ServerHost.PackTransfer.cs
+@@ -0,0 +1,159 @@
++using System.Text.Json.Nodes;
++using Orc.Mcp.Pool;
++using Orc.Protocol;
++using Orc.Server.Admin;
++using Orc.Server.Execution;
++using Orc.Server.Rooms;
++
++namespace Orc.Server.Transport;
++
++public sealed partial class ServerHost
++{
++    private bool _allowGuestPacks, _requirePackAlignment;
++    private string _transferRoom = "";
++    private readonly Dictionary<string, (string Root, JsonObject Info, byte[] Zip)> _transferPacks = new(StringComparer.Ordinal);
++    private readonly Dictionary<string, (string Room, string Fingerprint)> _packAcks = new();
++    private readonly Dictionary<string, (JsonObject Info, MemoryStream Bytes)> _packUploads = new();
++    private readonly HashSet<string> _receivedPackRoots = new(StringComparer.OrdinalIgnoreCase);
++
++    private void ResetPackTransfers()
++    {
++        Packs.RemoveSessionDirectories(_receivedPackRoots);
++        _receivedPackRoots.Clear(); _transferPacks.Clear(); _packAcks.Clear();
++        foreach (var upload in _packUploads.Values) upload.Bytes.Dispose(); _packUploads.Clear();
++        _allowGuestPacks = false;
++    }
++
++    // Called exclusively through the parent's private admin channel.
++    public Task<AdminOutcome> SetPackTransferPolicyAsync(bool allowGuests, bool requireAlignment, CancellationToken ct)
++        => _queue.EnqueueAsync(WorkPriority.Command, _ =>
++        {
++            if (Room.State != RoomState.Lobby) return Task.FromResult(AdminOutcome.Fail("room-started", "只能在大厅更改卡包接收设置。"));
++            _allowGuestPacks = allowGuests; _requirePackAlignment = requireAlignment;
++            if (!allowGuests) { foreach (var upload in _packUploads.Values) upload.Bytes.Dispose(); _packUploads.Clear(); }
++            return Task.FromResult(AdminOutcome.Success(new JsonObject { ["allowGuestPacks"] = allowGuests }));
++        }, ct);
++
++    private void RefreshTransferCatalog()
++    {
++        if (_transferRoom != Room.RoomId)
++        {
++            _transferRoom = Room.RoomId; _packAcks.Clear();
++            foreach (var upload in _packUploads.Values) upload.Bytes.Dispose(); _packUploads.Clear();
++        }
++        foreach (var owner in _packUploads.Keys.Where(owner => !_sessions.Values.Any(s => s.State == SessionState.Admitted && s.IsController && s.SeatToken == owner)).ToArray())
++        { _packUploads[owner].Bytes.Dispose(); _packUploads.Remove(owner); }
++        foreach (var root in Packs.PrepareAssembly().Directories)
++        {
++            var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "manifest.json")))!;
++            var id = manifest["id"]!.ToString();
++            if (_transferPacks.ContainsKey(id)) continue; // Inputs are frozen session copies.
++            var info = NetworkPackageArchive.Describe(root);
++            _transferPacks.Add(id, (root, info, NetworkPackageArchive.Zip(root)));
++        }
++    }
++    private string TransferFingerprint => NetworkPackageArchive.Fingerprint(_transferPacks.Values.Select(p => p.Info));
++    public string? PackAlignmentFailure()
++    {
++        if (!_requirePackAlignment) return null;
++        RefreshTransferCatalog();
++        var fingerprint = TransferFingerprint;
++        foreach (var s in _sessions.Values.Where(s => s.State == SessionState.Admitted && s.IsController && s.Seat is not null))
++            if (s.SeatToken is null || !_packAcks.TryGetValue(s.SeatToken, out var ack) || ack.Room != Room.RoomId || ack.Fingerprint != fingerprint)
++                return $"座位 {s.Seat + 1} 的卡包尚未同步完成，请等待双方卡池已对齐后开局。";
++        if (_packUploads.Count > 0) return "仍有卡包正在上传，请等待同步完成。";
++        return null;
++    }
++    private async Task<RpcResponse> HandlePackTransferAsync(RpcRequest request, ClientSession session, CancellationToken ct)
++    {
++        if (!CosmeticReader(session)) return RpcResponse.Failure(request.Id, RpcErrorCodes.InvalidRequest, "卡包同步需要已批准的房间会话。");
++        try
++        {
++            return await _queue.EnqueueAsync(WorkPriority.Command, async token =>
++            {
++                if (IsDraining) throw new InvalidOperationException("房间正在轮换，请重试。");
++                RefreshTransferCatalog();
++                var args = request.Params as JsonObject ?? new JsonObject();
++                if (request.Method == "pool.manifest")
++                {
++                    return RpcResponse.Success(request.Id, new JsonObject { ["roomId"] = Room.RoomId,
++                        ["lobby"] = Room.State == RoomState.Lobby, ["fingerprint"] = TransferFingerprint,
++                        ["allowGuestPacks"] = _allowGuestPacks, ["aligned"] = PackAlignmentFailure() is null,
++                        ["packages"] = new JsonArray(_transferPacks.Values.Select(p => (JsonNode)p.Info.DeepClone()).ToArray()) });
++                }
++                if (request.Method == "pool.fetch")
++                {
++                    if (!_transferPacks.TryGetValue(args["id"]!.ToString(), out var pack)) throw new InvalidDataException("卡包不存在。");
++                    if (args["digest"]!.ToString() != pack.Info["digest"]!.ToString()) throw new InvalidDataException("卡包代次已经变化，请重新同步。");
++                    var offset = args["offset"]!.GetValue<int>();
++                    if (offset < 0 || offset >= pack.Zip.Length) throw new InvalidDataException("卡包分块偏移无效。");
++                    var block = pack.Zip.AsSpan(offset, Math.Min(NetworkPackageArchive.ChunkBytes, pack.Zip.Length - offset)).ToArray();
++                    return RpcResponse.Success(request.Id, new JsonObject { ["data"] = Convert.ToBase64String(block), ["sha256"] = NetworkPackageArchive.Hash(block) });
++                }
++                if (Room.State != RoomState.Lobby) throw new InvalidOperationException("对局开始后不能更改卡包。");
++                if (!session.IsController || session.SeatToken is not { } seatToken) throw new InvalidOperationException("只有已批准的玩家可以提交卡包或确认卡池。");
++                if (request.Method == "pool.ack")
++                {
++                    if (args["fingerprint"]!.ToString() != TransferFingerprint) throw new InvalidDataException("卡池已变化，请重新同步。");
++                    _packAcks[seatToken] = (Room.RoomId, TransferFingerprint);
++                    return RpcResponse.Success(request.Id, new JsonObject { ["ok"] = true });
++                }
++                if (!_allowGuestPacks) throw new InvalidOperationException("房主尚未开启接收好友卡包，请房主开启后重新同步。");
++                if (request.Method == "pool.offer")
++                {
++                    var info = (args["package"] as JsonObject)?.DeepClone().AsObject() ?? throw new InvalidDataException("卡包声明为空。");
++                    var id = info["id"]!.ToString(); var size = info["bytes"]!.GetValue<long>();
++                    if (id.Length is < 1 or > 160 || size is < 1 or > NetworkPackageArchive.MaxBytes || info["digest"]!.ToString().Length != 64)
++                        throw new InvalidDataException("卡包声明不合法。");
++                    if (_transferPacks.TryGetValue(id, out var existing))
++                    {
++                        if (existing.Info["digest"]!.ToString() != info["digest"]!.ToString()) throw new InvalidDataException("同名卡包内容不一致：" + id + "。请双方统一版本。");
++                        return RpcResponse.Success(request.Id, new JsonObject { ["exists"] = true });
++                    }
++                    if (_transferPacks.Count >= 128 || _transferPacks.Values.Sum(p => p.Zip.LongLength) + size > 512L * 1024 * 1024)
++                        throw new InvalidDataException("房间卡包缓存已满。");
++                    if (_packUploads.Remove(seatToken, out var previous)) previous.Bytes.Dispose();
++                    _packUploads[seatToken] = (info, new MemoryStream());
++                    return RpcResponse.Success(request.Id, new JsonObject { ["offset"] = 0 });
++                }
++                if (!_packUploads.TryGetValue(seatToken, out var upload)) throw new InvalidDataException("请先声明要上传的卡包。");
++                if (request.Method == "pool.chunk")
++                {
++                    var encoded = args["data"]!.ToString();
++                    if (encoded.Length > 350000) throw new InvalidDataException("分块过大。");
++                    var block = Convert.FromBase64String(encoded);
++                    if (block.Length == 0 || block.Length > NetworkPackageArchive.ChunkBytes || NetworkPackageArchive.Hash(block) != args["sha256"]!.ToString()
++                        || upload.Bytes.Length != args["offset"]!.GetValue<long>() || upload.Bytes.Length + block.Length > upload.Info["bytes"]!.GetValue<long>())
++                        throw new InvalidDataException("分块大小、顺序或校验和不正确。");
++                    upload.Bytes.Write(block);
++                    return RpcResponse.Success(request.Id, new JsonObject { ["offset"] = upload.Bytes.Length });
++                }
++                if (request.Method != "pool.commit") throw new InvalidDataException("未知卡包同步操作。");
++                var bytes = upload.Bytes.ToArray();
++                if (bytes.LongLength != upload.Info["bytes"]!.GetValue<long>() || NetworkPackageArchive.Hash(bytes) != upload.Info["sha256"]!.ToString())
++                    throw new InvalidDataException("卡包尚未传完或校验失败。");
++                var parent = Path.Combine(_options.SandboxRoot, "net-assets", Room.RoomId);
++                var root = Path.Combine(parent, Guid.NewGuid().ToString("N"));
++                Directory.CreateDirectory(parent);
++                try
++                {
++                    NetworkPackageArchive.Extract(bytes, root);
++                    var actual = NetworkPackageArchive.Describe(root);
++                    foreach (var key in new[] { "id", "version", "guid", "digest" })
++                        if (actual[key]!.ToString() != upload.Info[key]!.ToString()) throw new InvalidDataException("卡包身份或内容校验失败：" + key);
++                    actual["bytes"] = bytes.Length; actual["sha256"] = NetworkPackageArchive.Hash(bytes);
++                    RegisterNetworkVocabulary(root);
++                    var registered = await Packs.RegisterAsync(root, PoolAudience.RemotePlay, token).ConfigureAwait(false);
++                    if (!registered.Ok) throw new InvalidDataException(registered.Message ?? registered.Code);
++                    _transferPacks.Add(actual["id"]!.ToString(), (root, actual, bytes));
++                    _receivedPackRoots.Add(Path.GetFullPath(root));
++                }
++                catch { if (Directory.Exists(root)) Directory.Delete(root, true); throw; }
++                finally { upload.Bytes.Dispose(); _packUploads.Remove(seatToken); }
++                return RpcResponse.Success(request.Id, new JsonObject { ["ok"] = true });
++            }, ct).ConfigureAwait(false);
++        }
++        catch (Exception e) when (e is not OperationCanceledException)
++        { return RpcResponse.Failure(request.Id, RpcErrorCodes.InvalidParams, e.Message); }
++    }
++}
+diff --git a/tests/Orc.Server.Tests/NetworkPackageTransferTests.cs b/tests/Orc.Server.Tests/NetworkPackageTransferTests.cs
+new file mode 100644
+index 0000000..2739a01
+--- /dev/null
++++ b/tests/Orc.Server.Tests/NetworkPackageTransferTests.cs
+@@ -0,0 +1,75 @@
++using System.IO.Compression;
++using System.Text.Json.Nodes;
++using Orc.Protocol;
++using Orc.Server.Admin;
++using Xunit;
++
++namespace Orc.Server.Tests;
++
++public sealed class NetworkPackageTransferTests
++{
++    [Theory]
++    [InlineData("../escape.json")] [InlineData("/absolute.json")] [InlineData("cards/CON.png")]
++    [InlineData("cards/A.json:stream")] [InlineData("cards/../escape.json")]
++    public void ExtractionRejectsUnsafePaths(string path)
++    {
++        var root = Path.Combine(Path.GetTempPath(), "orc-net-archive-" + Guid.NewGuid().ToString("N"));
++        using var memory = new MemoryStream();
++        using (var zip = new ZipArchive(memory, ZipArchiveMode.Create, true))
++        { using var writer = new StreamWriter(zip.CreateEntry(path).Open()); writer.Write("{}"); }
++        try { Assert.Throws<InvalidDataException>(() => NetworkPackageArchive.Extract(memory.ToArray(), root)); }
++        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
++    }
++    [Fact]
++    public void ExtractionRejectsCaseConflictsAndLinks()
++    {
++        var root = Path.Combine(Path.GetTempPath(), "orc-net-archive-" + Guid.NewGuid().ToString("N"));
++        try
++        {
++            foreach (var link in new[] { false, true })
++            {
++                using var memory = new MemoryStream();
++                using (var zip = new ZipArchive(memory, ZipArchiveMode.Create, true))
++                {
++                    var entry = zip.CreateEntry("file.json"); if (link) entry.ExternalAttributes = unchecked((int)0xA0000000);
++                    using (var writer = new StreamWriter(entry.Open())) writer.Write("{}");
++                    if (!link) { using var writer = new StreamWriter(zip.CreateEntry("FILE.json").Open()); writer.Write("{}"); }
++                }
++                Assert.Throws<InvalidDataException>(() => NetworkPackageArchive.Extract(memory.ToArray(), root));
++            }
++        }
++        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
++    }
++    [Fact]
++    public async Task PendingCannotReadOrOfferAndApprovedPlayerCannotEnableUploads()
++    {
++        await using var fixture = await HostFixture.StartAsync();
++        await using var client = await fixture.ConnectAsync();
++        await HostFixture.AttachControllerAsync(client, 0);
++        foreach (var method in new[] { "pool.manifest", "pool.fetch", "pool.offer", "pool.ack" })
++            Assert.NotNull((await client.CallRawAsync(method, new JsonObject())).Error);
++        Assert.True((await fixture.AdminAsync(AdminOps.ConnectionAdmit, new JsonObject { ["connectionId"] = client.ConnectionId })).Ok);
++        Assert.Null((await client.CallRawAsync("pool.manifest", new JsonObject())).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.offer", new JsonObject())).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.transfer.policy", new JsonObject { ["allowGuestPacks"] = true })).Error);
++    }
++    [Fact]
++    public async Task CorruptOrOutOfOrderUploadCannotEnterPoolAndWrongFingerprintCannotAcknowledge()
++    {
++        await using var fixture = await HostFixture.StartAsync();
++        await using var client = await fixture.ConnectAsync();
++        await HostFixture.AttachControllerAsync(client, 0);
++        await fixture.AdminAsync(AdminOps.ConnectionAdmit, new JsonObject { ["connectionId"] = client.ConnectionId });
++        Assert.True((await fixture.AdminAsync("pool.transfer.policy", new JsonObject { ["allowGuestPacks"] = true, ["requireAlignment"] = true })).Ok);
++        var before = (await client.CallRawAsync("pool.manifest", new JsonObject())).Result!["fingerprint"]!.ToString();
++        Assert.NotNull((await client.CallRawAsync("pool.ack", new JsonObject { ["fingerprint"] = new string('0', 64) })).Error);
++        var bytes = new byte[] { 1, 2, 3 };
++        Assert.Null((await client.CallRawAsync("pool.offer", new JsonObject { ["package"] = new JsonObject {
++            ["id"] = "new-pack", ["digest"] = new string('0', 64), ["bytes"] = bytes.Length, ["sha256"] = NetworkPackageArchive.Hash(bytes) } })).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.chunk", new JsonObject { ["offset"] = 0, ["data"] = Convert.ToBase64String(bytes), ["sha256"] = new string('0', 64) })).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.chunk", new JsonObject { ["offset"] = 1, ["data"] = Convert.ToBase64String(bytes), ["sha256"] = NetworkPackageArchive.Hash(bytes) })).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.commit", new JsonObject())).Error);
++        var after = (await client.CallRawAsync("pool.manifest", new JsonObject())).Result!["fingerprint"]!.ToString();
++        Assert.Equal(before, after);
++    }
++}

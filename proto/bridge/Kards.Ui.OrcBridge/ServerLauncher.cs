@@ -7,19 +7,38 @@ namespace Kards.Ui.OrcBridge;
 /// <summary>房主私有管理通道；业务连接无法调用管理命令。</summary>
 public sealed class ServerLauncher : IAsyncDisposable
 {
-    private readonly ServerManager _manager;
+    private readonly ServerManager? _manager;
+    private readonly Orc.Server.Transport.ServerHost? _embedded;
     private readonly string _id;
     private readonly IReadOnlyList<PackageRef> _packages;
     public int Port { get; }
-    public bool HasExited => !_manager.List().Any(i => i.InstanceId == _id && i.Running);
+    public bool HasExited => _disposed || (_manager is not null && !_manager.List().Any(i => i.InstanceId == _id && i.Running));
+    private bool _disposed;
     private ServerLauncher(ServerManager manager, string id, int port, IReadOnlyList<PackageRef> packages)
         => (_manager, _id, Port, _packages) = (manager, id, port, packages);
+    private ServerLauncher(Orc.Server.Transport.ServerHost host, IReadOnlyList<PackageRef> packages)
+        => (_embedded, _id, Port, _packages) = (host, "embedded", host.Port, packages);
     public static Task<ServerLauncher> StartAsync(string packsDirectory, string sandboxDirectory, CancellationToken ct = default)
         => StartAsync([packsDirectory], sandboxDirectory, ct);
     public static async Task<ServerLauncher> StartAsync(IReadOnlyList<string> packsDirectories, string sandboxDirectory,
         CancellationToken ct = default, int? aiSeat = null, IReadOnlyList<string>? aiDeck = null,
-        bool fixedDeckForVerification = false)
+        bool fixedDeckForVerification = false, bool inProcess = false)
     {
+        if (inProcess || OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
+        {
+            var packages = packsDirectories.Select(root => Orc.Packages.PackageManifest.Parse(File.ReadAllText(Path.Combine(root, "manifest.json"))))
+                .Select(p => new PackageRef(p.Id, p.Version.ToString(), p.Guid.ToString())).ToArray();
+            var host = await Orc.Server.ServerBootstrap.StartAsync(new Orc.Server.ServerOptions {
+                PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory, PluginsRoot = PluginManifests.ResolveRoot(),
+                ScriptEvaluator = NativeScriptHost.Evaluator,
+                ReuseProcessVocabulary = true,
+                DeckRules = fixedDeckForVerification ? Orc.Game.Decks.DeckRuleTier.None : Orc.Game.Decks.DeckRuleTier.Strict,
+                Seats = Enumerable.Range(0, 2).Select(n => new Orc.Server.SeatConfig(
+                    n == aiSeat ? Orc.Server.SeatKind.Ai : Orc.Server.SeatKind.Agent,
+                    DisplayName: n == aiSeat ? "引擎 AI" : null, Packages: packages, Deck: n == aiSeat ? aiDeck : null)).ToArray()
+            }, ct).ConfigureAwait(false);
+            return new ServerLauncher(host, packages);
+        }
         EnableBundledRuntime();
         var manager = new ServerManager(ResolveServerDll());
         try
@@ -48,7 +67,12 @@ public sealed class ServerLauncher : IAsyncDisposable
     }
     public async Task<RemoteToolResult> AdminAsync(string op, JsonObject? args = null, CancellationToken ct = default)
     {
-        var r = await _manager.AdminAsync(_id, new ManagerAdminCall(op, args), ct).ConfigureAwait(false);
+        if (_embedded is not null)
+        {
+            var embedded = await _embedded.Admin.InvokeAsync(op, args, ct).ConfigureAwait(false);
+            return new(embedded.Ok, embedded.Code, embedded.Message, embedded.Payload);
+        }
+        var r = await _manager!.AdminAsync(_id, new ManagerAdminCall(op, args), ct).ConfigureAwait(false);
         return new(r.Ok, r.Code, r.Message, r.Payload);
     }
     public Task<RemoteToolResult> AdmitAsync(string connectionId, CancellationToken ct = default)
@@ -76,14 +100,13 @@ public sealed class ServerLauncher : IAsyncDisposable
         }
     }
     /// <summary>
-    /// 本机能否充当房主：既要能定位到 OrcServer，也要能起独立子进程。
-    /// 安卓两样都不占——包里没有 OrcServer 载荷，也不允许起子进程，所以只能作客人加入。
+    /// 本机能否充当房主：移动端使用内置服务，桌面端定位独立服务程序。
     /// </summary>
     public static bool CanHost
     {
         get
         {
-            if (OperatingSystem.IsAndroid() || OperatingSystem.IsIOS()) return false;
+            if (OperatingSystem.IsAndroid() || OperatingSystem.IsIOS()) return true;
             try { ResolveServerDll(); return true; }
             catch (FileNotFoundException) { return false; }
         }
@@ -116,5 +139,10 @@ public sealed class ServerLauncher : IAsyncDisposable
             "或设置 ORC_ENGINE_ROOT 指向引擎源码并先构建 Orc.Server。");
     }
 
-    public ValueTask DisposeAsync() => _manager.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return; _disposed = true;
+        if (_embedded is not null) await _embedded.DisposeAsync();
+        if (_manager is not null) await _manager.DisposeAsync();
+    }
 }

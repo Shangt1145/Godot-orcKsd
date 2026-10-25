@@ -216,7 +216,7 @@ public static class OrcImportService
                         stableKey = "orc." + effect.TemplateId,
                         kind = "passive",
                         viewType = "Orc.Cards.CardEventView",
-                        hooks = new[] { hook },
+                        hooks = hook.Split('|',StringSplitOptions.RemoveEmptyEntries),
                         events = new[] { new { id = "e1", entry = "HandleAsync" } }
                     },
                     otherTriggers = Array.Empty<object>(),

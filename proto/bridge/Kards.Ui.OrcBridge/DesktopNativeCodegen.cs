@@ -8,6 +8,7 @@ namespace Kards.Ui.OrcBridge;
 internal sealed class DesktopNativeCodegen
 {
     private const string Card="Orc.Cards.Card",Base="Orc.Game.Cards.CardBase",Unit="Orc.Game.Cards.UnitCard",Fields="Orc.Game.Cards.CardStatFields";
+    private const string Runtime="Orc.Game.Effects.AuthoringRuntime";
     private readonly Dictionary<string,(string Code,bool Cards)> _vars=new(StringComparer.Ordinal);
     private int _serial;
     private string Fresh()=>"orcV"+_serial++;
@@ -23,15 +24,26 @@ internal sealed class DesktopNativeCodegen
         {
             DesktopTargetContext.ValidateTarget(target);var name=T(target,"id");if(_vars.ContainsKey(name))throw Gap("重复目标声明 "+name);
             var local=Fresh();_vars[name]=(local,true);
-            selections.Add($"var {local}=await Kards.Ui.OrcBridge.DesktopTargetContext.SelectAsync(orcSelf,{Literal(target.GetRawText())},{Literal(DesktopTargetContext.Scope(graph))},ct);");
+            _vars.TryAdd("target",(local,true));
+            selections.Add($"var {local}=await Orc.Game.Effects.AuthoringTargetContext.SelectAsync(orcSelf,{Literal(target.GetRawText())},{Literal(DesktopTargetContext.Scope(graph))},ct);");
         }
-        var body=Actions(graph.GetProperty("actions"));
-        return $"var orcRuntime = self is null ? null : Orc.Game.Effects.EffectRuntime.ResolveFor(self);\nif (orcRuntime is not null && self is {Base} orcSelf && orcSelf.Owner is not null)\n{{\n{string.Join("\n",selections)}\n{body}\n}}";
+        var normalized=DesktopOrc.Request(new {method="nativeActions",actions=graph.GetProperty("actions")});
+        if(T(graph,"trigger")=="passive")
+        {
+            if(graph.TryGetProperty("condition",out _)||graph.TryGetProperty("filter",out _))throw Gap("持续效果的附加条件");
+            Orc.Game.Effects.AuthoringAuraRuntime.Validate(normalized);
+            return $"if(self is {Card} orcAuraHost) await Orc.Game.Effects.AuthoringAuraRuntime.RegisterAsync(orcAuraHost,view,{Literal(normalized.GetRawText())},ct);";
+        }
+        var body=Actions(normalized);
+        if(graph.TryGetProperty("condition",out var condition))body=$"if({Predicate(condition,"orcSelf")}){{{body}}}"+(graph.TryGetProperty("else",out var alternative)?$"else{{{Actions(alternative)}}}":"");
+        return $"var orcRuntime = self is null ? null : Orc.Game.Effects.EffectRuntime.ResolveFor(self);\nif (orcRuntime is not null && self is {Card} orcSelf && {Runtime}.ShouldRun(orcSelf,view,{Literal(graph.GetRawText())}))\n{{\n{string.Join("\n",selections)}\n{body}\n}}";
     }
     private string Actions(JsonElement actions)=>string.Join("\n",actions.EnumerateArray().Select(Action));
     private string Action(JsonElement a)
     {
         var op=T(a,"op");
+        var alias=DesktopNativeAliases.Rewrite(a);
+        if(alias is not null)return Actions(alias.Value);
         switch(op)
         {
             case "let":
@@ -61,18 +73,58 @@ internal sealed class DesktopNativeCodegen
             }
             case "drawOne":
             {
-                Only(a,"op","side","as","target");if(T(a,"side") is not ("" or "self" or "friendly"))throw Gap("敌方抽牌");
-                if(a.TryGetProperty("target",out var filter))throw Gap("定向抽牌 "+filter.GetRawText());
-                var name=T(a,"as");if(name.Length==0)return "await orcRuntime.DrawAsync(orcSelf,1,ct);";
+                Only(a,"op","side","as","target");
+                if(a.TryGetProperty("target",out var filter))
+                {
+                    var drawn=Fresh();if(T(a,"as").Length>0)_vars[T(a,"as")]=(drawn,true);
+                    return $"var {drawn}=await {Runtime}.DrawSpecificAsync(orcSelf,{Query(filter)},ct);";
+                }
+                var viewer=$"{Runtime}.Viewer(orcSelf,{Literal(T(a,"side"))})";
+                var name=T(a,"as");if(name.Length==0)return $"await orcRuntime.DrawAsync({viewer},1,ct);";
                 var before=Fresh();var result=Fresh();_vars[name]=(result,true);
-                return $"var {before}=orcSelf.Owner.Hand.Cast<{Card}>().ToArray(); await orcRuntime.DrawAsync(orcSelf,1,ct); var {result}=orcSelf.Owner.Hand.Cast<{Card}>().Except({before}).ToArray();";
+                return $"var {before}={Runtime}.Owner({viewer}).Hand.Cast<{Card}>().ToArray(); await orcRuntime.DrawAsync({viewer},1,ct); var {result}={Runtime}.Owner({viewer}).Hand.Cast<{Card}>().Except({before}).ToArray();";
+            }
+            case "discardOne":
+                Only(a,"op","side","target");return $"foreach(var orcDiscard in {(a.TryGetProperty("target",out var discarded)?Query(discarded):$"{Runtime}.Pick(orcSelf,{Runtime}.Pile(orcSelf,{Literal(T(a,"side"))},\"hand\"),\"random\",1)")}) await {Runtime}.DiscardAsync(orcSelf,orcDiscard,ct);";
+            case "choice":
+            {
+                Only(a,"op","prompt","options");var options=a.GetProperty("options").EnumerateArray().ToArray();var scope=_vars.ToArray();var selected=Fresh();
+                var bodies=options.Select((option,index)=>{Only(option,"label","actions");Restore(scope);return $"case {index}:{{{Actions(option.GetProperty("actions"))} break;}}";}).ToArray();Restore(scope);
+                return $"var {selected}=await {Runtime}.ChooseOptionAsync(orcSelf,new string[]{{{string.Join(",",options.Select(o=>Literal(T(o,"label"))))}}},ct);switch({selected}){{{string.Join("\n",bodies)}}}";
+            }
+            case "threeChoice":case "developCard":
+            {
+                Only(a,"op","pool","mode","side","as","prompt");var pool=a.GetProperty("pool");Only(pool,"source","cardIds","includeTokens","includeReserved");
+                if(T(pool,"source") is not ("pool" or "cards"))throw Gap("候选卡池来源 "+T(pool,"source"));
+                foreach(var flag in new[]{"includeTokens","includeReserved"})if(pool.TryGetProperty(flag,out var include)&&include.GetBoolean())throw Gap("候选卡池选项 "+flag);
+                var ids=pool.TryGetProperty("cardIds",out var members)?members.EnumerateArray().Select(v=>Literal(v.GetString()!)).ToArray():[];
+                var local=Fresh();if(T(a,"as").Length>0)_vars[T(a,"as")]=(local,true);
+                return $"var {local}=await {Runtime}.DevelopAsync(orcSelf,new string[]{{{string.Join(",",ids)}}},{Literal(T(a,"side"))},{(op=="developCard"||T(a,"mode")=="random"?"true":"false")},ct);";
+            }
+            case "selectObjects":
+            {
+                Only(a,"op","target","as","count","prompt","reveal","asCopies");
+                if(a.TryGetProperty("asCopies",out var copies)&&copies.GetBoolean())throw Gap("复制候选卡牌的选择");
+                var candidates=Query(a.GetProperty("target"));var local=Fresh();_vars[T(a,"as")]=(local,true);
+                return $"var {local}=await {Runtime}.ChooseAsync(orcSelf,{candidates},{Number(a.GetProperty("count"))},ct); if({local}.Length==0)return;";
+            }
+            case "createCard":case "createUnit":case "addCardToHand":case "summon":case "shuffleIn":
+            {
+                Only(a,"op","cardId","name","side","to","count","as");
+                var id=a.TryGetProperty("cardId",out var identity)?Value(identity,"orcSelf"):Literal(T(a,"name"));
+                var destination=op=="shuffleIn"?"deck":op is "summon" or "createUnit"?(T(a,"to").Length>0?T(a,"to"):"support"):"hand";
+                var expression=$"await {Runtime}.CreateAsync(orcSelf,{id},{Literal(T(a,"side"))},{Literal(destination)},{(a.TryGetProperty("count",out var n)?Number(n):"1")},ct)";
+                var variable=T(a,"as");if(variable.Length==0)return expression+";";
+                var local=Fresh();_vars[variable]=(local,true);return $"var {local}={expression};";
             }
             case "changeResource":
             {
-                Only(a,"op","side","mode","property","value");if(T(a,"side") is not ("self" or "friendly")||T(a,"mode")!="add")throw Gap("指挥资源侧或模式");
+                Only(a,"op","side","mode","property","value");if(T(a,"mode") is not ("add" or "set"))throw Gap("指挥资源模式");
                 var value=Number(a.GetProperty("value"));var local=Fresh();
                 var methods=T(a,"property") switch{"kredits"=>("GainPointsAsync","LosePointsAsync"),"maxKredits"=>("GainPointSlotsAsync","LosePointSlotsAsync"),_=>throw Gap("资源 "+T(a,"property"))};
-                return $"var {local}={value}; if({local}>=0) await orcRuntime.{methods.Item1}(orcSelf,{local},ct); else await orcRuntime.{methods.Item2}(orcSelf,-{local},ct);";
+                var viewer=$"{Runtime}.Viewer(orcSelf,{Literal(T(a,"side"))})";
+                if(T(a,"mode")=="set")value=$"({value})-{Runtime}.Owner({viewer}).{(T(a,"property")=="kredits"?"Points":"PointSlots")}";
+                return $"var {local}={value}; if({local}>=0) await orcRuntime.{methods.Item1}({viewer},{local},ct); else await orcRuntime.{methods.Item2}({viewer},-{local},ct);";
             }
             default:
             {
@@ -82,6 +134,16 @@ internal sealed class DesktopNativeCodegen
                 {
                     case "dealDamage":Only(a,"op","target","amount");body=$"await orcRuntime.DamageAsync({item},{Number(a.GetProperty("amount"),item)},orcSelf,ct);";break;
                     case "destroyUnit":Only(a,"op","target");body=$"await orcRuntime.KillAsync({item},orcSelf,ct);";break;
+                    case "restoreHealth":Only(a,"op","target","amount");body=$"await {Runtime}.HealAsync({item},{Number(a.GetProperty("amount"),item)},ct);";break;
+                    case "returnUnit":case "leaveUnit":Only(a,"op","target");body=$"await {Runtime}.ReturnAsync(orcSelf,{item},{(op=="returnUnit"?"true":"false")},ct);";break;
+                    case "battleUnits":Only(a,"op","target","with");body=$"foreach(var orcOpponent in {Query(a.GetProperty("with"))}) await orcRuntime.BattleAsync({item},orcOpponent,orcSelf,ct);";break;
+                    case "bindEvent":case "grantEffect":
+                    {
+                        Only(a,"op","target","effect");var nested=DesktopNativeLowering.Lower(a.GetProperty("effect").GetRawText());
+                        var key=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(a.GetProperty("effect").GetRawText())))[..16];
+                        var snapshot=OrcImportService.CompileOrcEffect("diy.grant."+key,nested).JsonText;
+                        body=$"var orcAttached=await orcRuntime.AttachSnapshotAsync({item},{Literal(snapshot)},ct); if(!orcAttached.IsSuccess)throw new InvalidOperationException(orcAttached.ToString());";break;
+                    }
                     case "suppressUnit":Only(a,"op","target");body=$"await orcRuntime.SilenceAsync({item},ct);";break;
                     case "setPinned":
                         Only(a,"op","target","enabled","turns");if(a.TryGetProperty("turns",out var turns)&&turns.GetInt32()!=1)throw Gap("压制期限");
@@ -91,23 +153,18 @@ internal sealed class DesktopNativeCodegen
                         Only(a,"op","target","property","mode","value","duration");
                         var duration=T(a,"duration") switch{"" or "permanent"=>"Orc.Game.Effects.EffectDuration.Permanent","turn"=>"Orc.Game.Effects.EffectDuration.TurnEnd",_=>throw Gap("持续时间 "+T(a,"duration"))};
                         var value=Number(a.GetProperty("value"),item);var property=T(a,"property");var mode=T(a,"mode");
-                        if(mode!="add")throw Gap("属性写入模式 "+mode);
-                        body=property switch
-                        {
-                            "attack"=>$"await orcRuntime.BuffAsync({item},{value},0,{duration},ct);",
-                            "defense"=>$"await orcRuntime.BuffAsync({item},0,{value},{duration},ct);",
-                            "opCost"=>$"await orcRuntime.CostModAsync({item},{value},{duration},ct);",
-                            _=>throw Gap("属性 "+property)
-                        };break;
+                        if(mode is not ("add" or "set")||property is not ("attack" or "defense" or "opCost" or "cost"))throw Gap("属性或写入模式 "+property+"/"+mode);
+                        body=$"await {Runtime}.AttributeAsync({item},{Literal(property)},{Literal(mode)},{value},{Literal(T(a,"duration"))},ct);";break;
                     }
                     case "setKeyword":
                     {
-                        Only(a,"op","target","keyword","enabled","value");var keyword=NativeKeyword(T(a,"keyword"));
+                        Only(a,"op","target","keyword","enabled","value","duration");if(T(a,"duration") is not ("" or "permanent"))throw Gap("词条期限");var keyword=NativeKeyword(T(a,"keyword"));
                         body=a.TryGetProperty("enabled",out var enabled)&&!enabled.GetBoolean()?$"await orcRuntime.RevokeAsync({item},{Literal(keyword)},ct);":
                             $"await orcRuntime.GrantAsync({item},{Literal(keyword)}{(a.TryGetProperty("value",out var v)?","+Number(v,item):"")},ct);";break;
                     }
                     case "moveUnit":Only(a,"op","target","to");if(T(a,"to") is not ("frontline" or "support"))throw Gap("移动落点");body=$"await orcRuntime.MoveAsync({item},{Literal(T(a,"to"))},ct);";break;
                     case "reveal":Only(a,"op","target");body=$"await orcRuntime.RevealAsync({item},ct);";break;
+                    case "upgradeSelf":Only(a,"op","target");body=$"await orcRuntime.UpgradeAsync({item},ct);";break;
                     default:throw Gap("动作 "+op);
                 }
                 return $"foreach(var {item} in {query}) {{\n{body}\n}}";
@@ -128,40 +185,52 @@ internal sealed class DesktopNativeCodegen
     }
     private string Query(JsonElement q)
     {
-        if(q.ValueKind==JsonValueKind.String)return _vars.TryGetValue(q.GetString()!,out var named)&&named.Cards?named.Code:throw Gap("选靶引用 "+q.GetString());
+        if(q.ValueKind==JsonValueKind.String)return q.GetString()=="self"?$"new {Card}[]{{orcSelf}}":_vars.TryGetValue(q.GetString()!,out var named)&&named.Cards?named.Code:throw Gap("选靶引用 "+q.GetString());
         if(T(q,"sel")=="union")
         {
             Only(q,"sel","queries");
             return $"new {Card}[][]{{{string.Join(",",q.GetProperty("queries").EnumerateArray().Select(Query))}}}.SelectMany(x=>x).Distinct().ToArray()";
         }
-        Only(q,"sel","side","zone","where","count","ref","excludeSelf");
+        Only(q,"sel","side","zone","where","count","ref","excludeSelf","filter","includeAnchor");
         var sel=T(q,"sel");if(sel=="self")return $"new {Card}[]{{orcSelf}}";
-        if(sel is "ref" or "refAll")return _vars.TryGetValue(T(q,"ref"),out var v)&&v.Cards?v.Code:throw Gap("选靶引用 "+T(q,"ref"));
-        if(sel is not ("all" or "random"))throw Gap("选择方式 "+sel);
+        if(sel is "ref" or "refAll")
+        {
+            var reference=T(q,"ref");
+            return reference is "self" or "source"?$"new {Card}[]{{orcSelf}}":reference is "eventUnit" or "eventCard" or "dead" or "attacker"?$"new {Card}[]{{{Runtime}.EventCard(view)}}.Where(c=>c is not null).ToArray()":
+                _vars.TryGetValue(reference,out var v)&&v.Cards?v.Code:throw Gap("选靶引用 "+reference);
+        }
+        if(sel=="adjacent")
+        {
+            var anchors=T(q,"ref");var source=anchors is "" or "self"?$"new {Card}[]{{orcSelf}}":_vars.TryGetValue(anchors,out var anchor)?anchor.Code:throw Gap("相邻单位的参照");
+            var adjacent=$"{Runtime}.Adjacent({source},{(q.TryGetProperty("includeAnchor",out var include)&&include.GetBoolean()?"true":"false")})";
+            if(q.TryGetProperty("where",out var predicate))adjacent+=$".Where(orcCandidate=>{Predicate(predicate,"orcCandidate")}).ToArray()";
+            return adjacent;
+        }
+        if(sel is not ("all" or "random" or "first" or "last"))throw Gap("选择方式 "+sel);
         var zone=T(q,"zone");var side=T(q,"side");string query;
         if(zone is "hand" or "deck")
         {
-            if(side is not ("" or "friendly" or "self"))throw Gap("敌方私有区域");
-            query=zone=="hand"?$"orcSelf.Owner.Hand.Cast<{Card}>().ToArray()":$"Enumerable.Range(0,orcSelf.Owner.Deck.Count).Select(i=>({Card})orcSelf.Owner.Deck.PeekInstance(i)).ToArray()";
+            query=$"{Runtime}.Pile(orcSelf,{Literal(side)},{Literal(zone)})";
         }
         else
         {
             if(zone is not ("" or "field" or "frontline" or "support" or "hq"))throw Gap("目标区域 "+zone);
-            query=$"(await orcRuntime.SelectAsync(orcSelf,new Orc.Game.Effects.EffectSelector({Literal(sel)},{Literal(side.Length==0?"both":side)},{(zone is "frontline" or "support" or "hq"?Literal(zone):"null")},Count:{(q.TryGetProperty("count",out var count)?Number(count):"null")}),ct)).ToArray()";
+            query=$"(await orcRuntime.SelectAsync(orcSelf,new Orc.Game.Effects.EffectSelector(\"all\",{Literal(side.Length==0?"both":side)},{(zone is "frontline" or "support" or "hq"?Literal(zone):"null")}),ct)).ToArray()";
         }
         if(q.TryGetProperty("where",out var where))
         {
-            if(sel=="random"&&!(T(where,"test")=="all"&&where.GetProperty("items").GetArrayLength()==0))throw Gap("带筛选的随机选择");
             query+=$".Where(orcCandidate=>{Predicate(where,"orcCandidate")}).ToArray()";
         }
+        if(q.TryGetProperty("filter",out var filter)){DesktopEffectRuntime.ValidateFilter(filter);query+=$".Where(orcCandidate=>{Runtime}.Matches(orcCandidate,{Literal(filter.GetRawText())})).ToArray()";}
         if(q.TryGetProperty("excludeSelf",out var exclude)&&exclude.GetBoolean())query+=".Where(x=>!object.ReferenceEquals(x,orcSelf)).ToArray()";
+        if(sel is "random" or "first" or "last")query=$"{Runtime}.Pick(orcSelf,{query},{Literal(sel)},{(q.TryGetProperty("count",out var take)?Number(take):"1")})";
         return query;
     }
     private string Number(JsonElement e,string candidate="orcSelf")
     {
         if(e.ValueKind==JsonValueKind.Number&&e.TryGetInt32(out var n))return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if(e.ValueKind!=JsonValueKind.Object)throw Gap("数值表达式 "+e.GetRawText());
-        Only(e,T(e,"expr") switch{"count"=>["expr","query"],"size" or "literal"=>["expr","value"],"variable"=>["expr","name"],"read"=>["expr","of","path"],"math"=>["expr","operator","items"],_=>["expr"]});
+        Only(e,T(e,"expr") switch{"count"=>["expr","query"],"size" or "literal"=>["expr","value"],"variable"=>["expr","name"],"read"=>["expr","of","path"],"math"=>["expr","operator","items"],"random"=>["expr","min","max"],_=>["expr"]});
         return T(e,"expr") switch
         {
             "count"=>$"({Query(e.GetProperty("query"))}).Length",
@@ -170,6 +239,7 @@ internal sealed class DesktopNativeCodegen
             "read"=>Read(e,candidate),
             "math"=>Math(e,candidate),
             "literal"=>Number(e.GetProperty("value"),candidate),
+            "random"=>$"{Runtime}.Random(orcSelf,{Number(e.GetProperty("min"),candidate)},{Number(e.GetProperty("max"),candidate)})",
             _=>throw Gap("数值表达式 "+T(e,"expr"))
         };
     }
@@ -178,15 +248,17 @@ internal sealed class DesktopNativeCodegen
         var symbol=T(e,"operator") switch{"add"=>"+","subtract"=>"-","multiply"=>"*",_=>throw Gap("算术 "+T(e,"operator"))};
         return "("+string.Join(symbol,e.GetProperty("items").EnumerateArray().Select(v=>"("+Number(v,candidate)+")"))+")";
     }
-    private string Subject(string name,string candidate)=>name switch
+    private string Subject(string name,string candidate)=>_vars.TryGetValue(name,out var variable)&&variable.Cards?$"({variable.Code}).FirstOrDefault()":name switch
     {
-        "self"=>"orcSelf","candidate"=>candidate,
+        "self" or "source"=>"orcSelf","candidate" or "current"=>candidate,
+        "eventUnit" or "eventCard" or "dead" or "attacker"=>$"{Runtime}.EventCard(view)",
+        "target" or "defender" or "attackTarget"=>$"{Runtime}.EventTarget(view)",
         _=>_vars.TryGetValue(name,out var v)&&v.Cards?$"({v.Code}).FirstOrDefault()":throw Gap("对象引用 "+name)
     };
     private string Read(JsonElement e,string candidate)
     {
         var property=T(e,"path");var of=T(e,"of");
-        if(of is "friendlyPlayer" or "selfPlayer")return property switch{"kredits"=>"orcSelf.Owner.Points","maxKredits"=>"orcSelf.Owner.PointSlots",_=>throw Gap("玩家属性 "+property)};
+        if(of is "friendlyPlayer" or "selfPlayer" or "enemyPlayer")return property switch{"kredits"=>$"{Runtime}.Owner({Runtime}.Viewer(orcSelf,{Literal(of=="enemyPlayer"?"enemy":"self")})).Points","maxKredits"=>$"{Runtime}.Owner({Runtime}.Viewer(orcSelf,{Literal(of=="enemyPlayer"?"enemy":"self")})).PointSlots",_=>throw Gap("玩家属性 "+property)};
         var subject=Subject(of,candidate);
         var stat=property switch{"attack"=>"Attack","defense"=>"Defense","cost"=>"DeployCost","opCost"=>"OperateCost",_=>null};
         if(stat is not null)
@@ -195,6 +267,7 @@ internal sealed class DesktopNativeCodegen
             if(property=="defense"){var hq=Fresh();return $"({subject} is Orc.Game.Players.Hq {hq} ? {hq}.Health : {read})";}
             return read;
         }
+        if(property is "maxDefense" or "missingDefense" or "owner" or "printed.attack" or "printed.defense")return $"{Runtime}.Int({subject},{Literal(property)})";
         throw Gap("读取属性 "+property);
     }
     private string Value(JsonElement e,string candidate)
@@ -209,11 +282,14 @@ internal sealed class DesktopNativeCodegen
             if(property=="extraTypes")return $"(({subject} as {Unit})?.GetData<Orc.Game.Cards.UnitStateData>().UnitTypes ?? new string[0])";
             if(property=="cardType")return $"({subject} is {Unit} ? \"unit\" : \"order\")";
             if(property=="name")return $"({subject}?.Name ?? \"\")";
+            if(property is "set" or "zone" or "uid")return $"{Runtime}.Text({subject},{Literal(property)})";
+            if(property is "alive" or "damaged" or "pinned")return $"{Runtime}.Flag({subject},{Literal(property)})";
         }
         return Number(e,candidate);
     }
     private string Predicate(JsonElement e,string candidate)
     {
+        if(e.TryGetProperty("op",out _))return LegacyPredicate(e,candidate);
         Only(e,T(e,"test") switch{"all" or "any"=>["test","items"],"not"=>["test","item"],"compare"=>["test","left","cmp","right"],_=>["test"]});
         switch(T(e,"test"))
         {
@@ -243,11 +319,37 @@ internal sealed class DesktopNativeCodegen
             default:throw Gap("条件 "+T(e,"test"));
         }
     }
+    private string LegacyPredicate(JsonElement e,string candidate)
+    {
+        var op=T(e,"op");
+        if(op=="predicate")return Predicate(e.GetProperty("test"),candidate);
+        if(op is "and" or "or")return string.Join(op=="and"?" && ":" || ",e.GetProperty("items").EnumerateArray().Select(x=>"("+Predicate(x,candidate)+")"));
+        if(op=="not")return "!("+Predicate(e.GetProperty("item"),candidate)+")";
+        if(op is "targetPinned" or "targetDead" or "targetIsHQ")
+        {
+            var target=Subject("target",candidate);return op=="targetIsHQ"?$"({target} is Orc.Game.Players.Hq)":op=="targetPinned"?$"{Runtime}.Flag({target},\"pinned\")":$"!{Runtime}.Flag({target},\"alive\")";
+        }
+        var comparison=T(e,"cmp");if(comparison.Length==0)comparison=">=";
+        if(comparison is not ("==" or "!=" or "<" or ">" or "<=" or ">="))throw Gap("条件比较 "+comparison);
+        if(op is "unitCount" or "controlsType")
+        {
+            var node=e.TryGetProperty("spec",out var spec)?System.Text.Json.Nodes.JsonNode.Parse(spec.GetRawText())!.AsObject():new System.Text.Json.Nodes.JsonObject{["side"]=T(e,"side") is "enemy"?"enemy":"friendly"};
+            node["sel"]="all";if(e.TryGetProperty("filter",out var filter))node["filter"]=System.Text.Json.Nodes.JsonNode.Parse(filter.GetRawText());
+            return $"({Query(JsonSerializer.SerializeToElement(node))}.Length {comparison} {Number(e.GetProperty("value"))})";
+        }
+        if(op=="compare")
+        {
+            var left=e.GetProperty("left");string value;
+            if(left.TryGetProperty("stat",out var stat))value=$"{Runtime}.Int({Subject(T(left,"of"),candidate)},{Literal(stat.GetString()!)})";
+            else value=Value(left,candidate);
+            return $"({value} {comparison} {Number(e.GetProperty("value"),candidate)})";
+        }
+        throw Gap("条件 "+op);
+    }
     private static string NativeKeyword(string token)
     {
         if(WorkshopAuthoring.TryKeyword(token,out var custom))return custom;
-        var keywords=DesktopOrc.Catalog.GetProperty("keywords");
-        var cn=keywords.TryGetProperty(token,out var item)&&item.TryGetProperty("cn",out var label)?label.GetString()!:token;
+        var cn=DesktopEffectRuntime.Keyword(token);
         if(!KeywordIds.All.Contains(cn,StringComparer.Ordinal))throw Gap("词条 "+cn);return cn;
     }
 }

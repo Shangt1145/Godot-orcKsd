@@ -237,9 +237,8 @@ public partial class RoomScreen : VBoxContainer
         var lifecycle = _lifecycle; _connecting = true;
         try
         {
-            // 开房要拉起 OrcServer 子进程，手机端做不了——先拦在门口，别等准备完卡组才甩一句找不到 dll。
             if (!ServerLauncher.CanHost)
-                throw new InvalidOperationException("本机不能创建房间。请让好友在电脑上开房，然后用房间地址加入。");
+                throw new InvalidOperationException("本机服务端尚未就绪，请检查安装文件。");
             Ui(() => Say("正在准备卡组…"));
             // 有必带卡（验证探针）时强制走自动组牌，否则优先用玩家自己构筑的卡组。
             _deck = (string.IsNullOrEmpty(_requiredCard) ? TryActiveDeck() : null)
@@ -255,6 +254,7 @@ public partial class RoomScreen : VBoxContainer
                 fixedDeckForVerification: FixedDeckForVerification);
             if (lifecycle != _lifecycle) { await server.DisposeAsync(); return; }
             _server = server;
+            MobilePlatform.SetHosting(true);
             var policy = await server.AdminAsync("pool.transfer.policy", new System.Text.Json.Nodes.JsonObject { ["allowGuestPacks"] = false, ["requireAlignment"] = true });
             if (!policy.Ok) throw new InvalidOperationException(policy.Message ?? "服务端不支持工坊卡包，请更新服务端。");
             Ui(() => Say($"● 就绪 · 端口 {_server.Port}"));
@@ -305,6 +305,7 @@ public partial class RoomScreen : VBoxContainer
         _ownRoomId = null;
         var feed = _feed; _feed = null;
         var server = _server; _server = null;
+        if (server is not null) MobilePlatform.SetHosting(false);
         if (feed is not null) { try { await feed.DisposeAsync(); } catch (Exception) { } }
         if (server is not null) { try { await server.DisposeAsync(); } catch (Exception) { } }
         _aiSeat = null; _guest = false; _guestPort = 0;
@@ -319,6 +320,7 @@ public partial class RoomScreen : VBoxContainer
 
     public override void _ExitTree()
     {
+        if (_server is not null) MobilePlatform.SetHosting(false);
         _lifecycle++; _exiting = true; _closing = true;
         _announcer?.Dispose();
         if (_feed is { } feed) _ = feed.DisposeAsync();

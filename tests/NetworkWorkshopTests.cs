@@ -10,6 +10,7 @@ namespace Kards.Ui.Tests;
 public sealed class NetworkWorkshopTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ksd-network-workshop-" + Guid.NewGuid().ToString("N"));
+    private readonly string _unusedKeyword = "unselected-" + Guid.NewGuid().ToString("N");
     public NetworkWorkshopTests() { Directory.CreateDirectory(_root); OrcEngineHost.WarmUp(); }
     private (DiyPackDraft Base, DiyPackDraft Extension, DiyCardDraft Unit, DiyCardDraft Order) Content()
     {
@@ -61,15 +62,22 @@ public sealed class NetworkWorkshopTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task GuestOnlyExpansionRequiresHostOptInThenSyncsAndExecutesInRealServer()
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task GuestOnlyExpansionRequiresHostOptInThenSyncsAndExecutesInRealServer(bool inProcess)
     {
+        // Browsing an unrelated local pack must not add its prefab requirements to this room.
+        if (inProcess)
+        {
+            Orc.Game.Cards.KeywordRegistry.RegisterOrReplace(_unusedKeyword, (_, value) => new Orc.Game.Cards.PlainKeywordComponent(_unusedKeyword, value));
+            Orc.Game.Cards.KeywordRegistry.DeclareEffectBindings(_unusedKeyword, [new("unselected.prefab", "unselected")]);
+        }
         var (_, _, unit, order) = Content();
         var hostSession = Prepare([unit], [unit.Id], "host");
         var guestSession = Prepare([unit, order], [order.Id], "guest");
         var hostDeck = hostSession.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
         var guestDeck = guestSession.MapDeck(Enumerable.Repeat(order.Id, 39).ToArray());
-        await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true);
+        await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true, inProcess: inProcess);
         Assert.True((await server.AdminAsync("pool.transfer.policy", Policy(false))).Ok);
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
@@ -142,8 +150,8 @@ public sealed class NetworkWorkshopTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)] [InlineData(true)]
-    public async Task AuthoredKeywordAndArtworkReachBothPlayersAndRunOnServer(bool program)
+    [InlineData(false, false)] [InlineData(true, false)] [InlineData(false, true)] [InlineData(true, true)]
+    public async Task AuthoredKeywordAndArtworkReachBothPlayersAndRunOnServer(bool program, bool inProcess)
     {
         var library = new DiyWorkshopLibrary(Path.Combine(_root, "words.json"));
         var keyword = new DiyKeywordDraft { Name = "联机成长", EffectText = "部署：获得 +2+2。",
@@ -157,7 +165,7 @@ public sealed class NetworkWorkshopTests : IDisposable
         var hostSession = NetworkWorkshopSession.Prepare(Path.Combine(_root, "host"), [], [unit], [], [unit.Id], art);
         var guestSession = Prepare([], [], "guest");
         var deck = hostSession.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
-        await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true);
+        await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true, inProcess: inProcess);
         await server.AdminAsync("pool.transfer.policy", Policy(false));
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
@@ -200,5 +208,5 @@ public sealed class NetworkWorkshopTests : IDisposable
         await Until(() => guest.CurrentView?.Phase == "play");
         await guest.SubmitAsync(new Concede()); await Until(() => string.Equals(host.CurrentView?.ResultReason, "Concede", StringComparison.OrdinalIgnoreCase));
     }
-    public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+    public void Dispose() { Orc.Game.Cards.KeywordRegistry.Unregister(_unusedKeyword); if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }

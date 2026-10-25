@@ -40,7 +40,11 @@ public partial class DiyWorkshopScreen
     {
         var dialog = new FileDialog { Title = save ? "导出卡包" : "导入卡包 ZIP", FileMode = save ? FileDialog.FileModeEnum.SaveFile : FileDialog.FileModeEnum.OpenFile,
             Access = FileDialog.AccessEnum.Filesystem, UseNativeDialog = true, Filters = ["*.zip ; 卡包压缩包"], CurrentFile = save ? "card-pack.zip" : "" };
-        AddChild(dialog); dialog.FileSelected += path => { selected(path); dialog.QueueFree(); };
+        AddChild(dialog); dialog.FileSelected += path => {
+            try { if (save) PlatformFiles.WriteDocument(path, selected, ".zip"); else selected(PlatformFiles.ReadLocalCopy(path, ".zip")); }
+            catch (Exception error) { _notice.Text = error.Message; }
+            finally { dialog.QueueFree(); }
+        };
         dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered(new Vector2I(900, 600));
     }
     private void ImportNative() => _editor.GuardNavigation(() => GuardNative(() => NativeFile(false, path =>

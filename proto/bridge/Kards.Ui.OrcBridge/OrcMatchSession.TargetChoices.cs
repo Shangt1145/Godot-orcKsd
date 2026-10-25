@@ -21,6 +21,7 @@ public sealed partial class OrcMatchSession
         if (TargetRequested is null) { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); return; }
         var data = selector.Presentation;
         var tag = data.Parameter as OrderSelectorTag;
+        if(tag is null&&data.Parameter is Orc.Game.Effects.AuthoringSelectorTag nativeTag)tag=new OrderSelectorTag(nativeTag.SlotName);
         var name = tag?.SlotName ?? "default";
         var kind = data.Identifiers is null ? ChoiceKind.Reference
             : selector.SelectorName == SelectorNames.CardPicker ? ChoiceKind.CardDefinition : ChoiceKind.Option;

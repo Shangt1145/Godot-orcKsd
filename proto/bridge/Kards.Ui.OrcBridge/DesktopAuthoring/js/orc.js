@@ -82,6 +82,7 @@
   }
   function unitPredicate(s,subject='candidate'){
     s=s.trim().replace(/的$/,'');const items=[];
+    const alternatives=split(s,'或');if(alternatives.length>1){const names=Object.keys(P.UNIT_TYPES||{}).filter(n=>!['nonspace','space'].includes(P.UNIT_TYPES[n])).sort((a,b)=>b.length-a.length);const firstType=names.find(n=>alternatives[0].endsWith(n));const prefix=firstType?alternatives[0].slice(0,-firstType.length):'';const choices=alternatives.map((part,i)=>unitPredicate(i&&names.includes(part)?prefix+part:part,subject));return choices.every(Boolean)?{test:'any',items:choices}:null;}
     const types=Object.entries(P.UNIT_TYPES||{}).sort((a,b)=>b[0].length-a[0].length);
     const type=types.find(([cn,id])=>s.endsWith(cn)&&!['nonspace','space'].includes(id));
     if(type){s=s.slice(0,-type[0].length);const ids=Array.isArray(type[1])?type[1]:[type[1]];items.push({test:'any',items:ids.flatMap(id=>[compare(read('unitType',subject),'==',id),compare(read('extraTypes',subject),'contains',id)])});}
@@ -107,6 +108,7 @@
   }
   function target(text,fx){
     let s=text.trim();
+    if(/(?:和|与|及)总部$/.test(s)){const side=s.match(/友方|我方|敌方|对方|双方/);if(side)s=s.replace(/((?:和|与|及))总部$/,'$1'+side[0]+'总部');}
     if(s==='最左侧和最右侧手牌')return {sel:'union',queries:[{sel:'first',zone:'hand',side:'friendly',count:1},{sel:'last',zone:'hand',side:'friendly',count:1}]};
     const joined=split(s,'与和及');if(joined.length>1&&(joined.some(x=>/^(友方|我方|敌方|对方)总部$/.test(x))||joined.every(x=>/^(其|该单位|本单位|此单位)$/.test(x)))){const queries=joined.map(x=>target(x,fx));return queries.every(Boolean)?{sel:'union',queries}:null;}
     const neighbors=s.match(/^(.+?)(?:及其|和其|与其)(?:左右)?相邻(?:的)?单位$/);
@@ -244,10 +246,10 @@
       if(head){fx={trigger:({部署:'deploy',亡计:'death',遗言:'death',使用时:'play',己方回合开始时:'turnStart',友方回合开始时:'turnStart',己方回合结束时:'turnEnd',友方回合结束时:'turnEnd'})[head[1]],actions:[],targets:[]};effects.push(fx);}
       let body=head?head[2]:line;
       if(!head&&card.cardType==='unit'){
-        const selfEvent=line.match(/^(?:本单位)?(攻击时|被攻击时|受到伤害时|移至前线时|攻击后)[，,](.+)$/);
-        const listener=line.match(/^(其他)?(友方|敌方)(.+?)(部署时|被消灭时|受到伤害时)[，,](.+)$/);
-        if(selfEvent){fx={trigger:({攻击时:'attack',被攻击时:'attacked',受到伤害时:'damaged',移至前线时:'mobilize',攻击后:'afterAttack'})[selfEvent[1]],selfOnly:true,actions:[],targets:[],_lastTarget:{sel:'self'}};effects.push(fx);body=selfEvent[2];}
-        else if(listener){const where=unitPredicate(listener[3]);if(!where)return null;fx={trigger:({部署时:'unitDeployed',被消灭时:'friendlyDeath',受到伤害时:'friendlyDamaged'})[listener[4]],...(listener[2]==='敌方'?{watchOpponent:true}:{}),filter:{where},actions:[],targets:[],_lastTarget:{sel:'refAll',ref:listener[4]==='受到伤害时'?'eventVictim':'eventUnit'}};
+        const selfEvent=line.match(/^(?:本单位)?(攻击时|被攻击时|受到伤害时|移至前线时|攻击后|升为老兵时)[，,](.+)$/);
+        const listener=line.match(/^(其他)?(友方|敌方)(.+?)(部署时|被消灭时|受到伤害时|升为老兵时)[，,](.+)$/);
+        if(selfEvent){fx={trigger:({攻击时:'attack',被攻击时:'attacked',受到伤害时:'damaged',移至前线时:'mobilize',攻击后:'afterAttack',升为老兵时:'upgraded'})[selfEvent[1]],selfOnly:true,actions:[],targets:[],_lastTarget:{sel:'self'}};effects.push(fx);body=selfEvent[2];}
+        else if(listener){const where=unitPredicate(listener[3]);if(!where)return null;fx={trigger:({部署时:'unitDeployed',被消灭时:'friendlyDeath',受到伤害时:'friendlyDamaged',升为老兵时:'unitUpgraded'})[listener[4]],...(listener[2]==='敌方'?{watchOpponent:true}:{}),filter:{where},actions:[],targets:[],_lastTarget:{sel:'refAll',ref:listener[4]==='受到伤害时'?'eventVictim':'eventUnit'}};
           if(listener[1])fx.condition={op:'predicate',test:compare(read('uid','eventUnit'),'!=',read('uid','self'))};effects.push(fx);body=listener[5];}
         else if((/^(.+?)(?:时|中)[，,]具有/.test(line)&&!/^若|如果/.test(line))){const c=line.match(/^(.+?)(?:时|(?<=回合)中)[，,](具有.+)$/),condition=c&&predicate(c[1]+(c[1].endsWith('回合')?'中':''),'self');if(!condition)return null;fx={trigger:'passive',condition:{op:'predicate',test:condition},actions:[],targets:[]};effects.push(fx);body=c[2];}
         else if(/具有/.test(line)&&!line.includes('时')&&!/^若|如果/.test(line)||/^(?:本单位)?无法(?:攻击|被压制|被抑制|撤退)/.test(line)||/造成双倍伤害$/.test(line)){fx={trigger:'passive',actions:[],targets:[]};effects.push(fx);body=line;}

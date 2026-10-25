@@ -168,9 +168,10 @@ internal partial class NativeEffectInspector
         {
             try
             {
-                var result=DesktopOrc.CompileGraph(input.Text,Document.Root["cardType"]?.ToString()??"unit",Catalog?.Invoke());
-                if(!result.GetProperty("complete").GetBoolean())
-                {_status.Text="输入未被当前 KARDS 规则语法完整识别，原效果未改动。也可以用按钮搭建。";return;}
+                var compiled=OrcInspector.CompileText("diy.inspector.sentence",input.Text,Document.Root["cardType"]?.ToString()??"unit",Catalog?.Invoke());
+                if(!compiled.ParseComplete||!compiled.AllCompiled)
+                {_status.Text="未应用："+string.Join("；",compiled.Problems.Take(3));return;}
+                using var parsed=JsonDocument.Parse(compiled.Parse.DesktopResultJson!);var result=parsed.RootElement;
                 var copy=Document.Root.DeepClone().AsObject();copy["effects"]=JsonNode.Parse(result.GetProperty("effects").GetRawText());
                 foreach(var f in result.GetProperty("cardFields").EnumerateObject())copy[f.Name]=JsonNode.Parse(f.Value.GetRawText());
                 foreach(var key in new[]{"kwMap","kwValues"})
@@ -543,11 +544,16 @@ internal partial class NativeEffectInspector
         {
             if(_pickerGroup.Selected>0&&P.Group(op)!=category)continue;
             if(!(P.Operation(op)+P.Group(op)+op).Contains(PickerSearch.Text,StringComparison.OrdinalIgnoreCase))continue;
-            _pickerOps.Add(op);PickerItems.AddItem(P.Operation(op)+"    ·    "+P.Group(op));
+            var problem=DiyCapability.OperationProblem(op);
+            _pickerOps.Add(op);var item=PickerItems.AddItem(P.Operation(op)+"    ·    "+P.Group(op)+(problem.Length>0?" · 暂不可执行":""));
+            PickerItems.SetItemTooltip(item,problem.Length>0?problem:"可编排；具体参数仍会通过效果编译检查。");
+            if(_playerAuthoring&&problem.Length>0)PickerItems.SetItemDisabled(item,true);
         }
         PickerAddButton.Disabled=_pickerOps.Count==0;
         _pickerExplanation.Text=_pickerOps.Count==0?"没有找到。试试动作、对象或资源的中文名称。":$"可选择 {_pickerOps.Count} 种动作。添加后可以自由修改参数和嵌套组合。";
-        if(_pickerOps.Count>0)PickerItems.Select(0);
+        var first=_pickerOps.FindIndex(op=>!_playerAuthoring||DiyCapability.OperationProblem(op).Length==0);
+        PickerAddButton.Disabled=first<0;
+        if(first>=0)PickerItems.Select(first);
     }
     private void ConfirmAction()
     {

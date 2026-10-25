@@ -34,7 +34,7 @@ public class OrcImportServiceTests(ITestOutputHelper output)
             new OrcImportRow("t-deploy-draw", "测试卡甲", "infantry", 2, 1, 2, 3, "部署：抽 1 张牌。"),
             new OrcImportRow("t-damage", "测试卡乙", "order", 1, 0, 0, 0, "对 1 个敌方单位造成 2 点伤害"),
             new OrcImportRow("t-keyword-only", "测试卡丙", "tank", 3, 1, 3, 4, "闪击、重甲1"),
-            new OrcImportRow("t-pending", "测试卡丁", "infantry", 2, 1, 2, 3, "使 1 个友方单位返回手牌"),
+            new OrcImportRow("t-pending", "测试卡丁", "infantry", 2, 1, 2, 3, "使 1 个友方单位返回牌库"),
             new OrcImportRow("t-counter", "测试卡戊", "countermeasure", 1, 0, 0, 0, "抽 1 张牌"),
         };
         var outcomes = OrcImportService.ImportBatch(rows, []);
@@ -57,7 +57,7 @@ public class OrcImportServiceTests(ITestOutputHelper output)
         // 待核对卡：诊断可读、原文保留。
         Assert.False(byId["t-pending"].Complete);
         Assert.NotEmpty(byId["t-pending"].Diagnostics);
-        Assert.Equal("使 1 个友方单位返回手牌", byId["t-pending"].SourceText);
+        Assert.Equal("使 1 个友方单位返回牌库", byId["t-pending"].SourceText);
         Assert.False(byId["t-counter"].Complete); // 反制卡面外
     }
 

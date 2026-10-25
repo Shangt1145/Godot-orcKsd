@@ -5,7 +5,7 @@
 param(
     [switch]$Release,
     [string]$Out = 'dist\android\OrC-KSD-android.apk',
-    [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64_console.exe',
+    [string]$Godot = 'H:\g\tools\godot47\Godot_v4.7-stable_mono_win64\Godot_v4.7-stable_mono_win64.exe',
     [string]$Sdk = 'H:\g\tools\android-sdk',
     [string]$Jdk = 'H:\g\tools\jdk17\jdk-17.0.20.1+1',
     [int]$TimeoutMinutes = 40
@@ -21,15 +21,17 @@ $env:ANDROID_HOME = $Sdk
 $env:ANDROID_SDK_ROOT = $Sdk
 $env:JAVA_HOME = $Jdk
 $env:PATH = "$(Join-Path $Jdk 'bin');$env:PATH"
+& (Join-Path $PSScriptRoot 'prepare-android-platform.ps1') -ProjectRoot $root
 
 $outPath = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $root $Out }
 New-Item -ItemType Directory -Path (Split-Path -Parent $outPath) -Force | Out-Null
 $mode = if ($Release) { '--export-release' } else { '--export-debug' }
+$exportStarted = [DateTime]::UtcNow
 
 Write-Host "导出 $mode ...（首次要拉 Gradle 依赖，之后约 3~5 分钟；APK 约 1 GB）"
 # 路径含空格，必须自己加引号：Start-Process 的 -ArgumentList 是按空格拼的，会拆坏 "--path"。
 $argumentLine = '--headless --path "{0}" {1} Android "{2}"' -f $root, $mode, $outPath
-$process = Start-Process -FilePath $Godot -PassThru -NoNewWindow -ArgumentList $argumentLine
+$process = Start-Process -FilePath $Godot -PassThru -WindowStyle Hidden -ArgumentList $argumentLine -RedirectStandardOutput ($outPath + '.export.log') -RedirectStandardError ($outPath + '.export-errors.log')
 
 # Godot 在产物写完后常卡在 adb 收尾不退出：等到超时就直接结束进程，再看产物判定成败。
 if (-not $process.WaitForExit($TimeoutMinutes * 60 * 1000)) {
@@ -38,6 +40,14 @@ if (-not $process.WaitForExit($TimeoutMinutes * 60 * 1000)) {
 }
 
 if (!(Test-Path -LiteralPath $outPath)) { throw '导出失败：没有生成 APK（往上翻 Godot 输出找第一条 error）' }
+if ((Get-Item -LiteralPath $outPath).LastWriteTimeUtc -lt $exportStarted) { throw '导出失败：磁盘上仅有此前的旧 APK。' }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$apkCheck = [System.IO.Compression.ZipFile]::OpenRead($outPath)
+try {
+    foreach ($entry in @('AndroidManifest.xml','classes.dex')) {
+        if (!$apkCheck.GetEntry($entry)) { throw "APK 缺少 $entry" }
+    }
+} finally { $apkCheck.Dispose() }
 $size = [math]::Round((Get-Item -LiteralPath $outPath).Length / 1MB, 1)
 $hash = (Get-FileHash -LiteralPath $outPath -Algorithm SHA256).Hash
 Write-Host "ANDROID_EXPORT_OK $outPath ($size MB)"

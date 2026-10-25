@@ -175,7 +175,7 @@ public partial class DiyWorkshopScreen
             GuardNative(() =>
             {
                 var picker = new FileDialog { Title = full ? "导入完整卡面" : "导入插画", FileMode = FileDialog.FileModeEnum.OpenFile, Access = FileDialog.AccessEnum.Filesystem, UseNativeDialog = true, Filters = ["*.png,*.jpg,*.jpeg,*.webp ; 图片"] }; AddChild(picker);
-                picker.FileSelected += path => NativeTry(() => { var image = Image.LoadFromFile(path); if (image is null || image.GetWidth() > 8192 || image.GetHeight() > 8192) throw new InvalidDataException("图片无效或超过 8192×8192。"); _native.SetArtwork(asset.Id, image.SavePngToBuffer(), full); _textures.Clear(); Preview(); _notice.Text = "卡图已写入草稿，转正后生效。"; picker.QueueFree(); }); picker.Canceled += () => picker.QueueFree(); picker.PopupCentered();
+                picker.FileSelected += path => NativeTry(() => { var image = PlatformFiles.LoadImage(path); if (image is null || image.GetWidth() > 8192 || image.GetHeight() > 8192) throw new InvalidDataException("图片无效或超过 8192×8192。"); _native.SetArtwork(asset.Id, image.SavePngToBuffer(), full); _textures.Clear(); Preview(); _notice.Text = "卡图已写入草稿，转正后生效。"; picker.QueueFree(); }); picker.Canceled += () => picker.QueueFree(); picker.PopupCentered();
             });
         }
         art.AddChild(MenuStyles.Button("导入插画…", () => ImportArt(false))); art.AddChild(MenuStyles.Button("导入完整卡面…", () => ImportArt(true)));
