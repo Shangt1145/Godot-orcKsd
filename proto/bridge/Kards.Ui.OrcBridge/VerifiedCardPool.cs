@@ -127,7 +127,14 @@ public static class VerifiedCardPool
                     plans.Add(card.CardId, source.Declaration.GetProperty("effects").Clone());
             }
             rows.Add(new(card.CardId, card.Name, support, reason!));
+            // 「这张卡为什么没效果」最常见的原因就出在核验档位上，明细直接进控制台。
+            if (support == UiCardSupport.Unsupported)
+                GameLog.Warn("pool", $"{card.CardId} 效果/属性无法装配：{reason}");
         }
+        GameLog.Info("pool", $"卡池核验：总计 {rows.Count}，可用 {accepted.Count}，"
+            + $"不支持 {rows.Count(r => r.Support == UiCardSupport.Unsupported)}，"
+            + $"源变更 {rows.Count(r => r.Support == UiCardSupport.SourceChanged)}，"
+            + $"待审 {rows.Count(r => r.Support == UiCardSupport.Unreviewed)}");
         return (accepted.AsReadOnly(), new(ReviewVersion, cards.Count, structural, rows.AsReadOnly()), plans,
             convertedEffects.AsReadOnly());
     }

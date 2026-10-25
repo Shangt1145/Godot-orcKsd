@@ -587,7 +587,14 @@ public sealed partial class OrcMatchSession : IDisposable
         }
         if (_automaticChoice) OrcTargeterBridge.AutoRespond(selector);
         else if (_interactiveCommand) PresentTargetChoice(selector);
-        else { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); }
+        else
+        {
+            // 引擎在问玩家要目标，但当前没有任何出牌/技能动作在飞——旧数据里「回合结束时，将其消灭」
+            // 就落在这里：它自己又发了一次选靶，而回合结束不是交互时机，于是被当成空选择丢掉。
+            LastRejectionReason = "SelectionRequired";
+            GameLog.Warn("target", $"非交互时机收到选靶请求（{selector.SelectorName}），已按空选择取消");
+            selector.Submit(new CancelEvent());
+        }
     }
 
     private Ref<Entity>? SlotAt(IReadOnlyList<Ref<Entity>>? candidates = null)
@@ -703,7 +710,12 @@ public sealed partial class OrcMatchSession : IDisposable
     {
         var outcome = await SubmitCoreAsync(command, ct);
         if (outcome != UiSubmitOutcome.Applied)
+        {
             Console.WriteLine($"[bridge] submit {command.GetType().Name} -> {outcome} reason={LastRejectionReason}");
+            GameLog.Warn("submit", $"{command.GetType().Name} 被拒：{outcome}"
+                + (LastRejectionReason is { Length: > 0 } reason ? "（" + reason + "）" : ""));
+        }
+        else GameLog.Debug("submit", $"{command.GetType().Name} 已受理");
         return outcome;
     }
 

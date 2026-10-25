@@ -3,7 +3,10 @@ using System.Text.Json.Nodes;
 using Kards.Ui.OrcBridge;
 using Kards.Ui.Core;
 
-var root = Path.GetFullPath(args.FirstOrDefault() ?? Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+// 仓库根：显式传入的现存目录优先，否则按可执行文件位置回退五级。
+// 注意别把开关（`--probe`）当路径——那样会在读语料时抛 FileNotFound，看着像资源缺失。
+var root = Path.GetFullPath(args.FirstOrDefault(a => Directory.Exists(a) && !a.StartsWith('-'))
+    ?? Path.Combine(AppContext.BaseDirectory, "../../../../.."));
 if(args.Contains("--parser-deltas"))
 {
     using var source=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"tests/fixtures/official-raw.json")));
@@ -34,7 +37,79 @@ if(args.Contains("--verify"))
     Console.WriteLine($"OFFICIAL_NATIVE_VERIFY_OK cards={count} source-cards={service.Report.Verified} selectable-packs={service.Packs.Count} engine-effect-mounts exact-deck");
     return;
 }
+if(args.Contains("--probe"))
+{
+    // 单卡文本编译探针：拿原始语料里的中文规则文本走**当前**解析器，打印声明图与 csx，
+    // 用来判定卡包里的既有 csx 是不是旧解析器产物（只读，不写卡包）。
+    // --text "<规则文本>" 可直接编译任意句子，--type order|unit 指定卡型（默认 order）。
+    var list=args.ToList();var index=list.IndexOf("--probe");
+    var ids=list.Skip(index+1).Where(a=>!a.StartsWith("--")&&!a.StartsWith("\"")).ToArray();
+    var textIndex=list.IndexOf("--text");
+    var probeText=textIndex>=0&&textIndex+1<list.Count?list[textIndex+1]:null;
+    var typeIndex=list.IndexOf("--type");
+    var probeType=typeIndex>=0&&typeIndex+1<list.Count?list[typeIndex+1]:"order";
+    using var raw=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"tests/fixtures/official-raw.json")));
+    var byId=raw.RootElement.GetProperty("cards").EnumerateArray()
+        .Where(c=>c.GetProperty("json").TryGetProperty("id",out var i)&&ids.Contains(i.GetString()))
+        .Select(c=>c.GetProperty("json")).ToDictionary(c=>c.GetProperty("id").GetString()!);
+    var report=new JsonObject();
+    void Emit(string id,JsonElement card)
+    {
+        var type=card.GetProperty("type").GetString()!;
+        var compiled=OfficialCardCompiler.Compile(card,"probe");
+        var effects=new JsonArray();
+        using var engine=JsonDocument.Parse(compiled.EngineJson);
+        foreach(var component in engine.RootElement.GetProperty("components").EnumerateArray())
+        {
+            if(component.GetProperty("component").GetString()!="effects")continue;
+            foreach(var inline in component.GetProperty("inline").EnumerateArray())
+            {
+                var trigger=inline.GetProperty("root").GetProperty("mainTrigger");
+                var scripts=new JsonArray();
+                foreach(var e in trigger.GetProperty("events").EnumerateArray())
+                    scripts.Add(e.TryGetProperty("csx",out var csx)?csx.GetString():null);
+                effects.Add(new JsonObject
+                {
+                    ["stableKey"]=trigger.GetProperty("stableKey").GetString(),
+                    ["csx"]=scripts
+                });
+            }
+        }
+        report[id]=new JsonObject
+        {
+            ["text"]=compiled.Text,
+            ["type"]=type,
+            ["graphs"]=JsonNode.Parse(JsonSerializer.Serialize(compiled.Graphs)),
+            ["csx"]=effects
+        };
+        Console.WriteLine($"PROBE_OK id={id} graphs={compiled.Graphs.Length} effects={effects.Count}");
+    }
+    foreach(var id in ids)
+    {
+        if(!byId.TryGetValue(id,out var card)){Console.WriteLine($"PROBE_MISS id={id}");continue;}
+        Emit(id,card);
+    }
+    if(probeText is not null)
+    {
+        var synthetic=JsonDocument.Parse(JsonSerializer.Serialize(new Dictionary<string,object?>
+        {
+            ["id"]="probe_text",["set"]="Base",["type"]=probeType,["faction"]="soviet",["kredits"]=1,
+            ["rarity"]="standard",["title"]=new Dictionary<string,string>{["zh-Hans"]="探针"},
+            ["text"]=new Dictionary<string,string>{["zh-Hans"]=probeText},
+            ["attack"]=probeType=="order"?0:1,["defense"]=probeType=="order"?0:1,["operationCost"]=0,["attributes"]=Array.Empty<string>()
+        }));
+        Emit("__text__",synthetic.RootElement);
+    }
+    Directory.CreateDirectory(Path.Combine(root,"artifacts"));
+    File.WriteAllText(Path.Combine(root,"artifacts/official-card-probe.json"),report.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
+    Console.WriteLine("PROBE_REPORT artifacts/official-card-probe.json");return;
+}
 var write = args.Contains("--write");
+// --only a,b,c：定向重生成（配合 --refresh）。全量 --refresh 会顺带把语料里另外 200+ 张新卡塞进卡池，
+// 那是产品级改动；修单张卡的行为时只该动那几张。
+var onlyArgument=args.SkipWhile(a=>a!="--only").Skip(1).FirstOrDefault();
+var only=onlyArgument is null?new HashSet<string>(StringComparer.Ordinal)
+    :onlyArgument.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).ToHashSet(StringComparer.Ordinal);
 var sets = new Dictionary<string,(string Id,string Name)>
 {
     ["Base"]=("builtin","内置卡包"), ["Allegiance"]=("exp-loyalty","忠诚"), ["TheatersOfWar"]=("exp-warzone","战区"),
@@ -54,6 +129,7 @@ if(args.Contains("--refresh"))
         foreach(var entry in document.RootElement.EnumerateObject())
         {
             if(entry.Name.Length==0||entry.Name.Any(c=>!char.IsAsciiLetterOrDigit(c)&&c is not '_' and not '-'))throw new InvalidDataException("生成卡编号无效");
+            if(only.Count>0&&!only.Contains(entry.Name))continue;
             managed.Add((Path.GetDirectoryName(file)!,entry.Name));existing.Remove(entry.Name);
         }
     }
@@ -65,6 +141,7 @@ foreach (var item in records.EnumerateArray())
 {
     var card = item.GetProperty("json"); var id=card.GetProperty("id").GetString()!; var set=card.GetProperty("set").GetString()!;
     if(existing.Contains(id))continue;
+    if(only.Count>0&&!only.Contains(id))continue;
     if(!sets.TryGetValue(set,out var pack))continue;
     try { admitted.Add((set,OfficialCardCompiler.Compile(card,pack.Id))); }
     catch(Exception e) when(e is InvalidDataException or ArgumentException or InvalidOperationException or FormatException)

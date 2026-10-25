@@ -25,7 +25,11 @@ internal sealed class DesktopNativeCodegen
             DesktopTargetContext.ValidateTarget(target);var name=T(target,"id");if(_vars.ContainsKey(name))throw Gap("重复目标声明 "+name);
             var local=Fresh();_vars[name]=(local,true);
             _vars.TryAdd("target",(local,true));
-            selections.Add($"var {local}=await Orc.Game.Effects.AuthoringTargetContext.SelectAsync(orcSelf,{Literal(target.GetRawText())},{Literal(DesktopTargetContext.Scope(graph))},ct);");
+            // reuse＝跨效果回指（「…。友方回合结束时，将其消灭」）：沿用上一段选中的目标，
+            // 不再发起一次选靶——回合结束这类时机没人能应答，重新问就是空集。
+            selections.Add(target.TryGetProperty("reuse",out var reuse)&&reuse.ValueKind==JsonValueKind.True
+                ? $"var {local}={Runtime}.RecallTargets(orcSelf,{Literal(target.GetRawText())});"
+                : $"var {local}=await Orc.Game.Effects.AuthoringTargetContext.SelectAsync(orcSelf,{Literal(target.GetRawText())},{Literal(DesktopTargetContext.Scope(graph))},ct);");
         }
         var normalized=DesktopOrc.Request(new {method="nativeActions",actions=graph.GetProperty("actions")});
         if(T(graph,"trigger")=="passive")

@@ -105,9 +105,11 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
         }
         Assert.True(drifted.Count==0,$"与基准不符 {drifted.Count} 条：{string.Join("、",drifted)}");
         File.WriteAllText(Path.Combine(root,"artifacts","desktop-parser-deltas.json"),JsonSerializer.Serialize(changes));
-        Assert.Equal(reviewed.Keys.Order(),changes.Order());Assert.Equal(13,changes.Count);
+        Assert.Equal(reviewed.Keys.Order(),changes.Order());
+        // 数量不写死：审核清单本身就是逐项人工复核的产物（每加一条都要手填 text + sha）。
+        Assert.Equal(reviewed.Count,changes.Count);
         var complete=result.EnumerateArray().Count(c=>c.GetProperty("complete").GetBoolean());
-        output.WriteLine($"完整移植 OrC＋总部语义修复：{complete}/{rows.Length}，1540 项原始结果保持一致，13 项逐项审核扩展");Assert.Equal(698,complete);
+        output.WriteLine($"完整移植 OrC＋总部语义修复：{complete}/{rows.Length}，其余保持原版结果，{reviewed.Count} 项逐项审核扩展");Assert.Equal(698,complete);
         var report=Path.Combine(root,"artifacts","desktop-authoring");Directory.CreateDirectory(report);File.WriteAllText(Path.Combine(report,"full-corpus.json"),result.GetRawText());
     }
     [Fact]

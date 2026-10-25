@@ -18,7 +18,13 @@ public sealed partial class OrcMatchSession
     private void PresentTargetChoice(ISelectorInstance selector)
     {
         if (_disposed || _activeCommandToken.IsCancellationRequested) { selector.Submit(new CancelEvent()); return; }
-        if (TargetRequested is null) { LastRejectionReason = "SelectionRequired"; selector.Submit(new CancelEvent()); return; }
+        if (TargetRequested is null)
+        {
+            // 没有任何界面在听：引擎会拿到空选择，效果静默消失——这是最难查的一类失灵。
+            LastRejectionReason = "SelectionRequired";
+            GameLog.Warn("target", $"选靶请求无人应答（{selector.SelectorName}），效果将不生效");
+            selector.Submit(new CancelEvent()); return;
+        }
         var data = selector.Presentation;
         var tag = data.Parameter as OrderSelectorTag;
         if(tag is null&&data.Parameter is Orc.Game.Effects.AuthoringSelectorTag nativeTag)tag=new OrderSelectorTag(nativeTag.SlotName);
@@ -55,8 +61,9 @@ public sealed partial class OrcMatchSession
         var choice = new ChoiceResponder(this, selector, request.RequestId, name);
         _targetChoice = choice;
         if (_activeCommandToken.IsCancellationRequested) { CancelTargetChoice(); return; }
+        GameLog.Debug("target", $"请求选靶 {selector.SelectorName}（{name}，{choices.Length} 个候选，{data.Min}..{data.Max}）");
         try { TargetRequested.Invoke(UiSnapshots.Freeze(request), choice); }
-        catch { LastRejectionReason = "InteractionFault"; CancelTargetChoice(); }
+        catch { LastRejectionReason = "InteractionFault"; GameLog.Error("target", "选靶界面抛出异常，请求已取消"); CancelTargetChoice(); }
     }
     private void CancelTargetChoice()
     {

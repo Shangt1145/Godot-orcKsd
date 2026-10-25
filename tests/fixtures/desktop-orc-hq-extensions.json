@@ -63,5 +63,20 @@
     "id": "winter_offensive",
     "sha256": "886C4DC61CE28BD2A262A026DD4A51541E728A0F0A5EBDC7FAB5EEC84B5CA01F",
     "text": "对所有目标造成 4 点伤害。"
+  },
+  {
+    "id": "final_push",
+    "sha256": "A1AAF7F2FC8763684BEC91426819E17941400B8056B212DEC6FF5FD08240AF55",
+    "text": "使 1 个友方单位获得 +3 攻击力。友方回合结束时，将其消灭。"
+  },
+  {
+    "id": "honor",
+    "sha256": "C3AE101EC63DD921A74C559C79DA0F493F9913A4DB6BE6C87FED1A401B9443F2",
+    "text": "使 1 个友方单位获得 +4+4。回合结束时，将其消灭。"
+  },
+  {
+    "id": "shadow_strike",
+    "sha256": "016EAA35293B899F2DDAF25664EE13C1F2A113ACDAEA84AA4B78A76B9D4882A8",
+    "text": "使 1 个友方单位获得冲击。回合结束时，使其获得烟幕。"
   }
 ]

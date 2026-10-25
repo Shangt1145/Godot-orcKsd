@@ -41,7 +41,9 @@ if (!$SkipAssets) {
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $sourceRoot 'proto\data\asset-manifest.json') -Encoding utf8
 }
 # Non-destructive synchronization. Generated output never copies back into source.
-& robocopy $sourceRoot $targetRoot /E /NFL /NDL /NJH /NJS /NP /XD .git .godot bin obj artifacts /XF '*.user' '.kards-ui-workspace'
+# dist 是发布产物目录（现已是指向 G:\orc-dist 的目录联接）：生成物不该进运行副本，
+# 而 robocopy /E 会跟进联接，把几十 GB 的发行包重抄一遍——同步会卡死在这。
+& robocopy $sourceRoot $targetRoot /E /NFL /NDL /NJH /NJS /NP /XD .git .godot bin obj artifacts dist /XF '*.user' '.kards-ui-workspace'
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
 # 代码目录强制覆盖（/IS）：robocopy 默认跳过"目标时间更新"的文件，工作副本一旦被旧版占住，
 # 就会出现"源能编译、副本编译失败"的鬼打墙——2026-10-24 实际踩到（RemotePresentationTranslator 旧版残留）。

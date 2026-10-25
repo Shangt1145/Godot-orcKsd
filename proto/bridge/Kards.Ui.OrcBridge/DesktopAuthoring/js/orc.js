@@ -116,7 +116,7 @@
     const adjacent=s.match(/^(?:与)?(?:(本单位|此单位|其|该单位)(?:左右)?)?相邻(?:的)?(.+)$/);
     if(adjacent){const anchor=target(adjacent[1]||'本单位',fx);if(!anchor)return null;const where=unitPredicate(adjacent[2]);if(!where)return null;const ref='orcAnchor'+(fx._serial=(fx._serial||0)+1);(fx._pending||(fx._pending=[])).push({op:'let',name:ref,value:{expr:'query',query:anchor}});return {sel:'adjacent',ref,where};}
     if(/^(本单位|此单位)$/.test(s))return {sel:'self'};
-    if(/^(其|该单位|该牌|此牌)$/.test(s))return fx._lastTarget?copy(fx._lastTarget):null;
+    if(/^(其|该单位|该牌|此牌)$/.test(s)){if(!fx._lastTarget)return null;ensureReuseDecl(fx);return copy(fx._lastTarget);}
     const hand=s.match(/^(?:(所有|全部|随机|最左侧|最右侧))?(友方|我方|敌方|对手)?(?:手牌|手中)(?:中|的)?(?:的)?(?:所有|全部)?(.*)$/);
     if(hand){const descriptor=hand[3].replace(/^的/,''),where=descriptor?cardPredicate(descriptor):null;if(descriptor&&!where)return null;const q={sel:hand[1]==='随机'?'random':hand[1]==='最左侧'?'first':hand[1]==='最右侧'?'last':'all',side:/敌|对手/.test(hand[2]||'')?'enemy':'friendly',zone:'hand',...(hand[1]&&hand[1]!=='所有'&&hand[1]!=='全部'?{count:1}:{}),...(where?{where}:{})};fx._lastTarget=copy(q);return q;}
     const side=/敌方|对方/.test(s)?'enemy':/友方|我方/.test(s)?'friendly':'both';
@@ -235,6 +235,26 @@
     if(s.includes('\u0001')){const at=s.indexOf('\u0001'),before=actionsFor(s.slice(0,at),fx,registry),after=before&&actionsFor(s.slice(at+1),fx,registry);return before&&after?before.concat(after):null;}
     const list=split(s.replace(/[，,](?=本回合(?:内)?$)/,'').replace(/并将其/,'，将其'),'，,');const out=[];for(const part of list){const a=action(part,fx,registry);if(!a)return null;out.push(...(fx._pending||[]),...a);fx._pending=[];}return out;
   }
+  /* ------------------------------------------------- 跨段代词（「其」）
+   * 「使 1 个友方单位获得 +3 攻击力。友方回合结束时，将其消灭。」
+   * 第二句带触发头，basicParse 会新开一个 effect——新的 fx 没有 _lastTarget，
+   * `target('其')` 直接返回 null，整个动作失败后落到 compiler.js 兜底，
+   * 被重新声明成「side:any 选择一个单位」。表现就是：回合结束时重新问一次（没人应答＝效果消失）。
+   * 这里把上一段最后的目标声明继承下来，并懒生成一条 reuse 声明：
+   * 执行期走 AuthoringRuntime.RecallTargets，复用上一次真正选中的那个单位。
+   */
+  const PRONOUN=/将其|对其|使其|将它|给其|其被|消灭其|压制其|返回其|弃掉其|该单位/;
+  function inheritTarget(previous){
+    if(!previous||!previous._lastTarget||!previous._lastTarget.ref)return null;
+    const decl=(previous.targets||[]).find(t=>t.id===previous._lastTarget.ref);
+    if(!decl)return null;
+    return {_lastTarget:copy(previous._lastTarget),_inheritDecl:copy(decl)};
+  }
+  function ensureReuseDecl(fx){
+    const decl=fx._inheritDecl;if(!decl)return;
+    fx._inheritDecl=null;
+    if(!(fx.targets||[]).some(t=>t.id===decl.id))fx.targets.push({...decl,reuse:true});
+  }
   function keyword(s){
     const m=s.trim().match(/^(.+?)(?:\s*[xX×]?\s*([\d零〇一二两三四五六七八九十百]+))?$/);if(!m)return null;
     const id=keyWords()[m[1].trim()];if(!id)return null;return {id,value:m[2]?number(m[2]):1,quantified:!!m[2]};
@@ -242,8 +262,12 @@
   function keywordLine(s){const items=split(s,'、,，;；').flatMap(x=>x.split(/\s+/)).filter(Boolean).map(keyword);return items.length&&items.every(Boolean)?items:null;}
   function basicParse(text,card,registry){
     const effects=[];let fx=null;
-    for(const line of split(text,'\n。；;')){const head=line.match(/^(部署|亡计|遗言|使用时|己方回合开始时|己方回合结束时|友方回合开始时|友方回合结束时)[：:,，]?\s*(.+)$/);
-      if(head){fx={trigger:({部署:'deploy',亡计:'death',遗言:'death',使用时:'play',己方回合开始时:'turnStart',友方回合开始时:'turnStart',己方回合结束时:'turnEnd',友方回合结束时:'turnEnd'})[head[1]],actions:[],targets:[]};effects.push(fx);}
+    for(const line of split(text,'\n。；;')){
+      // 「回合结束时」只在**带代词回指**时才当触发头：无代词的写法（如「回合结束时，抽 3 张牌」）
+      // 会产出执行面尚未适配的动作（moveCard/…），把原本能编译的卡整张拖垮。宁可不认。
+      let head=line.match(/^(部署|亡计|遗言|使用时|己方回合开始时|己方回合结束时|友方回合开始时|友方回合结束时)[：:,，]?\s*(.+)$/);
+      if(!head){const loose=line.match(/^(回合结束时)[：:,，]?\s*(.+)$/);if(loose&&PRONOUN.test(loose[2]))head=loose;}
+      if(head){const inherited=PRONOUN.test(head[2])?inheritTarget(effects[effects.length-1]):null;fx={trigger:({部署:'deploy',亡计:'death',遗言:'death',使用时:'play',回合结束时:'turnEnd',己方回合开始时:'turnStart',友方回合开始时:'turnStart',己方回合结束时:'turnEnd',友方回合结束时:'turnEnd'})[head[1]],actions:[],targets:[],...(inherited||{})};effects.push(fx);}
       let body=head?head[2]:line;
       if(!head&&card.cardType==='unit'){
         const selfEvent=line.match(/^(?:本单位)?(攻击时|被攻击时|受到伤害时|移至前线时|攻击后|升为老兵时)[，,](.+)$/);
@@ -266,7 +290,7 @@
       }
       const actions=actionsFor(body,fx,registry);if(!actions)return null;fx._lastClauseStart=fx.actions.length;fx.actions.push(...actions);
     }
-    return effects.map(({_lastTarget,_serial,_pending,_lastClauseStart,...e})=>e);
+    return effects.map(({_lastTarget,_serial,_pending,_lastClauseStart,_inheritDecl,...e})=>e);
   }
   function lower(a,registry){
     const only=keys=>Object.keys(a).every(k=>['op',...keys].includes(k));
