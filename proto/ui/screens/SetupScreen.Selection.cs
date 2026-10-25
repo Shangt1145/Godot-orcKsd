@@ -86,6 +86,8 @@ public partial class SetupScreen
     {
         StartButton.Text = !ReadyToPlay || (_online && !OnlineReady) ? "选择卡组  →" : _online ? "创建房间  →" : "开始训练  →";
         if (_pendingJoin.HasValue && OnlineReady) StartButton.Text = "加入选中的房间 →";
+        // 手机端起不了 OrcServer，按钮直说清楚，别让玩家点进去等半天才被告知缺 dll。
+        else if (_online && OnlineReady && !Kards.Ui.OrcBridge.ServerLauncher.CanHost) StartButton.Text = "手机端请加入好友房间";
         _pendingNotice.Visible = _pendingJoin.HasValue;
         if (_pendingJoin is { } pending) _pendingRoom.Text = $"准备加入 {pending.Host}:{pending.Port}";
         if (_online && !OnlineReady) _status.Text = "这副卡组暂不能用于好友对战。请选择 39 张联机可用卡牌组成的卡组，另含总部。";

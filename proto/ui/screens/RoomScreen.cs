@@ -237,6 +237,9 @@ public partial class RoomScreen : VBoxContainer
         var lifecycle = _lifecycle; _connecting = true;
         try
         {
+            // 开房要拉起 OrcServer 子进程，手机端做不了——先拦在门口，别等准备完卡组才甩一句找不到 dll。
+            if (!ServerLauncher.CanHost)
+                throw new InvalidOperationException("本机不能创建房间。请让好友在电脑上开房，然后用房间地址加入。");
             Ui(() => Say("正在准备卡组…"));
             // 有必带卡（验证探针）时强制走自动组牌，否则优先用玩家自己构筑的卡组。
             _deck = (string.IsNullOrEmpty(_requiredCard) ? TryActiveDeck() : null)

@@ -75,6 +75,20 @@ public sealed class ServerLauncher : IAsyncDisposable
             return;
         }
     }
+    /// <summary>
+    /// 本机能否充当房主：既要能定位到 OrcServer，也要能起独立子进程。
+    /// 安卓两样都不占——包里没有 OrcServer 载荷，也不允许起子进程，所以只能作客人加入。
+    /// </summary>
+    public static bool CanHost
+    {
+        get
+        {
+            if (OperatingSystem.IsAndroid() || OperatingSystem.IsIOS()) return false;
+            try { ResolveServerDll(); return true; }
+            catch (FileNotFoundException) { return false; }
+        }
+    }
+
     private static string ResolveServerDll()
     {
         var fromEnv = Environment.GetEnvironmentVariable("ORC_SERVER_DLL");
