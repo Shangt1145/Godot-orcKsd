@@ -55,9 +55,8 @@ public sealed class ServerLauncher : IAsyncDisposable
         => AdminAsync("conn.admit", new JsonObject { ["connectionId"] = connectionId }, ct);
     private async Task<bool> StartMatchAsync(CancellationToken ct)
     {
-        var plan = _manager.Assets.Plan(new PackageDeclaration("seat0", _packages), new PackageDeclaration("seat1", _packages));
-        if (!plan.Ok) throw new InvalidOperationException(plan.Message ?? plan.Code);
-        var reply = await AdminAsync("match.start", new JsonObject { ["plan"] = plan.Plan!.ToJson() }, ct);
+        // The server's mutable pool includes approved session packages received after spawn.
+        var reply = await AdminAsync("match.start", ct: ct);
         if (!reply.Ok) throw new InvalidOperationException(reply.Message ?? reply.Code);
         return true;
     }

@@ -1,6 +1,7 @@
 using Godot;
 using Kards.Ui.OrcBridge;
 using Kards.Ui.Core;
+using Kards.Ui.Contracts;
 
 namespace Kards.Ui;
 
@@ -9,6 +10,14 @@ public partial class RoomScreen : VBoxContainer
 {
     public CosmeticLibrary? Cosmetics { get; set; }
     private string _packsRoot = "", _sandbox = "";
+    internal Func<IReadOnlyList<string>>? WorkshopRootsSource { get; set; }
+    internal Func<IReadOnlyList<DiyCardDraft>>? WorkshopCardsSource { get; set; }
+    internal Func<IReadOnlyList<UiCardDefinition>>? WorkshopCatalogSource { get; set; }
+    internal string? WorkshopArtDirectory { get; set; }
+    private NetworkWorkshopSession? _workshopSession;
+    private CheckBox _receivePacks = null!;
+    private Label _packStatus = null!;
+    private Label _receiveHelp = null!;
     private ServerLauncher? _server;
     private RemoteMatchFeed? _feed;
     private LobbyDeck.Result? _deck;
@@ -156,6 +165,12 @@ public partial class RoomScreen : VBoxContainer
         _reapply = UiStyles.Button("重新申请入场", () => _ = ReapplyAsync()); _reapply.Visible = false; column.AddChild(_reapply);
         var help = UiStyles.Label("邀请好友加入，批准入场后即可开始。也可以在对手位置添加电脑对手。", 14, UiStyles.MenuDim);
         help.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(help);
+        _receivePacks = new CheckBox { Text = "接收好友卡包", TooltipText = "开启后将载入好友提供的效果脚本。收到的包仅用于本房间，不自动存入工坊。" };
+        _receivePacks.Toggled += enabled => _ = SetReceivePacksAsync(enabled);
+        column.AddChild(_receivePacks);
+        _receiveHelp = UiStyles.Label("开启接收后将载入好友提供的效果脚本；卡包仅用于本房间。", 12, UiStyles.MenuDim);
+        _receiveHelp.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_receiveHelp);
+        _packStatus = UiStyles.Label("等待卡包同步", 13, UiStyles.Gold); _packStatus.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_packStatus);
         column.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
         var details = new VBoxContainer { Visible = false }; column.AddChild(UiStyles.Button("连接详情", () => details.Visible = !details.Visible)); column.AddChild(details);
         _endpoint = UiStyles.Label("—", 14, UiStyles.MenuInk); _endpoint.AutowrapMode = TextServer.AutowrapMode.WordSmart; details.AddChild(_endpoint);
@@ -231,14 +246,14 @@ public partial class RoomScreen : VBoxContainer
 
             _deckPresentation = _deck.PackageId == "player" ? DeckPresentationSource?.Invoke()?.Snapshot() : null;
             Ui(() => Say("正在创建房间…"));
-            var packs = Directory.EnumerateDirectories(_packsRoot)
-                .Where(directory => File.Exists(Path.Combine(directory, "manifest.json")))
-                .OrderBy(directory => directory, StringComparer.Ordinal)
-                .ToArray();
+            PrepareWorkshopSession();
+            var packs = _workshopSession!.Roots;
             var server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null,
                 fixedDeckForVerification: FixedDeckForVerification);
             if (lifecycle != _lifecycle) { await server.DisposeAsync(); return; }
             _server = server;
+            var policy = await server.AdminAsync("pool.transfer.policy", new System.Text.Json.Nodes.JsonObject { ["allowGuestPacks"] = false, ["requireAlignment"] = true });
+            if (!policy.Ok) throw new InvalidOperationException(policy.Message ?? "服务端不支持工坊卡包，请更新服务端。");
             Ui(() => Say($"● 就绪 · 端口 {_server.Port}"));
 
             var feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
@@ -291,6 +306,8 @@ public partial class RoomScreen : VBoxContainer
         if (server is not null) { try { await server.DisposeAsync(); } catch (Exception) { } }
         _aiSeat = null; _guest = false; _guestPort = 0;
         _deck = null; _deckPresentation = null; _deckNote = null; _lastError = null; _starting = false;
+        _workshopSession = null;
+        Ui(() => _receivePacks.SetPressedNoSignal(false));
         Array.Clear(_occupied);
         _reconnectToken = null; _reconnectObserver = false;
         _closing = false;
@@ -317,6 +334,7 @@ public partial class RoomScreen : VBoxContainer
         }
 
         if (_feed is null) return;
+        _packStatus.Text = _feed.PackSyncStatus;
         _poll += delta;
         if (_poll < 1.5) return;
         _poll = 0;
@@ -347,6 +365,8 @@ public partial class RoomScreen : VBoxContainer
             if (_feed != feed || lifecycle != _lifecycle) return;
             if (!info.Ok) { Ui(() => Say("✗ " + info.Code)); return; }
             if (info.Details is not System.Text.Json.Nodes.JsonObject details) return;
+            await feed.SynchronizePacksAsync();
+            if (_feed != feed || lifecycle != _lifecycle) return;
 
             // 解析在任意线程做，写控件统一回主线程。
             var snapshot = Parse(details);
@@ -452,7 +472,10 @@ public partial class RoomScreen : VBoxContainer
         var ready0 = snapshot.Seats.Any(s => s.Seat == 0 && s.Connected);
         var ready1 = snapshot.Seats.Any(s => s.Seat == 1 && s.Connected);
         // 服务端没报卡池状态＝未知，不因此拦住开局（旧行为）；报告了才按 loaded 判定。
-        var poolOk = !snapshot.PolicyKnown || snapshot.Policy == "loaded";
+        var poolOk = (!snapshot.PolicyKnown || snapshot.Policy == "loaded") && (_workshopSession is null || _feed?.PacksAligned == true);
+        _packStatus.Text = _feed?.PackSyncStatus ?? "等待卡包同步";
+        _receivePacks.Visible = !_guest;
+        _receiveHelp.Visible = !_guest;
 
         SetCheck(_checkSeat0, ready0, "房主就绪");
         SetCheck(_checkSeat1, ready1, "对手就绪");
@@ -531,6 +554,7 @@ public partial class RoomScreen : VBoxContainer
                 ? LobbyDeck.Build(_packsRoot) : throw new InvalidOperationException(_deckNote ?? "请先选择可用卡组。"));
             _deckPresentation = _deck.PackageId == "player" ? DeckPresentationSource?.Invoke()?.Snapshot() : null;
 
+            PrepareWorkshopSession();
             Ui(() => Say($"○ 连接 {host}:{port}…"));
             _guestPort = port;
             var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
@@ -657,8 +681,8 @@ public partial class RoomScreen : VBoxContainer
     /// <para>
     /// 联机只认应用层 id（<c>pack/{包}/{局部id}</c>）。卡库分两套 id：原始 catalog（<c>av76/...</c>）
     /// 与卡包投影（<c>pack/...</c>），而**两者之间没有任何溯源字段**——不是"还没打通映射"，
-    /// 是数据本身毫无关联（实测 219 张包卡按国别+卡名只能对上 2 张）。所以这里只接受 <c>pack/</c> 前缀，
-    /// 混入源卡时阻止加入并提示更换卡组；产品入口不替玩家更换牌组。
+    /// 是数据本身毫无关联。原生 <c>pack/</c> 与可编译的工坊 <c>diy/</c> 均可申请；
+    /// DIY 在占座前冻结为原生会话包并映射标识。混入源卡时阻止加入并提示更换卡组。
     /// </para>
     /// </summary>
     internal Func<IReadOnlyList<string>?>? ActiveDeckSource { get; set; }
@@ -672,7 +696,7 @@ public partial class RoomScreen : VBoxContainer
         var ids = ActiveDeckSource?.Invoke();
         if (ids is null || ids.Count == 0) return null;
 
-        var invalid = ids.FirstOrDefault(id => !id.StartsWith("pack/", StringComparison.Ordinal));
+        var invalid = ids.FirstOrDefault(id => !id.StartsWith("pack/", StringComparison.Ordinal) && !id.StartsWith("diy/", StringComparison.Ordinal));
         if (invalid is not null)
         {
             _deckNote = $"卡组含联机不支持的卡（{invalid}）";
@@ -687,6 +711,23 @@ public partial class RoomScreen : VBoxContainer
 
         _deckNote = "你的构筑卡组";
         return new LobbyDeck.Result("player", "自建", ids.ToArray());
+    }
+
+    private void PrepareWorkshopSession()
+    {
+        var roots = WorkshopRootsSource?.Invoke() ?? Directory.EnumerateDirectories(_packsRoot)
+            .Where(p => File.Exists(Path.Combine(p, "manifest.json"))).OrderBy(p => p, StringComparer.Ordinal).ToArray();
+        _workshopSession = NetworkWorkshopSession.Prepare(Path.Combine(_sandbox, "net-assets", "local"), roots,
+            WorkshopCardsSource?.Invoke() ?? [], WorkshopCatalogSource?.Invoke() ?? [], _deck?.CardIds ?? [], WorkshopArtDirectory);
+        if (_deck is not null) _deck = _deck with { CardIds = _workshopSession.MapDeck(_deck.CardIds) };
+    }
+
+    private async Task SetReceivePacksAsync(bool enabled)
+    {
+        if (_server is not { } server || _guest) return;
+        var reply = await server.AdminAsync("pool.transfer.policy", new System.Text.Json.Nodes.JsonObject { ["allowGuestPacks"] = enabled, ["requireAlignment"] = true });
+        if (!reply.Ok) Ui(() => { _receivePacks.SetPressedNoSignal(!enabled); _hint.Text = reply.Message ?? "卡包接收设置未保存。"; });
+        else Ui(() => _hint.Text = enabled ? "已允许载入好友提供的效果脚本；卡包仅保存在本房间会话。" : "已关闭接收好友卡包。");
     }
 
     /// <summary>最后一条服务端错误（验证探针用来报告占座/开局失败的真实原因）。</summary>
@@ -925,6 +966,7 @@ public partial class RoomScreen : VBoxContainer
         try
         {
             if (_server is not null && port == _server.Port) throw new InvalidOperationException("房主无需通过自己的地址观战，请由另一客户端加入。");
+            PrepareWorkshopSession();
             var feed = await RemoteMatchFeed.ConnectAsync(host, port);
             connectingFeed = feed;
             if (lifecycle != _lifecycle) return;
@@ -965,6 +1007,7 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>挂延迟显示（M5）：启动 ping 循环并把结果写进状态栏。</summary>
     private void HookPing(RemoteMatchFeed feed)
     {
+        if (_workshopSession is not null) feed.ConfigurePackTransfer(_workshopSession, _deck?.CardIds ?? []);
         if(Cosmetics is not null)feed.ConfigureCosmetics(Cosmetics,_deckPresentation?.Id,_deckPresentation?.Options.MainNation);
         feed.StartPingLoop();
         feed.AdmissionChanged += state => Ui(() => {

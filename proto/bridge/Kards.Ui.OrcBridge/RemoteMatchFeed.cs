@@ -148,17 +148,19 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         var client = await OrcClient.ConnectAsync(new ClientOptions { Host = host, Port = port }, ct)
             .ConfigureAwait(false);
         var supportsCosmetics = false;
+        var supportsPacks = false;
         try
         {
             var initialized = await client.InitializeAsync(new InitializeParams { ClientName = "godot" }, ct).ConfigureAwait(false);
             supportsCosmetics = initialized.Capabilities.Contains("cosmetics-v1");
+            supportsPacks = initialized.Capabilities.Contains("pack-transfer-v1");
         }
         catch
         {
             await client.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics };
+        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics, SupportsPackTransfer = supportsPacks };
     }
 
     /// <summary>读房间快照（座位、可连地址、卡包状态）。</summary>
@@ -349,7 +351,7 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         AttackUnit attack => ("command.attack", new JsonObject { ["ref"] = attack.AttackerUid }),
         RetreatUnit retreat => ("command.leave", new JsonObject { ["ref"] = retreat.Uid }),
         EndTurn => ("match.end_turn", new JsonObject()),
-        Concede => ("match.concede", new JsonObject()),
+        Concede => ("match.concede", new JsonObject { ["owner"] = Seat }),
         _ => (null, null),
     };
 
@@ -480,7 +482,9 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private UiMatchView ResolveArt(UiMatchView view)
     {
         UiCardView? Art(UiCardView? card) => card is null ? null : card with
-        { Definition = card.Definition with { ArtPath = ArtPathResolver?.Invoke(card.Definition.CardId) ?? card.Definition.ArtPath } };
+        { Definition = card.Definition with { ArtPath = ResolveNetworkArt(card.Definition.CardId) ?? card.Definition.ArtPath,
+            Text = _networkTexts.GetValueOrDefault(card.Definition.CardId, card.Definition.Text),
+            Flavor = _networkFlavor.GetValueOrDefault(card.Definition.CardId, card.Definition.Flavor) } };
         return view with { SelfHand = view.SelfHand.Select(c => Art(c)!).ToArray(), SelfLine = view.SelfLine.Select(c => Art(c)!).ToArray(),
             EnemyLine = view.EnemyLine.Select(c => Art(c)!).ToArray(), SelfHq = Art(view.SelfHq), EnemyHq = Art(view.EnemyHq),
             PendingChoices = view.PendingChoices.Select(c => Art(c)!).ToArray(), SelectedTarget = Art(view.SelectedTarget) };
@@ -554,7 +558,7 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         _pendingSegments.Clear();
         if (before is not null && before.MatchId == view.MatchId)
         {
-            var steps = RemotePresentationTranslator.Translate(entries, before, view, Seat, ArtPathResolver);
+            var steps = RemotePresentationTranslator.Translate(entries, before, view, Seat, ResolveNetworkArt);
             PresentationReady?.Invoke(new UiPresentationResolution(MatchId, steps, view)
                 { Before = before, Sequence = _lastSegmentSequence }, actions);
         }

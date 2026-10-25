@@ -16,7 +16,7 @@ public partial class SetupScreen
     private VBoxContainer _pendingNotice = null!;
     private Label _pendingRoom = null!;
     public void SetResume(bool available, string caption) { if (_resumeSession is not null) { _resumeSession.Visible = available; _resumeSession.Text = caption; } }
-    private bool OnlineReady => ReadyToPlay && _library.ActiveDeck is { CardIds.Length: 39 } deck && deck.CardIds.All(id => id.StartsWith("pack/", StringComparison.Ordinal));
+    private bool OnlineReady => ReadyToPlay && _library.ActiveDeck is { CardIds.Length: 39 } deck && deck.CardIds.All(id => id.StartsWith("pack/", StringComparison.Ordinal) || id.StartsWith("diy/", StringComparison.Ordinal));
 
     private SetupDeckBack _selectedBack = null!;
     private void BuildSelection()

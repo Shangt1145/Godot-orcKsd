@@ -1,5 +1,9 @@
 # OrC-KSD 接入基线
 
+## 工坊联机开发依赖（2026-10-25）
+
+当前引擎 HEAD `4e7b2a223d93e516a69c062fe87f519f13dd993e` 加 [工坊联机配套补丁](../engine-patches/network-workshop-20261025.patch)。包含会话包传输、词条准入和服务端开局对齐门禁；需要重新构建 `Orc.Server`，并与客户端一同更新。[使用流程与验证范围](../acceptance/NETWORK_WORKSHOP_20261025.md)。本机引擎工作副本已应用，勿重复叠加。
+
 ## 当前开发依赖（2026-10-24）
 
 新增外观联机通道依赖服务端本地修改：[展示通道补丁](../engine-patches/cosmetics-channel-20261024.patch)、[功能及验证记录](../acceptance/COSMETICS_20261024.md)。补丁基于下述整合 HEAD，独立于机制兼容修复；服务端全套 117/117，未推送、未重打发行包。

@@ -10,6 +10,32 @@ namespace Kards.Ui.OrcBridge;
 
 public static class WorkshopAuthoring
 {
+    internal static IReadOnlyList<DiyNationDraft> NetworkNations(string packId)
+    {
+        var parent = _packs.FirstOrDefault(p => p.Id == packId)?.BasePackId;
+        return _packs.Where(p => p.Id == packId || p.Id == parent).SelectMany(p => p.Nations).ToArray();
+    }
+    internal static System.Text.Json.Nodes.JsonArray NetworkVocabulary(IEnumerable<string> packIds)
+    {
+        var selected = packIds.ToHashSet(StringComparer.Ordinal);
+        var result = new System.Text.Json.Nodes.JsonArray();
+        foreach (var k in _packs.Where(p => selected.Contains(p.Id)).SelectMany(p => p.Keywords))
+        {
+            if (!_keywords.TryGetValue(k.Id, out var id)) throw new InvalidDataException("词条无法编译：" + k.Name);
+            var row = new System.Text.Json.Nodes.JsonObject { ["id"] = id, ["battle"] = k.Battle };
+            if (k.ProgramJson is { } json)
+            {
+                var program = KeywordProgram.Parse(json);
+                string BindKeyword(string key) => key.Length == 0 ? "" : _keywords.TryGetValue(key, out var authored) ? authored : KeywordRegistry.IsDefined(key) ? key : DiyCardCompiler.EngineKeywordId(key);
+                KeywordProgramAction[] Bind(KeywordProgramAction[] actions) => actions.Select(a => a with { Key = a.Op is "keyword.grant" or "keyword.remove" ? BindKeyword(a.Key) : a.Key, Then = Bind(a.Then), Else = Bind(a.Else) }).ToArray();
+                program = program with { Handlers = program.Handlers.Select(h => h with { Actions = Bind(h.Actions) }).ToArray(), Skills = program.Skills.Select(s => s with { Actions = Bind(s.Actions) }).ToArray() };
+                row["program"] = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(program));
+            }
+            else row["snapshots"] = new System.Text.Json.Nodes.JsonArray(CompileKeyword(k).Select(s => System.Text.Json.Nodes.JsonNode.Parse(PrefabJson.SerializeForDisk(s))).ToArray());
+            result.Add(row);
+        }
+        return result;
+    }
     private static IReadOnlyList<DiyPackDraft> _packs=[];
     private static IReadOnlyDictionary<string,string> _keywords=new Dictionary<string,string>();
     public static IReadOnlyDictionary<string,string> Errors {get;private set;}=new Dictionary<string,string>();

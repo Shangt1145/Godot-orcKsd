@@ -1,0 +1,167 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Kards.Ui.Contracts;
+using Orc.Protocol;
+using Orc.Core;
+
+namespace Kards.Ui.OrcBridge;
+
+/// <summary>Freezes enabled native packs and compiles compatibility drafts into session-only native packages.</summary>
+public sealed class NetworkWorkshopSession
+{
+    public IReadOnlyList<string> Roots { get; private init; } = [];
+    public IReadOnlyDictionary<string, string> CardIds { get; private init; } = new Dictionary<string, string>();
+    public string Directory { get; private init; } = "";
+    public IReadOnlyList<string> MapDeck(IReadOnlyList<string> ids) => ids.Select(id => CardIds.GetValueOrDefault(id, id)).ToArray();
+
+    public static NetworkWorkshopSession Prepare(string sessionRoot, IReadOnlyList<string> nativeRoots,
+        IReadOnlyList<DiyCardDraft> drafts, IReadOnlyList<UiCardDefinition> catalog, IReadOnlyList<string> deck,
+        string? artDirectory = null)
+    {
+        CleanupExpired(sessionRoot);
+        var directory = Path.Combine(sessionRoot, Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(directory);
+        var roots = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var source in nativeRoots)
+        {
+            var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(source, "manifest.json")))!;
+            var id = manifest["id"]!.ToString();
+            var target = Path.Combine(directory, NetworkPackageArchive.Key(id));
+            WorkshopPackageArchive.Copy(source, target);
+            if (!roots.TryAdd(id, target)) throw new InvalidDataException("重复卡包：" + id);
+        }
+        // IDs depend on the authored identity, never on machine paths or connection order.
+        string Package(DiyCardDraft c) => c.PackId.StartsWith("pack/", StringComparison.Ordinal) ? c.PackId[5..] : "workshop.loose";
+        var ids = drafts.ToDictionary(c => c.RuntimeId, c => c.SourceCardId.Length > 0 ? c.SourceCardId : "pack/" + Package(c) + "/card." + NetworkPackageArchive.Key(c.Id)[..32].ToLowerInvariant(), StringComparer.Ordinal);
+        if (deck.FirstOrDefault(id => id.StartsWith("diy/", StringComparison.Ordinal) && !ids.ContainsKey(id)) is { } missing)
+            throw new InvalidDataException("找不到所选 DIY 卡牌的可执行草稿：" + missing);
+        var selected = drafts.Where(c => deck.Contains(c.RuntimeId)).Select(Package).ToHashSet(StringComparer.Ordinal);
+        // Bring the complete selected family: expansions inherit vocabulary from the base pack.
+        foreach (var c in drafts)
+            if (selected.Contains(Package(c))) selected.Add(Kards.Ui.Core.DeckCardPacks.Family(c.PackId).Replace("pack/", ""));
+        foreach (var c in drafts)
+            if (selected.Contains(Kards.Ui.Core.DeckCardPacks.Family(c.PackId).Replace("pack/", ""))) selected.Add(Package(c));
+        var chosen = drafts.Where(c => selected.Contains(Package(c))).ToArray();
+        foreach (var group in chosen.GroupBy(Package))
+        {
+            var id = group.Key;
+            if (!roots.TryGetValue(id, out var root))
+            {
+                root = Path.Combine(directory, NetworkPackageArchive.Key(id)); System.IO.Directory.CreateDirectory(root); roots.Add(id, root);
+                var manifest = new JsonObject { ["schemaVersion"] = 2, ["id"] = id, ["kind"] = "cardpack",
+                    ["guid"] = StableGuid("package/" + id), ["version"] = "1.0.0", ["name"] = WorkshopAuthoring.PackNames.GetValueOrDefault("pack/" + id, "工坊自建卡包"), ["metadata"] = new JsonArray() };
+                Save(root, "manifest.json", manifest);
+            }
+            var packageManifest = Read(root, "manifest.json");
+            var metadata = packageManifest["metadata"]!.AsArray();
+            var formalLock = ReadOptional(root, "lock.formal.json");
+            if (formalLock.Count == 0) { formalLock["schemaVersion"] = 1; formalLock["packageId"] = id; formalLock["domain"] = "formal"; formalLock["assets"] = new JsonArray(); }
+            var texts = ReadOptional(root, "display-texts.json");
+            var plans = ReadOptional(root, "desktop-effects.json");
+            var presentation = ReadOptional(root, "workshop.presentation.json");
+            if (presentation["cards"] is not JsonObject) presentation["cards"] = new JsonObject();
+            var nations = (presentation["nations"] as JsonArray ?? new()).OfType<JsonObject>()
+                .ToDictionary(n => n["id"]!.ToString(), n => n.DeepClone(), StringComparer.Ordinal);
+            foreach (var n in WorkshopAuthoring.NetworkNations(group.First().PackId)) nations[n.Id] = new JsonObject { ["id"] = n.Id, ["name"] = n.Name };
+            presentation["nations"] = new JsonArray(nations.Values.ToArray());
+            var family = Kards.Ui.Core.DeckCardPacks.Family("pack/" + id);
+            if (family != "pack/" + id) presentation["basePackId"] = family.StartsWith("pack/") ? family[5..] : family;
+            foreach (var draft in group)
+            {
+                var validation = DiyCardCompiler.Validate(draft, catalog);
+                if (!validation.Success)
+                {
+                    if (deck.Contains(draft.RuntimeId)) throw new InvalidDataException(draft.Name + "：" + string.Join("；", validation.Errors));
+                    continue; // Unfinished cards remain drafts.
+                }
+                var compiled = DiyCardCompiler.Compile(draft.Snapshot(), catalog);
+                var mapped = ids[draft.RuntimeId]; var localId = mapped[(id.Length + 6)..];
+                var relative = "cards/" + localId + ".card.json";
+                if (draft.SourceCardId.Length > 0)
+                {
+                    var meta = metadata.Select(n => n!.ToString()).Select(path => Read(root, path))
+                        .FirstOrDefault(m => (m["assets"] as JsonArray)?.Any(a => a?["kind"]?.ToString() == "card" && a?["id"]?.ToString() == localId) == true)
+                        ?? throw new InvalidDataException("找不到被修改卡牌的原生元数据：" + draft.SourceCardId);
+                    relative = meta["source"]!.ToString();
+                }
+                else
+                {
+                    var metaPath = relative + ".meta.json";
+                    var assetGuid = AssetIdentity.DeriveAssetGuid(Guid.Parse(packageManifest["guid"]!.ToString()), AssetKind.Card, localId, new AssetVersion(1, 0, 0)).ToString();
+                    metadata.Add(metaPath);
+                    formalLock["assets"]!.AsArray().Add(new JsonObject { ["guid"] = assetGuid, ["kind"] = "card", ["id"] = mapped, ["version"] = "1.0.0" });
+                    Save(root, metaPath, new JsonObject { ["schemaVersion"] = 1, ["packageId"] = id, ["source"] = relative,
+                        ["assets"] = new JsonArray(new JsonObject { ["guid"] = assetGuid, ["kind"] = "card", ["id"] = localId, ["version"] = "1.0.0", ["dependsOn"] = new JsonArray(), ["conflictsWith"] = new JsonArray() }) });
+                }
+                var card = JsonNode.Parse(compiled.CardJson)!;
+                ReplaceReferences(card, ids); card["id"] = localId; Save(root, relative, card);
+                texts[localId] = compiled.Card.Text;
+                var graphs = draft.OrcEffects.Where(e => e.DesktopJson is not null).Select(e => e.DesktopJson!).Concat(WorkshopAuthoring.KeywordGraphs(draft)).ToArray();
+                if (graphs.Length > 0) { var graphArray = JsonSerializer.SerializeToNode(graphs)!; ReplaceReferences(graphArray, ids); plans[localId] = graphArray; }
+                var entry = (presentation["cards"]![localId] as JsonObject)?.DeepClone().AsObject() ?? new JsonObject();
+                entry["flavor"] = draft.Flavor;
+                if (draft.ArtFile.Length > 0 && artDirectory is not null)
+                {
+                    var source = NetworkPackageArchive.Child(artDirectory, draft.ArtFile);
+                    if (!File.Exists(source)) throw new InvalidDataException("缺少自建卡图：" + draft.Name);
+                    var art = "art/" + NetworkPackageArchive.Hash(File.ReadAllBytes(source)) + ".png";
+                    System.IO.Directory.CreateDirectory(Path.Combine(root, "art")); File.Copy(source, NetworkPackageArchive.Child(root, art), true);
+                    entry["art"] = art; entry["artKind"] = draft.ArtImportMode == "full" ? "full" : "illustration";
+                }
+                presentation["cards"]![localId] = entry;
+            }
+            Save(root, "manifest.json", packageManifest); Save(root, "display-texts.json", texts);
+            Save(root, "lock.formal.json", formalLock);
+            Save(root, "desktop-effects.json", plans); Save(root, "workshop.presentation.json", presentation);
+            // One owner per vocabulary, including the base of an expansion.
+            var vocabularyPacks = new[] { group.First().PackId, family }.Distinct().ToArray();
+            var vocabulary = WorkshopAuthoring.NetworkVocabulary(vocabularyPacks); ReplaceReferences(vocabulary, ids);
+            Save(root, "network-vocabulary.json", vocabulary);
+        }
+        // A modified package must have a content version that changes with its payload.
+        foreach (var group in chosen.GroupBy(Package))
+        {
+            var root = roots[group.Key]; var manifest = Read(root, "manifest.json");
+            manifest["version"] = NetworkPackageArchive.Digest(root)[..32]; Save(root, "manifest.json", manifest);
+        }
+        return new() { Directory = directory, Roots = roots.Values.ToArray(), CardIds = ids };
+    }
+    private static string StableGuid(string id) => new Guid(Convert.FromHexString(NetworkPackageArchive.Key(id)[..32])).ToString();
+    private static void CleanupExpired(string sessionRoot)
+    {
+        if (!System.IO.Directory.Exists(sessionRoot)) return;
+        var parent = Path.GetFullPath(sessionRoot) + Path.DirectorySeparatorChar;
+        foreach (var candidate in System.IO.Directory.GetDirectories(sessionRoot))
+        {
+            if (!Guid.TryParseExact(Path.GetFileName(candidate), "N", out _) || !Path.GetFullPath(candidate).StartsWith(parent, StringComparison.OrdinalIgnoreCase)
+                || (File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0 || System.IO.Directory.GetCreationTimeUtc(candidate) > DateTime.UtcNow.AddHours(-24)) continue;
+            try { _ = NetworkPackageArchive.Files(candidate).Count(); System.IO.Directory.Delete(candidate, true); }
+            catch (IOException) { } catch (UnauthorizedAccessException) { } catch (InvalidDataException) { }
+        }
+    }
+    private static JsonObject Read(string root, string path) => JsonNode.Parse(File.ReadAllText(NetworkPackageArchive.Child(root, path)))!.AsObject();
+    private static JsonObject ReadOptional(string root, string path) => File.Exists(Path.Combine(root, path)) ? Read(root, path) : new();
+    private static void Save(string root, string path, JsonNode value)
+    {
+        var target = NetworkPackageArchive.Child(root, path); System.IO.Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllText(target, value.ToJsonString());
+    }
+    private static void ReplaceReferences(JsonNode node, IReadOnlyDictionary<string, string> ids)
+    {
+        if (node is JsonObject obj)
+            foreach (var pair in obj.ToArray())
+            { if (pair.Value is JsonValue value && value.TryGetValue<string>(out var s)) obj[pair.Key] = ReplaceString(s, ids); else if (pair.Value is not null) ReplaceReferences(pair.Value, ids); }
+        else if (node is JsonArray array)
+            for (int i = 0; i < array.Count; i++)
+            { if (array[i] is JsonValue value && value.TryGetValue<string>(out var s)) array[i] = ReplaceString(s, ids); else if (array[i] is { } child) ReplaceReferences(child, ids); }
+    }
+    private static string ReplaceString(string value, IReadOnlyDictionary<string, string> ids)
+    {
+        if (ids.TryGetValue(value, out var mapped)) return mapped;
+        if (value.TrimStart().StartsWith('{') || value.TrimStart().StartsWith('['))
+            try { var nested = JsonNode.Parse(value)!; ReplaceReferences(nested, ids); return nested.ToJsonString(); } catch (JsonException) { }
+        // Compiler-generated C# uses quoted card IDs. Replace complete string literals only.
+        foreach (var pair in ids) value = value.Replace(JsonSerializer.Serialize(pair.Key), JsonSerializer.Serialize(pair.Value), StringComparison.Ordinal);
+        return value;
+    }
+}
