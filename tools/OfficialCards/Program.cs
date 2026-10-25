@@ -140,8 +140,11 @@ var admitted = new List<(string Set, OfficialCompiledCard Card)>(); var pending 
 foreach (var item in records.EnumerateArray())
 {
     var card = item.GetProperty("json"); var id=card.GetProperty("id").GetString()!; var set=card.GetProperty("set").GetString()!;
-    if(existing.Contains(id))continue;
-    if(only.Count>0&&!only.Contains(id))continue;
+    // --only 是显式白名单：即便这张卡已经在卡池里也要重编。
+    // 卡池里有大量「有卡面文本、card.json 却连 effects 组件都没有」的白板卡（历史产物缺口），
+    // 它们不在 desktop-effects.json 的受管表里，走 --refresh 永远轮不到——只能靠白名单强刷。
+    if(only.Count>0){ if(!only.Contains(id))continue; }
+    else if(existing.Contains(id))continue;
     if(!sets.TryGetValue(set,out var pack))continue;
     try { admitted.Add((set,OfficialCardCompiler.Compile(card,pack.Id))); }
     catch(Exception e) when(e is InvalidDataException or ArgumentException or InvalidOperationException or FormatException)
@@ -151,9 +154,12 @@ var jsonOptions = new JsonSerializerOptions {WriteIndented=true};
 if(write)
     foreach(var group in managed.GroupBy(m=>m.Directory))
     {
-        foreach(var name in new[]{"display-texts.json","desktop-effects.json"})
+        // texts.json＝「按文本编译效果」的声明表。同一张卡一旦有了已编译效果（desktop-effects），
+        // 两处同名会让 PackPresentationData 直接抛「同时声明了文本编译与已编译效果」。
+        foreach(var name in new[]{"display-texts.json","desktop-effects.json","texts.json"})
         {
-            var file=Path.Combine(group.Key,name);var data=JsonNode.Parse(File.ReadAllText(file))!.AsObject();
+            var file=Path.Combine(group.Key,name);if(!File.Exists(file))continue;
+            var data=JsonNode.Parse(File.ReadAllText(file))!.AsObject();
             foreach(var card in group)data.Remove(card.Id);
             File.WriteAllText(file,data.ToJsonString(jsonOptions));
         }
@@ -173,16 +179,21 @@ foreach (var group in admitted.GroupBy(a=>a.Set))
             dependsOn= new[]{new {id="builtin",version="1.*.*"}},assets=Array.Empty<object>()},jsonOptions));
     }
     JsonObject Read(string file)=>File.Exists(file)?JsonNode.Parse(File.ReadAllText(file))!.AsObject():new();
+    var textCompilePath=Path.Combine(directory,"texts.json");
     var display=Read(Path.Combine(directory,"display-texts.json")); var graphs=Read(Path.Combine(directory,"desktop-effects.json"));
+    var textCompile=Read(textCompilePath);
     foreach(var (_,card) in group)
     {
         File.WriteAllText(Path.Combine(directory,"cards",card.Id+".card.json"),card.EngineJson);
         display[card.Id]=card.Text;
+        // 已编译效果进 desktop-effects，就必须撤掉同名的文本编译声明（否则装配期直接抛冲突）。
+        textCompile.Remove(card.Id);
         // Preserve the exact graph bytes: native pre-play capture keys include a graph hash.
         graphs[card.Id]=JsonSerializer.SerializeToNode(card.Graphs);
     }
     File.WriteAllText(Path.Combine(directory,"display-texts.json"),display.ToJsonString(jsonOptions));
     File.WriteAllText(Path.Combine(directory,"desktop-effects.json"),graphs.ToJsonString(jsonOptions));
+    if(File.Exists(textCompilePath))File.WriteAllText(textCompilePath,textCompile.ToJsonString(jsonOptions));
 }
 Directory.CreateDirectory(Path.Combine(root,"artifacts"));
 File.WriteAllText(Path.Combine(root,"artifacts/official-card-expansion.json"),JsonSerializer.Serialize(new {

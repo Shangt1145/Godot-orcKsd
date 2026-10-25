@@ -15,9 +15,13 @@ public partial class Main
     private async Task VerifyDeployCardAsync()
     {
         var id = OS.GetEnvironment("DEPLOY_CARD_ID") is { Length: > 0 } env ? env : "pack/exp-winterwar/h39_swg";
+        // 部署指向是两段式：先落位、再由部署效果问"选谁"。要验第二段，场面必须先有可作用的对象，
+        // 所以允许先铺一张垫场单位（DEPLOY_HOST_CARD）。
+        var hostId = OS.GetEnvironment("DEPLOY_HOST_CARD") is { Length: > 0 } host ? host : null;
+        var hand = hostId is null ? new[] { id } : new[] { hostId, id };
         Show("battle");
         await StartRealMatchAsync(interactiveMulligan: false, manualOpponentForVerification: true,
-            deckSeed: 7, verificationHand: [id]);
+            deckSeed: 7, verificationHand: hand);
         var runner = _runner!;
         var opening = runner.CurrentView ?? throw new Exception("no projection after start");
         var card = opening.SelfHand.FirstOrDefault(c => c.CardId == id)
@@ -47,6 +51,17 @@ public partial class Main
                 var until = Time.GetTicksMsec() + 6000;
                 while (Time.GetTicksMsec() < until && (runner.IsSubmitting || runner.TargetPending))
                 { runner.Pump(); await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); }
+            }
+            // 两段式的第一段：趁开局 1 费先把垫场单位正常落位（它自己不带指向）。
+            if (hostId is not null && runner.CurrentView!.SelfKredits >= 1)
+            {
+                var hostCard = runner.CurrentView!.SelfHand.FirstOrDefault(c => c.CardId == hostId)
+                    ?? throw new Exception($"verification hand lacks host {hostId}");
+                await _battle.DragAsync(hostCard.Uid, _battle.DropAtRowEdge(false, false));
+                await SettleAsync();
+                var hostLanded = runner.CurrentView!.SelfLine.Any(c => c.Uid == hostCard.Uid);
+                GD.Print($"DEPLOY_HOST_RESULT id={hostId} landed={hostLanded} line=[{string.Join(' ', runner.CurrentView!.SelfLine.Select(c => $"{c.CardId}@{c.SlotIndex}"))}]");
+                if (!hostLanded) throw new Exception("垫场单位没能落位，第二段无从验证");
             }
             for (var turn = 0; turn < 8 && runner.CurrentView!.SelfKredits < cost; turn++)
             {
@@ -106,6 +121,10 @@ public partial class Main
                 + $"settled={settled} submitting={runner.IsSubmitting} targetPending={runner.TargetPending} "
                 + $"targets={requests.Count} held={waitedForTarget} line=[{string.Join(' ', final.SelfLine.Select(c => $"{c.CardId}@{c.SlotIndex}"))}] "
                 + $"diff=[{_battle.ProjectionDiff(final)}]");
+            // 选靶到底走没走、被谁取消——日志比结果行更能说明问题（这张卡是"先落位再选靶"的两段式）。
+            foreach (var entry in Kards.Ui.Core.GameLog.Snapshot()
+                         .Where(e => e.Category is "target" or "submit").TakeLast(24))
+                GD.Print($"DEPLOY_LOG {entry}");
             if(errors.Count!=0)throw new Exception("Deployment raised native errors: "+string.Join(";",errors));
             if(_battle.ProjectionDiff(final).Any())throw new Exception("Deployment projection did not settle.");
             if (!settled) throw new Exception($"deployment never settled: targets={requests.Count} targetPending={runner.TargetPending}");
