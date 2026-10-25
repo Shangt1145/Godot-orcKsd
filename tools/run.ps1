@@ -31,6 +31,7 @@
     [string]$MobileSize = '1200x540'
 )
 $ErrorActionPreference = 'Stop'
+Write-Host '[1/5] 同步源码到运行副本 …' -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot 'prepare.ps1') -BuildRoot $BuildRoot -SkipAssets
 if (!(Test-Path -LiteralPath $Godot)) { throw 'Pass -Godot with the path to Godot 4.7 .NET.' }
 if (Test-Path (Join-Path $EngineRoot 'src\Orc.Server')) { $env:ORC_ENGINE_ROOT = $EngineRoot }
@@ -38,6 +39,8 @@ Push-Location $BuildRoot
 try {
     $probeOutput = & $Godot --headless --path $BuildRoot --script (Join-Path $BuildRoot 'tools\probe.gd') 2>&1
     if (($probeOutput -join "`n") -notmatch 'csharp=true') { throw 'Godot has no C# support. Use the .NET build.' }
+    Write-Host '[2/5] 编译工程 …' -ForegroundColor Cyan
+    Write-Host "      ORC_ENGINE_ROOT=$env:ORC_ENGINE_ROOT" -ForegroundColor DarkGray
     & dotnet build 'Kards.Ui.csproj' --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     # Development runs use the engine just built, rather than an older server beside a prior export.
@@ -48,6 +51,7 @@ try {
     # once to resolve the full closure and sync whatever the Godot output is missing.
     $assemblyDir = Join-Path $BuildRoot '.godot\mono\temp\bin\Debug'
     $runtimeOut = Join-Path $env:TEMP 'kards-ui-runtime'
+    Write-Host '[3/5] 准备脚本运行时依赖 …' -ForegroundColor Cyan
     & dotnet publish (Join-Path $PSScriptRoot '..\proto\bridge\Kards.Ui.OrcBridge\Kards.Ui.OrcBridge.csproj') -c Debug -o $runtimeOut --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Runtime closure publish failed.' }
     Get-ChildItem $runtimeOut -Filter '*.dll' |
@@ -63,11 +67,18 @@ try {
     # Godot 的 headless 编辑器会往 stderr 打一条 "EditorSettings not instantiated yet …"（配置了
     # Android SDK 路径后必现）。$ErrorActionPreference='Stop' 会把它当成致命错误，把整个验证流程掐断，
     # 所以这里显式降级为 Continue，只看退出码。
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try { & $Godot --headless --editor --path $BuildRoot --quit 2>&1 | Out-Null }
-    finally { $ErrorActionPreference = $previousPreference }
-    if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
+    # 资源导入只有真正要跑 Godot 时才必要：单独 -Test 跳过，省掉几分钟的静默等待。
+    $onlyTest = $Test -and @($PSBoundParameters.Keys | Where-Object {
+        $_ -notin @('Test', 'BuildRoot', 'Godot', 'EngineRoot', 'MobileSize') }).Count -eq 0
+    if (-not $onlyTest) {
+        Write-Host '[4/5] Godot 资源导入（首次或资源变动时较慢，静默等待即可）…' -ForegroundColor Cyan
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & $Godot --headless --editor --path $BuildRoot --quit 2>&1 | Out-Null }
+        finally { $ErrorActionPreference = $previousPreference }
+        if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
+    }
+    Write-Host '[5/5] 运行 …' -ForegroundColor Cyan
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }

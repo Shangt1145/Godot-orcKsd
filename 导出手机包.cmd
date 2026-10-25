@@ -4,5 +4,6 @@ rem Keep this file ASCII-only (cmd.exe reads .cmd in the OEM codepage).
 setlocal
 set "ROOT=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\export-android.ps1"
-if errorlevel 1 (echo. & echo [FAILED] & pause)
+if errorlevel 1 (echo. & echo [FAILED]) else (echo. & echo [DONE])
+pause
 endlocal

@@ -50,6 +50,23 @@ public partial class Main : Control
     private string _deckPath = "";
     private DiyWorkshopLibrary _workshopLibrary=null!;
     private DiyWorkshopScreen _workshop=null!;
+    private GameConsole? _console;
+
+    /// <summary>
+    /// 控制台必须在建界面**之前**挂上：启动阶段的失败也要能看见。
+    /// 它挂在 CanvasLayer 上，不参与屏幕切换，F1 / 右下角按钮切换。
+    /// </summary>
+    private void MountConsole()
+    {
+        _console = new GameConsole
+        {
+            ShowScreenRequested = id => { if (_screens.ContainsKey(id)) Show(id); else GameLog.Warn("console", "没有这个屏幕：" + id); },
+            DescribeState = () =>
+                $"屏幕={_active} 卡池={_catalog.Cards.Count} 对局数据源={_feed?.GetType().Name ?? "无"} " +
+                $"日志={GameLog.Snapshot().Length} 丢弃={GameLog.Dropped}",
+        };
+        AddChild(_console);
+    }
 
     public override async void _Ready()
     {
@@ -74,6 +91,7 @@ public partial class Main : Control
         MobileSim.Initialize();
         if (OS.HasFeature("mobile")) { DisplayServer.ScreenSetKeepOn(true); GetTree().QuitOnGoBack = false; }
         _splash = new MenuSplash(); _splash.Initialize(); AddChild(_splash); _splash.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        MountConsole();
         try
         {
             NativeScriptHost.ConfigureAssemblyDirectory(MobilePlatform.IsAndroid ? MobilePlatform.ScriptReferences()
@@ -83,6 +101,7 @@ public partial class Main : Control
         }
         catch (Exception error)
         {
+            GameLog.Exception("startup", error, "启动失败");
             GD.PushError(error.ToString());
             RecordStartupFailure(error);
             _splash?.Fail(DescribeStartupFailure(error));

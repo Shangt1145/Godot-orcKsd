@@ -5,5 +5,6 @@ rem Keep this file ASCII-only (cmd.exe reads .cmd in the OEM codepage).
 setlocal
 set "ROOT=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\run.ps1" -Verify
-if errorlevel 1 (echo. & echo [FAILED] & pause)
+if errorlevel 1 (echo. & echo [FAILED]) else (echo. & echo [DONE])
+pause
 endlocal

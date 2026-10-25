@@ -7,5 +7,6 @@ rem non-ASCII comments can split into stray commands.
 setlocal
 set "ROOT=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\run.ps1" -MobileSim -MobileSize 1200x540
-if errorlevel 1 (echo. & echo [FAILED] & pause)
+if errorlevel 1 (echo. & echo [FAILED]) else (echo. & echo [DONE])
+pause
 endlocal

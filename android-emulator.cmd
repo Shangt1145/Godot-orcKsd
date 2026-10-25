@@ -4,5 +4,6 @@ rem First run may ask for UAC (UAC is only needed for the hardware acceleration 
 setlocal
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\android-emulator.ps1" %*
 set RC=%ERRORLEVEL%
-if not "%RC%"=="0" pause
+if not "%RC%"=="0" (echo. & echo [FAILED]) else (echo. & echo [DONE])
+pause
 endlocal
