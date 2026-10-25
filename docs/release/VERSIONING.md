@@ -47,7 +47,7 @@ MAJOR.MINOR.PATCH[-预发布标识]
 2. **hotfix 不占号**：修的是已发布版本，编号不变只加后缀；该修复**必须同时合回主干**，并在下一个常规版本（PATCH 或 MINOR）中体现，不重复发号。
 3. **预发布期不走 PATCH**：alpha/beta 期间的修复直接体现在当前预发布号（递增 N）；PATCH 与 hotfix 只用于已发布版本。
 4. **0.x 阶段契约未冻结**：`0.x.y` 的 MINOR 允许不兼容变更，但必须在阶段文档里写明。**1.0.0 起严格执行上表**。
-5. **单一真源**：根目录 `VERSION` 文件，同步写入 `project.godot` 的 `application/config/version`；UI 页脚直接读该设置显示，避免两处不一致。
+5. **单一真源**：根目录 `VERSION` 文件，同步写入 `project.godot` 的 `application/config/version` 与 Android 的 `version/name`；UI 页脚直接读该设置显示。`version.ps1` 在版本名变化时递增 Android `version/code`，重复设置同一版本不重复递增。
 6. **打标**：每个对外版本打 `v<VERSION>` 标签（如 `v0.0.0-alpha.1`）。
 
 ## 操作

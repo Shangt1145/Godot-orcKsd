@@ -1,10 +1,11 @@
 using Kards.Ui.Core;
 using Godot;
+using Kards.Ui.OrcBridge;
 
 namespace Kards.Ui;
 
 /// <summary>
-/// 简易控制台：一个可随时呼出的浮层，显示 <see cref="GameLog"/> 的最近条目并接受几条调试命令。
+/// 跨平台调试面板：本地对局操作、状态检查及可筛选日志。
 /// 桌面按 F1 切换，手机点右下角“控制台”按钮。挂在 CanvasLayer 上，不参与屏幕切换。
 /// </summary>
 public partial class GameConsole : CanvasLayer
@@ -17,6 +18,13 @@ public partial class GameConsole : CanvasLayer
     private LineEdit _input = null!;
     private Button _toggle = null!;
     private bool _open;
+    private GameLogLevel _minimumLevel;
+    private LineEdit _logSearch = null!;
+    private double _refreshElapsed;
+    public Func<MatchDebugSnapshot?>? ReadDebugState { get; set; }
+    public Func<UiMatchView?>? ReadProjection { get; set; }
+    public Func<MatchDebugCommand,Task<MatchDebugResult>>? ExecuteDebug { get; set; }
+    public bool IsOpen => _open;
 
     /// <summary>切屏回调（由 Main 注入），供 <c>screen &lt;id&gt;</c> 命令使用。</summary>
     public Action<string>? ShowScreenRequested { get; set; }
@@ -35,7 +43,7 @@ public partial class GameConsole : CanvasLayer
         foreach (var entry in GameLog.Snapshot()) _recent.Add(entry);
         Trim();
         Redraw();
-        GameLog.Info("console", "控制台就绪：F1 或右下角按钮；输入 help 查看命令。");
+        GameLog.Info("console", "调试面板就绪：F1 或右下角按钮；本地对局可启用图形化调试。");
     }
 
     public override void _ExitTree()
@@ -46,26 +54,27 @@ public partial class GameConsole : CanvasLayer
 
     private void Build()
     {
+        var consoleTheme=UiStyles.CreateTheme();consoleTheme.DefaultFontSize=MobileSim.Enabled?24:16;
         // 触发按钮固定右下角，任何时候都能点（手机上没有 F1）。
         _toggle = new Button
         {
             Text = "控制台",
             FocusMode = Control.FocusModeEnum.None,
-            TooltipText = "显示/隐藏日志控制台（F1）",
+            TooltipText = "对局调试与日志（F1）",
         };
-        _toggle.AddThemeFontSizeOverride("font_size", 13);
+        _toggle.AddThemeFontSizeOverride("font_size", MobileSim.Enabled?24:13);
         _toggle.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
-        _toggle.OffsetLeft = -104;
-        _toggle.OffsetTop = -44;
+        _toggle.OffsetLeft = MobileSim.Enabled?-172:-104;
+        _toggle.OffsetTop = MobileSim.Enabled?-78:-44;
         _toggle.OffsetRight = -12;
         _toggle.OffsetBottom = -12;
         _toggle.Pressed += Toggle;
         AddChild(_toggle);
 
-        _panel = new PanelContainer { Visible = false };
-        _panel.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
-        _panel.OffsetTop = -340;
-        _panel.OffsetBottom = -52;
+        _panel = new PanelContainer { Visible = false,Theme=consoleTheme };
+        _panel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _panel.AnchorLeft = .03f; _panel.AnchorRight = .97f;
+        _panel.AnchorTop = .27f; _panel.AnchorBottom = .92f;
         var background = new StyleBoxFlat { BgColor = new Color(0.05f, 0.07f, 0.08f, 0.94f) };
         background.SetContentMarginAll(8);
         background.SetBorderWidthAll(1);
@@ -77,6 +86,22 @@ public partial class GameConsole : CanvasLayer
         column.AddThemeConstantOverride("separation", 6);
         _panel.AddChild(column);
 
+        var header=new HBoxContainer();column.AddChild(header);
+        header.AddChild(new Label{Text="游戏调试台",SizeFlagsHorizontal=Control.SizeFlags.ExpandFill});
+        AddButton(header,"刷新",RefreshDebug);
+        AddButton(header,"复制诊断快照",CopySnapshot);
+        AddButton(header,"关闭",Toggle);
+        var tabs=new TabContainer{SizeFlagsVertical=Control.SizeFlags.ExpandFill};column.AddChild(tabs);
+        BuildDebug(tabs);
+        var logs=new VBoxContainer{Name="日志"};tabs.AddChild(logs);
+        var filters=new HBoxContainer();logs.AddChild(filters);
+        var level=new OptionButton();foreach(var name in new[]{"全部级别","信息及以上","警告及以上","仅错误"})level.AddItem(name);
+        level.ItemSelected+=index=>{_minimumLevel=(GameLogLevel)index;Redraw();};filters.AddChild(level);
+        _logSearch=new LineEdit{PlaceholderText="搜索类别或内容",SizeFlagsHorizontal=Control.SizeFlags.ExpandFill,ClearButtonEnabled=true};
+        _logSearch.TextChanged+=_=>Redraw();filters.AddChild(_logSearch);
+        AddButton(filters,"清空",()=>{GameLog.Clear();_recent.Clear();Redraw();});
+        AddButton(filters,"复制日志",()=>DisplayServer.ClipboardSet(string.Join('\n',FilteredLogs())));
+
         _log = new RichTextLabel
         {
             BbcodeEnabled = true,
@@ -85,18 +110,18 @@ public partial class GameConsole : CanvasLayer
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
             FitContent = false,
         };
-        _log.AddThemeFontSizeOverride("normal_font_size", 12);
+        _log.AddThemeFontSizeOverride("normal_font_size", MobileSim.Enabled?22:14);
         _log.AddThemeColorOverride("default_color", new Color(0.86f, 0.87f, 0.84f));
-        column.AddChild(_log);
+        logs.AddChild(_log);
 
         _input = new LineEdit
         {
             PlaceholderText = "help / clear / screen <id> / state / log <debug|info|warn|error>",
             ClearButtonEnabled = true,
         };
-        _input.AddThemeFontSizeOverride("font_size", 12);
+        _input.AddThemeFontSizeOverride("font_size", MobileSim.Enabled?24:14);
         _input.TextSubmitted += Run;
-        column.AddChild(_input);
+        logs.AddChild(_input);
     }
 
     private void Toggle()
@@ -106,13 +131,26 @@ public partial class GameConsole : CanvasLayer
         if (_open)
         {
             Redraw();
-            if (!OS.HasFeature("mobile")) _input.GrabFocus();
+            RefreshDebug();
         }
     }
 
-    public override void _UnhandledInput(InputEvent @event)
+    public override void _Process(double delta)
+    {
+        if(!_open)return;
+        _refreshElapsed+=delta;if(_refreshElapsed<.5)return;_refreshElapsed=0;RefreshDebug();
+    }
+    public bool CapturesInput(InputEvent input)
+    {
+        var at=input switch{InputEventMouse m=>(Vector2?)m.Position,InputEventScreenTouch t=>t.Position,InputEventScreenDrag d=>d.Position,_=>null};
+        return at is { } point?(_toggle.GetGlobalRect().HasPoint(point)||_open&&_panel.GetGlobalRect().HasPoint(point))
+            : _open&&input is InputEventKey;
+    }
+
+    public override void _Input(InputEvent @event)
     {
         if (@event is not InputEventKey { Pressed: true, Echo: false } key) return;
+        if(key.Keycode==Key.Escape&&_open){Toggle();GetViewport().SetInputAsHandled();return;}
         if (key.Keycode is not (Key.F1 or Key.Quoteleft)) return;
         Toggle();
         GetViewport().SetInputAsHandled();
@@ -144,9 +182,10 @@ public partial class GameConsole : CanvasLayer
     private void Redraw()
     {
         _log.Clear();
-        foreach (var entry in _recent)
-            _log.AppendText($"[color=#{Color(entry.Level)}]{entry}[/color]\n");
+        foreach (var entry in FilteredLogs())
+            _log.AppendText($"[color=#{Color(entry.Level)}]{entry.ToString().Replace("[","[lb]")}[/color]\n");
     }
+    private IEnumerable<GameLogEntry> FilteredLogs()=>_recent.Where(e=>e.Level>=_minimumLevel&&(_logSearch.Text.Length==0||e.ToString().Contains(_logSearch.Text,StringComparison.OrdinalIgnoreCase)));
 
     private void Append(string text) => GameLog.Info("console", text);
 
@@ -179,9 +218,8 @@ public partial class GameConsole : CanvasLayer
                 else Append("（无切屏回调）");
                 break;
             case "log":
-                Append(parts.Length < 2
-                    ? "用法：log <debug|info|warn|error>"
-                    : "日志级别过滤暂未实现；当前显示最近 " + VisibleLines + " 条。");
+                if(parts.Length==2&&Enum.TryParse<GameLogLevel>(parts[1],true,out var minimum)){_minimumLevel=minimum;Redraw();}
+                else Append("用法：log <debug|info|warn|error>");
                 break;
             default:
                 Append("未知命令：" + parts[0] + "（help 查看）");

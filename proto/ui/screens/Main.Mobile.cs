@@ -7,6 +7,8 @@ public partial class Main
     public override void _Notification(int what)
     {
         if (what != NotificationWMGoBackRequest || !OS.HasFeature("mobile")) return;
+        if(_console?.IsOpen==true)
+        {GetViewport().PushInput(new InputEventKey{Keycode=Key.Escape,Pressed=true},true);return;}
         var modal = FindChildren("*", "Window", true, false).OfType<Window>().Any(window => window.Visible);
         var cancelBattle = _active == "battle" && _battle?.HasCancelableInteraction == true;
         // Let modal dialogs and the battle's existing cancel handling consume Escape first.

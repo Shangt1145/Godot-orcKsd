@@ -49,6 +49,7 @@ public sealed class CardEffectBehaviourTests
                 ?? throw new InvalidOperationException(
                     $"起手没有 {H39}：[{string.Join(' ', session.View.SelfHand.Select(c => c.CardId))}]");
             var cost = card.Definition.Cost ?? 4;
+            Assert.DoesNotContain(session.Actions.OrderTargets,t=>t.Uid==card.Uid);
 
             for (var turn = 0; turn < 10 && session.View.SelfKredits < cost; turn++)
             {

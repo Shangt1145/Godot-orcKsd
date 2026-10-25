@@ -476,7 +476,9 @@ public partial class BattleScreen : Control
         _dragDeploymentGaps = InteractionActions.DeploymentGaps.ToArray();
         Hint(card.Mode != BattleCardMode.Hand ? "拖动单位到前线移动，或拖到敌方卡牌发动攻击；右键取消"
             : card.View.Definition.CardType == "counter" ? (InteractionCard(uid)?.IsCounterArmed == true ? "拖到战场取消反制，退还预留费用" : "拖到战场激活反制，满足条件后自动触发")
-            : IsTargetedOrder(uid) ? "拖出箭头指向单位，松手打出；右键取消"
+            : IsTargetedOrder(uid) ? (card.View.Definition.CardType == "unit"
+                ? "拖向目标后松手部署；拖到支援线空位可先定落点，再选择目标；右键取消"
+                : "拖出箭头指向单位，松手打出；右键取消")
             : card.View.Definition.CardType == "order" ? "拖到战场打出指令；右键取消"
             : "拖动卡牌到我方支援线部署；右键取消");
         UpdateSelection();
@@ -625,6 +627,21 @@ public partial class BattleScreen : Control
         ClearSlotHints();
         if (!IsFriendlyTurn) { CancelGesture(); return; }
         if (_selected is null) return;
+        // A deployment has two independent inputs: where the unit lands and what its effect targets.
+        // Empty-space deployment deliberately leaves TargetUid empty: native pre-play selection asks
+        // the player before payment, so cancelling still returns the intact card to the hand.
+        if (!_usingDemo && InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "unit" }
+            && InteractionActions.PlayableUids.Contains(_selected) && IsTargetedOrder(_selected))
+        {
+            var target = OrderTargetAt(_selected, at);
+            if ((!SelfBand.HasPoint(at) && target is null) || DeploymentGapAt(at.X) is not { } gap)
+            { CancelGesture(); Hint("请拖向目标或我方支援线空位"); return; }
+            if (releasedPose is { } targetedPose) _deploymentOrigins[_selected] = targetedPose;
+            _deploymentChoiceCenters[_selected] = new(GapX(gap), SelfArea.Position.Y + FieldCardSize.Y / 2);
+            RestorePendingDeploymentPoses();
+            Submit(new PlayCard(_selected, TargetUid: target?.Uid, GapId: gap.GapId));
+            return;
+        }
         if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" } order)
         {
             // 引擎不发布 orderTargets（恒为空，见 McpService.Projection），所以"指向性指令"在拖拽前
@@ -913,6 +930,7 @@ public partial class BattleScreen : Control
 
     public override void _Input(InputEvent e)
     {
+        if(GameConsole.Current?.CapturesInput(e)==true)return;
         // 触屏设备上先把"长按＝右键取消"记下来；桌面直接短路。
         TrackTouch(e);
         if (!IsVisibleInTree() || _canvas is null) return;

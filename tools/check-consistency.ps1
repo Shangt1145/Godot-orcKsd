@@ -36,6 +36,12 @@ $latest = $dirs[-1].Name
 if ($latest -eq $version) { Ok 'VERSION=最新目录' $version }
 else { Bad 'VERSION=最新目录' "VERSION=$version 但最新发行目录=$latest" }
 
+$androidPresets=[IO.File]::ReadAllText((Join-Path $root 'export_presets.cfg'),[Text.UTF8Encoding]::new($false))
+if($androidPresets -match '(?m)^version/name="([^"]+)"' -and $Matches[1] -eq $version){Ok 'Android 版本名' $version}
+else{Bad 'Android 版本名' 'export_presets.cfg 与 VERSION 不一致'}
+if($androidPresets -match '(?m)^version/code=([1-9]\d*)'){Ok 'Android 安装版本号' $Matches[1]}
+else{Bad 'Android 安装版本号' '缺少正整数 version/code'}
+
 # ── R3 该版本有 tag ───────────────────────────────────────────────
 $currentTag = "v$version"
 $tagCommit = (& git -C $root rev-parse -q --verify "refs/tags/$currentTag^{commit}" 2>$null)

@@ -24,6 +24,14 @@ public sealed class OrcMatchRunner : IMatchFeed
     public bool IsRunning => _session is not null;
     public IReadOnlyList<UiKeywordSkill> KeywordSkills(string uid)=>_session?.KeywordSkills(uid)??[];
     public bool IsSubmitting => _session?.IsSubmitting == true;
+    public MatchDebugSnapshot? ReadDebugSnapshot() => _session?.ReadDebugSnapshot();
+    public async Task<MatchDebugResult> DebugAsync(MatchDebugCommand command)
+    {
+        if(_session is not { } session)return new(false,"没有本地对局");
+        var result=await session.DebugAsync(command,_lifetime.Token);
+        if(_session==session&&!_stopped)Publish();
+        return result;
+    }
     /// <summary>最近一次命令被拒的引擎原因（诊断用）。</summary>
     public string? LastRejectionReason => _session?.LastRejectionReason;
     public string? MulliganRequestId => _session?.MulliganRequestId;

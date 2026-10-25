@@ -28,6 +28,7 @@ public sealed class DesktopTargetContext : IDisposable
         return chosen;
     }
     internal bool TryReplayNativeSelection(ISelectorInstance selector)=>_native.TryReplayNativeSelection(selector);
+    internal void PrepareCard(CardBase card)=>_native.PrepareCard(card);
     public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
     {
         var result=new List<UiOrderTargeting>();
@@ -42,6 +43,7 @@ public sealed class DesktopTargetContext : IDisposable
             {
                 using var document=JsonDocument.Parse(graph);var root=document.RootElement;
                 if(root.GetProperty("trigger").GetString() is not ("play" or "order" or "deploy"))continue;
+                if(!AuthoringTargetContext.HasInteractivePlayEffect(shaped,root.GetProperty("trigger").GetString()!))continue;
                 if(!root.TryGetProperty("targets",out var targets)||targets.GetArrayLength()==0)continue;
                 var candidates=AuthoringTargetContext.ResolveCandidates(card,targets[0]).GetAwaiter().GetResult();
                 result.Add(new(OrcRefs.KeyOf(card),candidates.Select(OrcRefs.KeyOf).ToArray()));break;

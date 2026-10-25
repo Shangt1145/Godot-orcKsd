@@ -1,5 +1,9 @@
 # OrC-KSD 接入基线
 
+## 调试台与部署选靶依赖（2026-10-25）
+
+引擎 `025d44ebe4a491042a484c452ca264121a95c3cb` 加 [本轮目标上下文补丁](../engine-patches/debug-deployment-20261025.patch)。新增动态卡目标捕获准备、展示计划与原生触发的一致性检查，以及不发射被指向事件的候选查询。[功能与验证](../acceptance/DEBUG_DEPLOYMENT_20261025.md)。本地已应用，勿重复叠加；下方为历史基线记录。
+
 ## 工坊联机开发依赖（2026-10-25）
 
 当前引擎 HEAD `4e7b2a223d93e516a69c062fe87f519f13dd993e` 加 [工坊联机配套补丁](../engine-patches/network-workshop-20261025.patch)。包含会话包传输、词条准入和服务端开局对齐门禁；需要重新构建 `Orc.Server`，并与客户端一同更新。[使用流程与验证范围](../acceptance/NETWORK_WORKSHOP_20261025.md)。本机引擎工作副本已应用，勿重复叠加。

@@ -26,6 +26,16 @@ function Set-Version([string]$value) {
     if ($value -match '-hotfix' -and $value -match '^0\.0\.0') {
         throw "hotfix 用于已发布版本：0.0.0 尚未发布，不能有 hotfix"
     }
+    # Android exposes a display version and a monotonic installation code. Keep both with VERSION.
+    $presetFile=Join-Path $root 'export_presets.cfg'
+    $presetText=[IO.File]::ReadAllText($presetFile,[Text.UTF8Encoding]::new($false))
+    $androidName=[regex]::Matches($presetText,'(?m)^version/name="([^"]*)"\r?$')
+    $androidCode=[regex]::Matches($presetText,'(?m)^version/code=(\d+)\r?$')
+    if($androidName.Count -ne 1 -or $androidCode.Count -ne 1){throw 'Android export version fields are missing or ambiguous.'}
+    $nextCode=[int]$androidCode[0].Groups[1].Value
+    if($androidName[0].Groups[1].Value -ne $value){$nextCode++}
+    $presetText=[regex]::Replace($presetText,'(?m)^version/name="[^"]*"',('version/name="'+$value+'"'))
+    $presetText=[regex]::Replace($presetText,'(?m)^version/code=\d+',('version/code='+$nextCode))
     # PS5.1 的 -Encoding utf8 会写 BOM，Godot 读到 BOM 会把文件解析坏（历史事故：
     # project.godot 的中文项目名被写崩）。统一用无 BOM 的 UTF-8 写。
     [IO.File]::WriteAllText($versionFile, $value, [Text.UTF8Encoding]::new($false))
@@ -46,6 +56,7 @@ function Set-Version([string]$value) {
         }
     }
     [IO.File]::WriteAllLines($projectFile, [string[]]$output, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($presetFile,$presetText,[Text.UTF8Encoding]::new($false))
     Write-Host "Version set to $value"
 }
 

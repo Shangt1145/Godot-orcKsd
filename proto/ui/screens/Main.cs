@@ -64,6 +64,10 @@ public partial class Main : Control
             DescribeState = () =>
                 $"屏幕={_active} 卡池={_catalog.Cards.Count} 对局数据源={_feed?.GetType().Name ?? "无"} " +
                 $"日志={GameLog.Snapshot().Length} 丢弃={GameLog.Dropped}",
+            ReadProjection = () => _feed?.CurrentView,
+            ReadDebugState = () => ReferenceEquals(_feed,_runner)?_runner?.ReadDebugSnapshot():null,
+            ExecuteDebug = command => ReferenceEquals(_feed,_runner)&&_runner is { } runner
+                ? runner.DebugAsync(command) : Task.FromResult(new MatchDebugResult(false,"仅本地对局可修改游戏状态")),
         };
         AddChild(_console);
     }
@@ -376,6 +380,8 @@ public partial class Main : Control
         Show("home");
         await FinishStartupAsync();
         var args = OS.GetCmdlineUserArgs();
+        if (OS.IsDebugBuild() && Godot.FileAccess.FileExists("user://verify-debug-deployment.flag"))
+        { Callable.From(VerifyDebugDeployment).CallDeferred();return; }
         if (args.Contains("--verify-android-parity") || (OS.IsDebugBuild() && Godot.FileAccess.FileExists("user://verify-android-parity.flag"))) Callable.From(VerifyAndroidParity).CallDeferred();
         else if (args.Contains("--verify-appearance")) Callable.From(VerifyAppearance).CallDeferred();
         else if (args.Contains("--net-probe")) Callable.From(NetProbe).CallDeferred();
@@ -469,6 +475,8 @@ public partial class Main : Control
             CallDeferred(MethodName.VerifyOpponentTurnLiveness);
         else if (args.Contains("--verify-deploy-card"))
             CallDeferred(MethodName.VerifyDeployCard);
+        else if (args.Contains("--verify-debug-deployment"))
+            CallDeferred(MethodName.VerifyDebugDeployment);
     }
     /// <summary>Runs the screen from a real engine match. Invoked again after a game over = restart.
     /// Verify and headless paths pass interactiveMulligan: false to keep the automatic keep-all answer.</summary>

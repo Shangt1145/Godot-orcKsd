@@ -1,0 +1,116 @@
+diff --git a/src/Orc.Game/Effects/AuthoringTargetContext.cs b/src/Orc.Game/Effects/AuthoringTargetContext.cs
+index 9b2f56c..319a8e9 100644
+--- a/src/Orc.Game/Effects/AuthoringTargetContext.cs
++++ b/src/Orc.Game/Effects/AuthoringTargetContext.cs
+@@ -27,25 +27,34 @@ public sealed class AuthoringTargetContext : IDisposable
+     private readonly List<(Orc.Core.Trigger<CardTriggerView> Trigger,TriggerRegistration Handle)> _registrations=[];
+     private readonly Match _match;
+     private readonly IReadOnlyDictionary<string,string[]> _plans;
++    private readonly ConditionalWeakTable<Card,object> _prepared=new();
+     public AuthoringTargetContext(Match match,IReadOnlyDictionary<string,string[]> plans)
+     {
+         _match=match;_plans=plans;
+         foreach(var owner in match.Players)Owners.Add(owner,this);
+         foreach(var card in match.Players.SelectMany(p=>p.Hand.OfType<CardBase>().Concat(Enumerable.Range(0,p.Deck.Count).Select(p.Deck.PeekInstance))))
++            PrepareCard(card);
++    }
++    /// <summary>Also called before playing dynamically created copies, which did not exist at setup.</summary>
++    public void PrepareCard(CardBase card)
++    {
++        if(_prepared.TryGetValue(card,out _))return;
++        _prepared.Add(card,new object());
+         {
+-            if(!match.CardLibrary.TryGetRegisteredId(card.Definition,out var id)||!plans.TryGetValue(id,out var graphs))continue;
++            if(!_match.CardLibrary.TryGetRegisteredId(card.Definition,out var id)||!_plans.TryGetValue(id,out var graphs))return;
+             var declarations=graphs.SelectMany(g=>
+             {
+                 using var d=JsonDocument.Parse(g);var e=d.RootElement;
++                if(!HasInteractivePlayEffect(card,Text(e,"trigger")))return [];
+                 // reuse＝跨效果回指（「将其消灭」）：它在执行时取上一次选中的目标，
+                 // 打出前不额外问玩家一次，否则同一张卡会连问两遍。
+                 return Text(e,"trigger") is "deploy" or "play" or "order"&&e.TryGetProperty("targets",out var targets)
+                     ?targets.EnumerateArray().Where(t=>!(t.TryGetProperty("reuse",out var r)&&r.ValueKind==JsonValueKind.True))
+                         .Select(t=>(Declaration:t.GetRawText(),Scope:Scope(e))).ToArray():[];
+             }).Distinct().ToArray();
+-            if(declarations.Length==0)continue;
++            if(declarations.Length==0)return;
+             var trigger=card switch{UnitCard unit=>unit.PrePlayTrigger,OrderCard command=>command.PrePlayTrigger,_=>null};
+-            if(trigger is null)continue;
++            if(trigger is null)return;
+             var handle=trigger.Register("desktop/capture",async(view,_,ct)=>
+             {
+                 _captured.Remove(card);_consumed.Remove(card);var selection=new Dictionary<string,Card[]>(StringComparer.Ordinal);
+@@ -73,6 +82,13 @@ public sealed class AuthoringTargetContext : IDisposable
+         if(target.TryGetProperty("filter",out var filter))AuthoringRuntime.ValidateFilter(filter);
+         if(Text(target,"side") is not ("" or "any" or "friendly" or "enemy" or "both"))throw new InvalidDataException("选靶阵营无效");
+     }
++    /// <summary>Presentation metadata must not invent a deployment effect removed from native data.</summary>
++    public static bool HasInteractivePlayEffect(CardBase card,string trigger)
++    {
++        var hook=trigger=="deploy"?"unit.deployed":trigger is "play" or "order"?"card.played":null;
++        if(hook is null)return false;
++        return card.Effects.Any(effect=>effect is not DynamicPassiveEffect native || native.Snapshot.Root.MainTrigger.Hooks.Contains(hook));
++    }
+     public static string Scope(JsonElement graph)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(graph.GetRawText())))[..24];
+     public static async Task<Card[]> SelectAsync(Card source,string declaration,string scope,CancellationToken ct)
+     {
+@@ -141,20 +157,25 @@ public sealed class AuthoringTargetContext : IDisposable
+             selected=(Card)step.Value!.Value;return TargeterResult.Ok();
+         });
+         ct.ThrowIfCancellationRequested();
+-        if(result.IsOk&&selected is not null){Remember(source,declaration,[selected]);return [selected];}
++        if(result.IsOk&&selected is not null)
++        {
++            await TargetingRules.NotifyAsync(_match.Engine,selected,source,TargetingRules.KindEffect,triggerCard:source,ct);
++            Remember(source,declaration,[selected]);return [selected];
++        }
+         // 选靶"成功提交但拿不到结果"必须留下判据：这是效果静默不生效的唯一线索。
+         Console.WriteLine($"[desktop-target] empty selection ok={result.IsOk} selected={(selected is null?"null":"set")} "
+             + $"candidates={candidates.Length} declaration={declaration}");
+         return [];
+     }
+-    public static async Task<IReadOnlyList<Card>> ResolveCandidates(Card source,JsonElement target,CancellationToken ct=default)
++    public static Task<IReadOnlyList<Card>> ResolveCandidates(Card source,JsonElement target,CancellationToken ct=default)
+     {
+         var runtime=EffectRuntime.ResolveFor(source)??throw new InvalidOperationException("原生效果服务未装配");
+         var zone=Text(target,"zone");var side=Text(target,"side");
+         var kind=Text(target,"kind");
+-        var units=kind=="hq"||zone=="hq"?Array.Empty<Card>():await runtime.SelectAsync(source,new("all",side is "any" or ""?"both":side,zone is "frontline" or "support"?zone:null),ct);
+-        var hqs=kind=="unit"?Array.Empty<Card>():await runtime.SelectAsync(source,new("all",side is "any" or ""?"both":side,"hq"),ct);
+-        return units.Concat(hqs).Where(c=>!target.TryGetProperty("filter",out var filter)||AuthoringRuntime.Matches(c,filter.GetRawText())).ToArray();
++        ct.ThrowIfCancellationRequested();
++        var units=kind=="hq"||zone=="hq"?Array.Empty<Card>():runtime.QueryTargetCandidates(source,new("all",side is "any" or ""?"both":side,zone is "frontline" or "support"?zone:null));
++        var hqs=kind=="unit"?Array.Empty<Card>():runtime.QueryTargetCandidates(source,new("all",side is "any" or ""?"both":side,"hq"));
++        return Task.FromResult<IReadOnlyList<Card>>(units.Concat(hqs).Where(c=>!target.TryGetProperty("filter",out var filter)||AuthoringRuntime.Matches(c,filter.GetRawText())).ToArray());
+     }
+     private static string Text(JsonElement e,string key)=>e.TryGetProperty(key,out var v)&&v.ValueKind==JsonValueKind.String?v.GetString()!:"";
+     public void Dispose(){foreach(var r in _registrations)r.Trigger.Unregister(r.Handle);foreach(var p in _match.Players)Owners.Remove(p);}
+diff --git a/src/Orc.Game/Effects/EffectRuntime.cs b/src/Orc.Game/Effects/EffectRuntime.cs
+index 06c4bb3..76caccd 100644
+--- a/src/Orc.Game/Effects/EffectRuntime.cs
++++ b/src/Orc.Game/Effects/EffectRuntime.cs
+@@ -89,7 +89,7 @@ public enum EffectDuration
+ public sealed partial class EffectRuntime
+ {
+     /// <summary>The active native match for an effect host; no separate simulation or copied state.</summary>
+-    public static Match? MatchFor(Card host) => KeywordProgramRuntime.TryMatchFor(host.Engine);
++    internal static Match? MatchFor(Card host) => KeywordProgramRuntime.TryMatchFor(host.Engine);
+     private readonly Func<CommandManager?> _commands;
+     private readonly Func<PlayerManager?> _players;
+     private readonly Func<JudicatorRegistry?> _judicators;
+@@ -745,6 +745,15 @@ public sealed partial class EffectRuntime
+         return await resources.LosePointsAsync(player, amount, ct).ConfigureAwait(false);
+     }
+ 
++    /// <summary>Read-only candidates for targeting previews. Does not emit targeted notifications.</summary>
++    internal IReadOnlyList<Card> QueryTargetCandidates(Card viewer, EffectSelector selector)
++    {
++        ArgumentNullException.ThrowIfNull(viewer);ArgumentNullException.ThrowIfNull(selector);
++        if(_judicators() is not { } judicators)return Array.Empty<Card>();
++        var rule=new JudicatorSelectionRule(judicators.Resolve(JudicatorNames.TargetCandidateEligibility),viewer,selector);
++        return rule.Candidates().Where(r=>r.IsAlive).Select(r=>r.Value).OfType<Card>().ToArray();
++    }
++
+     /// <summary>无头选靶（经游戏层判定器 <see cref="JudicatorNames.EffectTargetResolve"/> 求值；不可用＝空集）。</summary>
+     /// <exception cref="ArgumentNullException">viewer 或 selector 为 null。</exception>
+     public async Task<IReadOnlyList<Card>> SelectAsync(Card viewer, EffectSelector selector, CancellationToken ct = default)

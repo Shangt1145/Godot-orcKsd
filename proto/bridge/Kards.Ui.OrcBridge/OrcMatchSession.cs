@@ -555,7 +555,7 @@ public sealed partial class OrcMatchSession : IDisposable
         if (_pendingGapId is { } gapId && (selector.SelectorName == SelectorNames.Slot || allowed.Any(r => r.Value is FormationGap)))
         {
             var wanted = allowed.FirstOrDefault(r => r.Value is FormationGap && OrcRefs.KeyOf(r.Value) == gapId);
-            ClearIntent();
+            _pendingGapId = null;
             if (wanted is not null) selector.Submit(new PickEvent([wanted]));
             else {  LastRejectionReason = "FormationGapUnavailable"; selector.Submit(new CancelEvent()); }
             return;
@@ -565,7 +565,7 @@ public sealed partial class OrcMatchSession : IDisposable
             var chosen = _pendingSelection.Select(uid => allowed.FirstOrDefault(r => OrcRefs.KeyOf(r.Value) == uid)).ToArray();
             if (chosen.All(r => r is not null))
             {
-                ClearIntent();
+                _pendingSelection = null;
                 selector.Submit(selector.Mode == SelectorInteractionMode.Drag && chosen.Length == 1
                     ? new DropEvent(chosen[0]) : new PickEvent(chosen!));
                 return;
@@ -842,14 +842,14 @@ public sealed partial class OrcMatchSession : IDisposable
         if (Resolve(uid) is CounterCard counter)
             return Report(await Match.PlayManager.UseCounterAsync(counter, ct));
         if (Resolve(uid) is not UnitCard unit) return UiSubmitOutcome.UnknownCard;
-        // 玩家已经拖到了一个具体落点：**直接**用那个 gap 打出，不走"先预打出再被问位置"。
-        // 之前依赖事后再答（AnswerParked），而意图在 SubmitAsync 的 finally 里就被清掉了，
-        // 于是必然落到 PresentTargetChoice → 无人应答 → SelectionRequired（H39 就是这么红的）。
+        _desktopTargets?.PrepareCard(unit);
+        // A selected gap answers the native slot request, but never bypasses pre-play targeting.
+        // Capture and cancellation must finish before deployment and payment begin.
         if (_pendingGapId is { } chosenGapId)
         {
             var gap = FindGap(chosenGapId);
             if (gap is null) { LastRejectionReason = "FormationGapUnavailable"; return UiSubmitOutcome.Rejected; }
-            return Report(await Match.PlayManager.PlayUnitAsync(unit, gap, ct));
+            return Report(await Match.PlayManager.BeginUnitPrePlayAsync(unit, ct));
         }
         // Compatibility for older contract fixtures explicitly naming storage slots. Product drag
         // submits GapId and goes through the canonical native gap selector; these paths never mix.
@@ -859,7 +859,8 @@ public sealed partial class OrcMatchSession : IDisposable
             var gap = line.GetInsertionGaps().FirstOrDefault(g=>g.Ordinal==legacy);
             if (gap is null)
             { LastRejectionReason = "SelectedSlotUnavailable"; return UiSubmitOutcome.Rejected; }
-            return Report(await Match.PlayManager.PlayUnitAsync(unit, gap, ct));
+            _pendingSupportIndex=legacy;
+            return Report(await Match.PlayManager.BeginUnitPrePlayAsync(unit, ct));
         }
         // Contract-only callers may omit a position. This explicit adapter policy is limited to
         // untargeted deployment; a named but illegal position is always refused.
