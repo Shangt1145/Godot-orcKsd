@@ -88,7 +88,7 @@ public static class DiyCardCompiler
          new("anyUnit", "1 个单位"), new("bothUnits", "所有单位")];
     public static IReadOnlyList<UiDiyChoice> Durations { get; } =
         [new("", "持续"), new("turnEnd", "本回合结束"), new("nextOwnerTurnStart", "下个己方回合开始")];
-    private static readonly Lazy<OpTemplateCatalog> Ops = new(() =>
+    private static readonly Lazy<(OpTemplateCatalog Catalog, string Directory)> OpsBundle = new(() =>
     {
         // Godot loads managed assemblies from bytes; Assembly.Location can be empty.
         // Freeze the current engine's op assets in the bridge and materialize only those assets.
@@ -124,10 +124,19 @@ public static class DiyCardCompiler
         }
         var ops = OpTemplateCatalog.LoadFiles(paths, out var failures);
         if (failures.Count > 0) throw new InvalidDataException(string.Join("；", failures.Select(f => f.Error)));
-        return ops;
+        return (ops, directory);
     });
+
+    private static OpTemplateCatalog Ops => OpsBundle.Value.Catalog;
     /// <summary>op 资产目录（嵌入资产唯一装载点；OrC 导入复用同一份）。</summary>
-    internal static OpTemplateCatalog SharedOps() => Ops.Value;
+    internal static OpTemplateCatalog SharedOps() => Ops;
+    /// <summary>
+    /// op 模板的物化目录。引擎内置的 <c>CardTextEffectCompiler</c> 默认按
+    /// <c>AppContext.BaseDirectory/EffectParsing/Templates/ops</c> 约定找模板，
+    /// 安卓上 BaseDirectory 是空串（拼出来是相对路径、不存在）→ 空 op 目录 →
+    /// 所有 op 都报「语句模板缺失」。宿主用这个目录覆盖它。
+    /// </summary>
+    internal static string SharedOpsDirectory => OpsBundle.Value.Directory;
 
     private static EffectTemplate Template(string type)
     {
@@ -334,7 +343,7 @@ public static class DiyCardCompiler
         foreach (var effect in effects) CheckEffect(cardType, effect);
         var template = Template(cardType);
         var driver = new EffectCompilationDriver();
-        driver.UseEffectAssets([template], Ops.Value);
+        driver.UseEffectAssets([template], Ops);
         var ops = effects.Select(e => ToDsl(e, cardType)).ToArray();
         var dsl = new DslEffectInstance(template.Id, new Dictionary<string, DslSlotFill> { ["on_event"] = new(ops) });
         var result = driver.CompileDsl(DslJson.Serialize(dsl), compileId.Replace('/', '.') + ".effect");

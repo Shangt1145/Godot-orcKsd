@@ -62,6 +62,13 @@ public static class OrcEngineHost
         {
             RegisterCustomNations();
 
+            // 引擎内置编译器（CardTextEffectCompiler）按 <BaseDirectory>/EffectParsing/Templates/ops
+            // 找 op 模板。安卓上 BaseDirectory 是空串，拼出来是相对路径、必然不存在，
+            // 于是拿到一个空 op 目录、所有 op 都报「语句模板缺失」。
+            // 桌面保持原约定不动，只有 BaseDirectory 缺失时才改用物化的嵌入模板。
+            if (string.IsNullOrEmpty(AppContext.BaseDirectory))
+                Orc.Game.EffectParsing.CardTextEffectCompiler.OpTemplateDirectory ??= DiyCardCompiler.SharedOpsDirectory;
+
             if (_host is not null)
             {
                 return _host;
