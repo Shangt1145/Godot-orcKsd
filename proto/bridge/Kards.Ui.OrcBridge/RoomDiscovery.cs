@@ -52,10 +52,9 @@ public sealed class RoomAnnouncer : IDisposable
 {
     public const int PayloadLengthLimit = 512;
 
-    private readonly UdpClient _client = new() { EnableBroadcast = true };
+    private UdpClient? _client;
     private readonly CancellationTokenSource _cts = new();
-    private readonly Task _loop;
-    private int _seatsTaken;
+    private readonly Task? _loop;    private int _seatsTaken;
     private int _seatsTotal = 2;
 
     public RoomAnnouncer(string roomId, int port, string? name)
@@ -63,18 +62,33 @@ public sealed class RoomAnnouncer : IDisposable
         RoomId = roomId;
         Port = port;
         Name = name;
-        _loop = Task.Run(() => LoopAsync(_cts.Token));
+        try
+        {
+            _client = new UdpClient { EnableBroadcast = true };
+            _loop = Task.Run(() => LoopAsync(_cts.Token));
+        }
+        catch (Exception error) when (error is SocketException or UnauthorizedAccessException)
+        {
+            // 安卓缺 INTERNET 权限时建 socket 直接 EACCES(13)。宣告不了只影响自动发现，房间本身照开。
+            _client?.Dispose();
+            _client = null;
+            UnavailableReason = error.Message;
+        }
     }
 
     public string RoomId { get; }
     public int Port { get; }
     public string? Name { get; }
 
+    /// <summary>宣告起不来时的原因（安卓缺 INTERNET 权限会拿到 EACCES）。非空即代表只影响自动发现。</summary>
+    public string? UnavailableReason { get; private set; }
+
     /// <summary>座位占用（有客人加入/离开时由房间屏刷新）。</summary>
     public void UpdateSeats(int taken, int total) { _seatsTaken = taken; _seatsTotal = total; }
 
     private async Task LoopAsync(CancellationToken ct)
     {
+        var client = _client!;
         var targets = new[]
         {
             new IPEndPoint(IPAddress.Broadcast, RoomDiscovery.DefaultPort), // 255.255.255.255：所有网卡（含任意虚拟局域网网卡）
@@ -88,7 +102,7 @@ public sealed class RoomAnnouncer : IDisposable
             var datagram = Encoding.UTF8.GetBytes(payload);
             foreach (var target in targets)
             {
-                try { await _client.SendAsync(datagram, target).ConfigureAwait(false); }
+                try { await client.SendAsync(datagram, target).ConfigureAwait(false); }
                 catch (SocketException) { /* 某块网卡发不出去很正常，下一轮再说 */ }
                 catch (ObjectDisposedException) { return; }
             }
@@ -98,8 +112,8 @@ public sealed class RoomAnnouncer : IDisposable
     public void Dispose()
     {
         try { _cts.Cancel(); } catch (Exception) { }
-        _client.Dispose();
-        try { _loop.Wait(TimeSpan.FromSeconds(1)); } catch (Exception) { }
+        _client?.Dispose();
+        try { _loop?.Wait(TimeSpan.FromSeconds(1)); } catch (Exception) { }
         _cts.Dispose();
     }
 }
@@ -114,16 +128,34 @@ public sealed class RoomListener : IDisposable
     /// <summary>协议线程回调：收到一条合法宣告。UI 使用处必须自己 marshal 回主线程。</summary>
     public event Action<DiscoveredRoom>? Received;
 
+    /// <summary>监听起不来时的原因（安卓缺 INTERNET 权限会拿到 EACCES(13)）。非空时只能手动填房间地址。</summary>
+    public string? UnavailableReason { get; private set; }
+
+    public bool IsListening => _client is not null;
+
     public void Start()
     {
-        if (_client is not null) return;
-        _client = new UdpClient(AddressFamily.InterNetwork);
-        // 允许多个客户端同机共存（探针的双端布局）。
-        try { _client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true); }
-        catch (SocketException) { }
-        _client.Client.Bind(new IPEndPoint(IPAddress.Any, RoomDiscovery.DefaultPort));
-        _cts = new CancellationTokenSource();
-        _loop = Task.Run(() => LoopAsync(_cts.Token));
+        if (_client is not null || UnavailableReason is not null) return;
+        try
+        {
+            _client = new UdpClient(AddressFamily.InterNetwork);
+            // 允许多个客户端同机共存（探针的双端布局）。
+            try { _client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true); }
+            catch (SocketException) { }
+            _client.Client.Bind(new IPEndPoint(IPAddress.Any, RoomDiscovery.DefaultPort));
+            _cts = new CancellationTokenSource();
+            _loop = Task.Run(() => LoopAsync(_cts.Token));
+        }
+        catch (Exception error) when (error is SocketException or UnauthorizedAccessException)
+        {
+            // 关键：局域网监听是可选能力，起不来就降级，绝不能把这个异常抛到界面初始化链上——
+            // 安卓缺 INTERNET 权限时会走到这里，之前正是它让整个启动流程崩在启动画面。
+            _client?.Dispose();
+            _client = null;
+            _cts?.Dispose();
+            _cts = null;
+            UnavailableReason = error.Message;
+        }
     }
 
     private async Task LoopAsync(CancellationToken ct)

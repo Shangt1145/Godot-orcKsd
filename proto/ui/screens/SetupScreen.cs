@@ -69,7 +69,11 @@ public partial class SetupScreen : VBoxContainer
         _roomList = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _roomList.AddThemeConstantOverride("separation", 4);
         scroll.AddChild(_roomList);
-        var note = UiStyles.Label("同一局域网中的房间会出现在这里。找不到好友时，可使用房间地址连接。", 11, UiStyles.MenuDim);
+        var note = UiStyles.Label(
+            _listener.IsListening
+                ? "同一局域网中的房间会出现在这里。找不到好友时，可使用房间地址连接。"
+                : "本机无法建立局域网监听，只能使用房间地址手动连接。",
+            11, UiStyles.MenuDim);
         note.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         column.AddChild(note);
         RenderRoomList();

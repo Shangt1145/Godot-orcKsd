@@ -26,7 +26,15 @@ internal static class OriginalCosmetics
     }
     private sealed record PropEntry(string Image,string Name,string[] Parts);
     private static Dictionary<string,string[]> _props=new();
-    public static string[] PropParts(string hash)=>_props.GetValueOrDefault(hash)??[];
+    public static string[] PropParts(string hash)
+    {
+        var parts=_props.GetValueOrDefault(hash)??[];
+        // 瘦身包（手机端）不会带 3D 桌饰载荷：缺文件就当没有这件桌饰，
+        // 绝不能把「装饰素材被裁掉」升级成 InvalidDataException 崩掉整个界面。
+        foreach(var path in parts)
+            if(!Godot.FileAccess.FileExists(path))return [];
+        return parts;
+    }
     private static Dictionary<string,string> _ui=new();
     private static readonly Dictionary<string,string> PayloadsByName=new();
     private static readonly Dictionary<string,Texture2D> UiTextures=new();

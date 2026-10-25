@@ -73,6 +73,20 @@ public static class DesktopOrc
         }
         return new(root.GetProperty("source").GetString()!,effects,keywords,diagnostics) {DesktopResultJson=root.GetRawText()};
     }
-    private static readonly Lazy<JsonElement> CatalogValue=new(()=>Request(new {method="catalog"}));
+    // 结构完整但内容为空的目录：安卓没有 ClearScript 的 V8 原生库（csproj 只带 win-x64），
+    // 目录取不到时让 DIY 编辑器退化成「空动作列表」，而不是把整个启动流程带崩。
+    private const string EmptyCatalogJson =
+        """{"contract":{"ops":{},"conditions":{}},"labels":{"SEED_OP":{},"SEED_COND":{},"TRIGGERS":{},"SEED_VALUE":{},"SEED_FIELD":{}},"vocabulary":{"ops":{},"conditions":{}},"behaviorActions":{},"keywords":{}}""";
+    private static readonly Lazy<JsonElement> CatalogValue=new(LazyCatalog);
+    private static JsonElement LazyCatalog()
+    {
+        try{return Request(new {method="catalog"});}
+        catch(Exception error)
+        {
+            Console.Error.WriteLine("OrC 目录不可用，DIY 编辑器已降级为空目录："+error.Message);
+            using var document=JsonDocument.Parse(EmptyCatalogJson);
+            return document.RootElement.Clone();
+        }
+    }
     public static JsonElement Catalog=>CatalogValue.Value;
 }

@@ -10,6 +10,7 @@ public partial class Main
     private ColorRect? _screenCurtain;
     private Tween? _screenCurtainTween;
     private int _startupStages;
+    private string _lastStartupStage = "启动";
     private bool _splashFadeInputVerified;
     private void ResetMenuTransition()
     {
@@ -90,7 +91,7 @@ public partial class Main
     }
     private async Task StartupStageAsync(float progress, string description)
     {
-        _splash!.SetStage(progress, description); _startupStages++;
+        _splash!.SetStage(progress, description); _lastStartupStage = description; _startupStages++;
         // Yield before each real loading stage, so the status is painted before CPU work begins.
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
         if (DisplayServer.GetName() != "headless")

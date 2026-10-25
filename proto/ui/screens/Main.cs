@@ -77,9 +77,37 @@ public partial class Main : Control
         try { await InitializeInterfaceAsync(sfx); }
         catch (Exception error)
         {
-            GD.PushError(error.ToString()); _splash?.Fail(error.Message);
+            GD.PushError(error.ToString());
+            RecordStartupFailure(error);
+            _splash?.Fail(DescribeStartupFailure(error));
             if (_verificationRun) GetTree().Quit(1);
         }
+    }
+
+    /// <summary>
+    /// 启动失败的可读描述：手机上没有控制台，只显示 <c>Message</c> 会丢光定位信息
+    /// （安卓上常见 "Permission denied" 这种把真实来源藏起来的一句）。
+    /// 取最内层异常的类型/消息 + 第一处源码帧，并把完整堆栈落到 <c>user://startup-error.txt</c>。
+    /// </summary>
+    private string DescribeStartupFailure(Exception error)
+    {
+        var inner = error;
+        while (inner.InnerException is not null) inner = inner.InnerException;
+        var frame = inner.StackTrace?.Split('\n')
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.Contains(" in ", StringComparison.Ordinal));
+        var detail = frame is null ? $"{inner.GetType().Name}: {inner.Message}" : $"{inner.GetType().Name}: {inner.Message}\n{frame}";
+        return $"阶段「{_lastStartupStage}」\n{detail}";
+    }
+
+    private static void RecordStartupFailure(Exception error)
+    {
+        try
+        {
+            using var file = Godot.FileAccess.Open("user://startup-error.txt", Godot.FileAccess.ModeFlags.Write);
+            file?.StoreString($"{DateTime.Now:O}\n{error}\n");
+        }
+        catch (Exception logFailure) { GD.PushWarning("启动失败日志写入失败：" + logFailure.Message); }
     }
     private async Task InitializeInterfaceAsync(SfxPlayer sfx)
     {
@@ -229,8 +257,12 @@ public partial class Main : Control
         _room.AllowSampleDeck = _verificationRun;
         _room.Cosmetics = _cosmetics;
         _setup.HiddenRoomId = () => _room.HostedRoomId;
-        // 联机优先用玩家自己在卡组库里选的构筑卡组（全部为 pack/ 应用层 id 时才采用）。
+        // 使用玩家选中的构筑卡组；工坊 DIY 标识在房间准备阶段映射为原生会话包标识。
         _room.ActiveDeckSource = () => _decks.ActiveDeck?.CardIds;
+        _room.WorkshopRootsSource = () => _nativeWorkshop.EnabledRoots();
+        _room.WorkshopCardsSource = () => _diy.Cards;
+        _room.WorkshopCatalogSource = () => _catalog.Cards;
+        _room.WorkshopArtDirectory = Path.Combine(Path.GetDirectoryName(_diyPath)!, "art");
         _room.DeckPresentationSource = () => _decks.ActiveDeck;
         _room.BackRequested += () => Show("setup");
         _room.MatchStarted += () => _ = EnterRemoteMatchAsync();
