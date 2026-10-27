@@ -582,10 +582,37 @@ P4 组合设置的「应用修改」、P5「重新绑定」的 OK、P7「移除/
 5. 子进程退出依赖引擎的 2 秒轮询，不是即时；PID 复用窗口在服务端这种短命进程上可接受
    （引擎注释里已写明这个取舍）。
 
-## P9 发版收口
+## P9 发版收口 — ⏸ 未发版（按指示停在"只准备、不发布"）
 
 版本号、补丁、GitHub Release、`check-consistency.ps1` = `CONSISTENCY_OK`，
 并按[验收矩阵](DEPLOY_TARGETING_ALPHA5_REOPEN_HANDOFF_20261025.md)跑一遍双端。
+
+### 本轮做到哪一步
+
+用户明确**本轮不发版**，所以只做"发布前能做的事"，一步都不越过 tag：
+
+| 项 | 状态 |
+|---|---|
+| `check-consistency.ps1` | ✅ `CONSISTENCY_OK`（0 红 1 黄，黄项＝工作区有未提交文件） |
+| 发行说明 | ✅ 草稿已写：[RELEASE_2.0.0_ALPHA6_DRAFT](../release/RELEASE_2.0.0_ALPHA6_DRAFT.md) |
+| 版本号 | ⏸ **故意不动**，仍是 `2.0.0-alpha.5` |
+| 发行目录 / 补丁 / APK / tag / 推送 | ⏸ 全部没做 |
+| 双端验收矩阵 | ⏸ 未跑（需要真机与导出产物） |
+
+**为什么版本号必须和发行目录一起动**：`check-consistency.ps1` 的 R2 规则是
+`VERSION` 必须等于 `dist/releases/` 里最新的目录名。只改 `VERSION` 不改目录，核对立刻变红——
+于是"绿着"这个信号就废了。所以顺序永远是：先建目录与产物，再改 `VERSION`，最后跑核对。
+
+### 发版前还差什么（写清，免得下次又从头猜）
+
+1. **ARM64 实体机验收**——这是唯一还悬着的"能不能信"。模拟器只能替一部分；
+   P8 的切后台提示、前台服务重开、ARM64 打包都没上过实体机。
+2. 改 `VERSION` + 新建 `dist/releases/2.0.0-alpha.6/`（两者同时）。
+3. Windows 导出 + 增量补丁（`release.ps1` → `build-compatible-update.ps1`）。
+4. Android 签名 APK（`export-android.ps1`），更新 `versionCode`。
+5. `check-consistency.ps1 -WriteIndex` 重生成 `docs/release/RELEASE_INDEX.md`。
+6. 打 tag `v2.0.0-alpha.6`、推送、建 prerelease、传补丁/更新器/APK/SHA256。
+7. 把发行说明改名去掉 `_DRAFT`，补构建标识、体积与校验值。
 
 ---
 

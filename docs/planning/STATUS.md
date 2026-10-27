@@ -43,6 +43,10 @@
 - 服务端子进程随 UI 退出由引擎保证（`ManagedInstance` 自动追加 `--parent-pid <UI 进程>`，
   `ParentWatchdog` 每 2 秒轮询）。实测：只杀 UI、不带 `/T`，子进程 2.1 秒退出、端口可再绑。
 - 本轮未全量重生成官方卡池，旧生成物及自动解析覆盖仍需逐项扩展。
+- **本轮未发版**：版本号仍是 `2.0.0-alpha.5`，没有新发行目录、tag 或推送。
+  发行说明草稿在 [RELEASE_2.0.0_ALPHA6_DRAFT](../release/RELEASE_2.0.0_ALPHA6_DRAFT.md)；
+  `check-consistency.ps1` 目前 `CONSISTENCY_OK`，改版本号必须与发行目录同时动。
+  发版前唯一硬门槛是 **ARM64 实体机验收**。
 - 下一步优先做 ARM64 实体机验证与复杂 DIY 机制覆盖，不能用模拟器或卡图存在代替规则验收。
 
 详细记录：[发行说明](../release/RELEASE_2.0.0_ALPHA5_20261025.md)、[调试台与选靶验收](../acceptance/DEBUG_DEPLOYMENT_20261025.md)、[Android 对齐](../acceptance/ANDROID_PARITY_20261025.md)。
