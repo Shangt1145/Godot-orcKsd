@@ -22,8 +22,10 @@ public sealed class ServerLauncher : IAsyncDisposable
         => StartAsync([packsDirectory], sandboxDirectory, ct);
     public static async Task<ServerLauncher> StartAsync(IReadOnlyList<string> packsDirectories, string sandboxDirectory,
         CancellationToken ct = default, int? aiSeat = null, IReadOnlyList<string>? aiDeck = null,
-        bool fixedDeckForVerification = false, bool inProcess = false)
+        bool fixedDeckForVerification = false, bool inProcess = false, int port = 0)
     {
+        // port＝0 让系统分配（默认）；非 0 就是玩家要求的固定端口，被占用时启动会失败，
+        // 由调用方决定"换端口重试"还是"报错"——这里不替玩家静默换端口。
         if (inProcess || OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
         {
             var packages = packsDirectories.Select(root => Orc.Packages.PackageManifest.Parse(File.ReadAllText(Path.Combine(root, "manifest.json"))))
@@ -31,6 +33,7 @@ public sealed class ServerLauncher : IAsyncDisposable
             var host = await Orc.Server.ServerBootstrap.StartAsync(new Orc.Server.ServerOptions {
                 PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory, PluginsRoot = PluginManifests.ResolveRoot(),
                 ScriptEvaluator = NativeScriptHost.Evaluator,
+                Port = port,
                 ReuseProcessVocabulary = true,
                 DeckRules = fixedDeckForVerification ? Orc.Game.Decks.DeckRuleTier.None : Orc.Game.Decks.DeckRuleTier.Strict,
                 Seats = Enumerable.Range(0, 2).Select(n => new Orc.Server.SeatConfig(
@@ -49,6 +52,7 @@ public sealed class ServerLauncher : IAsyncDisposable
             var id = Guid.NewGuid().ToString("N");
             var reply = await manager.SpawnAsync(new SpawnRequest {
                 InstanceId = id, PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory,
+                Port = port,
                 DeckRules = fixedDeckForVerification ? "none" : "strict",
                 RunDir = Path.Combine(sandboxDirectory, "instances", id), StartupTimeout = TimeSpan.FromSeconds(60),
                 Seats = Enumerable.Range(0, 2).Select(n => new SeatSpawn {

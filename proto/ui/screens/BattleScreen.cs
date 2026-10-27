@@ -129,8 +129,10 @@ public partial class BattleScreen : Control
             else if (id == 1) NavigationRequested?.Invoke("settings");
         };
         _history = new Control { Position = new(31, 226), Size = new(70, 260), MouseFilter = MouseFilterEnum.Ignore }; _canvas.AddChild(_history);
-        var historyToggle = new BattleHistoryButton { Position = new(30, 119), Size = new(36, 30), Flat = true, TooltipText = "行动记录", ToggleMode = true, ButtonPressed = true };
-        historyToggle.Toggled += visible => _history.Visible = visible; _canvas.AddChild(historyToggle);
+        // 「行动记录」原先只切换右侧三张缩略图；现在它打开完整战报（缩略图常驻）。
+        _historyToggle = new BattleHistoryButton { Position = new(30, 119), Size = new(36, 30), Flat = true, TooltipText = "战报 · 弃牌堆 · 词条" };
+        _historyToggle.Pressed += ToggleLogPanel; _canvas.AddChild(_historyToggle);
+        BuildLogPanel();
         _endTurn = new Button { Position = new(1120, 445), Size = new(135, 36), Text = "结束回合" };
         foreach (var state in new[] { "normal", "disabled", "hover", "pressed", "focus" })
         {
@@ -204,6 +206,7 @@ public partial class BattleScreen : Control
         ClearPresentation();
         _pendingCombat = null; _pendingActions = null; _combat.Interrupt();
         _usingDemo = true; _demo.Reset(); _turnInput.Reset(_demo.State); _interaction.Reset(); _entries.Clear(); UiStyles.Clear(_history);
+        _log.Reset(); _turnClockTurn = -1; RefreshLogPanel();
         Render(_demo.State, _demo.Actions, false);
         _hint.Visible = false;
     }
@@ -1093,27 +1096,46 @@ public partial class BattleScreen : Control
         if (oldCard is not null)
         {
             if (deployedUnit is null) _sfx.Play(command is PlayCard ? "deploy" : "move", oldCard);
-            Record(oldCard, message);
+            // 部署的文本由表现步骤记（覆盖对手）；移动没有演出段，只能在这里补。
+            Record(oldCard, message, command is MoveUnit ? BattleLogKind.Move : null);
         }
     }
     private async void EndTurnClicked()
     {
         if (!CanEndTurnNow) return;
         Submit(new EndTurn());
+        // EndTurn 没有 Actor，派发看门狗盖不到它；这条锁只能靠 12 秒对账兜底。
+        if (!_usingDemo) ArmEndTurnWatchdog();
         if (!_usingDemo) return;
         var epoch = _demoPlaybackEpoch;
         await ToSignal(GetTree().CreateTimer(1.1), SceneTreeTimer.SignalName.Timeout);
         if (!IsInsideTree() || epoch != _demoPlaybackEpoch || !_usingDemo) return;
         _demo.BeginNextTurn(); QueueDemoPlayback(direct: false); Hint("我方回合，资源已刷新");
     }
+    /// <summary>
+    /// 提示一律上屏。原先这里有个只看 <c>"当前无法" / "不可" / "等待"</c> 的白名单，
+    /// 把"已取消，卡牌返回原位""请拖向目标或我方支援线空位""动作没有返回结果，已解锁该单位"
+    /// 这类**真实拒绝原因**全吞掉了，玩家统一感知为"点了没反应"——比啰嗦难查得多。
+    /// </summary>
     private void Hint(string text)
     {
-        // Routine targeting/deployment cues are conveyed on the cards and board, not permanent tutorial text.
-        if (_hint is null || !(text.StartsWith("当前无法") || text.Contains("不可") || text.StartsWith("等待"))) return;
+        if (_hint is null || string.IsNullOrWhiteSpace(text)) return;
         _hint.Text = text; _hint.Visible = true;
     }
-    private void Record(UiCardView card, string message)
+    /// <summary>
+    /// 缩略图 ＋ 战报条目。缩略图仍只留最近三张（原来的视觉回声，位置在左侧），
+    /// 完整行动序列进 <see cref="_log"/>，由「行动记录」按钮打开。
+    ///
+    /// <paramref name="logKind"/> 为 null 表示这条只画缩略图、不入战报——部署就是这种情况：
+    /// 它由表现步骤 <c>UiDeploymentPresentation</c> 统一记，对手的部署也走那条路，
+    /// 在这里再记一次就会同一件事写两遍。
+    /// </summary>
+    private void Record(UiCardView card, string message, BattleLogKind? logKind = null)
     {
+        // 战报的回合号以投影为准：表现步骤不一定带回合（例如"拖动进攻"是前端自己记的），
+        // 不先同步就会写出"0 回合"这种玩家看不懂的行。
+        if (_state is not null) _log.Observe(_state.Turn);
+        if (logKind is { } kind) _log.Note(kind, card.OwnerSide, message, card.CardId);
         if (_history.GetChildCount() >= 3) { var oldest = _history.GetChild(0); _history.RemoveChild(oldest); oldest.QueueFree(); }
         foreach (var child in _history.GetChildren().OfType<Control>()) child.Position += new Vector2(0, 76);
         var thumbnail = new BattleCard { Size = new(48, 67), TooltipText = message };
@@ -1201,7 +1223,7 @@ public partial class BattleScreen : Control
         _selfResource.Bind(resolution.After.SelfKredits, resolution.After.SelfMaxKredits, resolution.After.SelfPlayerName);
         _enemyResource.Bind(resolution.After.EnemyKredits, resolution.After.EnemyMaxKredits, resolution.After.EnemyPlayerName);
         var generation = _generation;
-        Record(resolution.Attacker, $"{resolution.Attacker.Definition.Name} → {resolution.Defender.Definition.Name}");
+        Record(resolution.Attacker, $"{resolution.Attacker.Definition.Name} → {resolution.Defender.Definition.Name}", BattleLogKind.Attack);
         try
         {
             await _combat.PlayAsync(resolution, attacker, defender);
@@ -1229,6 +1251,21 @@ public partial class BattleScreen : Control
     public override void _ExitTree() { CancelMulliganMotion(); FinishOpening(); StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); ClearRemovalActors(); FinishMotion(); ReleaseGestureWaiter(); }
 
     public async Task VerifyAsync()
+    {
+        // 探针不能把玩家的动效偏好当成输入：Reduce Motion 打开时 SlamAsync 会直接跳过落地相位、
+        // 部署动画整段跳过（见 line 323），下面这些断言测的就变成"读配置"而不是"读行为"。
+        // 更糟的是 SetReducedMotion 会落盘（user://fx_speed.cfg），上一次运行若在还原前抛错，
+        // 这个值就会传给下一次运行——实测就踩到了这个坑（SlamAsync 提前 return，
+        // "A light unit was not placed gently"）。所以这段先把动效归一化为 Normal＋关，
+        // 跑完在 finally 里还原入口时的值，中途抛错也不会把探针状态留在磁盘上。
+        // （整轮 -Verify 在 Main.VerifyUi 里还有一层同样的归一化；这里是断言自己的前置条件，
+        //  单独调用 VerifyAsync 时也成立。）
+        var speed = _clock.Current; var quiet = _clock.ReducedMotion;
+        _clock.SetSpeed(AnimClock.Speed.Normal); _clock.SetReducedMotion(false);
+        try { await VerifyCoreAsync(); }
+        finally { _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); }
+    }
+    private async Task VerifyCoreAsync()
     {
         // The new reference samples straddle the user-specified defense thresholds of 4 and 7.
         if (BattleSequence.SlamTier(3) != 0 || BattleSequence.SlamTier(4) != 1
@@ -1534,11 +1571,18 @@ public partial class BattleScreen : Control
             throw new Exception("An enemy concession reported the wrong player.");
         if (_sequence.LiveCardCount != 0) throw new Exception("The result panel retained banner nodes.");
         _clock.SetSpeed(AnimClock.Speed.Faster); _clock.SetReducedMotion(true);
-        StartScenario("fighter"); _demo.TryResolveAttack(new("self-front", "enemy-0"), out var reduced, out _);
-        await PresentCombatAsync(reduced!, _demo.Actions);
-        if (!MatchesProjection(reduced!.After) || _combat.LiveEffectCount != 0) throw new Exception("Reduced-motion combat failed.");
-        _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); ResetDemo();
-        GD.Print("BATTLE_STAGE2_VERIFY_OK weapons=5 counter damage death mutual-death hq interrupt reset external-request unknown-kredits supplied-result reduced-motion effects=0");
+        try
+        {
+            StartScenario("fighter"); _demo.TryResolveAttack(new("self-front", "enemy-0"), out var reduced, out _);
+            await PresentCombatAsync(reduced!, _demo.Actions);
+            if (!MatchesProjection(reduced!.After) || _combat.LiveEffectCount != 0) throw new Exception("Reduced-motion combat failed.");
+        }
+        // 这一小段是唯一故意打开 Reduce Motion 的探针；还原放进 finally，
+        // 否则它一旦失败就把 reduced_motion=true 落盘，毒掉下一次运行的落地相位断言。
+        finally { _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); }
+        await VerifyLogPanelAsync();
+        ResetDemo();
+        GD.Print("BATTLE_STAGE2_VERIFY_OK weapons=5 counter damage death mutual-death hq interrupt reset external-request unknown-kredits supplied-result reduced-motion log-panel turn-clock effects=0");
     }
     public bool MatchesProjection(UiMatchView expected) => _state.MatchId == expected.MatchId && _state.Phase == expected.Phase
         && _state.SelfKredits == expected.SelfKredits

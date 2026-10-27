@@ -12,7 +12,29 @@ public sealed partial class NativeWorkshop
     private string RecoveryRoot => Path.Combine(_root, "recovery");
     private string? _recoveryDestination, _recoveryCanonical;
     public bool RecoveredDraft { get; private set; }
-    public IReadOnlyList<string> SessionWarnings => _editor?.Session?.Warnings ?? [];
+
+    /// <summary>
+    /// 展示层（display-texts / desktop-effects / workshop.presentation）的降级告警。
+    /// 这些是装饰数据，坏一条只丢一条；但必须让作者看得见，不能静默吞掉。
+    /// </summary>
+    private readonly List<string> _presentationWarnings = [];
+    private void ResetPresentationWarnings() => _presentationWarnings.Clear();
+    private void WarnPresentation(string message)
+    {
+        if (_presentationWarnings.Contains(message) || _presentationWarnings.Count >= 32) return;
+        _presentationWarnings.Add(message);
+    }
+    private void CollectPresentationWarnings(IEnumerable<string>? warnings)
+    {
+        if (warnings is null) return;
+        foreach (var warning in warnings) WarnPresentation(warning);
+    }
+
+    public IReadOnlyList<string> SessionWarnings =>
+        ((_editor?.Session?.Warnings) ?? [])
+        .Concat(_presentationWarnings)
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
 
     private AssetEditor CreateEditor(AssetRegistry registry)
     {

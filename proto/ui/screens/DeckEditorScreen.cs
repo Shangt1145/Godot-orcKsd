@@ -198,6 +198,48 @@ public partial class DeckEditorScreen : VBoxContainer
         var list = _draft.CardIds.ToList(); if (!list.Remove(id)) return;
         _draft = _draft with { CardIds = list.ToArray() }; Changed();
     }
+
+    /// <summary>把卡组里所有 <paramref name="missingId"/> 换成 <paramref name="replacementId"/>。</summary>
+    internal void RebindMissing(string missingId, string replacementId)
+    {
+        if (missingId == replacementId || !_draft.CardIds.Contains(missingId)) return;
+        _draft = _draft.Rebind(missingId, replacementId); Changed();
+    }
+
+    /// <summary>
+    /// 断链重新绑定：从本机 DIY 卡里挑一张顶替。只列 DIY 卡——悬空的引用本身就是 DIY 编号，
+    /// 拿官方卡顶替会让"玩家自己那张卡"悄悄变成另一张，比留一条断链更糟。
+    /// </summary>
+    private void OpenRebind(string missingId)
+    {
+        var dialog = new ConfirmationDialog
+        {
+            Title = "重新绑定丢失的卡牌", MinSize = new(560, 420), DialogHideOnOk = false,
+            OkButtonText = "绑定这张", CancelButtonText = "取消",
+        };
+        AddChild(dialog);
+        var box = new VBoxContainer(); dialog.AddChild(box);
+        var hint = MenuStyles.Label($"卡组里这张卡在本机找不到了：\n{missingId}\n\n选一张本地 DIY 卡顶替它（张数不变）。", 13, MenuStyles.Dim);
+        hint.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(hint);
+        var candidates = _service.Cards.Where(c => c.CardId.StartsWith("diy/", StringComparison.Ordinal))
+            .OrderBy(c => c.Name).ThenBy(c => c.CardId).ToArray();
+        var list = new ItemList { CustomMinimumSize = new(0, 230), SizeFlagsVertical = SizeFlags.ExpandFill };
+        foreach (var c in candidates) list.AddItem($"{c.Name}  ·  {c.Cost} 费");
+        box.AddChild(list);
+        if (candidates.Length == 0)
+            box.AddChild(MenuStyles.Label("本机没有 DIY 卡牌可绑。先去工坊做一张，或把那张卡的 ORCDIY1 代码重新导入。", 13, new Color("dca58b")));
+        var error = MenuStyles.Label("", 13, new Color("dca58b")); box.AddChild(error);
+        dialog.Confirmed += () =>
+        {
+            var picked = list.GetSelectedItems();
+            if (candidates.Length == 0 || picked.Length == 0) { error.Text = "先在上面选一张卡。"; return; }
+            RebindMissing(missingId, candidates[picked[0]].CardId);
+            dialog.QueueFree();
+        };
+        dialog.Canceled += dialog.QueueFree;
+        dialog.CloseRequested += dialog.QueueFree;
+        dialog.PopupCentered();
+    }
     private void Changed(bool pool = true) { _dirty = true; SaveButton.Text = "保存 *"; RenderDeck(); if (pool) RenderPool(); }
     private void Render() { TotalCards.Editable = !FreeSize.ButtonPressed; AllyNation.Disabled = FreeNations.ButtonPressed; SaveButton.Text = _dirty ? "保存 *" : "保存"; RenderDeck(); RenderPool(); }
     private void RenderPool()
@@ -229,7 +271,29 @@ public partial class DeckEditorScreen : VBoxContainer
             var support = MenuStyles.Label($"{SetupDeckBack.NationLabel(c.Set)} · {MenuStyles.RarityName(c.Rarity)}", 11, MenuStyles.Dim);
             support.ClipText = true; support.TooltipText = support.Text; item.AddChild(support);
         }
-        if (all.Length == 0) Grid.AddChild(MenuStyles.Label("没有符合筛选条件的卡牌", 16, MenuStyles.Dim));
+        if (all.Length == 0) Grid.AddChild(MenuStyles.Label(EmptyPoolReason(), 16, MenuStyles.Dim));
+    }
+
+    /// <summary>
+    /// 空结果必须说清原因。原先无论为什么空着都只写"没有符合筛选条件的卡牌"，
+    /// 于是"我做了一张 av76 的卡，点『用于构筑』跳过来，搜名字一张都没有"——玩家以为自己把卡做丢了。
+    /// 最常见的原因就是国籍：卡属于 A 国，卡组主国是 B 国。
+    /// </summary>
+    private string EmptyPoolReason()
+    {
+        var search = Search.Text.Trim();
+        if (search.Length == 0) return "没有符合筛选条件的卡牌";
+        bool Match(UiCardDefinition c) => $"{c.Name} {c.CardId} {c.Text}".Contains(search, StringComparison.OrdinalIgnoreCase);
+        bool NationAllowed(UiCardDefinition c) => FreeNations.ButtonPressed
+            || DeckNations.Same(c.Set, _draft.Options.MainNation) || DeckNations.Same(c.Set, _draft.Options.AllyNation);
+        var hidden = _service.Pool(_draft).Where(c => Match(c) && !NationAllowed(c))
+            .OrderBy(c => c.Name).ToArray();
+        if (hidden.Length == 0) return "没有符合筛选条件的卡牌";
+        var foreign = hidden.GroupBy(c => c.Set).Select(g => SetupDeckBack.NationLabel(g.Key)).Distinct().ToArray();
+        return $"搜到了 {hidden.Length} 张卡，但它们属于 {string.Join("、", foreign)}，"
+            + $"当前卡组主国是 {SetupDeckBack.NationLabel(_draft.Options.MainNation)}"
+            + (DeckNations.Same(_draft.Options.AllyNation, "") ? "" : $"、盟国是 {SetupDeckBack.NationLabel(_draft.Options.AllyNation)}")
+            + "；把对应国家设为主国或盟国后才能加入。";
     }
     private void RenderDeck()
     {
@@ -259,12 +323,31 @@ public partial class DeckEditorScreen : VBoxContainer
         {
             var id = group.Key; var c = definitions.GetValueOrDefault(id);
             var row = new HBoxContainer { Name = "DeckRow" }; Rows.AddChild(row);
-            var title = MenuStyles.Button($"{c?.Cost?.ToString() ?? "?"}  {c?.Name ?? id}", () => { if (c is not null) Inspect(c); });
-            title.SizeFlagsHorizontal = SizeFlags.ExpandFill; title.ClipText = true; title.TooltipText = c?.Text ?? id; title.Alignment = HorizontalAlignment.Left; row.AddChild(title);
+            if (c is null)
+            {
+                // 断链行：卡组存着 diy/<guid>，本机没有这个编号。以前这里只渲染成「?  diy/8f3a…」，
+                // 玩家既不知道发生了什么，也没有任何能修的动作。现在说清原因并给「重新绑定」。
+                var lost = MenuStyles.Button("⚠ 这张卡在本机找不到了", () => { });
+                lost.SizeFlagsHorizontal = SizeFlags.ExpandFill; lost.ClipText = true;
+                lost.TooltipText = $"卡组里存的是 {id}，本机没有这个编号的卡。\n"
+                    + "最常见的原因：这张卡被删掉后又重新导入，编号变了。\n"
+                    + "点右侧「重新绑定」指回一张本地卡，或按 − 把它移出卡组。";
+                lost.Alignment = HorizontalAlignment.Left; row.AddChild(lost);
+                row.AddChild(MenuStyles.Label("×" + group.Count(), 13, MenuStyles.Gold));
+                var drop = MenuStyles.Button("−", () => RemoveCard(id)); drop.Name = "RemoveCard"; row.AddChild(drop);
+                var bind = MenuStyles.Button("重新绑定", () => OpenRebind(id)); bind.Name = "RebindCard"; row.AddChild(bind);
+                continue;
+            }
+            var title = MenuStyles.Button($"{c.Cost?.ToString() ?? "?"}  {c.Name}", () => Inspect(c));
+            title.SizeFlagsHorizontal = SizeFlags.ExpandFill; title.ClipText = true; title.TooltipText = c.Text; title.Alignment = HorizontalAlignment.Left; row.AddChild(title);
             row.AddChild(MenuStyles.Label("×" + group.Count(), 13, MenuStyles.Gold));
             var minus = MenuStyles.Button("−", () => RemoveCard(id)); minus.Name = "RemoveCard"; row.AddChild(minus);
-            var plus = MenuStyles.Button("+", () => { if (c is not null) AddCard(c); }); plus.Disabled = c is null || ConstructionRules.CannotAdd(_draft, c) is not null; row.AddChild(plus);
+            var plus = MenuStyles.Button("+", () => AddCard(c)); plus.Disabled = ConstructionRules.CannotAdd(_draft, c) is not null; row.AddChild(plus);
         }
+        var missing = ConstructionRules.Missing(_draft, _service.Cards);
+        if (missing.Count > 0)
+            _notice.Text = $"有 {missing.Count} 种卡在本机找不到了（删掉后重新导入会换编号）。"
+                + "点那一行的「重新绑定」把它们指回本地卡，或按 − 移出卡组。";
         var errors = _service.Validate(_draft);
         StartButton.Disabled = errors.Count > 0 || _library.LoadError is not null;
         SaveButton.Disabled = string.IsNullOrWhiteSpace(_draft.Name) || _library.LoadError is not null;

@@ -29,9 +29,15 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     private readonly Dictionary<string, int> _picksByChoiceId = new(StringComparer.Ordinal);
     /// <summary>选靶候选：choice id → 引擎引用键（用于把"点谁"对到候选）。</summary>
     private readonly Dictionary<string, string> _refsByChoiceId = new(StringComparer.Ordinal);
-    /// <summary>下一条选靶请求要自动命中的目标引用键（攻击/指向性指挥用）。</summary>
+    /// <summary>
+    /// 下一条"位置"选靶请求（<c>selector == "slot"</c>）要自动命中的空隙引用键。
+    /// 和 <see cref="_desiredTargetRef"/> 必须**分开存**：部署是"落点 + 效果目标"两个独立输入，
+    /// 共用一个字段时后写的会顶掉先写的（旧实现里 GapId 直接把 TargetUid 覆盖掉，
+    /// 部署指向类 DIY 卡在联机里永远打错目标）。
+    /// </summary>
+    private string? _desiredGapRef;
+    /// <summary>下一条"目标"选靶请求要自动命中的目标引用键（攻击／指向性指挥／部署效果目标）。</summary>
     private string? _desiredTargetRef;
-    private bool _desiredGap;
     private HashSet<string>? _mulliganReplacements;
     public Func<string, string?>? ArtPathResolver { get; set; }
 
@@ -311,6 +317,13 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                 }
                 if (result.Code is not ("targeting" or "cancelled"))
                     HintRequested?.Invoke(result.Message ?? result.Code);
+                _desiredGapRef = null; _desiredTargetRef = null;
+            }
+            // 动作直接完成、没有产生任何选择器：残留的意图必须丢掉，
+            // 否则下一个无关的选靶请求会莫名其妙地自动命中上一张卡记下的目标。
+            else if (result.Code != "targeting")
+            {
+                _desiredGapRef = null; _desiredTargetRef = null;
             }
         }
         catch (Exception error)
@@ -355,28 +368,33 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         _ => (null, null),
     };
 
-    /// 记下"这条命令希望选中的目标"（引用键），下一条选靶请求优先自动命中它。
+    /// 记下"这条命令希望选中的落点"和"希望选中的目标"——两个坑位各记各的。
     ///
     /// <para>
-    /// 服务端只提供"发起指挥"这一个入口，目标要靠 <c>target.submit</c> 回填；
-    /// 但玩家点"攻击这个目标"时不该被迫再点一次。所以带明确目标的命令先记下来，
-    /// 等 pending 到达再按 <c>candidates[].ref</c> 对上号自动提交。
+    /// 服务端只提供"发起指挥"这一个入口，位置和目标都要靠 <c>target.submit</c> 回填；
+    /// 玩家点"部署到这个空隙、然后打那个单位"时不该被迫点两次。两个意图分开保存，
+    /// 哪个选择器先来就命中哪个，另一个留给下一次请求。
     /// </para>
     /// </summary>
     private void RememberDesiredTarget(UiCommand command)
     {
-        _desiredGap = command is PlayCard { GapId: not null };
-        _desiredTargetRef = command switch
+        _desiredGapRef = command switch
         {
-            PlayCard play => play.GapId ?? play.TargetUid,
-            AttackUnit attack => attack.DefenderUid,
-            CommandUnit unit => unit.TargetUid ?? _actions.Moves.FirstOrDefault(m => m.Uid == unit.Uid
+            PlayCard play => play.GapId,
+            // CommandUnit 带目标＝攻击/指向，不带目标＝拖到前线的移动，落点才算空隙。
+            CommandUnit { TargetUid: null } unit => _actions.Moves.FirstOrDefault(m => m.Uid == unit.Uid
                 && m.ToZone == "frontline" && m.SlotIndex == unit.SlotIndex)?.GapId,
             MoveUnit move => _actions.Moves.FirstOrDefault(m => m.Uid == move.Uid && m.ToZone == move.ToZone
                 && (move.SlotIndex is null || m.SlotIndex == move.SlotIndex))?.GapId,
-            // MoveUnit 的目标是槽位（ToZone/SlotIndex），不是实体引用键，
-            // 而候选里的槽位 ref 是引擎懒分配的、无法从 SlotIndex 反推——
-            // 所以移动仍然交给选槽面板，不在这里硬猜。
+            _ => null,
+        };
+        _desiredTargetRef = command switch
+        {
+            PlayCard play => play.TargetUid,
+            AttackUnit attack => attack.DefenderUid,
+            CommandUnit unit => unit.TargetUid,
+            // 移动的目标是槽位（ToZone/SlotIndex），不是实体引用键，而候选里的槽位 ref
+            // 是引擎懒分配的、无法从 SlotIndex 反推——移动的落点走 _desiredGapRef。
             _ => null,
         };
     }
@@ -642,16 +660,21 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             return;
         }
 
-        // 玩家已经点明了"打谁"：候选里能找到就直接提交，不再让人点第二次。
-        if (_desiredTargetRef is { Length: > 0 } wanted && (!_desiredGap || selector == "slot"))
+        // 玩家已经点明了落点/目标：候选里能找到就直接提交，不再让人点第二次。
+        // 位置（slot）和目标（其它 selector）是两份意图，各取各的——绝不能共用一个字段，
+        // 否则"部署到空隙 + 指向某个单位"必然丢一个。
+        var wantsSlot = selector == "slot";
+        var wanted = wantsSlot ? _desiredGapRef : _desiredTargetRef;
+        if (wanted is { Length: > 0 })
         {
-            _desiredTargetRef = null; _desiredGap = false;
+            // 只消费命中的那一份；另一份留给下一个选择器。
+            if (wantsSlot) _desiredGapRef = null; else _desiredTargetRef = null;
             var hit = allowed.FirstOrDefault(choice =>
                 _refsByChoiceId.TryGetValue(choice.Id, out var reference) && reference == wanted);
             if (hit is not null && _picksByChoiceId.TryGetValue(hit.Id, out var index))
             {
                 _targetPending = false;
-                Console.WriteLine($"[net] 自动命中选靶目标 ref={wanted} pick={index}");
+                Console.WriteLine($"[net] 自动命中选靶{(wantsSlot ? "落点" : "目标")} ref={wanted} pick={index}");
                 _ = SubmitTargetAsync(sessionId, [index]);
                 return;
             }
@@ -660,7 +683,8 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             // 必须**主动取消**——把请求挂在那儿等超时，后面每条命令都会吃
             // "当前有未应答的选靶请求"（实测连出牌都被堵死）。
             _targetPending = false;
-            Console.WriteLine($"[net] 选靶目标不可用 ref={wanted}，取消本次动作（候选 {allowed.Count} 个）");
+            _desiredGapRef = null; _desiredTargetRef = null;
+            Console.WriteLine($"[net] 选靶{(wantsSlot ? "落点" : "目标")}不可用 ref={wanted}，取消本次动作（候选 {allowed.Count} 个）");
             _ = CancelTargetAsync(sessionId);
             return;
         }
@@ -732,6 +756,7 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
     {
         if (command is null) return;
         if (ReferenceEquals(command, _targetCommand)) _targetCommand = null;
+        _desiredGapRef = null; _desiredTargetRef = null;
         // 留一行可检索的日志：实机"这个单位再也打不了"时，先看有没有这条。
         Console.WriteLine($"[net] targeting refused -> unlock {command.GetType().Name} actor={BattleInteractionActorName(command)}");
         CommandRefused?.Invoke(command);

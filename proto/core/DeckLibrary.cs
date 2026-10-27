@@ -22,6 +22,13 @@ public sealed record ConstructedDeck
     /// <summary>null is a legacy deck: infer only the packs its cards actually use.</summary>
     public string[]? PackIds { get; init; }
     public ConstructedDeck Snapshot() => this with { CardIds = CardIds.ToArray(), PackIds = PackIds?.ToArray() };
+    /// <summary>
+    /// 把卡组里所有 <paramref name="oldId"/> 换成 <paramref name="newId"/>（断链重新绑定）。
+    /// 只换编号、不动张数；换完是否合法仍由 <see cref="ConstructionRules.Validate"/> 判。
+    /// </summary>
+    public ConstructedDeck Rebind(string oldId, string newId) => oldId == newId
+        ? this
+        : this with { CardIds = CardIds.Select(id => id == oldId ? newId : id).ToArray() };
 }
 
 public static class DeckCardPacks
@@ -116,6 +123,16 @@ public static class ConstructionRules
             errors.Add("盟国卡牌最多 12 张");
         return errors.AsReadOnly();
     }
+    /// <summary>
+    /// 卡组里引用了目录中不存在的卡。最常见的成因：DIY 卡删掉后又重新导入，编号变了，
+    /// 于是卡组那条 <c>diy/&lt;guid&gt;</c> 悬空——卡组没坏、卡也没丢，但两者对不上。
+    /// 界面据此给"重新绑定"入口，而不是只把编号印在报错里。
+    /// </summary>
+    public static IReadOnlyList<string> Missing(ConstructedDeck deck, IReadOnlyList<UiCardDefinition> catalog)
+    {
+        var known = catalog.Select(c => c.CardId).ToHashSet(StringComparer.Ordinal);
+        return deck.CardIds.Where(id => !known.Contains(id)).Distinct(StringComparer.Ordinal).ToArray();
+    }
     public static string? CannotAdd(ConstructedDeck deck, UiCardDefinition card)
     {
         if (!DeckCardPacks.Allows(deck, card.CardId)) return "这张卡不属于所选卡包";
@@ -152,7 +169,9 @@ public sealed class DeckLibrary
         try
         {
             var data = JsonSerializer.Deserialize<FileData>(File.ReadAllText(path), Json);
-            if (data is null || data.Schema != 1 || data.Decks is null || data.Decks.Length > 500
+            if (data is null) throw new InvalidDataException("卡组文件为空");
+            SchemaVersioning.Require(data.Schema, "卡组文件");
+            if (data.Decks is null || data.Decks.Length > 500
                 || data.Decks.Any(d => d is null || string.IsNullOrWhiteSpace(d.Id) || d.Name is null || d.Options is null
                     || d.Options.MainNation is null || d.Options.AllyNation is null
                     || d.CardIds is null || d.CardIds.Length > 511 || d.CardIds.Any(string.IsNullOrWhiteSpace))

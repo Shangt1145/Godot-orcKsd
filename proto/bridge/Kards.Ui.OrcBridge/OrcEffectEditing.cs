@@ -337,7 +337,12 @@ public static class OrcEffectEditing
                 for(var opIndex=0;opIndex<parsed.Ops.Count;opIndex++)
                 {
                     var op=parsed.Ops[opIndex];
-                    var (one, oneJson) = OrcImportService.CompileOrcEffect(cardId+".e"+effectIndex+".op"+opIndex, parsed with { Ops = [op] });
+                    // 单目标（sel=one）在 op 模板里是**无头**选靶（runtime.SelectAsync 直接取候选第一个），
+                    // 玩家点谁打谁拿不到。声明图才有预打出捕获 + 交互选靶，所以这类 op 改走声明图；
+                    // 其余 op 仍走已验证的 op 模板（全体/自己/随机不需要玩家应答）。
+                    var graph = opIndex < draft.Ops.Length ? OrcStructuredGraph.Graph(draft, draft.Ops[opIndex]) : null;
+                    var (one, oneJson) = OrcImportService.CompileOrcEffect(cardId+".e"+effectIndex+".op"+opIndex,
+                        graph is null ? parsed with { Ops = [op] } : DesktopNativeLowering.Lower(graph));
                     snapshots.Add(one);
                     using var doc = System.Text.Json.JsonDocument.Parse(oneJson);
                     jsons.Add(doc.RootElement.Clone());

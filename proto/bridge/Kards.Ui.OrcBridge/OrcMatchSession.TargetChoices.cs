@@ -81,19 +81,24 @@ public sealed partial class OrcMatchSession
         {
             if (requestId != RequestId || session._targetChoice != this || selectionsBySlot.Count != 1
                 || !selectionsBySlot.TryGetValue(slotName, out var ids)) return false;
-            SelectorEvent input;
+            SelectorEvent? input = null;
             if (selector.Presentation.Identifiers is not null)
                 input = new PickEvent(identifiers: ids.ToArray());
             else
             {
                 var references = ids.Select(id => selector.Presentation.Candidates
                     .FirstOrDefault(r => r.IsAlive && OrcRefs.KeyOf(r.Value) == id)).ToArray();
-                if (references.Any(r => r is null)) return false;
-                input = selector.Mode == SelectorInteractionMode.Drag && references.Length <= 1
-                    ? new DropEvent(references.FirstOrDefault()) : new PickEvent(references!);
+                if (!references.Any(r => r is null))
+                    input = selector.Mode == SelectorInteractionMode.Drag && references.Length <= 1
+                        ? new DropEvent(references.FirstOrDefault()) : new PickEvent(references!);
             }
-            if (!selector.Submit(input)) return false;
-            Close(); return true;
+            if (input is not null && selector.Submit(input)) { Close(); return true; }
+            // 提交没被引擎接受时必须主动取消。否则引擎一直 park 在这个 selector 上，
+            // 提交命令的信号量不释放，之后每条命令都只回"上一操作尚未完成"；
+            // 而选靶面板这边已经关掉了——玩家看到的是"这个单位再也点不动"。
+            GameLog.Warn("target", $"选靶提交未被接受（{slotName}，{ids.Count} 项），改为取消以免锁死后续命令");
+            if (!Cancel(RequestId)) Close();
+            return false;
         }
         public bool Cancel(string requestId)
         {

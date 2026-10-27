@@ -295,6 +295,7 @@ public partial class Main : Control
         _room.DeckPresentationSource = () => _decks.ActiveDeck;
         _room.BackRequested += () => Show("setup");
         _room.MatchStarted += () => _ = EnterRemoteMatchAsync();
+        _room.FeedRestored += _ => ResumeRemoteMatchAfterReconnect();
         AddScreen(content, "room", _room);
         _setup.RoomRequested += () => ReplaceSession(() => { Show("room"); _room.Open(); });
         // 局域网房间列表一键加入（M4 主流程入口）：跳房间屏并直接连对方地址。
@@ -319,7 +320,14 @@ public partial class Main : Control
         };
         _diyEditor.ConstructRequested += id =>
         {
-            _deckEditor.Search.Text = _catalog.Cards.First(c => c.CardId == id).Name;
+            var authored = _catalog.Cards.First(c => c.CardId == id);
+            _deckEditor.Search.Text = authored.Name;
+            // "用于构筑"要保证这张卡真的看得见：卡组按国籍过滤卡池，卡属于 av76 而卡组主国是别国时
+            // 搜名字只会得到一张空列表。空卡组没有代价，直接把主国切成这张卡的国家；
+            // 已经有卡的卡组不动人家的构筑，交给构筑页的空结果提示说明原因。
+            var current = _deckEditor.Draft;
+            if (current.CardIds.Length == 0 && !DeckNations.Same(authored.Set, current.Options.MainNation))
+                _deckEditor.Load(current with { Options = current.Options with { MainNation = authored.Set } });
             if (!DeckCardPacks.Allows(_deckEditor.Draft, id))
                 _deckPackPicker.Open(DeckCardPacks.Selected(_deckEditor.Draft), packs => { _deckEditor.ApplyPacks(packs); Show("deck"); }, creating: false);
             else Show("deck");
@@ -400,6 +408,7 @@ public partial class Main : Control
         else if (args.Contains("--verify-room-discovery")) Callable.From(VerifyRoomDiscovery).CallDeferred();
         else if (args.Contains("--verify-room-segments")) Callable.From(VerifyRoomSegments).CallDeferred();
         else if (args.Contains("--verify-room-ping")) Callable.From(VerifyRoomPing).CallDeferred();
+        else if (args.Contains("--verify-room-settings")) Callable.From(VerifyRoomSettings).CallDeferred();
         else if (args.Contains("--verify-target")) Callable.From(VerifyTarget).CallDeferred();
         else if (args.Contains("--verify-combat")) Callable.From(VerifyCombat).CallDeferred();
         else if (args.Contains("--verify-deck")) Callable.From(VerifyDeck).CallDeferred();
@@ -652,6 +661,19 @@ public partial class Main : Control
         try { await feed.RefreshViewAsync(); }
         catch (Exception error) { GD.PushError($"[remote] 拉取首帧视图失败：{error}"); }
         if (feed.MulliganPending) _battle.ShowMulliganPanel(feed.CurrentView, feed.MulliganRequestId);
+    }
+
+    /// <summary>
+    /// 房主对局中掉线重连：房间屏已经换成新 feed，战场却还挂在那个被释放的旧 feed 上
+    /// （客人有 HookGuestAutoEnter 自愈，房主没有）。这里只补房主这一路。
+    /// </summary>
+    private void ResumeRemoteMatchAfterReconnect()
+    {
+        if (_active != "battle") return;                         // 没在战场上，房间屏自己刷
+        if (_feed is not RemoteMatchFeed current) return;         // 战场没绑远端（单机/回放）时不该动
+        if (ReferenceEquals(current, _room.Feed)) return;         // 已经是新 feed 了
+        GD.Print("[main] host reconnect -> rebind battle to restored feed");
+        _ = EnterRemoteMatchAsync();
     }
 
     private void StopRealMatch()
@@ -999,6 +1021,15 @@ public partial class Main : Control
     }
     private async void VerifyUi()
     {
+        // 探针不能把玩家保存的动效偏好当成输入：Reduce Motion 打开时落地演出、部署编排整段跳过
+        // （BattleSequence.SlamAsync 直接 return、BattleScreen 的 animate 分支不走），
+        // 断言就变成"读配置"而不是"读行为"。更麻烦的是 SetSpeed/SetReducedMotion 都会落盘，
+        // 探针中途抛错就把这个状态留给下一次运行——实测踩过：fx_speed.cfg 里留着
+        // reduced_motion=true，下一次 -Verify 报 "A light unit was not placed gently"。
+        // 所以整轮 UI 探针统一归一化为 Normal＋关，退出时还原玩家真实偏好（正常/失败两条路都还原）。
+        var probeSpeed = _clock.Current; var probeQuiet = _clock.ReducedMotion;
+        void RestoreProbeClock() { _clock.SetSpeed(probeSpeed); _clock.SetReducedMotion(probeQuiet); }
+        _clock.SetSpeed(AnimClock.Speed.Normal); _clock.SetReducedMotion(false);
         try
         {
             // 迁移 S8：中立视图契约上移到 Orc.UI.Contracts（零引擎依赖），proto/ui 经全局 Using 消费
@@ -1104,9 +1135,10 @@ public partial class Main : Control
             if (OS.GetCmdlineUserArgs().Contains("--verify-effects"))
                 await _gallery.VerifyAllEffectsAsync();
             GD.Print($"UI_VERIFY_OK screens={_screens.Count} cards={_catalog.Cards.Count} texture_cache={_textures.Count}/{_textures.Capacity}");
+            RestoreProbeClock();
             GetTree().Quit();
         }
-        catch (Exception e) { GD.PushError(e.ToString()); GetTree().Quit(1); }
+        catch (Exception e) { RestoreProbeClock(); GD.PushError(e.ToString()); GetTree().Quit(1); }
     }
     /// <summary>Records the P11 assault trajectory and result band as per-frame PNGs.</summary>
     private async void CaptureP11()
@@ -1163,6 +1195,7 @@ public partial class Main : Control
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
         GetViewport().GetTexture().GetImage().SavePng(dir + "/battle-stage2-hand.png");
         _battle.CancelSelection();
+        await _battle.CaptureLogPanelAsync(dir);
         var originalWindowSize = GetWindow().Size;
         GetWindow().Size = new(1100, 720);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);

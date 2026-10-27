@@ -1,5 +1,6 @@
 using Godot;
 using Kards.Ui.Core;
+using Kards.Ui.Contracts;
 
 namespace Kards.Ui;
 
@@ -90,6 +91,54 @@ public partial class Main
         if (!import.GetChildren().OfType<VBoxContainer>().Single().GetChildren().OfType<Label>().Any(l => l.Text.Contains("ORK1:"))) throw new Exception("Invalid import did not show an error.");
         input.Text = code; await DeckClickAsync(import.GetOkButton());
         if (_decks.Decks.Count != count + 2 || _decks.ActiveId != initial || _active != "deck") throw new Exception("Import did not create a separate editable deck.");
+        // 断链与重新绑定：卡组里存着 diy/<guid>，本机没有这张卡（删掉后重新导入会换编号）。
+        // 以前这一行只渲染成「?  diy/8f3a…」，玩家既不知道发生了什么，也没有任何能修的动作。
+        var probeCard = new DiyCardDraft { Name = "断链探针卡", Cost = 1, OpCost = 1 };
+        try
+        {
+            _diy.Save(probeCard); RefreshDiy();
+            Show("deck");
+            var lostId = "diy/" + Guid.NewGuid().ToString("N");
+            var baseDeck = _deckService.Starter(30, 5) with
+            {
+                Name = "断链探针", Options = new DeckOptions { UnrestrictedNations = true, TotalCards = 31 },
+            };
+            _deckEditor.Load(baseDeck with { CardIds = baseDeck.CardIds.Append(lostId).ToArray() });
+            await MenuSettledAsync(); await MenuFrameAsync();
+            if (!_deckEditor.Draft.CardIds.Contains(lostId))
+                throw new Exception("A missing card was silently dropped from the draft.");
+            var lostRow = _deckEditor.Rows.GetChildren().OfType<HBoxContainer>()
+                .SingleOrDefault(r => r.GetChildren().OfType<Button>().Any(b => b.Name == "RebindCard"))
+                ?? throw new Exception("A broken deck reference rendered no rebind entry.");
+            await DeckClickAsync(lostRow.GetChildren().OfType<Button>().Single(b => b.Name == "RebindCard"));
+            var rebind = _deckEditor.GetChildren().OfType<ConfirmationDialog>().SingleOrDefault(d => d.Title == "重新绑定丢失的卡牌")
+                ?? throw new Exception("The rebind entry opened no dialog.");
+            var list = rebind.GetChildren().OfType<VBoxContainer>().Single().GetChildren().OfType<ItemList>().Single();
+            var row = Enumerable.Range(0, list.ItemCount)
+                .FirstOrDefault(i => list.GetItemText(i).StartsWith("断链探针卡", StringComparison.Ordinal), -1);
+            if (row < 0) throw new Exception("The rebind dialog did not list the local DIY card.");
+            list.Select(row);
+            await DeckClickAsync(rebind.GetOkButton());
+            if (rebind.Visible && _deckEditor.Draft.CardIds.Contains(lostId))
+            {
+                // 合成鼠标在子窗口里的偏移没根治（同 P4 组合设置那处）：点不到时退回信号直发，
+                // 并打印留痕，不静默当成点过了。
+                rebind.GetOkButton().EmitSignal(BaseButton.SignalName.Pressed);
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                GD.Print("DECK_NOTE rebind-ok-click-missed");
+            }
+            if (_deckEditor.Draft.CardIds.Contains(lostId) || !_deckEditor.Draft.CardIds.Contains(probeCard.Id))
+            {
+                var error = rebind.GetChildren().OfType<VBoxContainer>().Single().GetChildren().OfType<Label>()
+                    .LastOrDefault()?.Text ?? "";
+                throw new Exception("Rebind did not rewrite the deck's card id."
+                    + $" dialogOpen={rebind.Visible} selected={list.GetSelectedItems().Length} items={list.ItemCount}"
+                    + $" row={row} error=\"{error}\" draft={_deckEditor.Draft.CardIds.Length}");
+            }
+            if (_deckEditor.Draft.CardIds.Length != baseDeck.CardIds.Length + 1)
+                throw new Exception("Rebind changed the deck's card count.");
+        }
+        finally { _diy.Delete(probeCard.Id); RefreshDiy(); }
         // Exercise both fixed-size and unrestricted-size decks through the actual start button.
         foreach (var size in new[] { 30, 39 })
         {
@@ -122,6 +171,6 @@ public partial class Main
             if (_runner?.CurrentView?.Phase != "play") throw new Exception("Constructed mulligan did not settle.");
             StopRealMatch();
         }
-        GD.Print("DECK_VERIFY_OK mouse-add-remove draft-save reload duplicate confirmed-delete export invalid-import import custom-count unrestricted-nations unrestricted-size exact-deal mulligan");
+        GD.Print("DECK_VERIFY_OK mouse-add-remove draft-save reload duplicate confirmed-delete export invalid-import import broken-reference-rebind custom-count unrestricted-nations unrestricted-size exact-deal mulligan");
     }
 }

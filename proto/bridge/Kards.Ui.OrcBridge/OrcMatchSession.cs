@@ -244,10 +244,15 @@ public sealed partial class OrcMatchSession : IDisposable
         {
             session._effects = new SourceEffectAssembly(session.Match, effects.Where(p=>!replacements.Contains(p.Key)).ToDictionary(p=>p.Key,p=>p.Value), reason => session.LastRejectionReason ??= reason);
             var desktopPlans=new Dictionary<string,string[]>(StringComparer.Ordinal);
+            var planWarnings = new List<string>();
             foreach(var content in packSet.Contents)
-                foreach(var plan in PackPresentationData.Plans(content)) desktopPlans.Add(plan.Key,plan.Value);
+                foreach(var plan in PackPresentationData.Plans(content, planWarnings)) desktopPlans[plan.Key]=plan.Value;
+            if (planWarnings.Count > 0) GameLog.Warn("pack", string.Join("；", planWarnings));
             foreach(var card in custom)desktopPlans[card.Entry.Id]=(card.Draft.OrcEffects.Length>0
-                ?card.Draft.OrcEffects.Where(e=>e.DesktopJson is not null).Select(e=>e.DesktopJson!).ToArray()
+                // 结构化效果原本没有 DesktopJson，声明图是编译期按 op 现生成的——这里必须用同一个
+                // 函数再生成一遍，否则预打出捕获拿不到声明（玩家不会被问，op 模板又退回无头选靶）。
+                ?card.Draft.OrcEffects.Where(e=>e.DesktopJson is not null).Select(e=>e.DesktopJson!)
+                    .Concat(OrcStructuredGraph.Graphs(card.Draft.OrcEffects)).ToArray()
                 :!card.Draft.UseStructuredEffects&&card.Draft.EffectText.Length>0?OrcInspector.CompileText(card.Draft.Id,card.Draft.EffectText,card.Draft.CardType).Parse.Effects.Select(e=>e.DesktopJson!).ToArray():[]).Concat(WorkshopAuthoring.KeywordGraphs(card.Draft)).ToArray();
             foreach(var card in importedCards.Where(c=>c.DesktopEffectsJson is not null))
             {using var graph=System.Text.Json.JsonDocument.Parse(card.DesktopEffectsJson!);desktopPlans[card.Entry!.Id]=graph.RootElement.EnumerateArray().Select(e=>e.GetRawText()).ToArray();}
@@ -442,7 +447,9 @@ public sealed partial class OrcMatchSession : IDisposable
         foreach (var content in packSet.Contents)
         {
             var prefix = content.Prefix;
-            var texts = PackPresentationData.Texts(content);
+            var textWarnings = new List<string>();
+            var texts = PackPresentationData.Texts(content, textWarnings);
+            if (textWarnings.Count > 0) GameLog.Warn("pack", string.Join("；", textWarnings));
             foreach (var entry in content.Definitions)
             {
                 var rawId = entry.Id.StartsWith(prefix, StringComparison.Ordinal)

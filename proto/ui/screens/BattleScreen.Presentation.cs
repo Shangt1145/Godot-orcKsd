@@ -150,6 +150,10 @@ public partial class BattleScreen
         _deckCount.Text = resolution.After.SelfDeckCount.ToString();
         // 战报：移动没有自己的演出段（直接走状态刷新），靠前后快照差分补记换线动作。
         RecordZoneMoves(resolution);
+        // 完整行动序列：部署/指令/伤害/阵亡/弃牌/回合/调度/反制都来自引擎给的表现步骤，
+        // 这里一次折成战报条目（移动与攻击声明已由上面与 PresentCombatAsync 记过）。
+        _log.Ingest(resolution);
+        RefreshLogPanel();
         try
         {
             for (var stepIndex = 0; stepIndex < resolution.Steps.Count; stepIndex++)
@@ -451,7 +455,7 @@ public partial class BattleScreen
         {
             var moved = resolution.After.SelfLine.FirstOrDefault(c => c.Uid == unit.Uid);
             if (moved is null || moved.Zone == unit.Zone) continue;
-            Record(moved, $"{moved.Definition.Name} → {(moved.Zone == "frontline" ? "前线" : "支援线")}");
+            Record(moved, $"{moved.Definition.Name} → {(moved.Zone == "frontline" ? "前线" : "支援线")}", BattleLogKind.Move);
         }
     }
 }

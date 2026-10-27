@@ -36,8 +36,25 @@ public partial class DiyWorkshopScreen
         if (_saveNativeCard is not null) { dialog.AddButton("不保存，继续", true, "discard"); dialog.CustomAction += key => { if (key == "discard") { _nativeDirty = false; action(); dialog.QueueFree(); } }; }
         dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
     }
+    /// <summary>
+    /// 探针专用：非空时「导出/导入卡包 ZIP…」**跳过系统文件对话框**，直接用这个路径。
+    ///
+    /// <para>
+    /// 无头模式下 <see cref="FileDialog"/> 的原生对话框弹不出来，而这两个按钮是 P3
+    /// 「DIY 包拿得到 ZIP」唯一的玩家入口——没有这个缝，整条链在探针里就只能靠读代码。
+    /// 只由 <c>--verify-diy</c> 设置，正常运行永远是 null。
+    /// </para>
+    /// </summary>
+    internal static string? VerificationFileTarget;
+
     private void NativeFile(bool save, Action<string> selected)
     {
+        if (VerificationFileTarget is { } fixedPath)
+        {
+            try { selected(save ? fixedPath : PlatformFiles.ReadLocalCopy(fixedPath, ".zip")); }
+            catch (Exception error) { _notice.Text = error.Message; }
+            return;
+        }
         var dialog = new FileDialog { Title = save ? "导出卡包" : "导入卡包 ZIP", FileMode = save ? FileDialog.FileModeEnum.SaveFile : FileDialog.FileModeEnum.OpenFile,
             Access = FileDialog.AccessEnum.Filesystem, UseNativeDialog = true, Filters = ["*.zip ; 卡包压缩包"], CurrentFile = save ? "card-pack.zip" : "" };
         AddChild(dialog); dialog.FileSelected += path => {
@@ -47,6 +64,9 @@ public partial class DiyWorkshopScreen
         };
         dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered(new Vector2I(900, 600));
     }
+
+    /// <summary>探针用：把工坊底部那行提示读出来，失败时能直接说清"为什么没导出"。</summary>
+    internal string NoticeForVerification => _notice.Text;
     private void ImportNative() => _editor.GuardNavigation(() => GuardNative(() => NativeFile(false, path =>
     {
         void Install(bool replace)

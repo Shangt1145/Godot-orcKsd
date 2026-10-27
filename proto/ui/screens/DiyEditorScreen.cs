@@ -305,7 +305,10 @@ public partial class DiyEditorScreen : VBoxContainer
             _propertyParents.Clear();_focusedProperties.GetParent().RemoveChild(_focusedProperties);_focusedProperties.QueueFree();_focusedProperties=null!;_basicFields.GetParent().GetParent<Control>().Show();
         }
         PreviewPanel.CustomMinimumSize = new(focused ? 300 : 245, 0);
-        foreach (var action in new Control[] { ValidateButton, ConstructButton, TrialButton, AlignButton })
+        // 聚焦模式会隐藏左侧库列表，删除/恢复原版按钮原来跟着一起消失——
+        // 于是"从工坊点进单卡"时能复制、能保存，却删不掉刚复制出来的副本。
+        // 删除是这张卡的操作，不是列表的操作，跟着动作栏走。
+        foreach (var action in new Control[] { DeleteButton, ValidateButton, ConstructButton, TrialButton, AlignButton })
         {
             _actionParents.TryAdd(action, action.GetParent());
             var parent = focused ? _focusActions : _actionParents[action];
@@ -398,7 +401,7 @@ public partial class DiyEditorScreen : VBoxContainer
     }
     internal void Load(DiyCardDraft draft)
     {
-        if(draft.PackId.Length==0&&_scopePack.Length>0)draft=draft with{PackId=_scopePack};
+        if (draft.PackId.Length==0&&_scopePack.Length>0)draft=draft with{PackId=_scopePack};
         _blocked = _storedError(draft.Id) is null || draft.OrcEffects.Any(e=>e.DesktopJson is not null||e.PrefabJson is not null) ? null : draft.Snapshot();
         _loading = true; _draft = draft.Snapshot();
         RefreshWorkshopVocabulary(draft.PackId);
@@ -707,17 +710,21 @@ public partial class DiyEditorScreen : VBoxContainer
     {
         var dialog = new ConfirmationDialog { Title = "导入 DIY 卡牌", MinSize = new(650, 330), DialogHideOnOk = false }; AddChild(dialog); ActiveImport = dialog;
         var box = new VBoxContainer(); dialog.AddChild(box);
-        box.AddChild(MenuStyles.Label("粘贴 ORCDIY1: 卡牌代码。校验后另存为新卡，不覆盖现有卡牌。", 13, MenuStyles.Dim));
+        box.AddChild(MenuStyles.Label("粘贴 ORCDIY1: 卡牌代码。若本机没有同一编号的卡，会沿用代码里的编号"
+            + "（这样删掉再导回来，卡组里对它的引用还能对上）；编号已被占用时另存为新编号，不覆盖现有卡牌。", 13, MenuStyles.Dim));
         var text = new TextEdit { CustomMinimumSize = new(590, 170), WrapMode = TextEdit.LineWrappingMode.Boundary }; box.AddChild(text); ImportText = text;
         var error = MenuStyles.Label("", 13, new("dca58b")); error.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(error);
         dialog.Confirmed += () =>
         {
             try
             {
-                var card = DiyCardLibrary.Import(text.Text) with{PackId=_scopePack};
+                var (card, reused) = _library.ImportCard(text.Text, _scopePack);
                 var validation = DiyCardCompiler.Validate(card, _catalog());
                 if (!validation.Success) { error.Text = string.Join("；", validation.Errors); return; }
-                _library.Save(card); Saved?.Invoke(); Load(card); _notice.Text = "已导入并保存为新卡。";
+                _library.Save(card); Saved?.Invoke(); Load(card);
+                _notice.Text = reused
+                    ? "已导入并保存，沿用了原编号：卡组里对它的引用可以直接对上。"
+                    : "已导入并保存为新编号：原编号已被本机另一张卡占用，卡组里的旧引用需要重新绑定。";
                 ActiveImport = null; ImportText = null; dialog.QueueFree();
             }
             catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException) { error.Text = e.Message; }

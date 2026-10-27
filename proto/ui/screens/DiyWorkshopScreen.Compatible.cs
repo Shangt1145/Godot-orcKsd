@@ -17,6 +17,8 @@ public partial class DiyWorkshopScreen
         var title = MenuStyles.Label(pack.Name, 23, MenuStyles.Gold); title.SizeFlagsHorizontal = SizeFlags.ExpandFill; heading.AddChild(title);
         heading.AddChild(MenuStyles.Button("‹ 我的卡包", () => _editor.GuardNavigation(ShowNativePackages)));
         heading.AddChild(MenuStyles.Button("卡包信息…", () => EditCompatiblePackInfo(pack)));
+        // 分享入口就放在卡包页上：玩家打开自己的包，第一眼就能导出给别人。
+        AddCompatibleExportButtons(heading, pack, _cards.Cards.Where(c => c.PackId == pack.Id).ToArray());
         if (_store.Packs.Any(p => p.Id == pack.Id) && !pack.IsExpansion)
             heading.AddChild(MenuStyles.Button("词条与效果", () =>
             {

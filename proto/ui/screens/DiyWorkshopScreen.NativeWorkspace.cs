@@ -16,7 +16,13 @@ public partial class DiyWorkshopScreen
         row.AddChild(MenuStyles.Button("‹ 我的卡包", () => GuardNative(ShowNativePackages)));
         var title = MenuStyles.Label(_native!.WorkingPackage?.Name ?? id, 23, MenuStyles.Gold);
         title.SizeFlagsHorizontal = SizeFlags.ExpandFill; row.AddChild(title);
-        row.AddChild(MenuStyles.Button("导出草稿…", () => GuardNative(() => NativeFile(true, path => NativeTry(() => _native.Export(id, path, true))))));
+        row.AddChild(MenuStyles.Button("导出草稿…", () => GuardNative(() => NativeFile(true, path => NativeTry(() =>
+        {
+            var orphans = _native!.CountOrphanPresentationReferences(id, draft: true);
+            _native.Export(id, path, true);
+            if (orphans > 0)
+                _notice.Text = $"草稿已导出到 {path}，但有 {orphans} 条失效的展示引用会一起带出去。";
+        })))));
         if (_native.SessionWarnings.Count > 0) row.AddChild(MenuStyles.Button("编辑会话提示", () => NativeText("引擎返回的会话提示", string.Join("\n", _native.SessionWarnings))));
         NativePromoteButton = MenuStyles.Button("应用修改", () => GuardNative(() => NativeTry(() =>
         { _native.Promote(); _nativeChanged!(); ShowNativePackages(); _notice.Text = "卡包已转正，构筑和新对局使用此版本。"; })));

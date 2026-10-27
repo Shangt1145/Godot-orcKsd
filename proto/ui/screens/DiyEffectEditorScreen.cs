@@ -111,7 +111,10 @@ public partial class DiyEffectEditorScreen : VBoxContainer
         structureSec.AddChild(AddOrcButton);
 
         var legacySec = Section(form, "简易效果行（旧卡兼容）");
-        legacySec.AddChild(MenuStyles.Label("九宫格行编辑器，表达不了引擎 21 动作面；新效果请用上方结构编辑。", 12, MenuStyles.Dim));
+        // 单目标在这里是**引擎自己挑**（op 模板无头选靶），玩家点了谁不算数——这不是 bug 藏起来，
+        // 是这条通道没有"打出前问一句"的时机。必须当面说清，否则玩家会以为卡坏了。
+        legacySec.AddChild(MenuStyles.Label("九宫格行编辑器，表达不了引擎 21 动作面；新效果请用上方结构编辑。\n"
+            + "这里选「1 个友方/敌方单位」时目标由引擎自动挑，不会弹选靶面板——要玩家自己点，请用上方结构编辑里的同名动作。", 12, MenuStyles.Dim));
         _trigger = MenuStyles.Label("", 14, MenuStyles.Gold); legacySec.AddChild(_trigger);
         _effectBox = new VBoxContainer(); legacySec.AddChild(_effectBox);
         AddEffectButton = MenuStyles.Button("＋ 添加效果", () => AddEffect(new()));

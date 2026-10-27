@@ -18,7 +18,7 @@ public sealed class DiyWorkshopLibrary
         {
             if(new FileInfo(path).Length>16_000_000)throw new InvalidDataException("工坊文件过大");
             var data=JsonSerializer.Deserialize<Storage>(File.ReadAllText(path))??throw new InvalidDataException("工坊文件为空");
-            if(data.Schema!=1)throw new InvalidDataException("工坊版本无效");Validate(data.Packs);_packs=data.Packs.Select(p=>p.Snapshot()).ToList();
+            SchemaVersioning.Require(data.Schema,"工坊文件");Validate(data.Packs);_packs=data.Packs.Select(p=>p.Snapshot()).ToList();
         }
         catch(Exception e)when(e is IOException or JsonException or InvalidDataException){LoadError="工坊读取失败，原文件保留："+e.Message;}
     }

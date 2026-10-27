@@ -24,6 +24,7 @@ public partial class BattleScreen
     private UiMatchView? _liveInputView;
     private UiBattleActions? _liveInputActions;
     private readonly TurnInputGate _turnInput = new();
+    private int _endTurnWatchdog;
     private readonly BattleInteractionStateMachine _interaction = new();
     private string? _dispatchingActor;
     private UiCommand? _dispatchingCommand;
@@ -106,6 +107,24 @@ public partial class BattleScreen
             || _detail.Visible || _inspectStats.Visible)) CancelGesture();
         UpdateSelection(); UpdateEndTurnButton();
         if (_dragging && _pressed is { } source && IsTargetedOrder(source.Uid)) UpdateOrderAim(source, _aim.To);
+    }
+
+    /// <summary>
+    /// 结束回合的兜底。<see cref="BattleInteractionStateMachine.Actor"/> 对 EndTurn 返回 null，
+    /// 所以 <see cref="ArmDispatchWatchdog"/> 第一行就 return 了——结束回合是唯一"上了锁却没人解得开"的动作。
+    /// 一旦"我方回合"那段演出丢失（段丢失时确实会），按钮就永久灰掉，玩家只能退出对局。
+    /// 这里按权威视图对账：服务端说我方能动、本地还锁着 → 解锁。
+    /// </summary>
+    private async void ArmEndTurnWatchdog()
+    {
+        var generation = ++_endTurnWatchdog;
+        await ToSignal(GetTree().CreateTimer(12.0), SceneTreeTimer.SignalName.Timeout);
+        if (!GodotObject.IsInstanceValid(this) || !IsInsideTree() || generation != _endTurnWatchdog) return;
+        if (_readOnlyMode is not null || _usingDemo || TargetChoiceVisible || MulliganPanelVisible) return;
+        if (!_turnInput.Reconcile(InteractionView)) return;
+        GD.Print("[battle] end-turn watchdog -> unlock (turn banner never arrived)");
+        Hint("没等到回合切换演出，已按服务端状态解锁；可以继续操作，或再点一次结束回合。");
+        RefreshTurnInput();
     }
 
     private void UpdateEndTurnButton()

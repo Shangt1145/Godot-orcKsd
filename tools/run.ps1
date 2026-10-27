@@ -6,6 +6,8 @@
     [switch]$Editor,
     [switch]$Test,
     [switch]$Verify,
+    [switch]$VerifyDiy,
+    [switch]$VerifyAuthoring,
     [switch]$VerifyEffects,
     [switch]$NetProbe,
     [switch]$NetPlay,
@@ -20,9 +22,14 @@
     [switch]$VerifyRoomDiscovery,
     [switch]$VerifyRoomSegments,
     [switch]$VerifyRoomPing,
+    # 房间名 / 固定端口 / 房间成员（含移除）。
+    [switch]$VerifyRoomSettings,
     [switch]$VerifyTarget,
     [switch]$VerifyCombat,
     [switch]$VerifyDeck,
+    [switch]$VerifyDecks,
+    # 弃牌演出 + 弃牌堆战报（以前只能靠整轮 -Verify 跑到）。
+    [switch]$VerifyDiscard,
     [switch]$VerifyAppearance,
     [switch]$CaptureRoom,
     [switch]$Capture,
@@ -42,6 +49,14 @@ try {
     Write-Host '[2/5] 编译工程 …' -ForegroundColor Cyan
     Write-Host "      ORC_ENGINE_ROOT=$env:ORC_ENGINE_ROOT" -ForegroundColor DarkGray
     & dotnet build 'Kards.Ui.csproj' --nologo
+    if ($LASTEXITCODE -ne 0) {
+        # 运行副本的 obj/ 是增量缓存，偶尔会坚持一个源里已经不存在的错误：
+        # 2026-10-27 实测——源里刚给 BattleLog 加了 Observe，副本增量编译仍报 CS1061，
+        # 紧接着 -t:Rebuild 立刻通过（源与副本的 BattleLog.cs 字节一致）。
+        # 全量重建一次即可自愈；真错误会原样再报一遍，不会被这条重试掩盖。
+        Write-Host '      增量编译失败，改为全量重建重试一次 …' -ForegroundColor Yellow
+        & dotnet build 'Kards.Ui.csproj' --nologo -t:Rebuild
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     # Development runs use the engine just built, rather than an older server beside a prior export.
     $developmentServerDll = Join-Path $EngineRoot 'src\Orc.Server\bin\Debug\net8.0\Orc.Server.dll'
@@ -78,7 +93,15 @@ try {
         finally { $ErrorActionPreference = $previousPreference }
         if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
     }
+    # 只跑测试就到此为止。否则会掉进下面的 else 分支，以交互方式把游戏窗口拉起来——
+    # 那个进程不会自己退出，于是 `run.ps1 -Test` 永远不返回（实测踩过：静默挂 10 分钟）。
+    if ($onlyTest) { Write-Host '[5/5] 只跑测试，跳过 Godot 运行。' -ForegroundColor Cyan; return }
     Write-Host '[5/5] 运行 …' -ForegroundColor Cyan
+    # 同上：Godot 会把 GD.PushWarning 写到 stderr（探针会故意保存一张坏卡、故意走一遍拒绝分支），
+    # $ErrorActionPreference='Stop' 会把它当成致命错误，于是"探针跑完了"被读成"脚本失败"。
+    # 这里降级为 Continue，成败只看退出码——Godot 侧的 Check 失败会 Quit(1)。
+    $previousRunPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     if ($VerifyEffects) { & $Godot --headless --path $BuildRoot '--' --verify-ui --verify-effects }
     elseif ($NetProbe) { & $Godot --headless --path $BuildRoot '--' --net-probe }
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
@@ -93,15 +116,22 @@ try {
     elseif ($VerifyRoomDiscovery) { & $Godot --headless --path $BuildRoot '--' --verify-room-discovery }
     elseif ($VerifyRoomSegments) { & $Godot --headless --path $BuildRoot '--' --verify-room-segments }
     elseif ($VerifyRoomPing) { & $Godot --headless --path $BuildRoot '--' --verify-room-ping }
+    elseif ($VerifyRoomSettings) { & $Godot --headless --path $BuildRoot '--' --verify-room-settings }
     elseif ($VerifyTarget) { & $Godot --headless --path $BuildRoot '--' --verify-target }
     elseif ($VerifyCombat) { & $Godot --headless --path $BuildRoot '--' --verify-combat }
     elseif ($VerifyDeck) { & $Godot --headless --path $BuildRoot '--' --verify-deck }
+    # 卡组构筑全流程（含断链重新绑定）。以前只能通过 -Verify 跑到，单独改一处要等整轮 UI 探针。
+    elseif ($VerifyDecks) { & $Godot --headless --path $BuildRoot '--' --verify-decks }
+    elseif ($VerifyDiscard) { & $Godot --headless --path $BuildRoot '--' --verify-discard }
     elseif ($VerifyAppearance) { & $Godot --path $BuildRoot '--' --verify-appearance }
     elseif ($CaptureRoom) { & $Godot --path $BuildRoot '--' --capture-room }
     elseif ($Verify) { & $Godot --headless --path $BuildRoot '--' --verify-ui }
+    elseif ($VerifyDiy) { & $Godot --headless --path $BuildRoot '--' --verify-diy }
+    elseif ($VerifyAuthoring) { & $Godot --headless --path $BuildRoot '--' --verify-desktop-authoring }
     elseif ($Capture) { & $Godot --path $BuildRoot '--' --capture-ui }
     elseif ($Editor) { & $Godot --editor --path $BuildRoot }
     elseif ($MobileSim) { & $Godot --path $BuildRoot '--' --mobile-sim "--mobile-size=$MobileSize" }
     else { & $Godot --path $BuildRoot }
+    $ErrorActionPreference = $previousRunPreference
     if ($LASTEXITCODE -ne 0) { throw "Godot exited with code $LASTEXITCODE" }
 } finally { Pop-Location }

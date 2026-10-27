@@ -16,9 +16,16 @@ public partial class DiyWorkshopScreen
     private void BuildPackageActions(VBoxContainer parent, DiyPackDraft pack)
     {
         var native = _native?.Packages().FirstOrDefault(p => "pack/" + p.Id == pack.Id);
-        if (native is null) return;
+        if (native is null) { BuildCompatiblePackageActions(parent, pack); return; }
         parent.AddChild(MenuStyles.Label((native.Enabled ? "已启用" : "已停用") + (native.HasDraft ? " · 有未应用的修改" : ""), 14, MenuStyles.Gold));
-        parent.AddChild(MenuStyles.Button("导出卡包 ZIP…", () => NativeFile(true, path => NativeTry(() => _native!.Export(native.Id, path)))));
+        parent.AddChild(MenuStyles.Button("导出卡包 ZIP…", () => NativeFile(true, path => NativeTry(() =>
+        {
+            // 坏包会随 ZIP 原样传给下载方，对方连修的机会都没有——导出前先报一声。
+            var orphans = _native!.CountOrphanPresentationReferences(native.Id);
+            _native.Export(native.Id, path);
+            if (orphans > 0)
+                _notice.Text = $"已导出到 {path}，但包内有 {orphans} 条失效的展示引用（卡本身不受影响）。建议先在编辑会话里清理，再分享给别人。";
+        }))));
         if (native.Installed)
             parent.AddChild(MenuStyles.Button(native.Enabled ? "停用此卡包" : "启用此卡包", () => NativeTry(() =>
             { _native!.SetEnabled(native.Id, !native.Enabled); _nativeChanged!(); ShowNativePackages(); })));
@@ -31,6 +38,49 @@ public partial class DiyWorkshopScreen
             }));
         if (native.Diagnostics.Count > 0)
             parent.AddChild(MenuStyles.Button($"查看 {native.Diagnostics.Count} 条检查结果", () => NativeText("卡包检查结果", string.Join("\n", native.Diagnostics))));
+    }
+
+    /// <summary>
+    /// DIY 卡包（草稿库里的包，没有原生安装目录）的操作面。
+    /// <para>
+    /// 以前这里直接 <c>return</c>：DIY 包连一个按钮都没有，玩家根本拿不到 ZIP。现在导出走
+    /// <see cref="DiyPackExport"/>——把草稿编译成原生卡包格式，对方用「导入卡包 ZIP…」装上即用。
+    /// </para>
+    /// </summary>
+    private void BuildCompatiblePackageActions(VBoxContainer parent, DiyPackDraft pack)
+    {
+        var cards = _cards.Cards.Where(c => c.PackId == pack.Id).ToArray();
+        parent.AddChild(MenuStyles.Label(
+            $"DIY 卡包 · {cards.Length} 张卡 · {pack.Keywords.Length} 个词条"
+            + (pack.IsExpansion ? " · 扩展包" : ""), 14, MenuStyles.Gold));
+        AddCompatibleExportButtons(parent, pack, cards);
+    }
+
+    /// <summary>
+    /// 导出按钮组。卡包详情页与「修改卡包」面板共用这一份实现——两处都要能导出，
+    /// 否则玩家在自己的卡包页里找不到分享入口，只能绕去"修改卡包"。
+    /// </summary>
+    private void AddCompatibleExportButtons(Container parent, DiyPackDraft pack, DiyCardDraft[] cards)
+    {
+        parent.AddChild(MenuStyles.Button("导出卡包 ZIP…", () => NativeFile(true, path => NativeTry(() =>
+        {
+            var result = DiyPackExport.Export(pack, cards, _service.Cards, _cards.ArtDirectory, path);
+            if (result.Archive is null)
+            {
+                _notice.Text = "导出前检查没通过，未写文件：" + string.Join("；", result.Problems);
+                return;
+            }
+            _notice.Text = $"已导出 {result.Cards} 张卡到 {path}。对方在工坊用「导入卡包 ZIP…」安装后即可直接使用。"
+                + (result.Problems.Count > 0 ? " 注意：" + string.Join("；", result.Problems) : "");
+        }))));
+        if (cards.Length == 0) return;
+        parent.AddChild(MenuStyles.Button("导出前检查", () => NativeTry(() =>
+        {
+            var problems = DiyPackExport.Check(pack, cards, _service.Cards, _cards.ArtDirectory);
+            _notice.Text = problems.Count == 0
+                ? $"检查通过：{cards.Length} 张卡都能编译，卡图与词条齐全，可以分享。"
+                : "分享前需要先处理：" + string.Join("；", problems);
+        })));
     }
 
     private void EditCompatiblePackInfo(DiyPackDraft pack)

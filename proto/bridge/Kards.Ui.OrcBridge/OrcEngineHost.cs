@@ -119,6 +119,56 @@ public static class OrcEngineHost
     public static IReadOnlyList<UiDiyChoice> NativeNations => Current?.CreateSnapshot().CardPacks
         .SelectMany(p => NativeWorkshop.ReadNations(p.RootDirectory)).DistinctBy(n => n.Id).ToArray() ?? [];
 
+    private static (string Stamp, IReadOnlyList<UiDiyChoice> Rows) _keywordNames = ("", []);
+
+    /// <summary>
+    /// 已装卡包自带的词条显示名（引擎 id → 名字）。导出的 DIY 包靠它把
+    /// <c>◇ kw-76e1c7658f9a…</c> 还原成玩家写的名字。
+    ///
+    /// <para>
+    /// 走缓存：这个方法在卡面渲染路径上（每个词条一次），而 <c>workshop.presentation.json</c>
+    /// 是磁盘文件。缓存键是各包该文件的 <c>最后写入时间 + 长度</c>——装/卸包或玩家手改展示文件
+    /// 都会让键变，所以不会读到旧名字。读不出来＝空，卡面退回显示引擎 id。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<UiDiyChoice> NativeKeywords
+    {
+        get
+        {
+            if (Current is not { } host) return [];
+            // 走 Catalog.Packages 而不是 CreateSnapshot()：后者会克隆整份卡数据，
+            // 而这条路径在卡面渲染上，每个词条都要问一次。
+            var roots = host.Catalog.Packages.Where(p => p.Manifest.Kind == PackageKind.CardPack)
+                .Select(p => p.RootDirectory).ToArray();
+            if (roots.Length == 0) return [];
+            var stamp = string.Join("|", roots.Select(PresentationStamp));
+            lock (Gate)
+            {
+                if (_keywordNames.Stamp == stamp) return _keywordNames.Rows;
+                var rows = new List<UiDiyChoice>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var root in roots)
+                    foreach (var row in NativeWorkshop.ReadKeywords(root))
+                        if (seen.Add(row.Id)) rows.Add(row);
+                _keywordNames = (stamp, rows);
+                return rows;
+            }
+        }
+    }
+
+    private static string PresentationStamp(string root)
+    {
+        try
+        {
+            var file = new FileInfo(Path.Combine(root, "workshop.presentation.json"));
+            return file.Exists ? root + "@" + file.LastWriteTimeUtc.Ticks + ":" + file.Length : root + "@-";
+        }
+        catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return root + "@?";
+        }
+    }
+
     /// <summary>Replace the effective card-pack set atomically; existing match snapshots stay frozen.</summary>
     public static void SetWorkshopRoots(IReadOnlyList<string> roots)
     {
@@ -223,8 +273,10 @@ public static class OrcEngineHost
             {
                 var content = LoadPackContent(package.RootDirectory, package.Manifest, out var rejected);
                 rejectedAll.AddRange(rejected);
-                var texts = PackPresentationData.Texts(content);
-                _ = PackPresentationData.Plans(content);
+                // 展示层坏一条只丢一条：包与卡照常进池，问题进 failures 供卡包管理页展示。
+                var presentationWarnings = new List<string>();
+                var texts = PackPresentationData.Texts(content, presentationWarnings);
+                _ = PackPresentationData.Plans(content, presentationWarnings);
                 var prefix = content.Prefix;
                 foreach (var entry in content.Definitions)
                 {
@@ -233,8 +285,9 @@ public static class OrcEngineHost
                         : entry.Id;
                     cards.Add(StaticCardProjection.Project(
                         entry.Id, entry.Definition, artLookup,
-                        text: texts.TryGetValue(rawId, out var text) ? text : null) with { Flavor = PackPresentationData.Flavor(package.RootDirectory, rawId) });
+                        text: texts.TryGetValue(rawId, out var text) ? text : null) with { Flavor = PackPresentationData.Flavor(package.RootDirectory, rawId, presentationWarnings) });
                 }
+                failures.AddRange(presentationWarnings.Select(w => $"{package.Manifest.Id}：{w}"));
 
                 // v1 的 dependsOn 已退役，依赖一律读 v2 的 requires（包 ID 列表）。
                 var required = package.Manifest.RequiredPackages;

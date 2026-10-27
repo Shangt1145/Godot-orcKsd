@@ -66,6 +66,13 @@ public sealed class NetworkWorkshopSession
             presentation["nations"] = new JsonArray(nations.Values.ToArray());
             var family = Kards.Ui.Core.DeckCardPacks.Family("pack/" + id);
             if (family != "pack/" + id) presentation["basePackId"] = family.StartsWith("pack/") ? family[5..] : family;
+            // 词条名字：规则在 network-vocabulary.json（只有引擎 id），名字只能进展示层。
+            // 少了这一段，收包人的卡面把自定义词条显示成 "◇ kw-76e1c7658f9a…"。
+            var keywordNames = (presentation["keywords"] as JsonArray ?? new()).OfType<JsonObject>()
+                .ToDictionary(k => k["id"]!.ToString(), k => k.DeepClone(), StringComparer.Ordinal);
+            foreach (var name in WorkshopAuthoring.NetworkKeywordNames(new[] { group.First().PackId, family }))
+                keywordNames[name!["id"]!.ToString()] = name.DeepClone();
+            if (keywordNames.Count > 0) presentation["keywords"] = new JsonArray(keywordNames.Values.ToArray());
             foreach (var draft in group)
             {
                 var validation = DiyCardCompiler.Validate(draft, catalog);
@@ -96,7 +103,12 @@ public sealed class NetworkWorkshopSession
                 var card = JsonNode.Parse(compiled.CardJson)!;
                 ReplaceReferences(card, ids); card["id"] = localId; Save(root, relative, card);
                 texts[localId] = compiled.Card.Text;
-                var graphs = draft.OrcEffects.Where(e => e.DesktopJson is not null).Select(e => e.DesktopJson!).Concat(WorkshopAuthoring.KeywordGraphs(draft)).ToArray();
+                // 结构化单目标效果的声明图是编译期现生成的：导出的 desktop-effects.json 里必须
+                // 带着同一份文本，否则对方装包后预打出捕获找不到声明——他的客户端不会问，
+                // 引擎退回无头选靶，玩家看到的就是"我这张卡只打第一个"。
+                var graphs = draft.OrcEffects.Where(e => e.DesktopJson is not null).Select(e => e.DesktopJson!)
+                    .Concat(OrcStructuredGraph.Graphs(draft.OrcEffects))
+                    .Concat(WorkshopAuthoring.KeywordGraphs(draft)).ToArray();
                 if (graphs.Length > 0) { var graphArray = JsonSerializer.SerializeToNode(graphs)!; ReplaceReferences(graphArray, ids); plans[localId] = graphArray; }
                 var entry = (presentation["cards"]![localId] as JsonObject)?.DeepClone().AsObject() ?? new JsonObject();
                 entry["flavor"] = draft.Flavor;

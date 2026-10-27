@@ -26,8 +26,9 @@ public sealed class DiyCardLibrary
         {
             if (new FileInfo(path).Length > 8_000_000) throw new InvalidDataException("DIY 卡库文件过大");
             var data = JsonSerializer.Deserialize<FileData>(File.ReadAllText(path), Json);
-            if (data is null || data.Schema != 1 || data.Cards is null || data.Cards.Length > 128)
-                throw new InvalidDataException("DIY 卡库版本或内容无效");
+            if (data is null) throw new InvalidDataException("DIY 卡库文件为空");
+            SchemaVersioning.Require(data.Schema, "DIY 卡库");
+            if (data.Cards is null || data.Cards.Length > 128) throw new InvalidDataException("DIY 卡库内容无效");
             foreach (var card in data.Cards) CheckShape(card);
             if (data.Cards.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count() != data.Cards.Length
                 || data.Cards.Select(c=>c.RuntimeId).Distinct(StringComparer.Ordinal).Count()!=data.Cards.Length)
@@ -94,7 +95,8 @@ public sealed class DiyCardLibrary
     // ── 自导入卡图 ────────────────────────────────────────────────────────────
     // 图片存卡库旁 art/ 目录（与库文件同生命周期）；文件名由卡牌编号派生，
     // CheckShape 校验 ArtFile 受限字符——不存在路径逃逸面。
-    private string ArtDirectory => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(_path))!, "art");
+    /// <summary>自导入卡图目录（整包导出要把这些 PNG 一起带走，所以对外可读）。</summary>
+    public string ArtDirectory => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(_path))!, "art");
     public static string ArtFileName(string cardId) =>
         cardId.StartsWith("diy/", StringComparison.Ordinal) && Regex.IsMatch(cardId[4..], @"\A[a-zA-Z0-9_-]{1,64}\z")
             ? cardId[4..] + ".png" : throw new InvalidDataException("卡牌编号无效，无法派生卡图文件名");
@@ -143,7 +145,9 @@ public sealed class DiyCardLibrary
         CheckShape(card);
         return "ORCDIY1:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(card, Json)));
     }
-    public static DiyCardDraft Import(string text)
+
+    /// <summary>解析并校验一张卡牌代码，**保留代码自带的编号**（不重新发号）。</summary>
+    public static DiyCardDraft Parse(string text)
     {
         if (text is null || text.Length > 2_000_000 || !text.Trim().StartsWith("ORCDIY1:", StringComparison.Ordinal))
             throw new InvalidDataException("请输入 ORCDIY1: 开头的 DIY 卡牌代码");
@@ -151,10 +155,37 @@ public sealed class DiyCardLibrary
         {
             var card = JsonSerializer.Deserialize<DiyCardDraft>(Encoding.UTF8.GetString(Convert.FromBase64String(text.Trim()[8..])), Json);
             CheckShape(card);
-            // Import is a new card, never an overwrite of another author's card.
-            return card! with { Id = "diy/" + Guid.NewGuid().ToString("N"), SourceCardId="" };
+            return card!;
         }
         catch (Exception e) when (e is FormatException or JsonException)
         { throw new InvalidDataException("DIY 卡牌代码无效", e); }
     }
+
+    /// <summary>
+    /// 纯解析入口：<b>总是</b>重新发号。用于"两张代码永远不等于同一张卡"的场景
+    /// （分享、测试断言）。落盘请用 <see cref="ImportCard"/>。
+    /// </summary>
+    public static DiyCardDraft Import(string text) => Parse(text) with { Id = NewId(), SourceCardId = "" };
+
+    /// <summary>
+    /// 导入并准备落盘的编号策略：代码里的编号在本机<b>空闲</b>时沿用，已被别的卡占用时才另发新号。
+    ///
+    /// 为什么不是"永远发新号"：卡组存的是 <c>diy/&lt;guid&gt;</c>。玩家删掉一张卡再导入同一张，
+    /// 旧实现会得到一个新编号，于是卡组里那条引用永远指向不存在的卡——
+    /// 卡组没坏、卡也没丢，但两者对不上了。沿用空闲编号让"删了再导回来"原地复活。
+    ///
+    /// 为什么不是"永远沿用"：编号被占用时沿用会变成静默覆盖别人的卡。所以只在自己空闲时才沿用，
+    /// 这条与"导入永不覆盖现有卡牌"并不冲突——空闲就是没有现存卡牌。
+    /// <c>SourceCardId</c> 仍然清空：导入出来的是独立的一张卡，不是又一次"改官方卡"。
+    /// 返回 <c>ReusedId</c> 是为了让界面能说清"这次是复活了原卡还是另存了新编号"——
+    /// 玩家需要知道卡组里的引用会不会自己接上。
+    /// </summary>
+    public (DiyCardDraft Card, bool ReusedId) ImportCard(string text, string packId = "")
+    {
+        var card = Parse(text) with { PackId = packId, SourceCardId = "" };
+        if (!_cards.Any(c => c.Id == card.Id)) return (card, true);
+        return (card with { Id = NewId() }, false);
+    }
+
+    private static string NewId() => "diy/" + Guid.NewGuid().ToString("N");
 }

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Kards.Ui.Core;
 
 namespace Kards.Ui.OrcBridge;
 
@@ -36,8 +37,9 @@ public sealed class OrcImportLibrary
         {
             if (new FileInfo(path).Length > 8_000_000) throw new InvalidDataException("OrC 导入库文件过大");
             var data = JsonSerializer.Deserialize<FileData>(File.ReadAllText(path), Json);
-            if (data is null || data.Schema != 1 || data.Rows is null || data.Rows.Length > MaxRows)
-                throw new InvalidDataException("OrC 导入库版本或内容无效");
+            if (data is null) throw new InvalidDataException("OrC 导入库文件为空");
+            SchemaVersioning.Require(data.Schema, "OrC 导入库");
+            if (data.Rows is null || data.Rows.Length > MaxRows) throw new InvalidDataException("OrC 导入库内容无效");
             var rows = data.Rows.Select(r => new OrcImportRow(r.Id, r.Name, r.Type,
                 r.Cost, r.OpCost, r.Attack, r.Defense, r.Text,r.DesktopJson)).ToList();
             if (rows.Select(r => r.Id).Distinct(StringComparer.Ordinal).Count() != rows.Count)
@@ -53,6 +55,7 @@ public sealed class OrcImportLibrary
     {
         lock (_gate)
         {
+            GuardLoaded();
             var byId = _rows.ToDictionary(r => r.Id, r => r, StringComparer.Ordinal);
             foreach (var row in rows) byId[row.Id] = row;
             _rows = byId.Values.OrderBy(r => r.Id, StringComparer.Ordinal).ToList();
@@ -65,9 +68,20 @@ public sealed class OrcImportLibrary
     {
         lock (_gate)
         {
+            GuardLoaded();
             if (_rows.RemoveAll(r => r.Id == id) == 0) return;
             Write();
         }
+    }
+
+    /// <summary>
+    /// 读失败时禁止任何写入。别的库（卡库/卡组/工坊）一直有这道闸，这里以前没有：
+    /// 文件读不进来 → <c>_rows</c> 是空的 → 随便导入一行就把原文件整份覆盖掉，
+    /// 那份"读不懂但还有救"的数据就没了。闸门必须挡在写之前，而不是只在读取时提示。
+    /// </summary>
+    private void GuardLoaded()
+    {
+        if (LoadError is not null) throw new IOException(LoadError);
     }
 
     private void Write()

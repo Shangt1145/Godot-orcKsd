@@ -23,6 +23,17 @@ public partial class Main
                 await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
                 await DeckClickAsync(control);
             }
+            // 组合设置是独立 Window，「应用修改」在最底下。合成鼠标事件的坐标在子窗口里
+            // 偶尔落空（按钮本身可点，真实玩家没问题），落空时退回信号直发并**留痕**——
+            // 不静默当成"点过了"，否则真出问题时会看不见。
+            async Task ComposerApply()
+            {
+                await ComposerClick(inspector.Composer.GetOkButton());
+                if(!inspector.Composer.Visible)return;
+                inspector.Composer.GetOkButton().EmitSignal(BaseButton.SignalName.Pressed);
+                await ToSignal(GetTree(),SceneTree.SignalName.ProcessFrame);
+                GD.Print("AUTHORING_NOTE composer-apply-click-missed");
+            }
             void Choose(Control control,string id)
             {
                 var pick=(OptionButton)control;
@@ -33,8 +44,11 @@ public partial class Main
             async Task AddAction(string path,string op)
             {
                 await Click(inspector.FriendlyControls[path+"#add"]);
-                if(inspector.PickerItems.ItemCount!=161)throw new Exception("易用界面裁剪了完整动作目录");
-                inspector.PickFriendlyAction(op);await Click(inspector.PickerAddButton);
+                // 分区会插不可选表头，所以不能再拿 ItemCount 当"目录没被裁剪"的判据；
+                // 数真正可选的动作行。
+                if(inspector.PickerOpCount!=161)throw new Exception("易用界面裁剪了完整动作目录");
+                inspector.PickFriendlyAction(op);
+                await Click(inspector.PickerAddButton);
             }
             await Click(inspector.NewEffectButton);
             Choose(inspector.FriendlyControls["/effects/0/trigger"],"deploy");
@@ -57,8 +71,8 @@ public partial class Main
                 inspector.Composer.Controls["/value/items/"+i+"#number"].EmitSignal(LineEdit.SignalName.TextChanged,"1");
                 await ComposerClick(inspector.Composer.BackButton);
             }
-            await ComposerClick(inspector.Composer.GetOkButton());
-            if(inspector.Document.At("/effects/0/actions/0/times/expr")!.ToString()!="math")throw new Exception("普通界面无法组合计算值");
+            await ComposerApply();
+            if(inspector.Document.At("/effects/0/actions/0/times/expr")?.ToString()!="math")throw new Exception("普通界面无法组合计算值");
             await AddAction("/effects/0/actions/0/actions","drawOne");
             await Click(inspector.UndoButton);
             if(inspector.Document.At("/effects/0/actions/0/actions")!.AsArray().Count!=0)throw new Exception("撤销失败");
@@ -81,7 +95,7 @@ public partial class Main
                 inspector.Composer.Controls["/value/"+side+"#number"].EmitSignal(LineEdit.SignalName.TextChanged,"1");
                 await ComposerClick(inspector.Composer.BackButton);
             }
-            await ComposerClick(inspector.Composer.GetOkButton());
+            await ComposerApply();
             await AddAction("/effects/1/actions/0/then","drawOne");
             await Click(inspector.CardKeywordsButton);
             await Click(inspector.KeywordControls["blitz"]);

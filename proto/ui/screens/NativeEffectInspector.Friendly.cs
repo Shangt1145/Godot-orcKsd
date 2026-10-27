@@ -22,11 +22,15 @@ internal partial class NativeEffectInspector
     internal event Action? CountersRequested;
     internal ItemList PickerItems=null!;
     internal LineEdit PickerSearch=null!;
+    /// <summary>当前筛出来的动作数（不含分区表头）。探针用它守"易用界面不裁剪动作目录"。</summary>
+    internal int PickerOpCount=>_pickerOps.Count;
     internal readonly Dictionary<string,Control> FriendlyControls=[];
     private AcceptDialog _actionPicker=null!;
     private OptionButton _pickerGroup=null!;
     private Label _pickerExplanation=null!;
     private readonly List<string> _pickerOps=[];
+    /// <summary>与 <see cref="ItemList"/> 行号一一对应；分区表头是 null（不可选、不是动作）。</summary>
+    private readonly List<string?> _pickerRowOps=[];
     private string _addActionsPath="";
     private AcceptDialog _keywordDialog=null!;
     private VBoxContainer _keywordRows=null!;
@@ -528,37 +532,82 @@ internal partial class NativeEffectInspector
         _pickerExplanation=Note("");_pickerExplanation.CustomMinimumSize=new(600,52);box.AddChild(_pickerExplanation);
         PickerAddButton=MenuStyles.Button("添加这个动作",ConfirmAction);box.AddChild(PickerAddButton);
         PickerSearch.TextChanged+=_=>FilterFriendlyPicker();_pickerGroup.ItemSelected+=_=>FilterFriendlyPicker();
-        PickerItems.ItemSelected+=i=>_pickerExplanation.Text="需要设置："+string.Join("、",P.Parameters(_pickerOps[(int)i]).Where(f=>!f.TryGetProperty("optional",out var optional)||!optional.GetBoolean()).Select(f=>P.Field(f.GetProperty("name").GetString()!)));
+        PickerItems.ItemSelected+=i=>DescribeRow((int)i);
         PickerItems.ItemActivated+=_=>ConfirmAction();
+    }
+    /// <summary>
+    /// 选中一行之后的说明。预览动作**不灰掉**，而是选中后把原因说出来：
+    /// <see cref="ItemList.SetItemDisabled"/> 加 tooltip 在手机上没有 hover，玩家只看到"点了没反应"。
+    /// 玩家路径下把「添加」按钮关掉，等于同一件事（不能加），但原因是可读的。
+    /// </summary>
+    private void DescribeRow(int row)
+    {
+        if(_pickerRowOps[row] is not {} op){_pickerExplanation.Text="";PickerAddButton.Disabled=true;return;}
+        var problem=DiyCapability.OperationProblem(op);
+        _pickerExplanation.Text=problem.Length==0
+            ?"需要设置："+string.Join("、",P.Parameters(op).Where(f=>!f.TryGetProperty("optional",out var optional)||!optional.GetBoolean()).Select(f=>P.Field(f.GetProperty("name").GetString()!)))
+            :"预览动作（后续引擎版）："+problem;
+        PickerAddButton.Disabled=_playerAuthoring&&problem.Length>0;
     }
     private void OpenActionPicker(string path)
     {
         _addActionsPath=path;PickerSearch.Text="";_pickerGroup.Select(0);FilterFriendlyPicker();
         _actionPicker.PopupCentered(new Vector2I(Math.Min(760,(int)GetViewportRect().Size.X-80),Math.Min(590,(int)GetViewportRect().Size.Y-80)));PickerSearch.GrabFocus();
     }
+    /// <summary>
+    /// 重画选择器：先分区（✓ alpha 可用 / ○ 预览），再按分组和搜索过滤。
+    ///
+    /// <para>
+    /// <c>_pickerRowOps</c> 与 <see cref="ItemList"/> 的**行号一一对应**，表头行是 null——
+    /// 因为分区会插入不可选的行，原来"行号 == <c>_pickerOps</c> 下标"的假设不再成立，
+    /// 直接用行号取动作会错位一格。
+    /// </para>
+    /// </summary>
     private void FilterFriendlyPicker()
     {
-        PickerItems.Clear();_pickerOps.Clear();
+        PickerItems.Clear();_pickerOps.Clear();_pickerRowOps.Clear();
+        var all=DiyOpCatalog.All;
         var category=_pickerGroup.GetItemText(_pickerGroup.Selected);
-        foreach(var op in InspectorVocabulary.Operations.OrderBy(op=>Array.IndexOf(new[]{"卡牌","单位与总部","流程","记录","资源与环境"},P.Group(op))).ThenBy(P.Operation))
+        var shown=all.Where(entry=>_pickerGroup.Selected<=0||entry.Group==category)
+            .Where(entry=>(P.Operation(entry.Op)+entry.Group+entry.Op).Contains(PickerSearch.Text,StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        void Section(string title,DiyOpStage stage)
         {
-            if(_pickerGroup.Selected>0&&P.Group(op)!=category)continue;
-            if(!(P.Operation(op)+P.Group(op)+op).Contains(PickerSearch.Text,StringComparison.OrdinalIgnoreCase))continue;
-            var problem=DiyCapability.OperationProblem(op);
-            _pickerOps.Add(op);var item=PickerItems.AddItem(P.Operation(op)+"    ·    "+P.Group(op)+(problem.Length>0?" · 暂不可执行":""));
-            PickerItems.SetItemTooltip(item,problem.Length>0?problem:"可编排；具体参数仍会通过效果编译检查。");
-            if(_playerAuthoring&&problem.Length>0)PickerItems.SetItemDisabled(item,true);
+            var rows=shown.Where(entry=>entry.Stage==stage).ToArray();
+            if(rows.Length==0)return;
+            var header=PickerItems.AddItem(title+$"    ({rows.Length})");
+            PickerItems.SetItemSelectable(header,false);
+            PickerItems.SetItemCustomFgColor(header,stage==DiyOpStage.Alpha?MenuStyles.Gold:MenuStyles.Dim);
+            _pickerRowOps.Add(null);
+            foreach(var entry in rows)
+            {
+                _pickerOps.Add(entry.Op);
+                var item=PickerItems.AddItem(P.Operation(entry.Op)+"    ·    "+entry.Group);
+                PickerItems.SetItemTooltip(item,entry.Problem.Length>0?entry.Problem:"可编排；具体参数仍会通过效果编译检查。");
+                _pickerRowOps.Add(entry.Op);
+            }
         }
-        PickerAddButton.Disabled=_pickerOps.Count==0;
-        _pickerExplanation.Text=_pickerOps.Count==0?"没有找到。试试动作、对象或资源的中文名称。":$"可选择 {_pickerOps.Count} 种动作。添加后可以自由修改参数和嵌套组合。";
+        Section("✓ alpha 可用",DiyOpStage.Alpha);
+        Section("○ 预览（后续引擎版）",DiyOpStage.Preview);
+        // 这句说明**每次打开都在**，不是"首次弹一次"：哪些动作能跑会随引擎版本变，
+        // 一次性提示会过期，而这一行永远说当前实话。也不再单开一行 Label——对话框是固定高度的，
+        // 多一行会把「添加这个动作」挤出可点区域（探针的坐标点击会直接落空）。
+        _pickerExplanation.Text=_pickerOps.Count==0
+            ?"没有找到。试试动作、对象或资源的中文名称。"
+            :$"动作目录 {all.Count} 个：{DiyOpCatalog.Alpha.Count} 个这版能真跑（✓），"
+             +$"{DiyOpCatalog.Preview.Count} 个是预览（○，能排进草稿但还编不出可执行效果）。这里列出 {_pickerOps.Count} 种。";
         var first=_pickerOps.FindIndex(op=>!_playerAuthoring||DiyCapability.OperationProblem(op).Length==0);
-        PickerAddButton.Disabled=first<0;
-        if(first>=0)PickerItems.Select(first);
+        if(first<0){PickerAddButton.Disabled=true;return;}
+        var row=_pickerRowOps.IndexOf(_pickerOps[first]);
+        PickerItems.Select(row);DescribeRow(row);
     }
     private void ConfirmAction()
     {
         var selected=PickerItems.GetSelectedItems();if(selected.Length==0)return;
-        var op=_pickerOps[selected[0]];var action=InspectorVocabulary.Action(op);
+        if(_pickerRowOps[(int)selected[0]] is not {} op)return;
+        // 双击/回车也会走到这里：玩家路径下预览动作仍然不能加，但先把原因写出来。
+        if(_playerAuthoring&&DiyCapability.OperationProblem(op).Length>0){DescribeRow((int)selected[0]);return;}
+        var action=InspectorVocabulary.Action(op);
         // New legacy operations have optional-only schemas. Seed their declared controls,
         // without modifying any already-loaded declaration or limiting the available catalog.
         if(action.Count==1)
@@ -574,6 +623,6 @@ internal partial class NativeEffectInspector
     internal void EnsureFriendlyVisible(Control control){if(_friendlyScroll.IsAncestorOf(control))_friendlyScroll.EnsureControlVisible(control);}
     internal void PickFriendlyAction(string op)
     {
-        var index=_pickerOps.IndexOf(op);if(index<0)throw new InvalidOperationException("动作未出现在完整选择器中");PickerItems.Select(index);
+        var row=_pickerRowOps.IndexOf(op);if(row<0)throw new InvalidOperationException("动作未出现在完整选择器中");PickerItems.Select(row);
     }
 }

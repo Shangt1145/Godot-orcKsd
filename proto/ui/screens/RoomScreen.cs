@@ -1,4 +1,5 @@
 using Godot;
+using System.Net.Sockets;
 using Kards.Ui.OrcBridge;
 using Kards.Ui.Core;
 using Kards.Ui.Contracts;
@@ -34,6 +35,13 @@ public partial class RoomScreen : VBoxContainer
     private int _guestPort;
     private bool _guest;
     private string? _lastError;
+    /// <summary>
+    /// 重连时入场凭据已失效（大厅阶段断线会释放座位并作废令牌）。
+    /// 这种情况下服务端给新连接的状态是 <c>connected</c>，既不是 rejected 也不是 revoked，
+    /// 只靠 <see cref="RemoteMatchFeed.AdmissionState"/> 判断会让"重新申请入场"按钮永不出现——
+    /// 界面提示用户去点一个不存在的按钮。所以这里留一个显式标记。
+    /// </summary>
+    private bool _needsReapply;
 
     // ── 断线重连（M3）──────────────────────────────────────────────
     // 服务端语义：对局态座位不因断线释放（MarkDisconnected 只翻 Connected），
@@ -67,11 +75,34 @@ public partial class RoomScreen : VBoxContainer
     private Button _addAi = null!, _invite = null!, _start = null!, _back = null!;
     private string _joinEndpoint = "";
 
+    // ── 房间设置（P7）：房间名 + 固定端口 ─────────────────────────────
+    private RoomSettings _settings = null!;
+    private VBoxContainer _settingsPanel = null!;
+    private LineEdit _roomName = null!, _portField = null!;
+    private CheckBox _fixedPort = null!;
+    private Label _settingsNote = null!;
+    /// <summary>控件只回填一次：玩家正在打字时被快照刷新覆盖是最烦人的一种"输入失灵"。</summary>
+    private bool _settingsSynced;
+    /// <summary>探针在改设置控件时置位：避免把探针值写进玩家真实的设置文件。</summary>
+    private bool _suppressSettingsSave;
+    /// <summary>探针用的设置文件路径（默认 user://room-settings.json）。</summary>
+    internal string? SettingsPath { get; set; }
+
     /// <summary>请求返回上一屏（需要释放服务器实例）。</summary>
     public event Action? BackRequested;
 
     /// <summary>开局成功，请求切到战场。</summary>
     public event Action? MatchStarted;
+
+    /// <summary>
+    /// 重连成功后交回"新接上的 feed"（仅房主；客人/观战走 <see cref="MatchStarted"/> 自愈）。
+    /// <para>
+    /// 房主的战场不在房间屏里装配，<see cref="Main"/> 手里握的是旧 feed。没有这个事件，
+    /// 房主对局中掉线重连后画面就停在掉线那一刻，唯一出路"离开房间"还会顺手关掉服务端，
+    /// 把好友一起踢下线。
+    /// </para>
+    /// </summary>
+    public event Action<RemoteMatchFeed>? FeedRestored;
 
     /// <summary>当前连接（未就绪＝null）。</summary>
     public RemoteMatchFeed? Feed => _feed;
@@ -88,11 +119,13 @@ public partial class RoomScreen : VBoxContainer
     {
         _packsRoot = packsRoot;
         _sandbox = sandboxDirectory;
+        _settings = new RoomSettings(SettingsPath ?? ProjectSettings.GlobalizePath("user://room-settings.json"));
 
         AddThemeConstantOverride("separation", 14);
         BuildHeader();
         BuildBody();
         BuildFooter();
+        if (_settings.LoadError is { Length: > 0 } settingsError) _hint.Text = settingsError;
         foreach(var panel in FindChildren("*", "PanelContainer", true, false).OfType<PanelContainer>())
             panel.AddThemeStyleboxOverride("panel",MenuMaterials.Panel(new Color("22272a"),12));
         foreach(var button in FindChildren("*", "Button", true, false).OfType<Button>())
@@ -152,7 +185,7 @@ public partial class RoomScreen : VBoxContainer
         right.AddChild(BuildChecks());
     }
 
-    private Button _reapply = null!;
+    private Button _reapply = null!, _retryJoin = null!;
     private PanelContainer BuildInstancePanel()
     {
         var panel = new PanelContainer { CustomMinimumSize = new(300, 0) };
@@ -161,8 +194,11 @@ public partial class RoomScreen : VBoxContainer
         column.AddChild(UiStyles.Label("与好友一起作战", 22, UiStyles.Gold));
         _status = UiStyles.Label("正在准备房间…", 14, UiStyles.MenuInk); _status.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_status);
         _invite = UiStyles.Button("复制邀请地址", CopyInvite); column.AddChild(_invite);
-        _admissions = UiStyles.Button("入场申请", () => _ = ShowAdmissionsAsync()); column.AddChild(_admissions);
+        _admissions = UiStyles.Button("房间成员", () => _ = ShowAdmissionsAsync()); column.AddChild(_admissions);
         _reapply = UiStyles.Button("重新申请入场", () => _ = ReapplyAsync()); _reapply.Visible = false; column.AddChild(_reapply);
+        _retryJoin = UiStyles.Button("重试加入", () => _ = JoinAsync()); _retryJoin.Visible = false; column.AddChild(_retryJoin);
+        _settingsPanel = BuildRoomSettings();
+        column.AddChild(_settingsPanel);
         var help = UiStyles.Label("邀请好友加入，批准入场后即可开始。也可以在对手位置添加电脑对手。", 14, UiStyles.MenuDim);
         help.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(help);
         _receivePacks = new CheckBox { Text = "接收好友卡包", TooltipText = "开启后将载入好友提供的效果脚本。收到的包仅用于本房间，不自动存入工坊。" };
@@ -179,6 +215,110 @@ public partial class RoomScreen : VBoxContainer
         _ping = UiStyles.Label("延迟 —", 12, UiStyles.MenuDim); details.AddChild(_ping);
         _hint = UiStyles.Label("", 14, UiStyles.Gold); _hint.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_hint);
         return panel;
+    }
+
+    /// <summary>
+    /// 房间设置（房主）：房间名 + 固定端口 + 端口映射说明。
+    /// 客人看不到这一块——房间名与监听端口都是房主的事。
+    /// </summary>
+    private VBoxContainer BuildRoomSettings()
+    {
+        var box = new VBoxContainer { Visible = false };
+        box.AddThemeConstantOverride("separation", 6);
+        box.AddChild(UiStyles.Label("房间设置", 13, UiStyles.Accent));
+
+        _roomName = new LineEdit { PlaceholderText = $"房间名（留空＝好友的房间）", MaxLength = RoomSettings.NameLimit };
+        _roomName.TextChanged += text =>
+        {
+            if (_suppressSettingsSave) return;
+            ApplyRoomName(text, save: true);
+        };
+        box.AddChild(_roomName);
+
+        var portRow = new HBoxContainer(); portRow.AddThemeConstantOverride("separation", 8);
+        _fixedPort = new CheckBox
+        {
+            Text = "固定端口",
+            TooltipText = "勾选后每次开房都用同一个端口，好友不用每次重新问地址。端口被占用时会提示并改回自动分配。",
+        };
+        _fixedPort.Toggled += on =>
+        {
+            _settings.FixedPort = on;
+            _portField.Editable = on;
+            SaveSettings(); RefreshPortNote();
+        };
+        portRow.AddChild(_fixedPort);
+        _portField = new LineEdit
+        {
+            Text = _settings.Port.ToString(), MaxLength = 5, Editable = false, CustomMinimumSize = new(90, 0),
+            TooltipText = "1024–65535。1024 以下需要管理员权限，不让填。",
+        };
+        _portField.TextChanged += text =>
+        {
+            if (_suppressSettingsSave) return;
+            if (RoomSettings.TryParsePort(text, out var parsed)) { _settings.Port = parsed; SaveSettings(); RefreshPortNote(); }
+        };
+        portRow.AddChild(_portField);
+        box.AddChild(portRow);
+
+        _settingsNote = UiStyles.Label("", 11, UiStyles.MenuDim);
+        _settingsNote.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        box.AddChild(_settingsNote);
+        RefreshPortNote();
+        return box;
+    }
+
+    /// <summary>
+    /// 改房间名：写设置 → 立刻告诉宣告器（下一轮广播就带新名字，不必重开房间）→ 需要时落盘。
+    ///
+    /// <para>
+    /// 玩家打字与探针都走这一个方法。分成两份就会漂：探针那份只改内存不通知宣告器，
+    /// 于是"改名后好友那边看到旧名字"这种 bug 探针永远抓不到。
+    /// </para>
+    /// </summary>
+    private void ApplyRoomName(string? name, bool save)
+    {
+        _settings.Name = name ?? "";
+        _announcer?.Rename(_settings.Name);
+        if (save) SaveSettings();
+    }
+
+    /// <summary>把设置回填到控件（只做一次：玩家正在打字时被快照刷新覆盖最像"输入失灵"）。</summary>
+    private void SyncSettingsControls()
+    {
+        _settingsSynced = true;
+        _roomName.Text = _settings.Name;
+        _fixedPort.SetPressedNoSignal(_settings.FixedPort);
+        _portField.Text = _settings.Port.ToString();
+        _portField.Editable = _settings.FixedPort;
+        RefreshPortNote();
+    }
+
+    /// <summary>
+    /// 端口说明随开关变化——把"要不要做端口映射"直接写在玩家眼前，而不是藏在文档里。
+    /// 公网联机做不做映射，是玩家最容易卡住的一步；写在按钮下面比写进帮助页有用。
+    /// </summary>
+    private void RefreshPortNote()
+    {
+        if (_settingsNote is null) return;
+        _settingsNote.Text = _settings.FixedPort
+            ? $"好友直连填 本机地址:{_settings.Port}。公网联机还需要在路由器把 TCP {_settings.Port} 映射到本机；"
+              + "局域网或虚拟局域网（ZeroTier、Radmin 等）直连不用映射。"
+            : "端口每次开房由系统分配，地址会变。要给好友一个固定地址直连时，勾选固定端口。";
+    }
+
+    /// <summary>设置保存失败只说一次：玩家打 10 个字不该收到 10 条同样的提示。</summary>
+    private bool _settingsSaveErrorShown;
+
+    private void SaveSettings()
+    {
+        try { _settings.Save(); }
+        catch (Exception e)
+        {
+            if (_hint is null || _settingsSaveErrorShown) return;
+            _settingsSaveErrorShown = true;
+            NoteError("房间设置没能保存：" + e.Message);
+        }
     }
 
     private PanelContainer BuildChecks()
@@ -250,8 +390,22 @@ public partial class RoomScreen : VBoxContainer
             Ui(() => Say("正在创建房间…"));
             PrepareWorkshopSession();
             var packs = _workshopSession!.Roots;
-            var server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null,
-                fixedDeckForVerification: FixedDeckForVerification);
+            var requestedPort = _settings.RequestedPort;
+            ServerLauncher server;
+            try
+            {
+                server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null,
+                    fixedDeckForVerification: FixedDeckForVerification, port: requestedPort);
+            }
+            catch (Exception error) when (requestedPort != 0)
+            {
+                // 固定端口被占用时不静默换端口，也不让玩家卡死在"开不了房"：
+                // 退回自动分配，并把"为什么这次地址变了"写在他看得见的地方。
+                GD.PushWarning($"[room] 固定端口 {requestedPort} 启动失败，改为自动分配：{error.Message}");
+                Ui(() => _hint.Text = $"固定端口 {requestedPort} 用不了（多半被别的程序占着），这次改成自动分配端口。");
+                server = await ServerLauncher.StartAsync(packs, _sandbox, aiSeat: _aiSeat, aiDeck: _aiSeat.HasValue ? _deck.CardIds : null,
+                    fixedDeckForVerification: FixedDeckForVerification);
+            }
             if (lifecycle != _lifecycle) { await server.DisposeAsync(); return; }
             _server = server;
             MobilePlatform.SetHosting(true);
@@ -277,6 +431,7 @@ public partial class RoomScreen : VBoxContainer
             if (!await _feed.WaitForAdmissionAsync()) throw new InvalidOperationException("未收到房主入场许可。");
             if (lifecycle != _lifecycle) return;
             RememberSession("127.0.0.1", _server.Port, 0, _feed.SeatToken);
+            _needsReapply = false;
             await RefreshAsync();
         }
         catch (Exception error)
@@ -445,7 +600,9 @@ public partial class RoomScreen : VBoxContainer
             {
                 _ownRoomId = snapshot.RoomId;
                 _announcer?.Dispose();
-                _announcer = new RoomAnnouncer(snapshot.RoomId, _server?.Port ?? Port, "OrC 作战房间");
+                // 房间名进局域网广播：好友在列表里看到的就是这一行（空名＝"好友的房间"）。
+                _announcer = new RoomAnnouncer(snapshot.RoomId, _server?.Port ?? Port,
+                    _settings.Name.Length > 0 ? _settings.Name : null);
             }
             _announcer?.UpdateSeats(snapshot.Seats.Count(s => s.Kind.Length > 0), 2);
         }
@@ -491,7 +648,11 @@ public partial class RoomScreen : VBoxContainer
         _addAi.Disabled = _guest || (ready0 && ready1);
         _seat0.SetAccess(false); _seat1.SetAccess(!_guest && !ready1);
         _invite.Visible = !_guest; _admissions!.Visible = !_guest;
-        _reapply.Visible = _feed?.AdmissionState is "rejected" or "revoked";
+        _settingsPanel.Visible = !_guest;
+        if (!_guest && !_settingsSynced) SyncSettingsControls();
+        _reapply.Visible = _needsReapply || _feed?.AdmissionState is "rejected" or "revoked";
+        // 已经连上了，"重试加入"就没有意义——留着只会让人以为还有问题。
+        _retryJoin.Visible = false;
         _start.Visible = _feed?.IsObserver != true;
         Say(_guest ? (_feed?.AdmissionState == "pending" ? "等待房主批准入场…" : _feed?.IsObserver == true ? "正在观战" : "已加入好友的房间") : ready0 && ready1 ? "双方已就绪，可以开始对战" : "等待好友加入");
     }
@@ -560,9 +721,11 @@ public partial class RoomScreen : VBoxContainer
             _deckPresentation = _deck.PackageId == "player" ? DeckPresentationSource?.Invoke()?.Snapshot() : null;
 
             PrepareWorkshopSession();
-            Ui(() => Say($"○ 连接 {host}:{port}…"));
             _guestPort = port;
-            var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
+            // 连接层失败大多是"对方还没开房/地址暂时不通"，值得自己重试两下；
+            // 但"房间已满""被拒绝入场"这种是明确结论，重试只会让人白等。
+            var feed = await ConnectWithRetryAsync(host, port, lifecycle);
+            if (feed is null) return;
             connectingFeed = feed;
             if (lifecycle != _lifecycle) return;
             feed.ErrorRaised += message => Ui(() => { if (_feed == feed) NoteError(message); });
@@ -583,13 +746,15 @@ public partial class RoomScreen : VBoxContainer
             if (token is null)
             {
                 await feed.DisposeAsync();
-                Ui(() => Say("✗ 加入失败（房间已满或已开局）"));
+                // 明确结论：不重试，直接说清楚并给"重试"按钮（对方可能刚刚腾出座位）。
+                Ui(() => { Say("✗ 加入失败：房间已满或已经开局"); ShowJoinRetry("房间已满或已经开局。等对方腾出座位后再试。"); });
                 return;
             }
 
             _feed = feed;
             connectingFeed = null;
             _guest = true;
+            _needsReapply = false;
             RememberSession(host, port, feed.Seat, feed.SeatToken);
             feed.AdmissionChanged += state => Ui(() => {
                 if (_feed != feed) return;
@@ -606,7 +771,9 @@ public partial class RoomScreen : VBoxContainer
         }
         catch (Exception error)
         {
-            Ui(() => { if (lifecycle == _lifecycle) Say("✗ " + error.Message); });
+            // 异常文案多半是英文 socket 报错，玩家看不懂"填错端口"和"对方没开房"的区别。
+            var reason = DescribeJoinFailure(error);
+            Ui(() => { if (lifecycle == _lifecycle) { Say("✗ " + reason); ShowJoinRetry(reason); } });
         }
         finally
         {
@@ -621,6 +788,101 @@ public partial class RoomScreen : VBoxContainer
         _joinEndpoint = $"{host}:{port}";
         return JoinAsync();
     }
+
+    /// <summary>加入时最多尝试几次连接（第一次 + 两次重试）。</summary>
+    internal const int JoinAttempts = 3;
+    private const double JoinRetryDelay = 1.5;
+
+    /// <summary>
+    /// 连接（含退避重试）。返回 null＝流程被打断（离开房间/换目标），调用方直接收工。
+    /// 只重试"看起来会自己好的"失败：连接被拒、超时、IO 抖动。
+    /// 地址不存在这类重试也没用，让它直接落到失败提示上。
+    /// </summary>
+    private async Task<RemoteMatchFeed?> ConnectWithRetryAsync(string host, int port, int lifecycle)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            Ui(() => Say(attempt == 1 ? $"○ 连接 {host}:{port}…" : $"○ 第 {attempt}/{JoinAttempts} 次尝试连接 {host}:{port}…"));
+            try
+            {
+                var feed = await RemoteMatchFeed.ConnectAsync(host, port, seat: 1);
+                if (lifecycle == _lifecycle) return feed;
+                await feed.DisposeAsync();
+                return null;
+            }
+            catch (Exception error) when (attempt < JoinAttempts && IsTransient(error))
+            {
+                GD.PushWarning($"[room] 连接 {host}:{port} 第 {attempt} 次失败：{error.Message}");
+                var reason = DescribeJoinFailure(error);
+                Ui(() => Say($"○ {reason}，{JoinRetryDelay:0.#} 秒后重试…"));
+                await ToSignal(GetTree().CreateTimer(JoinRetryDelay), SceneTreeTimer.SignalName.Timeout);
+                if (lifecycle != _lifecycle) return null;
+            }
+        }
+    }
+
+    /// <summary>这类异常值得再试一次；其余的（参数错、地址非法）重试只会浪费时间。</summary>
+    internal static bool IsTransient(Exception error) => error is SocketException or IOException or TimeoutException;
+
+    /// <summary>把 socket 的英文报错翻成"下一步该做什么"——玩家分不清"填错端口"和"对方没开房"。</summary>
+    internal static string DescribeJoinFailure(Exception error) => error switch
+    {
+        SocketException { SocketErrorCode: SocketError.ConnectionRefused } => "对方没有在开房，或者地址/端口填错了",
+        SocketException { SocketErrorCode: SocketError.TimedOut } => "对方没有响应（可能不在同一网络，或被防火墙挡住）",
+        SocketException { SocketErrorCode: SocketError.HostNotFound or SocketError.NoData } => "找不到这个地址",
+        SocketException { SocketErrorCode: SocketError.NetworkUnreachable } => "这个网络不通（检查是否在同一局域网/虚拟局域网）",
+        TimeoutException => "连接超时",
+        _ => error.Message,
+    };
+
+    /// <summary>
+    /// 失败后留一个「重试加入」按钮：地址还在，别让玩家重新敲一遍。
+    /// 原因已经由 <see cref="Say"/> 写在状态行上，这里不再往提示行重复同一句话。
+    /// </summary>
+    private void ShowJoinRetry(string reason)
+    {
+        if (_retryJoin is null) return;
+        _retryJoin.Text = $"重试加入 {_joinEndpoint}";
+        _retryJoin.TooltipText = reason;
+        _retryJoin.Visible = true;
+    }
+
+    // ── 探针口（房间设置）────────────────────────────────────────────
+    // 只改内存、不落盘：探针跑一遍不该改掉玩家真实的房间设置。
+
+    /// <summary>探针：设定房间名 / 固定端口（不保存）。</summary>
+    internal void ConfigureRoomForVerification(string? name, int? fixedPort)
+    {
+        _suppressSettingsSave = true;
+        try
+        {
+            if (name is not null)
+            {
+                // 与玩家打字同一条路径（含"通知宣告器"），只是不落盘。
+                ApplyRoomName(name, save: false);
+                if (_roomName is not null) _roomName.Text = _settings.Name;
+            }
+            if (fixedPort is { } port)
+            {
+                _settings.FixedPort = true;
+                _settings.Port = port;
+                if (_fixedPort is not null)
+                {
+                    _fixedPort.SetPressedNoSignal(true);
+                    _portField.Text = port.ToString();
+                    _portField.Editable = true;
+                }
+            }
+        }
+        finally { _suppressSettingsSave = false; }
+        RefreshPortNote();
+    }
+
+    /// <summary>探针：当前广播出去的名字（宣告器还没起来＝空串）。</summary>
+    internal string AnnouncedRoomName => _announcer?.Name ?? "";
+
+    /// <summary>探针：开房时会向服务端要的端口（0＝系统分配）。</summary>
+    internal int RequestedPort => _settings.RequestedPort;
 
     /// <summary>解析好友分享的主机地址与端口。</summary>
     internal static bool TryParseEndpoint(string text, out string host, out int port)
@@ -820,6 +1082,9 @@ public partial class RoomScreen : VBoxContainer
     private void BeginReconnect()
     {
         if (_reconnecting || _closing || _feed is null) return;
+        // 凭据已失效就别再空转：没有令牌的 resume 每次都会立刻失败，
+        // 只会每 2.5 秒刷一条"重连失败"，而正确动作是让玩家点「重新申请入场」。
+        if (_needsReapply) return;
         GD.Print($"[room] reconnect begin (guest={_guest}, port={(_guest ? _guestPort : _server?.Port ?? 0)})");
         _reconnectObserver = _feed.IsObserver;
         _reconnectToken = _feed.SeatToken;
@@ -867,17 +1132,33 @@ public partial class RoomScreen : VBoxContainer
             if (!resumed)
             {
                 _feed = feed; connectingFeed = null; _reconnecting = false; _reconnectToken = null;
-                Say("入场凭据已失效，请重新申请入场。");
+                // 大厅阶段断线会释放座位并作废令牌（Room.Release 直接清空座位槽），
+                // 恢复不了只能重新申请。这里必须自己把状态置成"可重申请"，
+                // 不能指望 AdmissionState——新连接的状态是 connected。
+                _needsReapply = true;
+                Ui(() => { _reapply.Visible = true; _start.Disabled = true; });
+                Say("入场凭据已失效（大厅阶段断线会释放座位）· 请点「重新申请入场」。");
+                await RefreshAsync();
                 return;
             }
 
             _feed = feed;
             connectingFeed = null;
             _reconnecting = false;
+            _needsReapply = false;
+            Ui(() => _reapply.Visible = false);
             if (_guest) HookGuestAutoEnter(feed);
             GD.Print($"[room] reconnect success (attempt {_reconnectAttempts}, feed#{feed.GetHashCode():x})");
             Say(_reconnectObserver ? "○ 已重新连接 · 等待房主批准观战" : "● 重连成功 · 座位已恢复");
-            if (_reconnectObserver) { await RefreshAsync(); return; }
+            if (_reconnectObserver)
+            {
+                // 观战者没有 seatToken，重连就是一条新 viewer 连接；服务端不会再发 match.started，
+                // 必须主动拉一次全量视图，让 HookGuestAutoEnter 的投影兜底把战场接回来。
+                try { await feed.RefreshViewAsync(); }
+                catch (Exception) { /* 房间态没有对局视图，可忽略 */ }
+                await RefreshAsync();
+                return;
+            }
             // 补投影：服务端瞬时态可能拒一两次，拉不到就重试（M3 排障教训：一次失败不该留白屏）。
             try
             {
@@ -890,6 +1171,9 @@ public partial class RoomScreen : VBoxContainer
             }
             catch (Exception) { /* 房间态没有对局视图，可忽略 */ }
             await RefreshAsync();
+            // 房主：战场在 Main 里，得让它把展示层换成这条新 feed，否则画面永久冻结。
+            if (!_guest && feed.CurrentView is not null)
+                Ui(() => { if (_feed == feed) FeedRestored?.Invoke(feed); });
         }
         catch (Exception)
         {
@@ -902,6 +1186,8 @@ public partial class RoomScreen : VBoxContainer
     private async Task ReapplyAsync()
     {
         if (_feed is not { } previous || previous.AdmissionState is "pending" or "admitted") return;
+        // 先收起按钮再动手：失败时下面会重新置位，避免玩家以为没点着而连点。
+        _needsReapply = false; _reapply.Visible = false;
         try
         {
             if (previous.IsObserver)
@@ -913,7 +1199,11 @@ public partial class RoomScreen : VBoxContainer
             {
                 _feed = null; await previous.DisposeAsync(); await JoinAsync(); return;
             }
-            if (_server is null || _deck is null) return;
+            if (_server is null || _deck is null)
+            {
+                Ui(() => _hint.Text = "本机房间已关闭，无法重新申请，请重新创建房间。");
+                return;
+            }
             _feed = null; await previous.DisposeAsync();
             var feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", _server.Port);
             _server.Configure(feed); _feed = feed; HookPing(feed);
@@ -925,21 +1215,57 @@ public partial class RoomScreen : VBoxContainer
             RememberSession("127.0.0.1", Port, 0, feed.SeatToken);
             await RefreshAsync();
         }
-        catch (Exception e) { Ui(() => NoteError(e.Message)); }
+        catch (Exception e)
+        {
+            // 重新申请本身失败（房主已关房、端口变了等）也要把按钮放回来，否则又成死路。
+            Ui(() => { _needsReapply = true; _reapply.Visible = true; NoteError(e.Message); });
+        }
     }
 
+    /// <summary>
+    /// 房间成员：待处理申请（批准/拒绝）＋ 已连接（移除）。
+    ///
+    /// 「移除」走管理通道的 <c>conn.revoke</c>——引擎会释放该连接占的座位并断开它；
+    /// 对局中移除等同于该座位认输。这句话必须写在按钮旁边，不能让玩家点完才发现比分变了。
+    /// 房主自己的连接不列出来（移除自己＝把房间拆了，那是「离开房间」的事）。
+    /// </summary>
     private async Task ShowAdmissionsAsync()
     {
         if (_server is null || _guest) { _hint.Text = "请由房主处理入场申请。"; return; }
+        await OpenMembersDialogAsync();
+    }
+
+    /// <summary>
+    /// 建"房间成员"窗口并填好内容。按钮回调与探针走同一个方法——
+    /// 探针要验的是玩家点得到的那个窗口，不是另写一份。
+    /// </summary>
+    internal async Task<AcceptDialog> OpenMembersDialogAsync()
+    {
+        // 按钮回调本来就在主线程：直接建窗，别塞进 Ui()（延后执行会让下面的 rows 还是 null）。
+        var dialog = new AcceptDialog { Title = "房间成员", MinSize = new Vector2I(640, 320) };
+        var rows = new VBoxContainer(); dialog.AddChild(rows); AddChild(dialog);
+        dialog.CloseRequested += dialog.QueueFree; dialog.Confirmed += dialog.QueueFree;
+        await FillMembersAsync(dialog, rows);
+        dialog.PopupCentered();
+        return dialog;
+    }
+
+    /// <summary>把当前连接列表画进对话框（重取一次再画，避免用点开那一刻的旧快照）。</summary>
+    private async Task FillMembersAsync(AcceptDialog dialog, VBoxContainer rows)
+    {
+        if (_server is null) return;
         try
         {
             var result = await _server.AdminAsync("connections.list");
+            var all = (result.Details?["connections"] as System.Text.Json.Nodes.JsonArray)?.ToArray() ?? [];
+            var self = _feed?.ConnectionId;
+            var pending = all.Where(c => State(c) == "pending").ToArray();
+            var connected = all.Where(c => State(c) is "admitted" && c?["connectionId"]?.GetValue<string>() != self).ToArray();
             Ui(() => {
-                var dialog = new AcceptDialog { Title = "入场申请", MinSize = new Vector2I(600, 280) };
-                var rows = new VBoxContainer(); dialog.AddChild(rows); AddChild(dialog);
-                var pending = (result.Details?["connections"] as System.Text.Json.Nodes.JsonArray)?
-                    .Where(c => c?["state"]?.GetValue<string>() == "pending").ToArray() ?? [];
-                if (pending.Length == 0) rows.AddChild(UiStyles.Label("暂无待处理申请。", 18, UiStyles.MenuInk));
+                if (!GodotObject.IsInstanceValid(rows)) return;
+                UiStyles.Clear(rows);
+                rows.AddChild(UiStyles.Label($"待处理申请 · {pending.Length}", 13, UiStyles.Accent));
+                if (pending.Length == 0) rows.AddChild(UiStyles.Label("暂无待处理申请。", 14, UiStyles.MenuDim));
                 foreach (var connection in pending)
                 {
                     var id = connection!["connectionId"]!.GetValue<string>();
@@ -949,18 +1275,73 @@ public partial class RoomScreen : VBoxContainer
                     row.AddChild(UiStyles.Button("批准", () => _ = DecideAdmissionAsync(id, true, dialog)));
                     row.AddChild(UiStyles.Button("拒绝", () => _ = DecideAdmissionAsync(id, false, dialog)));
                 }
-                dialog.CloseRequested += dialog.QueueFree; dialog.Confirmed += dialog.QueueFree;
-                dialog.PopupCentered();
+
+                rows.AddChild(UiStyles.Label($"已连接 · {connected.Length}", 13, UiStyles.Accent));
+                if (connected.Length == 0) rows.AddChild(UiStyles.Label("还没有其他玩家连接。", 14, UiStyles.MenuDim));
+                foreach (var connection in connected)
+                {
+                    var id = connection!["connectionId"]!.GetValue<string>();
+                    var label = connection["label"]?.ToString() ?? "连接";
+                    var role = connection["roles"]?.AsArray().Any(r => r?.ToString() == "viewer") == true
+                        ? "观战" : connection["seat"] is null ? "已连接" : $"座位 {connection["seat"]}";
+                    var row = new HBoxContainer(); rows.AddChild(row);
+                    row.AddChild(UiStyles.Label($"{label} · {role}\n{connection["remote"]}", 14, UiStyles.MenuInk));
+                    var remove = UiStyles.Button("移除", () => ConfirmRemove(rows, id, label, dialog));
+                    remove.Name = "RemoveConnection";
+                    row.AddChild(remove);
+                }
             });
         }
         catch (Exception e) { Ui(() => NoteError(e.Message)); }
     }
+
+    private static string? State(System.Text.Json.Nodes.JsonNode? connection)
+        => connection?["state"]?.GetValue<string>();
+
+    /// <summary>就地二次确认：不叠子窗口（探针的合成点击打不中叠窗，玩家也容易点错）。</summary>
+    private void ConfirmRemove(VBoxContainer rows, string id, string label, AcceptDialog dialog)
+    {
+        if (!GodotObject.IsInstanceValid(rows)) return;
+        UiStyles.Clear(rows);
+        var warning = UiStyles.Label(
+            $"确定把「{label}」移出房间？\n断开后对方要重新申请入场；如果对局已经开始，等同于该座位认输。",
+            15, UiStyles.Gold);
+        warning.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        rows.AddChild(warning);
+        var row = new HBoxContainer(); rows.AddChild(row);
+        var confirm = UiStyles.Button("确定移除", () => _ = RemoveConnectionAsync(id, dialog));
+        confirm.Name = "ConfirmRemove";
+        row.AddChild(confirm);
+        row.AddChild(UiStyles.Button("取消", () => _ = FillMembersAsync(dialog, rows)));
+    }
+
+    private async Task RemoveConnectionAsync(string id, AcceptDialog dialog)
+    {
+        await RevokeConnectionAsync(id);
+        await FillMembersAsync(dialog, (VBoxContainer)dialog.GetChild(0));
+        await RefreshAsync();
+    }
+
+    /// <summary>
+    /// 把一条连接移出房间。走管理通道 <c>conn.revoke</c>：释放座位 + 断开连接；
+    /// 对局中移除等同于该座位认输（引擎会代该座位 Concede）。
+    /// </summary>
+    internal async Task<bool> RevokeConnectionAsync(string id)
+    {
+        if (_server is null) return false;
+        var result = await _server.AdminAsync("conn.revoke",
+            new System.Text.Json.Nodes.JsonObject { ["connectionId"] = id, ["reason"] = "host-removed" });
+        if (!result.Ok) { Ui(() => NoteError(result.Message ?? result.Code)); return false; }
+        return true;
+    }
+
     private async Task DecideAdmissionAsync(string id, bool accept, AcceptDialog dialog)
     {
         if (_server is null) return;
         var result = await _server.AdminAsync(accept ? "conn.admit" : "conn.reject",
             new System.Text.Json.Nodes.JsonObject { ["connectionId"] = id });
-        Ui(() => { if (result.Ok) dialog.QueueFree(); else NoteError(result.Message ?? result.Code); });
+        Ui(() => { if (!result.Ok) NoteError(result.Message ?? result.Code); });
+        await FillMembersAsync(dialog, (VBoxContainer)dialog.GetChild(0));
         await RefreshAsync();
     }
     public async Task SpectateAsync(string host, int port)
@@ -978,6 +1359,7 @@ public partial class RoomScreen : VBoxContainer
             feed.ErrorRaised += message => Ui(() => { if (_feed == feed) NoteError(message); });
             if (!await feed.AttachViewerAsync() || lifecycle != _lifecycle) return;
             _feed = feed; _guest = true; _guestPort = port; _joinEndpoint = $"{host}:{port}";
+            _needsReapply = false;
             connectingFeed = null;
             _reconnectHost = host; _reconnectPort = port; _reconnectSeat = 0; _reconnectToken = null;
             HookGuestAutoEnter(feed); HookPing(feed);
@@ -1017,7 +1399,9 @@ public partial class RoomScreen : VBoxContainer
         feed.StartPingLoop();
         feed.AdmissionChanged += state => Ui(() => {
             if (_feed != feed) return;
-            _reapply.Visible = state is "revoked" or "rejected";
+            // 重新申请成功后状态会从 connected 变成 pending/admitted，标记随之作废。
+            if (state is "pending" or "admitted") _needsReapply = false;
+            _reapply.Visible = _needsReapply || state is "revoked" or "rejected";
             _reconnectToken = feed.SeatToken;
             if (state is "revoked" or "rejected")
             {

@@ -78,7 +78,12 @@ public sealed class RoomAnnouncer : IDisposable
 
     public string RoomId { get; }
     public int Port { get; }
-    public string? Name { get; }
+
+    /// <summary>房间名（局域网列表里显示的那一行）。可改：房主随时改名不必重开房间。</summary>
+    public string? Name { get; private set; }
+
+    /// <summary>改名。宣告循环每 2 秒读一次这个字段，下一轮广播就带新名字。</summary>
+    public void Rename(string? name) => Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
 
     /// <summary>宣告起不来时的原因（安卓缺 INTERNET 权限会拿到 EACCES）。非空即代表只影响自动发现。</summary>
     public string? UnavailableReason { get; private set; }

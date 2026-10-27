@@ -50,7 +50,12 @@ public partial class BattleScreen
                     checks++;
                 }
             }
-            GD.Print($"DISCARD_ANIMATION_VERIFY_OK checks={checks} native-signal own-face enemy-back hand-origin visible-lift stamp retire normal-reduced cleanup");
+            // P6：真弃牌必须进弃牌堆页签；我方带牌面，对手那张只能是"1 张牌"（引擎本来就没给）。
+            if (LogDiscardCount("self") == 0) throw new Exception("真实弃牌没有进我方弃牌堆。");
+            if (LogDiscardCount("enemy") == 0) throw new Exception("真实弃牌没有进对手弃牌堆。");
+            if (!_log.Discards("self").Any(d => d.CardId is { Length: > 0 })) throw new Exception("我方弃牌没带牌面。");
+            if (_log.Discards("enemy").Any(d => d.CardId is { Length: > 0 })) throw new Exception("对手弃牌带了牌面（泄漏牌面）。");
+            GD.Print($"DISCARD_ANIMATION_VERIFY_OK checks={checks} native-signal own-face enemy-back hand-origin visible-lift stamp retire normal-reduced cleanup discard-pile");
         }
         finally { ResetDemo(); _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); }
     }

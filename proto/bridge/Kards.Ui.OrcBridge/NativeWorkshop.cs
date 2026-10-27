@@ -214,6 +214,7 @@ public sealed partial class NativeWorkshop
         Idle();
         if (SessionPackage == id) return;
         if (HasSession) Suspend();
+        ResetPresentationWarnings();
         if (InterruptedDrafts().FirstOrDefault(d => d.Id == id) is { } interrupted) { Resume(interrupted); return; }
         RecoveredDraft = false;
         var pack = Packages().Single(p => p.Id == id);
@@ -265,9 +266,15 @@ public sealed partial class NativeWorkshop
     {
         var root = Editor.Session!.TemporaryRoot;
         var content = PackageRegistrar.Register(root, Manifest(root), new AssetRegistry()).Content;
-        var texts = PackPresentationData.Texts(content);
-        return content.Definitions.Select(entry => StaticCardProjection.Project(entry.Id, entry.Definition, id => ArtAt(root, Editor.Session!.PackageId, id),
-              text: texts.GetValueOrDefault(entry.Id.StartsWith(content.Prefix, StringComparison.Ordinal) ? entry.Id[content.Prefix.Length..] : entry.Id)) with { Flavor = PackPresentationData.Flavor(root, entry.Id[content.Prefix.Length..]) }).ToArray();
+        // 卡列表是主功能，展示文本只是装饰：任何一条对不上都只丢那一条，并在「编辑会话提示」里留痕。
+        // 不在每次刷新时清空——保存时产生的告警会被紧接着的刷新吞掉，作者就永远看不到。
+        var warnings = new List<string>();
+        var texts = PackPresentationData.Texts(content, warnings);
+        var cards = content.Definitions.Select(entry => StaticCardProjection.Project(entry.Id, entry.Definition, id => ArtAt(root, Editor.Session!.PackageId, id),
+              text: texts.GetValueOrDefault(entry.Id.StartsWith(content.Prefix, StringComparison.Ordinal) ? entry.Id[content.Prefix.Length..] : entry.Id))
+            with { Flavor = PackPresentationData.Flavor(root, entry.Id[content.Prefix.Length..], warnings) }).ToArray();
+        CollectPresentationWarnings(warnings);
+        return cards;
     }
     private AssetEditor Editor => HasSession ? _editor! : throw new InvalidOperationException("请先进入原生卡包编辑。");
     public string Read(string sourcePath) => File.ReadAllText(WorkshopPackageArchive.Child(Editor.Session!.TemporaryRoot, sourcePath));
@@ -320,6 +327,20 @@ public sealed partial class NativeWorkshop
     {
         var root = draft && SessionPackage == id ? Editor.Session!.TemporaryRoot : Packages().Single(p => p.Id == id).Root;
         WorkshopPackageArchive.Export(root, destination);
+    }
+
+    /// <summary>
+    /// 只读对账：包里有几条展示引用指向"不存在的卡"（旧版本已经写坏的包）。
+    /// 导出前问一次——坏状态会随 ZIP 原样传给下一个玩家，而对方连修都修不了。
+    /// </summary>
+    public int CountOrphanPresentationReferences(string id, bool draft = false)
+    {
+        var root = draft && SessionPackage == id ? Editor.Session!.TemporaryRoot : Packages().Single(p => p.Id == id).Root;
+        var content = PackageRegistrar.Register(root, Manifest(root), new AssetRegistry()).Content;
+        var warnings = new List<string>();
+        _ = PackPresentationData.Texts(content, warnings);
+        _ = PackPresentationData.Plans(content, warnings);
+        return warnings.Count(w => w.Contains("引用了不存在的卡", StringComparison.Ordinal));
     }
     public string BackupInterruptedDraft(string id)
     {

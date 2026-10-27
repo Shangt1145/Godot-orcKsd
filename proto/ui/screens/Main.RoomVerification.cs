@@ -845,6 +845,13 @@ public partial class Main
             Require(await guestScreen.JoinForVerificationAsync("127.0.0.1", _room.Port), "客人加入失败");
             Require((await _room.AdmitForVerificationAsync(guestScreen.Feed!.ConnectionId)).Ok, "批准客人失败");
             Require(await guestScreen.Feed.WaitForAdmissionAsync(), "客人许可未送达");
+            // 引擎在开局前会校验"双方卡池已对齐"，不等同步就开局必然被拒
+            // （ServerHost.PackTransfer：座位 N 的卡包尚未同步完成）。
+            // 真实 UI 靠 _Process 轮询 + 开局按钮置灰兜住这件事，探针得自己等。
+            for (var i = 0; i < 150 && !(_room.Feed?.PacksAligned == true && guestScreen.Feed.PacksAligned); i++)
+                await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+            Require(_room.Feed?.PacksAligned == true && guestScreen.Feed.PacksAligned,
+                $"卡包未对齐：房主={_room.Feed?.PackSyncStatus ?? "无"} 客人={guestScreen.Feed.PackSyncStatus}");
             Require(await _room.StartForVerificationAsync(), "开局失败");
 
             await host.RefreshViewAsync();

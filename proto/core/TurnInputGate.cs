@@ -52,6 +52,20 @@ public sealed class TurnInputGate
             _waitingForFriendlyTurn = false;
     }
 
+    /// <summary>
+    /// 权威视图说"轮到我"，本地却还锁着——说明解锁所依赖的那段回合横幅永远没送达（段丢失）。
+    /// 返回 true 表示刚解开。解锁后同步把 <see cref="_lastPresentedFriendlyTurn"/> 抬到当前回合，
+    /// 免得迟到的旧段又把它锁回去。
+    /// </summary>
+    public bool Reconcile(UiMatchView view)
+    {
+        if (!_waitingForFriendlyTurn) return false;
+        if (view.Phase != "play" || view.ActivePlayerSide != "self") return false;
+        _waitingForFriendlyTurn = false;
+        _lastPresentedFriendlyTurn = Math.Max(_lastPresentedFriendlyTurn, view.Turn);
+        return true;
+    }
+
     private void HoldThrough(int turn)
     {
         // A delayed segment may still carry the previous enemy Before snapshot. It cannot

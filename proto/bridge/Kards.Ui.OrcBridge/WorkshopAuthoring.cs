@@ -15,6 +15,24 @@ public static class WorkshopAuthoring
         var parent = _packs.FirstOrDefault(p => p.Id == packId)?.BasePackId;
         return _packs.Where(p => p.Id == packId || p.Id == parent).SelectMany(p => p.Nations).ToArray();
     }
+    /// <summary>
+    /// 本包词条的**显示名**（引擎 id → 玩家写的名字），随 <c>workshop.presentation.json</c> 走。
+    ///
+    /// <para>
+    /// 规则在 <c>network-vocabulary.json</c> 里，但那里只有引擎 id（<c>kw-…&lt;hash&gt;</c>）。
+    /// 不带名字的话，收包人的卡面会显示成一串 <c>◇ kw-76e1c7658f9a…</c>——规则对、名字没有，
+    /// 等于"词条不齐"。所以名字单独进展示层，和 <c>nations</c> 一个路子。
+    /// </para>
+    /// </summary>
+    internal static System.Text.Json.Nodes.JsonArray NetworkKeywordNames(IEnumerable<string> packIds)
+    {
+        var selected = packIds.ToHashSet(StringComparer.Ordinal);
+        var result = new System.Text.Json.Nodes.JsonArray();
+        foreach (var keyword in _packs.Where(p => selected.Contains(p.Id)).SelectMany(p => p.Keywords))
+            if (_keywords.TryGetValue(keyword.Id, out var engine))
+                result.Add(new System.Text.Json.Nodes.JsonObject { ["id"] = engine, ["name"] = keyword.Name });
+        return result;
+    }
     internal static System.Text.Json.Nodes.JsonArray NetworkVocabulary(IEnumerable<string> packIds)
     {
         var selected = packIds.ToHashSet(StringComparer.Ordinal);
@@ -46,7 +64,9 @@ public static class WorkshopAuthoring
     public static IReadOnlyList<PackDescriptor> AuthoredPacks {get;private set;}=[];
     public static IReadOnlySet<string> EditedCardIds {get;private set;}=new HashSet<string>();
     public static bool TryKeyword(string id,out string engine)=>_keywords.TryGetValue(id,out engine!);
-    public static string KeywordLabel(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id||_keywords.GetValueOrDefault(k.Id)==id)?.Name??id;
+    /// <summary>词条显示名：先查自己的草稿库，再查已装卡包（导出包靠后者还原名字），都没有＝原样返回引擎 id。</summary>
+    public static string KeywordLabel(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id||_keywords.GetValueOrDefault(k.Id)==id)?.Name
+        ??OrcEngineHost.NativeKeywords.FirstOrDefault(k=>k.Id==id)?.Label??id;
     public static string NationLabel(string id)=>Nations.FirstOrDefault(n=>n.Id==id)?.Name??OrcEngineHost.NativeNations.FirstOrDefault(n=>n.Id==id)?.Label??id;
     public static DiyKeywordDraft? Keyword(string id)=>_packs.SelectMany(p=>p.Keywords).FirstOrDefault(k=>k.Id==id);
     public static int ParameterDefault(string id)
