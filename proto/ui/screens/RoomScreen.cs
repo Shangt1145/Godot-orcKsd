@@ -1017,6 +1017,46 @@ public partial class RoomScreen : VBoxContainer
     /// <summary>重连状态（验证探针用）。</summary>
     internal bool IsReconnecting => _reconnecting;
 
+    /// <summary>本端正在给别人当服务器（房主且房间开着）。</summary>
+    internal bool HostingRoom => _server is not null && !_guest;
+
+    /// <summary>服务端子进程 PID（探针用：验证"UI 没了它也会走"）。</summary>
+    internal int ServerProcessId => _server?.ProcessId ?? 0;
+
+    /// <summary>
+    /// 回到前台后重新点亮 Android 前台服务。
+    /// <para>
+    /// 系统在后台可能回收掉服务（唤醒锁、组播锁随之丢失），房间就不再"活着"——
+    /// 但 UI 里的 <see cref="_server"/> 还在跑，玩家看不出区别。重开服务是幂等的：
+    /// 还活着就是一次多余的 onStartCommand，被回收过就重新走 onCreate 拿回两把锁。
+    /// 桌面没有这层，直接返回 false。
+    /// </para>
+    /// </summary>
+    internal bool ReassertHosting()
+    {
+        if (!HostingRoom || !MobilePlatform.IsAndroid) return false;
+        MobilePlatform.SetHosting(true);
+        return true;
+    }
+
+    /// <summary>主动确认一次连接还在不在。回前台时用：成功＝真连着；失败就交给既有的重连入口
+    /// （<see cref="OnConnectionIssue"/> 只认"连接已关闭"，别的错误照旧只报错，不假装断线）。</summary>
+    internal async Task<bool> ProbeConnectionAsync()
+    {
+        if (_feed is not { } feed || _reconnecting) return false;
+        var lifecycle = _lifecycle;
+        try
+        {
+            var info = await feed.RoomInfoAsync();
+            return _feed == feed && lifecycle == _lifecycle && info.Ok;
+        }
+        catch (Exception error)
+        {
+            if (_feed == feed && lifecycle == _lifecycle) OnConnectionIssue(error.Message);
+            return false;
+        }
+    }
+
     /// <summary>
     /// 验证用：模拟连接层故障。真实断线（心跳判死/传输硬断）走同一个入口
     /// <see cref="BeginReconnect"/>，这里只是把"等心跳"换成"立刻触发"。
@@ -1059,13 +1099,14 @@ public partial class RoomScreen : VBoxContainer
         _hint.Text = $"已复制 {text}。好友可在作战准备页使用地址加入。";
     }
 
-    /// <summary>判定是否连接层故障；是则转入重连状态（幂等）。返回 false 表示普通业务错误。</summary>
+    /// <summary>延迟文案（验证探针用）。</summary>
     internal string PingText => _ping.Text;
     private void NoteError(string message)
     {
         if (OnConnectionIssue(message)) Say("✗ 连接断开 · 正在自动重连…");
         else Say("✗ " + message);
     }
+    /// <summary>判定是否连接层故障；是则转入重连状态（幂等）。返回 false 表示普通业务错误。</summary>
     private bool OnConnectionIssue(string message)
     {
         if (_closing || _reconnecting || _feed is null || _feed.AdmissionState is "revoked" or "rejected") return false;

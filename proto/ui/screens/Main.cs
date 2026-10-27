@@ -96,6 +96,7 @@ public partial class Main : Control
         if (OS.HasFeature("mobile")) { DisplayServer.ScreenSetKeepOn(true); GetTree().QuitOnGoBack = false; }
         _splash = new MenuSplash(); _splash.Initialize(); AddChild(_splash); _splash.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         MountConsole();
+        MountLifecycleNotice();
         try
         {
             NativeScriptHost.ConfigureAssemblyDirectory(MobilePlatform.IsAndroid ? MobilePlatform.ScriptReferences()
@@ -409,6 +410,8 @@ public partial class Main : Control
         else if (args.Contains("--verify-room-segments")) Callable.From(VerifyRoomSegments).CallDeferred();
         else if (args.Contains("--verify-room-ping")) Callable.From(VerifyRoomPing).CallDeferred();
         else if (args.Contains("--verify-room-settings")) Callable.From(VerifyRoomSettings).CallDeferred();
+        else if (args.Contains("--verify-background")) Callable.From(VerifyBackgroundRecovery).CallDeferred();
+        else if (args.Contains("--verify-host-watchdog")) Callable.From(VerifyHostWatchdog).CallDeferred();
         else if (args.Contains("--verify-target")) Callable.From(VerifyTarget).CallDeferred();
         else if (args.Contains("--verify-combat")) Callable.From(VerifyCombat).CallDeferred();
         else if (args.Contains("--verify-deck")) Callable.From(VerifyDeck).CallDeferred();
@@ -630,6 +633,7 @@ public partial class Main : Control
         var feed = _feed;
         feed?.Advance(delta);
         UpdateReplayControls();
+        UpdateLifecycleNotice(delta);
         if (_feed == feed && feed?.CurrentView is { } view)
             _battle.UpdateInputProjection(view, feed.CurrentActions);
     }

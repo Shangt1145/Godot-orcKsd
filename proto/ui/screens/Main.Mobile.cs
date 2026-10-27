@@ -6,6 +6,17 @@ public partial class Main
 {
     public override void _Notification(int what)
     {
+        // 切后台/回前台：逻辑本身与平台无关（探针直接调），这里只负责在移动端把系统通知接过来。
+        // 桌面也有同名通知（窗口失焦），但桌面进程不会被挂起，接过来只会制造噪音。
+        // 常量在 Godot 的 C# 绑定里是 long，_Notification 给的是 int，直接比会 CS0266，所以显式转。
+        var paused = what == (int)NotificationApplicationPaused;
+        var resumed = what == (int)NotificationApplicationResumed;
+        if ((paused || resumed) && OS.HasFeature("mobile"))
+        {
+            if (paused) HandleApplicationPaused();
+            else HandleApplicationResumed();
+            return;
+        }
         if (what != NotificationWMGoBackRequest || !OS.HasFeature("mobile")) return;
         if(_console?.IsOpen==true)
         {GetViewport().PushInput(new InputEventKey{Keycode=Key.Escape,Pressed=true},true);return;}

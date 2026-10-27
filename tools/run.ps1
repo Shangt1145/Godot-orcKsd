@@ -24,6 +24,8 @@
     [switch]$VerifyRoomPing,
     # 房间名 / 固定端口 / 房间成员（含移除）。
     [switch]$VerifyRoomSettings,
+    [switch]$VerifyBackground,
+    [switch]$VerifyHostWatchdog,
     [switch]$VerifyTarget,
     [switch]$VerifyCombat,
     [switch]$VerifyDeck,
@@ -117,6 +119,9 @@ try {
     elseif ($VerifyRoomSegments) { & $Godot --headless --path $BuildRoot '--' --verify-room-segments }
     elseif ($VerifyRoomPing) { & $Godot --headless --path $BuildRoot '--' --verify-room-ping }
     elseif ($VerifyRoomSettings) { & $Godot --headless --path $BuildRoot '--' --verify-room-settings }
+    elseif ($VerifyBackground) { & $Godot --headless --path $BuildRoot '--' --verify-background }
+    # 只有配套 artifacts/watchdog-probe.ps1 有意义：它会杀掉 UI，再看子进程与端口。
+    elseif ($VerifyHostWatchdog) { & $Godot --headless --path $BuildRoot '--' --verify-host-watchdog }
     elseif ($VerifyTarget) { & $Godot --headless --path $BuildRoot '--' --verify-target }
     elseif ($VerifyCombat) { & $Godot --headless --path $BuildRoot '--' --verify-combat }
     elseif ($VerifyDeck) { & $Godot --headless --path $BuildRoot '--' --verify-deck }

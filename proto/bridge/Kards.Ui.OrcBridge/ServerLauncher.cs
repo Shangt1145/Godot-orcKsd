@@ -13,6 +13,11 @@ public sealed class ServerLauncher : IAsyncDisposable
     private readonly IReadOnlyList<PackageRef> _packages;
     public int Port { get; }
     public bool HasExited => _disposed || (_manager is not null && !_manager.List().Any(i => i.InstanceId == _id && i.Running));
+    /// <summary>
+    /// 服务端子进程 PID（内嵌模式＝0，Android 走内嵌）。
+    /// 排障要它：进程和"管理通道里的实例"不是一回事，子进程赖在后台占端口时只有 PID 能对症。
+    /// </summary>
+    public int ProcessId => _manager?.List().FirstOrDefault(i => i.InstanceId == _id)?.ProcessId ?? 0;
     private bool _disposed;
     private ServerLauncher(ServerManager manager, string id, int port, IReadOnlyList<PackageRef> packages)
         => (_manager, _id, Port, _packages) = (manager, id, port, packages);

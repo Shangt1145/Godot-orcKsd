@@ -498,9 +498,89 @@ P4 组合设置的「应用修改」、P5「重新绑定」的 OK、P7「移除/
 下一步要么把这类对话框从 `Window` 改成屏内 `Control` 覆盖层（这样合成点击与其它屏一致，
 顺带省掉移动端弹窗的观感问题），要么用键盘驱动（`GrabFocus` + `ui_accept`）。两条都没在本轮做。
 
-## P8 手机与进程
+## P8 手机与进程 — ✅ 已收口（一项补做，一项验证后发现引擎早已实现）
 
-切后台掉线的显式提示；服务端子进程随 UI 退出（`--parent-pid`）。
+| 项 | 现状 | 收口标准 | 结果 |
+|---|---|---|---|
+| 切后台掉线的显式提示 | `_Notification` 只处理返回键 | 回前台主动确认连接并说出结论；单机与短切出不吭声 | ✅ 本轮补做 |
+| 服务端子进程随 UI 退出 | 计划按"待做 `--parent-pid`"立项 | UI 被杀后子进程自行退出、端口能再绑 | ✅ 引擎已实现，本轮实测确认 |
+
+### 切后台：先确认，再说话
+
+`_Notification` 以前只接 `NotificationWMGoBackRequest`，`NotificationApplicationPaused/Resumed`
+一个都没接。手机被挂起时 socket 断掉，玩家回到前台看到一张不动的棋盘——**没有任何解释**，
+这正是最容易被当成"游戏卡死"的形态。
+
+现在回前台做三件事，顺序不能反：
+
+1. **先确认连接还在不在**（`RoomScreen.ProbeConnectionAsync` → `room.info` 真往返一次），
+   而不是拿"没有报错"当"还连着"。半开连接（对端进程没了、TCP 还没超时）只有真发一次请求才看得出来。
+2. **再说结论**。文案只有四种，全部集中在 `Main.Lifecycle.cs` 的常量里，探针断言同一份常量：
+   - `切到后台期间连接断了 · 正在重连…`
+   - `切到后台期间连接可能已中断 · 正在确认连接…`
+   - `已回到前台 · 连接正常` / `已恢复连接`
+   - `连接没有恢复 · 请返回房间重新加入`
+3. **重连一旦开始就换成"正在重连"**，并且**一直留着**，直到重连真的结束——
+   重连不可能成功时绝不能翻成"已恢复"。探针专门用"杀掉服务端子进程"来钉这一条。
+
+两种不吭声的情形是刻意的：**单机对局**断不了，弹"连接可能中断"纯属制造焦虑；
+**3 秒以内的切出**（权限弹窗、来电悬浮条）多半没断，说了反而误导。阈值是
+`BackgroundNoticeSeconds`，经验值。
+
+顺手把 Android 前台服务重新点亮（`RoomScreen.ReassertHosting`）：系统在后台可能回收服务，
+唤醒锁与组播锁随之丢失，而 UI 里的 `_server` 还在跑——玩家看不出区别，好友却已经连不上了。
+`startForegroundService` 是幂等的，服务还活着就是一次多余的 `onStartCommand`。
+
+### 探针抓到的真问题：重连中切后台，一句提示都没有
+
+第一版把"是否挂着远端会话"写成 `_room.Feed is not null || _feed is RemoteMatchFeed`。
+探针第四步（杀掉服务端 → 转重连 → 切后台 → 回前台）直接红了：`paused network=False`。
+原因在 `BeginReconnect()`——它进入重连时**先把 `_feed` 置空**。于是"正在重连"这个状态
+在判断里等于"没有会话"，玩家恰好在最需要说话的时刻拿到一句不吭声。
+
+修法是把 `IsReconnecting` 也算进会话判断。这条不是推想出来的，是跑红了才发现的。
+
+### 子进程随 UI 退出：不用改代码，需要的是验证
+
+计划里写的是"待做 `--parent-pid`"，那个结论来自在本仓库 grep 不到——因为它在**引擎**里：
+
+- `Orc.Manager/ManagedInstance.cs` 起子进程时自动追加 `--parent-pid <Environment.ProcessId>`，
+  而这个管理器就跑在 UI 进程内，所以传的正是 UI 自己的 PID；
+- `Orc.Server/ParentWatchdog.cs` 每 2 秒轮询父进程，父进程消失即 `Environment.Exit(0)`。
+
+所以这一项**不需要改代码**，需要的是**证明它在真机上成立**。做法分两半：
+
+- 进程内探针 `-VerifyHostWatchdog`：开真房间，打印
+  `HOST_WATCHDOG_READY port=… serverPid=… uiPid=…`，然后原地等 45 秒；
+- 进程外驱动 `tools/watchdog-probe.ps1`：只杀 UI（**不带 `/T`**，模拟崩溃/被系统回收），
+  然后看子进程是否退出、端口能否再绑。
+
+实测（2026-10-27）：`childExited=True elapsed=2.1s portRebindable=free parentPidMatches=yes`
+→ `WATCHDOG_OK`。子进程命令行里确实是 `--parent-pid 25116`，25116 就是 UI 进程。
+
+顺带给 `ServerLauncher` 加了 `ProcessId`：排障需要它——"管理通道里的实例"和"进程"不是一回事，
+子进程赖在后台占端口时只有 PID 能对症。
+
+### 验证
+
+- `-VerifyBackground`（本轮新增开关）→ `BACKGROUND_RECOVERY_VERIFY_OK short-silent long-confirms
+  alive-recovers gone-stays-reconnecting`。四段断言：
+  ① 单机切后台再回来，没有任何提示；② 1 秒的切出不提示；
+  ③ 长切出且连接还在 → 先"正在确认"、再"连接正常"、然后自己收掉；
+  ④ 杀掉服务端后再长切出 → 停在"正在重连"，4 秒后仍是"正在重连"（不许谎报恢复）。
+- `-VerifyHostWatchdog` + `tools/watchdog-probe.ps1` → `WATCHDOG_OK`（见上）。
+- `run.ps1 -Test` → 694/694；`-Verify` → `UI_VERIFY_OK`（老断言没被碰坏）。
+
+验证边界（写清，不假装）：
+
+1. **没有真机验证**。桌面不发 `paused/resumed`，Windows 上那条 `_Notification` 分支永远进不去，
+   所以"通知接线"只有代码阅读，"行为"靠直接调同一对方法。Android 切后台仍待真机验。
+2. 3 秒阈值是经验值，没有按机型调过。
+3. 提示是顶部横幅（`MouseFilter = Ignore`），不挡操作；它**不负责重连**——
+   重连仍由房间屏既有的 2.5 秒循环驱动，这里只负责把状态说出来。
+4. `ReassertHosting` 只在 Android 生效，桌面恒返回 false，探针验不到。
+5. 子进程退出依赖引擎的 2 秒轮询，不是即时；PID 复用窗口在服务端这种短命进程上可接受
+   （引擎注释里已写明这个取舍）。
 
 ## P9 发版收口
 
