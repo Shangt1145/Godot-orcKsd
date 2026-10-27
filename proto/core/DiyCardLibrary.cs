@@ -36,7 +36,7 @@ public sealed class DiyCardLibrary
             _cards = data.Cards.Select(c => c.Snapshot()).ToList();
         }
         catch (Exception e) when (e is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
-        { LoadError = $"DIY 卡库读取失败，原文件保留：{e.Message}"; }
+        { LoadError = $"DIY 卡库读取失败，原文件保留：{e.Message}" + BackupRing.Hint(_path); }
     }
     public static void CheckShape(DiyCardDraft? card)
     {
@@ -132,6 +132,10 @@ public sealed class DiyCardLibrary
         {
             change();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
+            // 覆盖前留一份上一版：导入坏卡/误删之后，玩家还有三条回头路。
+            // 放在 try 里是有意的——备份写不出去就整次保存失败（内存一起回滚），
+            // "备份失败但照样覆盖"是最糟的组合。
+            BackupRing.Rotate(_path);
             var temporary = _path + ".tmp";
             var encoded=JsonSerializer.Serialize(new FileData(1, _cards.ToArray()), Json);
             if(Encoding.UTF8.GetByteCount(encoded)>8_000_000)throw new InvalidDataException("DIY 卡库总大小超过8MB，已有卡库保持不变");

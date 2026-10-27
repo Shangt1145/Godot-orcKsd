@@ -20,7 +20,7 @@ public sealed class DiyWorkshopLibrary
             var data=JsonSerializer.Deserialize<Storage>(File.ReadAllText(path))??throw new InvalidDataException("工坊文件为空");
             SchemaVersioning.Require(data.Schema,"工坊文件");Validate(data.Packs);_packs=data.Packs.Select(p=>p.Snapshot()).ToList();
         }
-        catch(Exception e)when(e is IOException or JsonException or InvalidDataException){LoadError="工坊读取失败，原文件保留："+e.Message;}
+        catch(Exception e)when(e is IOException or JsonException or InvalidDataException){LoadError="工坊读取失败，原文件保留："+e.Message+BackupRing.Hint(_path);}
     }
     private static bool Id(string s,string prefix)=>s is not null&&s.StartsWith(prefix,StringComparison.Ordinal)&&Regex.IsMatch(s[prefix.Length..],"^[a-zA-Z0-9_-]{1,64}$");
     private static void Validate(DiyPackDraft[] packs)
@@ -50,7 +50,10 @@ public sealed class DiyWorkshopLibrary
     {
         if(LoadError is not null)throw new InvalidDataException(LoadError);
         var next=_packs.Where(p=>p.Id!=pack.Id).Append(pack.Snapshot()).ToArray();Validate(next);
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);var temp=_path+".tmp";
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
+        // 覆盖前留一份上一版（同卡库：删卡包/改坏卡包之后还有回头路）。
+        BackupRing.Rotate(_path);
+        var temp=_path+".tmp";
         File.WriteAllText(temp,JsonSerializer.Serialize(new Storage(1,next),new JsonSerializerOptions{WriteIndented=true}));File.Move(temp,_path,true);_packs=next.ToList();
     }
     public IReadOnlyList<DiyPackDraft> VocabularyPacks(string id)

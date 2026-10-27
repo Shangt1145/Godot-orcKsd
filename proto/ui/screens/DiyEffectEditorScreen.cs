@@ -17,6 +17,9 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     internal Label OrcNotice = null!, _trigger = null!;
     internal ScrollContainer EditorScroll = null!;
     internal IReadOnlyList<EffectRow> EffectRows => _effects;
+
+    /// <summary>当前简易行的读取结果（探针断言顺序用：读的是行里的值，不是缓存）。</summary>
+    internal IReadOnlyList<DiyEffectDraft> CurrentEffects => _effects.Select(r => r.Read()).ToArray();
     internal IReadOnlyList<OrcEffectRow> StructureRows => _orcRows;
     /// <summary>每次编辑实时上抛（主编辑器把结果并回草稿并刷新预览）。</summary>
     public event Action<OrcEffectDraft[], DiyEffectDraft[]>? Applied;
@@ -389,6 +392,8 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     {
         internal readonly OptionButton Op, Target, Until;
         internal readonly SpinBox Amount, Attack, Defense;
+        /// <summary>上下移按钮（探针要真的点它们，不是直发信号）。</summary>
+        internal readonly Button Up, Down;
         private readonly Label _amountLabel, _attackLabel, _defenseLabel;
         private readonly DiyCapabilityBadge _capability;
         internal void SetCapability(DiyCapabilityRow row)=>_capability.Set(row);
@@ -400,8 +405,8 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             _capability=new DiyCapabilityBadge(box);top.AddChild(_capability);
             Op = DiyEditorScreen.Option(DiyCardCompiler.Operations); top.AddChild(Op);
             Target = DiyEditorScreen.Option(DiyCardCompiler.Targets); top.AddChild(Target);
-            top.AddChild(MenuStyles.Button("↑", () => move(this, -1)));
-            top.AddChild(MenuStyles.Button("↓", () => move(this, 1)));
+            Up = MenuStyles.Button("↑", () => move(this, -1)); top.AddChild(Up);
+            Down = MenuStyles.Button("↓", () => move(this, 1)); top.AddChild(Down);
             top.AddChild(MenuStyles.Button("×", () => remove(this)));
             var values = new HBoxContainer(); box.AddChild(values);
             _amountLabel = MenuStyles.Label("数量", 12, MenuStyles.Dim); values.AddChild(_amountLabel);

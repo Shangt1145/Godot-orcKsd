@@ -182,7 +182,7 @@ public sealed class DeckLibrary
             ActiveId = _decks.Any(d => d.Id == data.ActiveId) ? data.ActiveId : null;
         }
         catch (Exception e) when (e is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
-        { LoadError = $"卡组文件读取失败，原文件保留：{e.Message}"; }
+        { LoadError = $"卡组文件读取失败，原文件保留：{e.Message}" + BackupRing.Hint(_path); }
     }
     public void Save(ConstructedDeck deck)
     {
@@ -204,6 +204,8 @@ public sealed class DeckLibrary
         {
             action();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
+            // 覆盖前留一份上一版（同卡库：删卡组/改坏卡组之后还有回头路）。
+            BackupRing.Rotate(_path);
             var temporary = _path + ".tmp";
             File.WriteAllText(temporary, JsonSerializer.Serialize(new FileData(1, ActiveId, _decks.ToArray()), Json));
             File.Move(temporary, _path, overwrite: true);

@@ -13,7 +13,7 @@
 | 项 | 现状 | 收口标准 |
 |---|---|---|
 | `--verify-diy` 红灯「复制→删副本」 | ✅ **根因已查明并修掉一半** | 见下方进度 |
-| 卡库无备份 | 覆写式原子写，坏了只能靠 git | 每次保存前留上一版（环形 3 份），失败可回滚 |
+| 卡库无备份 | ✅ **已修（2026-10-27 补做）** | 每次保存前留上一版（环形 3 份），失败可回滚 |
 
 ### P1 进度（2026-10-26）
 
@@ -29,6 +29,34 @@
    这是 M2（自己卡组）的核心链路，列为 **P1.5，优先于 P2**。
 
 已排除：`DiyCardLibrary` 的 Save→SaveCopy→DeleteCopy 单测通过，存储层无问题。
+
+### P1 备份环收口（2026-10-27 补做）
+
+**这条当初是计划里写着、代码里根本没有的**。`grep -r '\.bak\|Backup' proto/core/` 零命中——
+也就是说"覆写式原子写"只保证了"不会写出半个文件"，从没保证过"写出一个逻辑上错的文件"还救得回来。
+
+做法（`proto/core/BackupRing.cs`，环 3 格）：
+
+- `Rotate(path)` 在每次 `.tmp` 写入**之前**调用：`cards.json` → `.bak1` → `.bak2` → `.bak3`。
+- 为什么固定 3 格而不是时间戳：时间戳会让目录无限增长，而且"该保留哪一份"变成玩家要做的决定。
+  3 格是"我可能手滑两三次"的量级，每格含义确定（bak1＝上一次保存前的样子）。
+- **备份写不出去就让这次保存失败**（异常抛给调用方，调用方已有内存回滚）。
+  反过来"备份失败但照样覆盖"是最糟的组合——玩家以为有后路，实际没有。
+- `LoadError` 后面拼 `BackupRing.Hint(path)`，直接告诉玩家"上一版备份在 X，改名覆盖即可回滚"。
+  这句话是真的显示在界面提示行上的，不是日志。
+- 接入点：`DiyCardLibrary.Mutate`、`DeckLibrary.Mutate`、`DiyWorkshopLibrary.Save`。
+
+怎么验：
+
+1. `tests/BackupRingTests.cs` 11 条：格子语义、连存四次只留三份、空档容忍、`Newest` 回退、
+   `Restore`、`keep:0` 空转；另有三条打真库——存两次后 `bak1` 是"第一版"、删卡后 `bak1` 还在、
+   把主文件写坏后 `LoadError` 里含「备份」和 `.bak1`。
+2. 手工路径（玩家视角）：改一张 DIY 卡存两次 → 把 `diy-cards.json` 手工改坏 → 重开 →
+   提示行会指明备份文件；把 `.bak1` 改名盖回去 → 卡回到上一版。
+
+**写测试时逮到实现的一个真 bug**：原实现"先删最老格、再依次后退"，遇到空档
+（比如 `bak2` 被手工删过）就会白丢 `bak3`——环里明明还有位置。改成从最老格往下搬、
+只在真有东西搬进来时才覆盖，满环行为不变，空档不再丢历史。这条是测试红出来的，不是想出来的。
 
 ## P1.5 DIY 卡进构筑（新增，优先）— ✅ 已收口
 
@@ -46,10 +74,32 @@
    （"对话框没弹/确认没生效/原卡被误删"三合一、加卡失败与校验失败混判、`Verified==24` 写死）；
    网格查找从 `GetChild(0)` 改成全网格扫描（分页顺序不保证）。
 
-## P1.6 探针自身的欠账（顺手记下，未做）
+## P1.6 探针自身的欠账 — ✅ 已收口（2026-10-27）
 
-`--verify-diy` 里还有一处 `DIY_SKIP`（效果行 ↑/↓ 排序断言），原因是长列表滚出可视区后
-坐标点击会落空。等 Inspector 重做后再恢复，或改成信号直发。
+原来 `--verify-diy` 里有一处 `DIY_SKIP`（效果行 ↑/↓ 排序断言），记的原因是"长列表滚出可视区后
+坐标点击会落空"。现在改成**真的点按钮**，不直发信号：
+
+- `EffectRow.Up`/`Down` 从局部变量提成字段（`internal readonly Button Up, Down;`），
+  `DiyEffectEditorScreen.CurrentEffects` 暴露"行里现在的值"。
+- 断言读 `CurrentEffects`（界面当前值）而不是草稿缓存——缓存对不代表界面在改。
+- 点完 ↑/↓ 还断言**保存后的草稿顺序**，界面和落盘两边都钉住。
+
+复现时踩到的真原因，和当初记的不一样，值得写下来：
+**不是"滚出可视区"，是控件不可见**。`DiyEffectEditorScreen.Open()` 会把标签页重置回
+「图形搭建」并 `SetTabHidden(1,true)`，简易效果行所在的「结构编辑」页跟着整页隐藏；
+**不可见的控件收不到 `PushInput` 的合成点击**，点击静默落空、不报错。
+探针第一处进效果页后有一句 `ShowCompatibility()`，第二处（`Load()` 之后）漏了，于是红在这里。
+修法：每次进效果页都先 `ShowCompatibility()` 再点。
+
+诊断手法记一笔：先看 `[fx-move]` 打印在不在——**在＝逻辑问题，不在＝没点到**；
+没点到就打 `IsVisibleInTree()` 和祖先链，一眼能看出是哪一层 `Visible=False`。
+这比盯着坐标猜快得多。
+
+验证：`-VerifyDiy` → `DIY_UI_VERIFY_OK mouse-save edit-reload copy confirmed-delete dirty-guard
+invalid-and-valid-import export native-json catalog builder exact-deck quarantined-invalid
+trial-mulligan native-deployment pack-zip-export pack-zip-import overlay-effects=0`；
+日志里 `[fx-move] loading=False effects0=buff count=2` 与 `effects0=draw count=2` 两条，
+就是两次真点击的痕迹（`loading=False` 说明不是加载期重建，是点击触发）。
 
 
 ## P2 DIY 选靶（这版的核心承诺）— ✅ 已收口

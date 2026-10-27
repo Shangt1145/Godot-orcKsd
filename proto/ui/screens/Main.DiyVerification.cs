@@ -34,6 +34,10 @@ public partial class Main
         var image = GetViewport().GetTexture().GetImage();
         image.SavePng($"{directory}/{name}-{image.GetWidth()}.png");
     }
+    /// <summary>效果行的 op 顺序（探针用：读行里的值，一行字符串方便直接贴进失败消息）。</summary>
+    private static string Ops(DiyEffectEditorScreen editor)
+        => string.Join(",", editor.CurrentEffects.Select(e => e.Op));
+
     private async Task VerifyDiyAsync()
     {
         var originalCards = _diy.Cards.Select(c => c.Id).ToHashSet();
@@ -137,15 +141,35 @@ public partial class Main
             _diyEditor.Load(new DiyCardDraft { CardType = "order", Name = "DIY 战地补给", Cost = 0,
                 Effects = [new() { Op = "draw", Amount = 1 }, new() { Op = "buff", Target = "friendlyUnits", Attack = 1, Defense = 2, Until = "turnEnd" }] });
             await DiyClickAsync(_diyEditor.OpenEffectsButton);
-            // 🔧 op 排序断言暂时摘除：效果编辑器改造中，op 行的 ↑/↓ 在长列表里滚出可视区后
-            // 坐标点击会落空（DeckClickAsync 按全局坐标推鼠标事件）。等新 Inspector 的
-            // op 排序稳定后，改用信号直发或确保按钮可见再恢复这两条。
-            GD.Print("DIY_SKIP effect reorder assertions (editor being redesigned)");
+            // Load() 会把标签页重置回「图形搭建」并隐藏「结构编辑」，简易行跟着一起不可见——
+            // 不可见的控件收不到合成点击，所以每次进效果页都要重新切到兼容模式。
+            _diyEffects.ShowCompatibility();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            Check(_diyEffects.EffectRows.Count == 2, $"效果行数不对：{_diyEffects.EffectRows.Count}");
+            Check(Ops(_diyEffects) == "draw,buff", $"打开时效果顺序不对：{Ops(_diyEffects)}");
+
+            // 效果行排序：**真的点 ↑/↓**（不直发信号）。断言读的是"行里现在的值"（CurrentEffects），
+            // 不是草稿缓存——缓存对不代表界面在改。
+            var firstRow = _diyEffects.EffectRows[0];
+            _diyEffects.EditorScroll.EnsureControlVisible(firstRow);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await DiyClickAsync(firstRow.Down);
+            Check(Ops(_diyEffects) == "buff,draw", $"点「↓」没有把第一条效果下移（现在是 {Ops(_diyEffects)}）");
+
+            var lastRow = _diyEffects.EffectRows[^1];
+            _diyEffects.EditorScroll.EnsureControlVisible(lastRow);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await DiyClickAsync(lastRow.Up);
+            Check(Ops(_diyEffects) == "draw,buff", $"点「↑」没有把最后一条效果上移（现在是 {Ops(_diyEffects)}）");
+
             _diyEffects.EditorScroll.EnsureControlVisible(_diyEffects.EffectRows[^1]);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await DiyCaptureAsync("editor-effects");
             await DiyClickAsync(_diyEffects.FinishButton);
             await DiyClickAsync(_diyEditor.SaveButton); var order = _diyEditor.Draft;
+            // 排序不只改界面：存下来的草稿必须也是新顺序。
+            Check(string.Join(",", order.Effects.Select(e => e.Op)) == "draw,buff",
+                $"保存后的效果顺序与界面不一致：{string.Join(",", order.Effects.Select(e => e.Op))}");
             _diyEditor.EditorScroll.ScrollVertical = 0;
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             await DiyCaptureAsync("editor-order");
