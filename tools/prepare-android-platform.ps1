@@ -1,4 +1,4 @@
-param([string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot))
+﻿param([string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $platformRoot = Join-Path $ProjectRoot 'platform/android'
 $javaRoot = Join-Path $ProjectRoot 'android/build/src/main/java/com/godot/game'

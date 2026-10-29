@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Reflection.Metadata;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Scripting;
@@ -16,11 +17,50 @@ public static class NativeScriptHost
     /// <summary>Only the UI host supplies the directory of its current managed build.</summary>
     public static void ConfigureAssemblyDirectory(string directory)
     {
-        ScriptAssemblyReferences.ConfigureDirectory(directory);
+        ScriptReferenceSource.ConfigureDirectory(directory);
         Volatile.Write(ref _evaluator, new HostEvaluator(Path.GetFullPath(directory)));
     }
 
     internal static IScriptEvaluator Evaluator => Volatile.Read(ref _evaluator);
+
+    /// <summary>
+    /// 无物理 DLL 场景（安卓 APK／单文件发布）的程序集引用来源。
+    /// <para>
+    /// **为什么本仓库自带这一份**：这段能力原本在引擎的 <c>Orc.Script.ScriptAssemblyReferences</c> 里，
+    /// v4 把它删了——引擎自己的求值器现在遇到无路径程序集**直接跳过**（见 <c>CSharpScriptEvaluator</c>
+    /// 的 "单文件发布等无路径场景：跳过"）。跳过在桌面无感，但在安卓上会让所有引用本程序集的 csx 编译失败。
+    /// 引擎侧没有替代入口，所以这段必须留在宿主侧（不修改引擎）。
+    /// </para>
+    /// <para>
+    /// 三级回退：①程序集真实路径 → ②宿主提供的同目录副本 → ③读取已加载程序集的元数据（唯一能覆盖
+    /// 纯内存加载的路径，需要 <c>unsafe</c>；<c>TryGetRawMetadata</c> 只有指针重载）。
+    /// </para>
+    /// </summary>
+    private static class ScriptReferenceSource
+    {
+        private static string? _directory;
+
+        /// <summary>宿主自带的同版本运行时程序集副本目录（Mono 拿不到原始元数据时用）。</summary>
+        public static void ConfigureDirectory(string directory) => Volatile.Write(ref _directory, Path.GetFullPath(directory));
+
+        public static unsafe MetadataReference FromAssembly(Assembly assembly)
+        {
+            if (!string.IsNullOrEmpty(assembly.Location) && File.Exists(assembly.Location))
+                return MetadataReference.CreateFromFile(assembly.Location);
+
+            var directory = Volatile.Read(ref _directory);
+            var copy = directory is null ? null : Path.Combine(directory, assembly.GetName().Name + ".dll");
+            if (copy is not null && File.Exists(copy))
+                return MetadataReference.CreateFromFile(copy);
+
+            if (assembly.TryGetRawMetadata(out var blob, out var length))
+                return AssemblyMetadata
+                    .Create(ModuleMetadata.CreateFromMetadata((IntPtr)blob, length))
+                    .GetReference(filePath: assembly.GetName().Name + ".dll");
+
+            throw new InvalidDataException("无法取得脚本编译引用：" + assembly.FullName);
+        }
+    }
 
     private sealed class HostEvaluator(string? directory) : IScriptEvaluator
     {
@@ -86,6 +126,14 @@ public static class NativeScriptHost
 
         private static ScriptOptions Build(string? directory)
         {
+            // dynamic（承载视图的唯一形态）需要 DLR 绑定器程序集：它未必已被进程加载，不显式拉一次，
+            // 引用集里就没有它，csx 里写 dynamic 会直接编译失败。引擎自己的求值器同样先显式拉这两个。
+            foreach (var required in new[] { "Microsoft.CSharp", "System.Linq.Expressions" })
+            {
+                try { _ = Assembly.Load(required); }
+                catch (Exception) { /* 拉不起来＝引用集里没有它；后面的编译会明确报错，不静默降级 */ }
+            }
+
             var references = new List<MetadataReference>();
             foreach (var name in CSharpScriptSecurityOptions.DefaultAllowedAssemblies.Append(typeof(DesktopTargetContext).Assembly.GetName().Name!))
             {
@@ -102,7 +150,7 @@ public static class NativeScriptHost
                 var path = assembly.Location;
                 if (string.IsNullOrEmpty(path) || !File.Exists(path))
                 {
-                    references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+                    references.Add(ScriptReferenceSource.FromAssembly(assembly));
                     continue;
                 }
                 references.Add(MetadataReference.CreateFromFile(path));

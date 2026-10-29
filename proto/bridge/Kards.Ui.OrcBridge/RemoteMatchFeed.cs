@@ -166,7 +166,10 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
             await client.DisposeAsync().ConfigureAwait(false);
             throw;
         }
-        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics, SupportsPackTransfer = supportsPacks };
+        // v4：卡包传输整条线已停用（对端没有 pool.* RPC），SupportsPackTransfer 恒 false——
+        // 这里不再把握手里的 pack-transfer-v1 能力位写进来，免得界面以为"可以同步"。
+        _ = supportsPacks;
+        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics };
     }
 
     /// <summary>读房间快照（座位、可连地址、卡包状态）。</summary>

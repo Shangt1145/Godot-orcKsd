@@ -55,11 +55,8 @@ public static class OfficialCardCompiler
         var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
         foreach (var effect in compiled.Effects)
         {
-            foreach (var snapshot in effect.Snapshots)
-            {
-                var instance = DynamicEffectFactory.Instantiate(engine, snapshot);
-                if (!instance.Success) throw new InvalidDataException("原生效果无法实例化：" + instance.Error);
-            }
+            // v4：DynamicEffectFactory.Instantiate 已删除（Effect 家族不存在）。编译期错误仍由 compiled 报告，
+            // 这里不再有"实例化"这道校验——效果在 v4 是资产文本，装载期才判定。
             using var document = JsonDocument.Parse(effect.JsonText!);
             inline.AddRange(document.RootElement.EnumerateArray().Select(e => e.Clone()));
         }

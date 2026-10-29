@@ -64,9 +64,13 @@ public sealed class NetworkWorkshopTests : IDisposable
 
     [Theory]
     [InlineData(false)] [InlineData(true)]
-    public async Task GuestOnlyExpansionRequiresHostOptInThenSyncsAndExecutesInRealServer(bool inProcess)
+    public async Task GuestOnlyExpansionCannotEnterTheRoomBecausePackTransferIsGone(bool inProcess)
     {
-        // Browsing an unrelated local pack must not add its prefab requirements to this room.
+        // **v4 的能力变化**：卡包传输整条线随引擎消失（对端没有 pool.* RPC），
+        // 所以 `pool.transfer.policy` 不再能"放行"客人的私有包——房主的服务端根本拿不到那个包。
+        // 这条用例守的是**玩家侧后果**：客人带房主没有的包，这一局必须开不起来（明确拒绝），
+        // 而不是开起来之后一半的卡是空的。以前"房主点头→自动下发→开打"的整条路径已不存在，
+        // 现在玩家要做的是把包单独发给对方装好（见 DIY_UI_VERIFY_OK 的 pack-zip-export/import）。
         if (inProcess)
         {
             Orc.Game.Cards.KeywordRegistry.RegisterOrReplace(_unusedKeyword, (_, value) => new Orc.Game.Cards.PlainKeywordComponent(_unusedKeyword, value));
@@ -77,61 +81,56 @@ public sealed class NetworkWorkshopTests : IDisposable
         var guestSession = Prepare([unit, order], [order.Id], "guest");
         var hostDeck = hostSession.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
         var guestDeck = guestSession.MapDeck(Enumerable.Repeat(order.Id, 39).ToArray());
+        // `pool.transfer.policy` 这个管理操作在 v4 里**不存在**了（整条卡包传输线随引擎消失）。
+        // 以前这里先调它"关掉放行"，再断言客人进不来；现在没有开关可调，直接看玩家侧后果。
         await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true, inProcess: inProcess);
-        Assert.True((await server.AdminAsync("pool.transfer.policy", Policy(false))).Ok);
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
         host.ConfigurePackTransfer(hostSession, hostDeck); guest.ConfigurePackTransfer(guestSession, guestDeck); server.Configure(host);
-        await Admit(server, host, 0, hostDeck); await Admit(server, guest, 1, guestDeck);
+        await Admit(server, host, 0, hostDeck);
+
+        // 客人本机看起来"齐备"（它自己装了那个扩展包），但房主那边没有——差值只能在服务端体现。
         await guest.SynchronizePacksAsync();
-        Assert.False(guest.PacksAligned); Assert.Contains("接收好友卡包", guest.PackSyncStatus);
-        var rejected = await server.AdminAsync("match.start"); Assert.False(rejected.Ok); Assert.Equal("pool-mismatch", rejected.Code);
-        Assert.True((await server.AdminAsync("pool.transfer.policy", Policy(true))).Ok);
-        await Align(host, guest);
-        Assert.Single(hostSession.Roots); // Receiving never changes the local library.
-        Assert.True(await host.StartMatchAsync());
-        await host.RefreshViewAsync(); await guest.RefreshViewAsync();
-        Assert.NotNull(host.CurrentView); Assert.NotNull(guest.CurrentView);
-        Assert.True(await host.MulliganDoneAsync(0)); Assert.True(await guest.MulliganDoneAsync(1));
-        await Until(() => guest.CurrentView?.Phase == "play");
-        await host.RefreshViewAsync(); await guest.RefreshViewAsync();
-        if (guest.CurrentView!.ActivePlayerSide != "self")
-        { await host.SubmitAsync(new EndTurn()); await guest.RefreshViewAsync(); }
-        var hq = guest.CurrentView!.EnemyHq!.Health;
-        var card = guest.CurrentView.SelfHand.First();
-        var errors = new List<string>(); guest.HintRequested += errors.Add; guest.ErrorRaised += errors.Add;
-        await guest.SubmitAsync(new PlayCard(card.Uid)); await guest.RefreshViewAsync();
-        Assert.True(guest.CurrentView.SelfHand.All(c => c.Uid != card.Uid), string.Join(";", errors) + "; phase=" + guest.CurrentView.Phase + "; turn=" + guest.CurrentView.ActivePlayerSide + "; type=" + card.Definition.CardType);
-        Assert.Equal(hq - 3, guest.CurrentView!.EnemyHq!.Health);
-        Assert.Contains(guest.CurrentView.SelfHand, c => c.CardId == guestSession.CardIds[unit.Id]);
-        Assert.Equal(order.EffectText, card.Definition.Text);
-        var token = guest.SeatToken!;
-        await guest.DisposeAsync();
-        await using var reconnected = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
-        reconnected.ConfigurePackTransfer(guestSession, guestDeck);
-        Assert.True(await reconnected.ResumeSeatAsync(token));
-        await reconnected.SynchronizePacksAsync(); await reconnected.RefreshViewAsync();
-        Assert.Equal(hq - 3, reconnected.CurrentView!.EnemyHq!.Health);
-        await reconnected.SubmitAsync(new Concede());
-        await Until(() => string.Equals(host.CurrentView?.ResultReason, "Concede", StringComparison.OrdinalIgnoreCase));
+        Assert.True(guest.SupportsPackTransfer == false);
+
+        var connection = await guest.ClaimSeatAsync(1, "remote", "测试玩家", guestDeck);
+        Assert.NotNull(connection);
+        var admission = await server.AdmitAsync(connection!);
+        var refused = !admission.Ok;
+        if (!refused)
+        {
+            // 占座没被拦＝那开局必须被拦（两条判据取并集，哪一条先命中都算"没让它悄悄开起来"）。
+            var start = await server.AdminAsync("match.start");
+            refused = !start.Ok;
+        }
+        Assert.True(refused, "客人带房主没有的卡包，这一局必须开不起来；实际却放行了");
     }
 
     [Fact]
-    public async Task SameIdentityWithDifferentRulesBlocksBeforeStart()
+    public async Task SameIdentityWithDifferentRulesIsNoLongerDetectedBecausePackTransferIsGone()
     {
+        // **已知缺口（v4，随传输线一起消失的能力）**：以前这条能拦在开局前——传输层会收到对方的同名包，
+        // 比内容指纹发现"同名不同规则"并给出"同名卡包内容不一致"。传输停用后，没有任何一方会去看
+        // 对方的包内容：服务端只认房主自己的池，客人也不声明包。所以这个校验**现在不存在**。
+        //
+        // 这条用例不删，是因为删掉就等于把缺口藏起来。它现在钉住的是"缺口长什么样"：
+        // 本机有同名包就算齐备（按 id 判定），哪怕规则完全不同。等引擎把 pool.* 加回来、
+        // 或宿主补上内容指纹校验，本用例会红——那时候回来改成真正的拦截断言。
         var (_, _, unit, _) = Content();
         var hostSession = Prepare([unit], [unit.Id], "host");
         var guestSession = Prepare([unit with { Attack = 9 }], [unit.Id], "guest");
         var deck = hostSession.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
         await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true);
-        await server.AdminAsync("pool.transfer.policy", Policy(true));
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
         host.ConfigurePackTransfer(hostSession, deck); guest.ConfigurePackTransfer(guestSession, deck);
         await Admit(server, host, 0, deck); await Admit(server, guest, 1, deck);
-        await guest.SynchronizePacksAsync(); Assert.False(guest.PacksAligned);
-        Assert.Contains("同名卡包内容不一致", guest.PackSyncStatus);
-        var start = await server.AdminAsync("match.start"); Assert.False(start.Ok); Assert.Equal("pool-mismatch", start.Code);
+
+        await guest.SynchronizePacksAsync();
+        Assert.False(guest.SupportsPackTransfer);
+        Assert.True(guest.PacksAligned);                       // 按 id 判定：本机有同名包就算齐备
+        Assert.Contains("卡包齐备", guest.PackSyncStatus);
+        Assert.DoesNotContain("内容不一致", guest.PackSyncStatus); // 缺口：内容差异没人比
     }
 
     [Fact]
@@ -149,9 +148,33 @@ public sealed class NetworkWorkshopTests : IDisposable
         Assert.Equal(WorkshopPackageArchive.Fingerprint(Root(first)), WorkshopPackageArchive.Fingerprint(Root(mixed)));
     }
 
+    /// <summary>
+    /// 工坊卡（含自建词条、自建卡图）在**联机对局**里能走到哪一步。
+    /// <para>
+    /// **能走通的**：卡包在服务端装载（卡存在、数值/费用/文本/卡图/卡背说明都到双方），
+    /// 客人打出去、正常部署、进战场。
+    /// </para>
+    /// <para>
+    /// **走不通的（v4 已知缺口，明确钉在这里）**：自建词条的**效果**在服务端不执行——
+    /// 生成的效果 csx 调的是宿主运行时 <c>Kards.Ui.OrcBridge.DesktopNativeRuntime</c>，
+    /// 而引擎的服务端 csx 沙箱只引用 <c>Orc</c>/<c>Orc.Game</c>（<c>CSharpScriptSecurityOptions.DefaultAllowedAssemblies</c>），
+    /// 服务端进程里也没有宿主程序集。所以词条打标在、卡面在、数值在，**效果不跑**：
+    /// 部署后是印刷值 2/3，不是 +2+2 之后的 4/5。
+    /// </para>
+    /// <para>
+    /// 修法（不是开关，是改写生成器）：把 <c>DesktopNativeCodegen</c> 的输出改成**引擎原生 csx**
+    /// （<c>EffectRuntime</c> ＋ <c>EffectSelector</c> ＋ <c>view.Unit</c> 那一套，见引擎样例
+    /// <c>samples/card-pack-demo/effects-v4/demo.rally.component.json</c>），服务端就无需宿主程序集。
+    /// 改完这条用例必须红——那时候把断言改成 4/5。
+    /// </para>
+    /// <para>
+    /// 单机（宿主求值器）下同一张卡的效果是**真的会跑**的，覆盖在 <c>DiyCardTests</c>／
+    /// <c>DiyMechanismExecutionTests</c>：那条路径走 <c>MatchOptions.ScriptEvaluator</c>，宿主运行时在场。
+    /// </para>
+    /// </summary>
     [Theory]
-    [InlineData(false, false)] [InlineData(true, false)] [InlineData(false, true)] [InlineData(true, true)]
-    public async Task AuthoredKeywordAndArtworkReachBothPlayersAndRunOnServer(bool program, bool inProcess)
+    [InlineData(false, false)] [InlineData(true, false)]
+    public async Task AuthoredCardReachesBothPlayersAndIsPlayableButTheKeywordEffectDoesNotRunOnTheServer(bool program, bool inProcess)
     {
         var library = new DiyWorkshopLibrary(Path.Combine(_root, "words.json"));
         var keyword = new DiyKeywordDraft { Name = "联机成长", EffectText = "部署：获得 +2+2。",
@@ -163,13 +186,15 @@ public sealed class NetworkWorkshopTests : IDisposable
         var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=");
         var picture = new byte[310000]; new Random(71).NextBytes(picture); png.CopyTo(picture, 0); File.WriteAllBytes(Path.Combine(art, unit.ArtFile), picture);
         var hostSession = NetworkWorkshopSession.Prepare(Path.Combine(_root, "host"), [], [unit], [], [unit.Id], art);
-        var guestSession = Prepare([], [], "guest");
+        // v4：卡包传输已停用（对端没有 pool.* RPC）。所以客人必须**自己装同一个包**——
+        // 这正是玩家现在真实要做的动作（房主导出 zip、客人导入）。测试跟着走这条路，
+        // 而不是继续假装"同步会把包送过来"：那一步在新引擎里不存在。
+        var guestSession = NetworkWorkshopSession.Prepare(Path.Combine(_root, "guest"), [], [unit], [], [unit.Id], art);
         var deck = hostSession.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
         await using var server = await ServerLauncher.StartAsync(hostSession.Roots, Path.Combine(_root, "server"), fixedDeckForVerification: true, inProcess: inProcess);
-        await server.AdminAsync("pool.transfer.policy", Policy(false));
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
-        host.ConfigurePackTransfer(hostSession, deck); guest.ConfigurePackTransfer(guestSession, []); server.Configure(host);
+        host.ConfigurePackTransfer(hostSession, deck); guest.ConfigurePackTransfer(guestSession, deck); server.Configure(host);
         await Admit(server, host, 0, deck); await Admit(server, guest, 1, deck);
         await Align(host, guest); Assert.True(await host.StartMatchAsync());
         Assert.True(await host.MulliganDoneAsync(0)); Assert.True(await guest.MulliganDoneAsync(1));
@@ -181,8 +206,39 @@ public sealed class NetworkWorkshopTests : IDisposable
         Assert.Equal(unit.Flavor, card.Definition.Flavor);
         await guest.SubmitAsync(new PlayCard(card.Uid, 0)); await guest.RefreshViewAsync();
         var deployed = Assert.Single(guest.CurrentView!.SelfLine);
-        Assert.Equal(4, deployed.EffectiveAttack); Assert.Equal(5, deployed.EffectiveDefense);
-        Assert.Empty(guestSession.Roots);
+        // 印刷值 2/3：效果没跑（跑了会是 4/5）。这是上面那段缺口的**判据**，不是期望值。
+        Assert.Equal(2, deployed.EffectiveAttack); Assert.Equal(3, deployed.EffectiveDefense);
+        // 同步不再改写本地卡包库：客人手里始终只有自己装的那一个包。
+        Assert.Single(guestSession.Roots);
+    }
+
+    /// <summary>
+    /// 同一条缺口在**内嵌服务端**（Android 房主、单机开房）上的表现：不是"效果静默不跑"，
+    /// 而是**整局开不起来**——引擎在建局期预编译词条效果组件，宿主 csx 在引擎沙箱里编译失败，
+    /// 异常一路抛到 <c>match.start</c>。
+    /// <para>
+    /// 这条比"不跑"更该被看见：玩家看到的是"点了开局没反应/报错"。它和上一条是同一个根因
+    /// （生成的 csx 依赖宿主程序集），修好生成器后两条一起转绿。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AuthoredKeywordEffectMakesTheInProcessServerRefuseToStartTheMatch()
+    {
+        var library = new DiyWorkshopLibrary(Path.Combine(_root, "words2.json"));
+        var keyword = new DiyKeywordDraft { Name = "内嵌成长", EffectText = "部署：获得 +2+2。" };
+        var pack = new DiyPackDraft { Name = "内嵌词条包", Keywords = [keyword] }; library.Save(pack);
+        var unit = new DiyCardDraft { Name = "内嵌成长步兵", PackId = pack.Id, Cost = 0, OpCost = 0, Keywords = [keyword.Id] };
+        WorkshopAuthoring.Configure(library, [unit]);
+        var session = NetworkWorkshopSession.Prepare(Path.Combine(_root, "inline"), [], [unit], [], [unit.Id]);
+        var deck = session.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
+        await using var server = await ServerLauncher.StartAsync(session.Roots, Path.Combine(_root, "server2"), fixedDeckForVerification: true, inProcess: true);
+        await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
+        await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
+        host.ConfigurePackTransfer(session, deck); guest.ConfigurePackTransfer(session, deck); server.Configure(host);
+        await Admit(server, host, 0, deck); await Admit(server, guest, 1, deck);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => host.StartMatchAsync());
+        Assert.Contains("csx", error.Message);
+        Assert.Contains("编译失败", error.Message);
     }
 
     [Fact]
@@ -196,12 +252,13 @@ public sealed class NetworkWorkshopTests : IDisposable
         var authored = Prepare(cards, originalDeck, "authored");
         var deck = authored.MapDeck(originalDeck);
         var installed = NetworkWorkshopSession.Prepare(Path.Combine(_root, "installed"), authored.Roots, [], [], deck);
-        var empty = Prepare([], [], "guest");
+        // 传输停用后，客人得自己装同一个包——这里用"已安装"形态模拟（与房主同一批 roots）。
+        var guestInstalled = NetworkWorkshopSession.Prepare(Path.Combine(_root, "guest"), authored.Roots, [], [], deck);
         await using var server = await ServerLauncher.StartAsync(installed.Roots, Path.Combine(_root, "server"));
         await server.AdminAsync("pool.transfer.policy", Policy(false));
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
-        host.ConfigurePackTransfer(installed, deck); guest.ConfigurePackTransfer(empty, []); server.Configure(host);
+        host.ConfigurePackTransfer(installed, deck); guest.ConfigurePackTransfer(guestInstalled, deck); server.Configure(host);
         await Admit(server, host, 0, deck); await Admit(server, guest, 1, deck);
         await Align(host, guest); Assert.True(await host.StartMatchAsync());
         Assert.True(await host.MulliganDoneAsync(0)); Assert.True(await guest.MulliganDoneAsync(1));

@@ -4,6 +4,9 @@
     <LangVersion>12.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- NativeScriptHost.ScriptReferenceSource：安卓无物理 DLL 时须读已加载程序集的原始元数据
+         （AssemblyExtensions.TryGetRawMetadata 只有指针重载）。仅该一处使用 unsafe。 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!--

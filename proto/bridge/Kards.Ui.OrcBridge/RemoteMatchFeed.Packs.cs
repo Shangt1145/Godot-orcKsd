@@ -1,153 +1,90 @@
 using System.Text.Json.Nodes;
-using Orc.Protocol;
+using Kards.Ui.Core;
 
 namespace Kards.Ui.OrcBridge;
 
+/// <summary>
+/// 联机卡包同步（房主 ↔ 客人）。
+/// <para>
+/// **2026-10-28 v4 迁移：整条传输线已停用。** 原实现走的是服务端六个方法
+/// （<c>pool.manifest</c>／<c>pool.offer</c>／<c>pool.chunk</c>／<c>pool.commit</c>／<c>pool.fetch</c>／<c>pool.ack</c>），
+/// 它们只存在于本地分支的 <c>ServerHost.PackTransfer.cs</c>；新引擎（<c>origin/main</c>）里没有这个文件，
+/// 也就没有对端。按「一切以新引擎为准，本地的不管」的裁定，本仓库不再假装能同步。
+/// </para>
+/// <para>
+/// **玩家侧后果（说清楚，不藏）**：联机对局只能用**双方都装好的**卡包；工坊自建卡包不能随对局传过去。
+/// 因此带 DIY 卡组开房时，客人若没有对应卡包会停在「卡包未对齐」，而不是像以前那样自动下载。
+/// 这条不是本层的临时降级开关——是能力本身在新引擎里不存在，恢复的前提是引擎把 <c>pool.*</c> 加回来。
+/// </para>
+/// </summary>
 public sealed partial class RemoteMatchFeed
 {
-    public bool SupportsPackTransfer { get; private set; }
+    /// <summary>本机/对端是否支持卡包传输。v4 恒为 false（对端没有这套 RPC）。</summary>
+    public bool SupportsPackTransfer => false;
+
+    /// <summary>双方卡池是否已对齐。传输停用后不再自动对齐，只能靠双方装同一批包。</summary>
     public bool PacksAligned { get; private set; }
+
+    /// <summary>同步状态文案（界面直接显示）。</summary>
     public string PackSyncStatus { get; private set; } = "等待卡包同步";
-    private readonly SemaphoreSlim _packSync = new(1, 1);
+
     private IReadOnlyList<string> _localPackRoots = [];
     private IReadOnlyList<string> _networkDeck = [];
-    private string _networkCache = "";
-    private string _syncedFingerprint = "";
     private readonly Dictionary<string, (string Root, JsonObject Info)> _localNetworkPacks = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _networkArt = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _networkTexts = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _networkFlavor = new(StringComparer.Ordinal);
+
+    /// <summary>登记本局要用的本地卡包（保留调用面：界面/远程订阅仍按原签名调用）。</summary>
     public void ConfigurePackTransfer(NetworkWorkshopSession session, IReadOnlyList<string> deck)
     {
-        _localPackRoots = session.Roots; _networkDeck = deck;
-        _networkCache = Path.Combine(session.Directory, "received");
+        _localPackRoots = session.Roots;
+        _networkDeck = deck;
     }
-    private async Task<JsonNode> PackCallAsync(string method, JsonObject? args, CancellationToken ct)
+
+    /// <summary>
+    /// 同步卡包。v4 下**不做任何网络往返**：只把状态写成"不可用"，并检查本机是否具备开局所需卡包，
+    /// 好让玩家在开局前就看到"缺哪个包"，而不是进对局后拿到一堆空牌。
+    /// </summary>
+    public Task SynchronizePacksAsync(CancellationToken ct = default)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(60));
-        var response = await _client.CallRawAsync(method, args ?? new JsonObject(), timeout.Token).ConfigureAwait(false);
-        if (response.Error is { } error) throw new InvalidOperationException(error.Message);
-        return response.Result ?? throw new InvalidDataException("卡包同步响应为空。");
-    }
-    public async Task SynchronizePacksAsync(CancellationToken ct = default)
-    {
-        if (_networkCache.Length == 0 || AdmissionState != "admitted" || !await _packSync.WaitAsync(0, ct).ConfigureAwait(false)) return;
-        try
+        ct.ThrowIfCancellationRequested();
+        PacksAligned = false;
+        if (_networkDeck.Count == 0)
         {
-            if (!SupportsPackTransfer) { PackSyncStatus = "房主版本不支持工坊卡包同步，请更新房主程序。"; return; }
-            var manifest = await PackCallAsync("pool.manifest", null, ct).ConfigureAwait(false);
-            if (manifest["lobby"]?.GetValue<bool>() != true && _syncedFingerprint.Length > 0) return;
-            if (_localNetworkPacks.Count == 0)
-                foreach (var root in _localPackRoots)
-                {
-                    var info = NetworkPackageArchive.Describe(root);
-                    _localNetworkPacks.Add(info["id"]!.ToString(), (root, info));
-                }
-            var remote = manifest["packages"]!.AsArray().OfType<JsonObject>().ToDictionary(p => p["id"]!.ToString(), StringComparer.Ordinal);
-            var needed = _networkDeck.Where(id => id.StartsWith("pack/", StringComparison.Ordinal)).Select(id => id.Split('/')[1]).ToHashSet(StringComparer.Ordinal);
-            var dependencies = _localNetworkPacks.ToDictionary(p => p.Key, p => Dependencies(p.Value.Root, p.Key), StringComparer.Ordinal);
-            bool expanded;
-            do
-            {
-                expanded = false;
-                foreach (var (id, local) in _localNetworkPacks)
-                {
-                    if (needed.Contains(id)) foreach (var dependency in dependencies[id]) expanded |= needed.Add(dependency);
-                    var parent = WorkshopPackagePresentation.Parent(local.Root, id);
-                    if (parent is not null && needed.Contains(parent)) expanded |= needed.Add(id);
-                }
-            } while (expanded);
-            var ordered = new List<string>(); var visited = new HashSet<string>(); var visiting = new HashSet<string>();
-            void Visit(string id)
-            {
-                if (!needed.Contains(id) || !_localNetworkPacks.ContainsKey(id) || visited.Contains(id)) return;
-                if (!visiting.Add(id)) throw new InvalidDataException("卡包依赖形成循环：" + id);
-                foreach (var dependency in dependencies[id]) Visit(dependency);
-                visiting.Remove(id); visited.Add(id); ordered.Add(id);
-            }
-            foreach (var id in needed) Visit(id);
-            foreach (var id in ordered)
-            {
-                var local = _localNetworkPacks[id];
-                if (remote.TryGetValue(id, out var existing))
-                {
-                    if (existing["digest"]!.ToString() != local.Info["digest"]!.ToString())
-                        throw new InvalidDataException("同名卡包内容不一致：" + local.Info["name"] + "。请双方统一版本后重新开房。");
-                    continue;
-                }
-                if (manifest["allowGuestPacks"]?.GetValue<bool>() != true)
-                    throw new InvalidOperationException("房主缺少卡包「" + local.Info["name"] + "」，请房主开启“接收好友卡包”。");
-                PackSyncStatus = "正在上传「" + local.Info["name"] + "」…";
-                var offer = await PackCallAsync("pool.offer", new JsonObject { ["package"] = local.Info.DeepClone() }, ct).ConfigureAwait(false);
-                if (offer["exists"]?.GetValue<bool>() == true) continue;
-                var bytes = NetworkPackageArchive.Zip(local.Root);
-                for (int offset = 0; offset < bytes.Length; offset += NetworkPackageArchive.ChunkBytes)
-                {
-                    var block = bytes.AsSpan(offset, Math.Min(NetworkPackageArchive.ChunkBytes, bytes.Length - offset)).ToArray();
-                    await PackCallAsync("pool.chunk", new JsonObject { ["offset"] = offset, ["data"] = Convert.ToBase64String(block), ["sha256"] = NetworkPackageArchive.Hash(block) }, ct).ConfigureAwait(false);
-                }
-                await PackCallAsync("pool.commit", new JsonObject(), ct).ConfigureAwait(false);
-            }
-            manifest = await PackCallAsync("pool.manifest", null, ct).ConfigureAwait(false);
-            var fingerprint = manifest["fingerprint"]!.ToString();
-            PacksAligned = false;
-            if (_syncedFingerprint != fingerprint)
-            {
-                foreach (var info in manifest["packages"]!.AsArray().OfType<JsonObject>())
-                {
-                    var id = info["id"]!.ToString(); var digest = info["digest"]!.ToString(); string root;
-                    if (_localNetworkPacks.TryGetValue(id, out var own) && own.Info["digest"]!.ToString() == digest) root = own.Root;
-                    else
-                    {
-                        root = Path.Combine(_networkCache, NetworkPackageArchive.Key(id + "/" + digest));
-                        if (!Directory.Exists(root) || NetworkPackageArchive.Digest(root) != digest)
-                        {
-                            PackSyncStatus = "正在接收「" + info["name"] + "」…";
-                            var size = info["bytes"]!.GetValue<int>();
-                            if (size < 1 || size > NetworkPackageArchive.MaxBytes) throw new InvalidDataException("远端卡包大小无效。");
-                            using var stream = new MemoryStream();
-                            while (stream.Length < size)
-                            {
-                                var response = await PackCallAsync("pool.fetch", new JsonObject { ["id"] = id, ["digest"] = digest, ["offset"] = stream.Length }, ct).ConfigureAwait(false);
-                                var encoded = response["data"]!.ToString();
-                                if (encoded.Length > 350000) throw new InvalidDataException("远端分块过大。");
-                                var block = Convert.FromBase64String(encoded);
-                                if (block.Length == 0 || stream.Length + block.Length > size || NetworkPackageArchive.Hash(block) != response["sha256"]!.ToString()) throw new InvalidDataException("远端卡包分块校验失败。");
-                                stream.Write(block);
-                            }
-                            var bytes = stream.ToArray();
-                            if (NetworkPackageArchive.Hash(bytes) != info["sha256"]!.ToString()) throw new InvalidDataException("远端卡包校验失败。");
-                            var temporary = root + "." + Guid.NewGuid().ToString("N") + ".partial";
-                            try
-                            {
-                                NetworkPackageArchive.Extract(bytes, temporary);
-                                if (NetworkPackageArchive.Digest(temporary) != digest) throw new InvalidDataException("远端卡包内容校验失败。");
-                                if (Directory.Exists(root)) Directory.Delete(root, true);
-                                Directory.Move(temporary, root);
-                            }
-                            finally { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); }
-                        }
-                    }
-                    LoadNetworkArt(root, id);
-                }
-                if (manifest["lobby"]?.GetValue<bool>() == true && !IsObserver)
-                    await PackCallAsync("pool.ack", new JsonObject { ["fingerprint"] = fingerprint }, ct).ConfigureAwait(false);
-                _syncedFingerprint = fingerprint;
-                if (_view is not null) await RefreshViewAsync(ct).ConfigureAwait(false);
-            }
-            PacksAligned = manifest["aligned"]?.GetValue<bool>() == true;
-            PackSyncStatus = PacksAligned ? "双方卡池已对齐" : "本机卡包已同步，等待对方同步";
+            PackSyncStatus = "本局不使用工坊卡包";
+            return Task.CompletedTask;
         }
-        catch (Exception e) when (e is not OperationCanceledException) { PacksAligned = false; _syncedFingerprint = ""; PackSyncStatus = "卡包同步未完成：" + e.Message; }
-        finally { _packSync.Release(); }
+
+        // 本地包索引（仅用于给出"缺哪个包"的明确提示；不参与传输）。
+        foreach (var root in _localPackRoots)
+        {
+            try
+            {
+                var manifestPath = Path.Combine(root, "manifest.json");
+                if (!File.Exists(manifestPath)) continue;
+                if (JsonNode.Parse(File.ReadAllText(manifestPath)) is not JsonObject manifest) continue;
+                var id = manifest["id"]?.ToString();
+                if (string.IsNullOrEmpty(id) || _localNetworkPacks.ContainsKey(id)) continue;
+                _localNetworkPacks[id] = (root, manifest);
+                LoadNetworkArt(root, id);
+            }
+            catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                GameLog.Warn("pack", "卡包索引失败：" + root + " · " + e.Message);
+            }
+        }
+
+        var needed = _networkDeck.Where(id => id.StartsWith("pack/", StringComparison.Ordinal))
+            .Select(id => id.Split('/')[1]).Distinct(StringComparer.Ordinal).ToArray();
+        var missing = needed.Where(id => !_localNetworkPacks.ContainsKey(id)).ToArray();
+        PackSyncStatus = missing.Length == 0
+            ? "卡包齐备（联机卡包传输已停用，需双方各自安装）"
+            : "本机缺少卡包：" + string.Join("、", missing) + "（联机卡包传输已停用，请让对方单独发给你）";
+        PacksAligned = missing.Length == 0;
+        return Task.CompletedTask;
     }
-    private static string[] Dependencies(string root, string id)
-    {
-        var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "manifest.json")))!;
-        return (manifest["requires"] as JsonArray ?? new()).Select(n => n!.ToString())
-            .Append(WorkshopPackagePresentation.Parent(root, id) ?? "").Where(s => s.Length > 0)
-            .Select(s => s.StartsWith("pack/", StringComparison.Ordinal) ? s[5..] : s).Distinct(StringComparer.Ordinal).ToArray();
-    }
+
     private void LoadNetworkArt(string root, string id)
     {
         var textPath = Path.Combine(root, "display-texts.json");
@@ -160,10 +97,11 @@ public sealed partial class RemoteMatchFeed
             _networkFlavor["pack/" + id + "/" + localId] = node?["flavor"]?.ToString() ?? "";
             if (node?["art"]?.GetValue<string>() is { Length: > 0 } relative)
             {
-                var full = NetworkPackageArchive.Child(root, relative);
+                var full = PackPaths.Child(root, relative);
                 if (File.Exists(full)) _networkArt["pack/" + id + "/" + localId] = (node["artKind"]?.ToString() == "full" ? "packfull://" : "packart://") + full;
             }
         }
     }
+
     private string? ResolveNetworkArt(string id) => _networkArt.TryGetValue(id, out var art) ? art : ArtPathResolver?.Invoke(id);
 }

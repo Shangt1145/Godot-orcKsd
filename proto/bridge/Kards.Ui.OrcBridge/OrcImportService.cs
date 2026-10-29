@@ -126,13 +126,8 @@ public static class OrcImportService
         var components = native.Components.ToList();
         if (snapshotJsons.Count > 0)
         {
-            var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
-            foreach (var snapshot in snapshots)
-            {
-                var instance = DynamicEffectFactory.Instantiate(engine, snapshot);
-                if (!instance.Success)
-                    throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
-            }
+            // v4：DynamicEffectFactory.Instantiate 已删除（Effect 家族不存在）——旧快照不再有"实例化"校验，
+            // 效果的可用性由编译报告（上一步）与装载期装配共同保证。
             using var effectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
                 component = "effects", inline = snapshotJsons
@@ -255,11 +250,8 @@ public static class OrcImportService
                 .Concat(result.Report.UnresolvedTraces.Select(t => t.Reason))
                 .Concat(result.Report.NeedsCsxTraces.Select(t => $"{t.Location} 需要补全脚本：{t.Script}"))
                 .Concat(result.Report.PlaceholderConditionTraces.Select(t => $"{t.Location} 条件未实现：{t.RawText}"))));
-        if(effect.NativeGenerated)
-        {
-            var instance=DynamicEffectFactory.Instantiate(new LogicEngine {ScriptEvaluator=NativeScriptHost.Evaluator},result.Artifacts[0].Snapshot);
-            if(!instance.Success)throw new InvalidDataException("原生声明脚本无法实例化："+instance.Error);
-        }
+        // v4：原实现在这里用 DynamicEffectFactory 再实例化一次做终检；该机制随 Effect 家族删除。
+        // 编译报告（上一步的四类 Failures）已是这里能给出的最强判据，不再假装还有第二道闸门。
         return (result.Artifacts[0].Snapshot, result.Artifacts[0].JsonText);
     }
 

@@ -29,9 +29,20 @@ public sealed class DiyOpCatalogTests(ITestOutputHelper output)
         // 2. 记账：2026-10-27 的诚实状态是 161 个动作里 57 个真能跑、104 个是预览，
         //    和计划文档 P4 一致。引擎补上机制后这三个数会变——**变了就回来改这里和计划文档**，
         //    别把它改成"自动生成、没人再看"的报表：数字变了却没人知道，正是这次要收口的病。
+        //
+        //    2026-10-29 切到 v4 后实测 55 / 106。**少掉的这 2 个不是"引擎没了这个机制"**，是目录里
+        //    几个动作的默认声明本身坏了（见下面第 2.1 条把它们钉住）：`conditional`／`repeat` 的必填
+        //    字段 initial 是 JS 的 `undefined`，请求体里就成了字符串 "undefined"，OrC 侧再 JSON.parse
+        //    直接 SyntaxError；`setVar` 缺目录键（KeyNotFound）。三者都属工具链缺陷、待修，
+        //    修好之后这里会红，提醒把数字改回去。
         Assert.Equal(161, all.Count);
-        Assert.Equal(57, DiyOpCatalog.Alpha.Count);
-        Assert.Equal(104, DiyOpCatalog.Preview.Count);
+        Assert.Equal(55, DiyOpCatalog.Alpha.Count);
+        Assert.Equal(106, DiyOpCatalog.Preview.Count);
+
+        // 2.1 把"工具链缺陷"和"引擎确实没有"分开记：这三条是前者，修好了本用例必须红。
+        Assert.Contains(DiyOpCatalog.Preview, e => e.Op == "conditional" && e.Problem.Contains("undefined"));
+        Assert.Contains(DiyOpCatalog.Preview, e => e.Op == "repeat" && e.Problem.Contains("undefined"));
+        Assert.Contains(DiyOpCatalog.Preview, e => e.Op == "setVar");
 
         // 3. 判据来自编译器：alpha ⇔ 默认声明过得了 DesktopNativeLowering，没有第三态。
         foreach (var entry in all)

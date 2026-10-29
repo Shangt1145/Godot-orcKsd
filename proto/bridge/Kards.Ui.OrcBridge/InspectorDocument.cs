@@ -94,7 +94,17 @@ public static class InspectorVocabulary
         var result=new JsonObject{["op"]=op};
         if(Catalog.GetProperty("vocabulary").GetProperty("ops").TryGetProperty(op,out var primitive))
             foreach(var field in primitive.GetProperty("fields").EnumerateArray())
-                if((!field.TryGetProperty("optional",out var optional)||!optional.GetBoolean())&&field.TryGetProperty("initial",out var initial))result[field.GetProperty("name").GetString()!]=JsonNode.Parse(initial.GetRawText());
+            {
+                if(field.TryGetProperty("optional",out var optional)&&optional.GetBoolean())continue;
+                if(!field.TryGetProperty("initial",out var initial))continue;
+                // 目录里有些必填字段的 initial 是 JS 的 `undefined`（序列化过来就是一个字符串 "undefined"）。
+                // 原样塞进声明里，请求体就成了 `{"x":"undefined"}`，OrC 侧对那个字符串再 JSON.parse 一次
+                // 直接 SyntaxError ⇒ 这个动作在目录里永远编不过、被划进"预览"（conditional／repeat 就是这样）。
+                // 省略该字段＝让 OrC 用它自己的默认值，才是"没给值"的正确表达。
+                if(initial.ValueKind==JsonValueKind.String&&initial.GetString()=="undefined")continue;
+                try{result[field.GetProperty("name").GetString()!]=JsonNode.Parse(initial.GetRawText());}
+                catch(JsonException){/* initial 本身不是合法 JSON：同样按"没给值"处理，不拖垮整张选择器。*/}
+            }
         return result;
     }
     public static IEnumerable<string> Fields(JsonObject node)

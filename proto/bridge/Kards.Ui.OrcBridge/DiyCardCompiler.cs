@@ -255,8 +255,7 @@ public static class DiyCardCompiler
                 if (edited.Error is not null) throw new InvalidDataException(edited.Error);
                 foreach (var one in edited.Snapshots)
                 {
-                    var instance = DynamicEffectFactory.Instantiate(engine, one);
-                    if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
+                    // v4：DynamicEffectFactory.Instantiate 已删除（Effect 家族不存在），不再有实例化终检。
                     snapshots.Add(one);
                 }
                 using var editedDoc = JsonDocument.Parse(edited.JsonText!);
@@ -281,8 +280,7 @@ public static class DiyCardCompiler
             {
                 foreach (var one in compiled.Snapshots)
                 {
-                    var instance = DynamicEffectFactory.Instantiate(engine, one);
-                    if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
+                    // v4：DynamicEffectFactory.Instantiate 已删除（Effect 家族不存在），不再有实例化终检。
                     snapshots.Add(one);
                 }
                 using var doc = JsonDocument.Parse(compiled.JsonText!);
@@ -302,8 +300,7 @@ public static class DiyCardCompiler
         {
             var (compiled, compiledJson) = CompileEffects(draft.CardType, draft.Effects, draft.Id.Replace('/', '.'));
             var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
-            var instance = DynamicEffectFactory.Instantiate(engine, compiled);
-            if (!instance.Success) throw new InvalidDataException($"效果无法实例化：{instance.ErrorCategory} · {instance.Error}");
+            // v4：同上——实例化终检随 Effect 家族删除。
             snapshots.Add(compiled);
             using var snapshotJson = JsonDocument.Parse(compiledJson);
             using var effectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new

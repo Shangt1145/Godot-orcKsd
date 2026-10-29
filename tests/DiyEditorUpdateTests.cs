@@ -70,9 +70,11 @@ public sealed class DiyEditorUpdateTests
     public void BandCatalogMatchesActualEnumsAndNonemptyBandsAreHonestlyBlocked()
     {
         Assert.Equal(Enum.GetNames<OrderFlowBands>(),DiyInjectionCatalog.Schemes["OrderFlowBands"]);
-        // 引擎 S2：AttackFlowBands / DamageFlowBands 已并入底层动作的触发端/处理端两套 band。
-        Assert.Equal(Enum.GetNames<ActionTriggerBands>(),DiyInjectionCatalog.Schemes["ActionTriggerBands"]);
-        Assert.Equal(Enum.GetNames<ActionHandleBands>(),DiyInjectionCatalog.Schemes["ActionHandleBands"]);
+        // v4：引擎不再暴露 ActionTriggerBands／ActionHandleBands 枚举——底层动作的触发端/处理端各自统一成一套 band，
+        // 真源是迁移器里的旧段集合（private）。所以这里不再拿枚举对拍，改为**钉住目录内容本身**：
+        // 这张表就是玩家在编辑器里能选到的东西，改它必须同时改这里，避免出现"引擎拒收但界面还能选"。
+        Assert.Equal(["Initiate","Announce","CounterGuard","Counter","Adjust","Commit"],DiyInjectionCatalog.Schemes["ActionTriggerBands"]);
+        Assert.Equal(["Rewrite","Veto","Apply"],DiyInjectionCatalog.Schemes["ActionHandleBands"]);
         Assert.Equal(Enum.GetNames<DefaultBands>(),DiyInjectionCatalog.Schemes["DefaultBands"]);
         var compiled=OrcEffectEditing.Compile("prefab",[new(){Ops=[new(){Op="draw",Count=1}]}]).Single();Assert.Null(compiled.Error);
         var raw=JsonNode.Parse(compiled.JsonText!)!.AsArray()[0]!.DeepClone().AsObject();

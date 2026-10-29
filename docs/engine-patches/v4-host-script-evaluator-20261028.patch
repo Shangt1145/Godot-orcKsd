@@ -1,0 +1,45 @@
+diff --git a/src/Orc.Game/Match/Match.cs b/src/Orc.Game/Match/Match.cs
+index 0e2f9dc..19cd245 100644
+--- a/src/Orc.Game/Match/Match.cs
++++ b/src/Orc.Game/Match/Match.cs
+@@ -184,6 +184,10 @@ public sealed class Match
+         // 批次 4（S14）：**提前到构造期**——装载门要求 csx 在装载期全量预编译（S5 第 9 条），
+         // 而效果库目录的装载发生在 Initialize 之前（卡加载链解析效果引用所必需）。
+         // 内核零依赖口径不变（接口倒置），实现由 satellite（Orc.Script）提供；宿主已装配＝不覆盖。
++        // 宿主装配面：宿主可经 MatchOptions.ScriptEvaluator 在建局前交入自己的求值器——本构造器末段的
++        // 内建词条组件预编译发生在宿主拿到 Engine 引用之前，按字节加载程序集的宿主（Godot／Unity）若拿不到
++        // 这个入口，就只能用引擎默认求值器，而后者取不到 Assembly.Location＝引用集为空＝词条 csx 全部编译失败。
++        Engine.ScriptEvaluator ??= resolvedOptions.ScriptEvaluator;
+         Engine.ScriptEvaluator ??= new Orc.Script.CSharpScriptEvaluator();
+ 
+         // A2（决策门 A）：内建词条行为制品＝v4 效果组件（Cards/KeywordPrefabs/*.component.json）——
+diff --git a/src/Orc.Game/Match/MatchOptions.cs b/src/Orc.Game/Match/MatchOptions.cs
+index c614856..9d839f2 100644
+--- a/src/Orc.Game/Match/MatchOptions.cs
++++ b/src/Orc.Game/Match/MatchOptions.cs
+@@ -36,6 +36,25 @@ public sealed class MatchOptions
+     /// </summary>
+     public bool AllowFirstTurnDraw { get; init; }
+ 
++    // ---------- 宿主装配面（csx 求值器） ----------
++
++    /// <summary>
++    /// 宿主提供的脚本求值器（缺省 <c>null</c>＝由 <c>Match</c> 构造器装引擎默认实现
++    /// <c>Orc.Script.CSharpScriptEvaluator</c>）。
++    /// <para>
++    /// **为什么需要这个入口**：<c>Match</c> 构造器在建局期就要用求值器**预编译内建词条效果组件**
++    /// （<c>KeywordComponentLibrary.LoadInto</c>，见 <c>Match</c> 构造器末段）——那一刻宿主还没有拿到
++    /// <see cref="LogicEngine"/> 引用，无法事后赋值 <c>Engine.ScriptEvaluator</c>。宿主若运行在
++    /// **按字节加载程序集**的运行时里（Godot／Unity 等），引擎默认求值器取不到 <c>Assembly.Location</c>，
++    /// 引用集为空 → 全部词条 csx 编译失败 → 对局开不起来。此入口让宿主在建局前就把自己的求值器交进来。
++    /// </para>
++    /// <para>
++    /// 语义：只作为 <c>Engine.ScriptEvaluator</c> 的**初值**（<c>??=</c> 链首），引擎不读它的其它字段、
++    /// 不做任何校验；传 <c>null</c> 与不传完全等价（既有宿主零行为变化）。
++    /// </para>
++    /// </summary>
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
++
+     // ---------- 沙盒调试原语（授权事实） ----------
+ 
+     /// <summary>

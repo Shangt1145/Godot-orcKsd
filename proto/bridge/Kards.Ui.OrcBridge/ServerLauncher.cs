@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Kards.Ui.Core;
 using Orc.Manager;
 using Orc.Protocol;
 
@@ -31,15 +32,17 @@ public sealed class ServerLauncher : IAsyncDisposable
     {
         // port＝0 让系统分配（默认）；非 0 就是玩家要求的固定端口，被占用时启动会失败，
         // 由调用方决定"换端口重试"还是"报错"——这里不替玩家静默换端口。
+        // v4 删除的三个开关（原样记在这里，免得下次又去引擎里找）：
+        //   PluginsRoot         —— 服务端不再收插件根目录；插件包只经 PackDirectories 发现。
+        //   ScriptEvaluator     —— 服务端改用引擎自己的求值器（NativeScriptHost 只服务宿主侧 DIY 编译）。
+        //   ReuseProcessVocabulary —— 进程级注册已前移到 ServerBootstrap（无条件执行），无需开关。
         if (inProcess || OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
         {
             var packages = packsDirectories.Select(root => Orc.Packages.PackageManifest.Parse(File.ReadAllText(Path.Combine(root, "manifest.json"))))
                 .Select(p => new PackageRef(p.Id, p.Version.ToString(), p.Guid.ToString())).ToArray();
             var host = await Orc.Server.ServerBootstrap.StartAsync(new Orc.Server.ServerOptions {
-                PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory, PluginsRoot = PluginManifests.ResolveRoot(),
-                ScriptEvaluator = NativeScriptHost.Evaluator,
+                PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory,
                 Port = port,
-                ReuseProcessVocabulary = true,
                 DeckRules = fixedDeckForVerification ? Orc.Game.Decks.DeckRuleTier.None : Orc.Game.Decks.DeckRuleTier.Strict,
                 Seats = Enumerable.Range(0, 2).Select(n => new Orc.Server.SeatConfig(
                     n == aiSeat ? Orc.Server.SeatKind.Ai : Orc.Server.SeatKind.Agent,
@@ -135,10 +138,46 @@ public sealed class ServerLauncher : IAsyncDisposable
         var engineRoot = Environment.GetEnvironmentVariable("ORC_ENGINE_ROOT");
         if (!string.IsNullOrWhiteSpace(engineRoot))
         {
+            // 两条判据同时成立才认（都是踩过的坑）：
+            //
+            // ① **必须是可运行目录**：引擎切到统一产物槽后，槽位里只有本工程自己的产物，
+            //    依赖靠 deps.json 指回兄弟槽位；但一旦别的工程（例如本 UI）把它当 ProjectReference
+            //    构建过一次，槽位里的依赖副本会被增量清理掉——目录看着在、dll 也在，一 spawn 就
+            //    `Could not load file or assembly 'Orc.Game'`。判据＝同目录有 Orc.Game.dll（可运行目录的
+            //    最低特征），缺了就不认，宁可直接报错也不要拉起一个装不起来的东西。
+            //
+            // ② **取最新**，不按固定顺序：`src/Orc.Server/bin/Debug/net8.0/` 是早期布局的产物，
+            //    切槽位之后没人清理，里面留着的可能是一份**旧引擎**。按"先认旧布局"取第一个的话，
+            //    桌面房主会静默跑起旧引擎：2026-10-29 实测，联机单测报的是 v3 时代才有的
+            //    "座位 N 的卡包尚未同步完成"，而引擎源码里根本没有这句话——真凶只是那份没人删的旧 dll。
+            var candidates = new List<string>();
             foreach (var configuration in new[] { "Debug", "Release" })
             {
-                var built = Path.Combine(engineRoot, "src", "Orc.Server", "bin", configuration, "net8.0", "Orc.Server.dll");
-                if (File.Exists(built)) return built;
+                // ① 旧布局：工程旁 bin（引擎早期用默认输出路径；自带完整依赖）。
+                candidates.Add(Path.Combine(engineRoot, "src", "Orc.Server", "bin", configuration, "net8.0", "Orc.Server.dll"));
+                // ② 现布局：引擎统一产物槽 `artifacts/slot/bin/<工程>/<配置小写>/`。
+                candidates.Add(Path.Combine(engineRoot, "artifacts", "slot", "bin", "Orc.Server",
+                    configuration.ToLowerInvariant(), "Orc.Server.dll"));
+            }
+
+            var found = candidates.Where(File.Exists)
+                .Select(path => (Path: path, Stamp: File.GetLastWriteTimeUtc(path), Runnable: Runnable(path)))
+                .OrderByDescending(c => c.Stamp)
+                .ToArray();
+            if (found.FirstOrDefault(c => c.Runnable).Path is { } chosen)
+            {
+                GameLog.Info("server", $"服务端程序：{chosen}（{File.GetLastWriteTimeUtc(chosen):yyyy-MM-dd HH:mm} UTC）");
+                return chosen;
+            }
+
+            if (found.Length > 0)
+            {
+                // 有 dll 但目录装不起来：直接点名，别让玩家看到"开房失败"却说不出原因。
+                throw new FileNotFoundException(
+                    "找到 Orc.Server.dll 但所在目录不可运行（缺依赖程序集）："
+                    + string.Join("、", found.Select(c => c.Path))
+                    + "。请在引擎仓库执行 `dotnet build OrcEngine.sln -c Debug -t:Rebuild` 补齐槽位依赖，"
+                    + "或 `dotnet publish src/Orc.Server -c Debug -o <目录>` 后把 ORC_SERVER_DLL 指过去。");
             }
         }
 
@@ -147,6 +186,14 @@ public sealed class ServerLauncher : IAsyncDisposable
             $"或把服务端放到 {Path.Combine(AppContext.BaseDirectory, "OrcServer")}；" +
             "或设置 ORC_ENGINE_ROOT 指向引擎源码并先构建 Orc.Server。");
     }
+
+    /// <summary>
+    /// 目录是否“可运行”：至少要有引擎核心程序集在同一目录。
+    /// 产物槽位只保证本工程产物；依赖缺失时进程会在启动前就崩在 <c>Could not load file or assembly</c>，
+    /// 所以这一条必须先判、且判在选路之前。
+    /// </summary>
+    private static bool Runnable(string serverDll)
+        => Path.GetDirectoryName(serverDll) is { } directory && File.Exists(Path.Combine(directory, "Orc.Game.dll"));
 
     public async ValueTask DisposeAsync()
     {

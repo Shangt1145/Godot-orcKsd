@@ -121,6 +121,13 @@ var sets = new Dictionary<string,(string Id,string Name)>
 var packs = Path.Combine(root,"proto/data/kards/packs");
 var existing = Directory.GetFiles(packs,"*.card.json",SearchOption.AllDirectories)
     .Select(f=>Path.GetFileName(f)[..^10]).ToHashSet(StringComparer.Ordinal);
+// 人工校正保护：卡包里有少量 csx 是**人工写定**的——解析器对那几句中文会编错
+// （例：exp-winterwar/h39_swg「抑制被本单位攻击的单位」被编成「部署时选一个单位抑制」）。
+// 这些卡在 csx 里带 `【人工校正` 标记，批量重生成一律跳过：proto/data 是生成物、没有 git 历史，
+// 覆盖了就找不回来，而且症状是"某张卡悄悄不生效"，最难查。要重编请先删掉那个标记。
+var handAuthored = Directory.GetFiles(packs,"*.card.json",SearchOption.AllDirectories)
+    .Where(f=>File.ReadAllText(f).Contains("【人工校正",StringComparison.Ordinal))
+    .Select(f=>Path.GetFileName(f)[..^10]).ToHashSet(StringComparer.Ordinal);
 var managed = new List<(string Directory,string Id)>();
 if(args.Contains("--refresh"))
     foreach(var file in Directory.GetFiles(packs,"desktop-effects.json",SearchOption.AllDirectories))
@@ -130,6 +137,7 @@ if(args.Contains("--refresh"))
         {
             if(entry.Name.Length==0||entry.Name.Any(c=>!char.IsAsciiLetterOrDigit(c)&&c is not '_' and not '-'))throw new InvalidDataException("生成卡编号无效");
             if(only.Count>0&&!only.Contains(entry.Name))continue;
+            if(handAuthored.Contains(entry.Name))continue;
             managed.Add((Path.GetDirectoryName(file)!,entry.Name));existing.Remove(entry.Name);
         }
     }
@@ -145,6 +153,7 @@ foreach (var item in records.EnumerateArray())
     // 它们不在 desktop-effects.json 的受管表里，走 --refresh 永远轮不到——只能靠白名单强刷。
     if(only.Count>0){ if(!only.Contains(id))continue; }
     else if(existing.Contains(id))continue;
+    if(handAuthored.Contains(id))continue;
     if(!sets.TryGetValue(set,out var pack))continue;
     try { admitted.Add((set,OfficialCardCompiler.Compile(card,pack.Id))); }
     catch(Exception e) when(e is InvalidDataException or ArgumentException or InvalidOperationException or FormatException)

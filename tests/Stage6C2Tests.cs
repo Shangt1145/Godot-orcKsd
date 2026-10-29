@@ -4,6 +4,8 @@ using Kards.Ui.Core;
 using Kards.Ui.OrcBridge;
 using Orc.Cards;
 using Orc.Core;
+using Orc.Core.Model;
+using Orc.Game;
 using Orc.Game.Cards;
 using Orc.Game.Targeting;
 using Orc.Game.Triggers;
@@ -81,13 +83,18 @@ public sealed class Stage6C2Tests
             });
             if (result.IsOk) view.CaptureBox!.Capture("chosen"); else view.CaptureBox!.CancelPrePlay();
         });
-        // S13：引擎删除 AddActiveHandler，主动效果改由 ActiveEffect 承载（与 SourceEffectAssembly 同一迁移）。
-        // 施放载荷只有 Source/Target/Amount（OrderFlowView），捕获的字符串选择值不再回传。
-        order.AddEffect(new TestCast(view =>
-        {
-            Assert.Same(order, view.Source); effectRan = true; return Task.CompletedTask;
-        }));
-        Assert.Single(order.Effects.OfType<ICastAction>()); // 二分：是没装上，还是装上没执行
+        // S13/v4：引擎删除 AddEffect／ActiveEffect，主动效果改由**成员边上的一条外来边**承载
+        // （与 SourceEffectAssembly 同一迁移）。旧断言 `order.Effects.OfType<ICastAction>()` 的二分
+        // （没装上 vs 装上没执行）在 v4 没有对应物——卡上不再有效果集合，所以改用"边对象拿到了"作闸门，
+        // 行为判据仍是 effectRan：真跑了才算数。
+        var edge = session.Host.Match.Engine.AttachMemberEdge(GameUpdates.CardPlayed, "test/native-effect", this,
+            MemberEdges.For<CardEventView>((view, _, _) =>
+            {
+                // card.played 对单位部署也会发：只有本卡自己的宣告才算"施放"。
+                if (!ReferenceEquals(view.Card, order)) return Task.CompletedTask;
+                Assert.Same(order, view.Card); effectRan = true; return Task.CompletedTask;
+            }));
+        Assert.NotNull(edge); // 二分：是没装上，还是装上没执行
         var uid = session.View.SelfHand[0].Uid;
         var action = session.SubmitAsync(new PlayCard(uid));
         var first = await requests.Reader.ReadAsync().AsTask().WaitAsync(Limit);
@@ -113,16 +120,6 @@ public sealed class Stage6C2Tests
         Assert.Equal(!cancel, effectRan); Assert.False(session.TargetPending);
         Assert.Equal(cancel, session.View.SelfHand.Any(c => c.Uid == uid));
         Assert.DoesNotContain(session.Host.Viewer.Hand.OfType<CardBase>(), c => c.Definition.Name == "引擎候选单位");
-    }
-
-    /// <summary>测试用主动效果：引擎的 OrderCard 已不接受 AddActiveHandler，主动效果必须装成 ActiveEffect。</summary>
-    private sealed class TestCast : ActiveEffect<OrderCastView>
-    {
-        public TestCast(Func<OrderCastView, Task> body)
-            : base("test/native-effect", castEvents:
-            [
-                new TriggerEvent<OrderCastView>("test/native-effect", (view, ctx, ct) => body(view))
-            ])
-        { }
+        edge.Dispose();
     }
 }

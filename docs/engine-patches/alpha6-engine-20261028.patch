@@ -1,0 +1,2061 @@
+diff --git a/src/Orc.Foundation.Actions/AttackAction.cs b/src/Orc.Foundation.Actions/AttackAction.cs
+index 4e0e3a6..6b43800 100644
+--- a/src/Orc.Foundation.Actions/AttackAction.cs
++++ b/src/Orc.Foundation.Actions/AttackAction.cs
+@@ -210,6 +210,7 @@ public sealed class AttackAction : IAttackAction
+                 [CommandDataKeys.Resolution] = new AttackDamageResolution(),
+                 [nameof(AttackDamageTriggerView.Result)] = view.Result,
+             };
++            await SmokeScreenRules.RemoveAsync(attacker, ct);
+             if (view.TriggerCard is not null)
+             {
+                 data[CommandDataKeys.TriggerCard] = view.TriggerCard;
+@@ -225,6 +226,7 @@ public sealed class AttackAction : IAttackAction
+                 if (combatCompleted)
+                 {
+                     await KeywordProgramFacade.AttackEvent(attacker, targetEntity as Card, false, ct);
++                    await SmokeScreenRules.RemoveAsync(attacker, ct);
+                 }
+                 else
+                 {
+diff --git a/src/Orc.Game/Actions/MatchActionServices.Board.cs b/src/Orc.Game/Actions/MatchActionServices.Board.cs
+index d399713..3dadc44 100644
+--- a/src/Orc.Game/Actions/MatchActionServices.Board.cs
++++ b/src/Orc.Game/Actions/MatchActionServices.Board.cs
+@@ -53,6 +53,7 @@ internal sealed partial class MatchActionServices
+         }
+ 
+         state.Line = targetLine;
++        await SmokeScreenRules.RemoveOnFrontAsync(unit, ct).ConfigureAwait(false);
+         await GameUpdates.EmitUnitPositionChanged(
+             _engine, unit, oldPosition, new BoardPosition(targetLine, insertAt), ct).ConfigureAwait(false);
+         return true;
+diff --git a/src/Orc.Game/Cards/KeywordEffectAssembly.cs b/src/Orc.Game/Cards/KeywordEffectAssembly.cs
+index 15b9214..f33f675 100644
+--- a/src/Orc.Game/Cards/KeywordEffectAssembly.cs
++++ b/src/Orc.Game/Cards/KeywordEffectAssembly.cs
+@@ -65,7 +65,7 @@ public static class KeywordEffectAssembly
+     /// <param name="libraryDirectory">库目录（缺省＝<see cref="KeywordPrefabLibrary.DefaultDirectory"/>；测试以临时目录取证）。</param>
+     /// <exception cref="ArgumentNullException">engine 为 null。</exception>
+     /// <exception cref="InvalidOperationException">绑定核验失败（键缺失——配置错误）。</exception>
+-    public static KeywordEffectAssemblyResult Assemble(LogicEngine engine, string? libraryDirectory = null)
++    public static KeywordEffectAssemblyResult Assemble(LogicEngine engine, string? libraryDirectory = null, KeywordSnapshot? keywords = null)
+     {
+         ArgumentNullException.ThrowIfNull(engine);
+ 
+@@ -84,7 +84,7 @@ public static class KeywordEffectAssembly
+         }
+ 
+         // ③ 绑定核验（词条声明绑定 → 库键；缺失＝配置错误——装配期 fail-fast，不得静默跳过）。
+-        VerifyBindings(engine.Prefabs);
++        VerifyBindings(engine.Prefabs, keywords);
+ 
+         return new KeywordEffectAssemblyResult(handlers, report.Loaded, report.Failures);
+     }
+@@ -105,10 +105,13 @@ public static class KeywordEffectAssembly
+     }
+ 
+     /// <summary>绑定核验（全部绑定：词条声明绑定 → 库键可解析；缺失清单非空＝fail-fast）。</summary>
+-    private static void VerifyBindings(PrefabManager prefabs)
++    private static void VerifyBindings(PrefabManager prefabs, KeywordSnapshot? keywords)
+     {
+         var missing = new List<string>();
+-        foreach (var (keyword, binding) in KeywordRegistry.EnumerateEffectBindings())
++        IEnumerable<(string Keyword, KeywordEffectBinding Binding)> bindings = keywords is null
++            ? KeywordRegistry.EnumerateEffectBindings()
++            : keywords.Registered.SelectMany(k => keywords.GetEffectBindings(k).Select(b => (k, b)));
++        foreach (var (keyword, binding) in bindings)
+         {
+             if (!prefabs.TryGetPrefab(binding.PrefabId, out _))
+             {
+diff --git a/src/Orc.Game/Cards/KeywordManager.cs b/src/Orc.Game/Cards/KeywordManager.cs
+index 19e4fc9..8145ebb 100644
+--- a/src/Orc.Game/Cards/KeywordManager.cs
++++ b/src/Orc.Game/Cards/KeywordManager.cs
+@@ -265,6 +265,7 @@ public sealed class KeywordManager
+     /// </summary>
+     internal bool GrantCore(string keyword, int? value, KeywordLoadContext? context, Effect? content = null)
+     {
++        if (keyword == KeywordIds.SmokeScreen && !SmokeScreenRules.CanGrant(_card, context)) return false;
+         if (_components.ContainsKey(keyword))
+         {
+             return false; // 幂等：重复授予（含不同参值）＝无操作、参值保持
+diff --git a/src/Orc.Game/Cards/KeywordRegistry.cs b/src/Orc.Game/Cards/KeywordRegistry.cs
+index 193ca6d..26d8a7f 100644
+--- a/src/Orc.Game/Cards/KeywordRegistry.cs
++++ b/src/Orc.Game/Cards/KeywordRegistry.cs
+@@ -359,6 +359,15 @@ public sealed class KeywordSnapshot
+     /// <summary>冻结时点的已注册标识清单（登记序近似——字典序展开，仅诊断用）。</summary>
+     public IReadOnlyList<string> Registered => _order;
+ 
++    /// <summary>Limit a hosted match to built-ins and vocabulary from its selected packages.</summary>
++    public KeywordSnapshot ForKeywords(IEnumerable<string> keywords)
++    {
++        var ids = keywords.ToHashSet(StringComparer.Ordinal);
++        return new KeywordSnapshot(_factories.Where(p => ids.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value),
++            _battleKeywords.Where(ids.Contains).ToHashSet(StringComparer.Ordinal),
++            _bindings.Where(p => ids.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value));
++    }
++
+     /// <summary>标识是否在快照内注册。</summary>
+     public bool IsDefined(string keyword)
+         => !string.IsNullOrWhiteSpace(keyword) && _factories.ContainsKey(keyword);
+diff --git a/src/Orc.Game/Cards/KeywordSystem.cs b/src/Orc.Game/Cards/KeywordSystem.cs
+index e533e91..8490f6c 100644
+--- a/src/Orc.Game/Cards/KeywordSystem.cs
++++ b/src/Orc.Game/Cards/KeywordSystem.cs
+@@ -34,7 +34,7 @@ public static class KeywordIds
+     /// <summary>奋战（能力型）：攻击后记账——首次攻击后仍可攻、二次后不可（「本轮已攻次数」由词条组件自维护）。</summary>
+     public const string Fury = "奋战";
+ 
+-    /// <summary>烟幕（标记型）：不可被攻击（对一切攻击者生效；攻击 targeting 中被筛除、不入候选）——轻量组件形态。</summary>
++    /// <summary>烟幕（标记型）：支援线单位不可被攻击；进入前线或主动攻击时移除，前线不能获得烟幕。</summary>
+     public const string SmokeScreen = "烟幕";
+ 
+     /// <summary>伏击（能力型）：「造成攻击伤害」内改写——被攻击单位实时攻击力＞攻击者实时防御力时，改为攻击者死亡、被攻击者不受伤。</summary>
+diff --git a/src/Orc.Game/Cards/SmokeScreenRules.cs b/src/Orc.Game/Cards/SmokeScreenRules.cs
+new file mode 100644
+index 0000000..4da8edc
+--- /dev/null
++++ b/src/Orc.Game/Cards/SmokeScreenRules.cs
+@@ -0,0 +1,24 @@
++using Orc.Cards;
++
++namespace Orc.Game.Cards;
++
++/// <summary>Smoke protects support units until they advance or attack; it is not covert.</summary>
++public static class SmokeScreenRules
++{
++    internal static bool CanGrant(Card card, KeywordLoadContext? context) =>
++        !card.TryGetData<UnitStateData>(out var state) || state.Line is null
++        || context?.Battlefield is not { } battlefield || !ReferenceEquals(state.Line, battlefield.FrontLine);
++
++    internal static Task RemoveOnFrontAsync(UnitCard unit, CancellationToken ct = default) =>
++        CanGrant(unit, unit.Keywords.LoadContextProvider?.Invoke()) ? Task.CompletedTask : RemoveAsync(unit, ct);
++
++    /// <summary>Drop the runtime keyword and publish its change for local and remote projections.</summary>
++    public static async Task RemoveAsync(UnitCard unit, CancellationToken ct = default)
++    {
++        if (!unit.TryGetData<UnitStateData>(out var state) || state.IsDestroyed
++            || !unit.Keywords.Has(KeywordIds.SmokeScreen)) return;
++        if (await unit.Keywords.RevokeAsync(KeywordIds.SmokeScreen).ConfigureAwait(false)
++            && unit.Keywords.LoadContextProvider?.Invoke() is { } context)
++            await GameUpdates.EmitCardStatChanged(context.Engine, unit, ["keywords"], ct).ConfigureAwait(false);
++    }
++}
+diff --git a/src/Orc.Game/Cards/UnitCard.cs b/src/Orc.Game/Cards/UnitCard.cs
+index ab9c6b9..272086e 100644
+--- a/src/Orc.Game/Cards/UnitCard.cs
++++ b/src/Orc.Game/Cards/UnitCard.cs
+@@ -317,6 +317,7 @@ public class UnitCard : CardBase
+         unit.AddData(state);
+         unit.AddData(new CommandData());
+         unit.AddData(new ActionRecordData());
++        await SmokeScreenRules.RemoveOnFrontAsync(unit, ct);
+ 
+         // W2b G3 接线：装配完成点请求跑链一次（首轮——以基准状态建立比较基线；本时点无修饰/无损伤＝零变化、零发射）。
+         await unit.Modifiers.RequestRerunAsync(ct);
+diff --git a/src/Orc.Game/EffectParsing/CardTextEffectCompiler.cs b/src/Orc.Game/EffectParsing/CardTextEffectCompiler.cs
+index 3d7f2a8..7adf48d 100644
+--- a/src/Orc.Game/EffectParsing/CardTextEffectCompiler.cs
++++ b/src/Orc.Game/EffectParsing/CardTextEffectCompiler.cs
+@@ -50,9 +50,28 @@ public static class CardTextEffectCompiler
+ 
+     private static readonly string[] DurationTokens = ["", "turnEnd", "nextOwnerTurnStart"];
+ 
+-    private static readonly Lazy<OpTemplateCatalog> Ops = new(() =>
++    /// <summary>
++    /// op 模板目录覆盖。默认走构建输出目录约定 <c>&lt;BaseDirectory&gt;/EffectParsing/Templates/ops</c>；
++    /// 移动端没有这个目录（<see cref="AppContext.BaseDirectory"/> 在安卓上是空串，拼出来是相对路径），
++    /// 由宿主把模板物化到可写目录后指过来。**必须在首次编译效果之前设置**。
++    /// </summary>
++    public static string? OpTemplateDirectory { get; set; }
++
++    private static OpTemplateCatalog? _ops;
++    private static readonly object OpsGate = new();
++
++    private static OpTemplateCatalog Ops
++    {
++        get
++        {
++            if (_ops is { } cached) return cached;
++            lock (OpsGate) return _ops ??= LoadOps();
++        }
++    }
++
++    private static OpTemplateCatalog LoadOps()
+     {
+-        var directory = Path.Combine(AppContext.BaseDirectory, "EffectParsing", "Templates", "ops");
++        var directory = OpTemplateDirectory ?? Path.Combine(AppContext.BaseDirectory, "EffectParsing", "Templates", "ops");
+         if (!Directory.Exists(directory))
+         {
+             return OpTemplateCatalog.LoadFiles(Array.Empty<string>(), out _);
+@@ -67,7 +86,7 @@ public static class CardTextEffectCompiler
+         }
+ 
+         return catalog;
+-    });
++    }
+ 
+     /// <summary>解析卡面文本。空文本＝空草稿集；不可解析＝null（＝生成器与解析器漂移）。</summary>
+     /// <exception cref="ArgumentNullException">cardType 为 null。</exception>
+@@ -130,7 +149,7 @@ public static class CardTextEffectCompiler
+ 
+         var template = Template(cardType);
+         var driver = new EffectCompilationDriver();
+-        driver.UseEffectAssets([template], Ops.Value);
++        driver.UseEffectAssets([template], Ops);
+         var ops = drafts.Select(d => ToDsl(d, cardType)).ToArray();
+         var dsl = new DslEffectInstance(template.Id, new Dictionary<string, DslSlotFill> { ["on_event"] = new(ops) });
+         var result = driver.CompileDsl(DslJson.Serialize(dsl), compileId.Replace('/', '.') + ".effect");
+diff --git a/src/Orc.Game/Effects/AuthoringAuraRuntime.cs b/src/Orc.Game/Effects/AuthoringAuraRuntime.cs
+new file mode 100644
+index 0000000..0e1127e
+--- /dev/null
++++ b/src/Orc.Game/Effects/AuthoringAuraRuntime.cs
+@@ -0,0 +1,104 @@
++using System.Runtime.CompilerServices;
++using System.Text.Json;
++using Orc.Cards;
++using Orc.Game.Board;
++using Orc.Game.Cards;
++using Orc.Game.Effects;
++
++namespace Orc.Game.Effects;
++
++/// <summary>Continuous authoring programs contribute through native aura collection, never permanent buffs.</summary>
++public static class AuthoringAuraRuntime
++{
++    private static readonly ConditionalWeakTable<object,HashSet<string>> Registered=new();
++    public static void Validate(JsonElement actions)
++    {
++        void Value(JsonElement e)
++        {
++            if(e.ValueKind==JsonValueKind.Number&&e.TryGetInt32(out _))return;
++            var expression=e.GetProperty("expr").GetString();
++            if(expression=="variable")return;
++            if(expression=="literal"){Value(e.GetProperty("value"));return;}
++            if(expression is "query" or "count"){Query(e.GetProperty("query"));return;}
++            if(expression=="read"&&e.GetProperty("of").GetString() is "self" or "candidate"&&e.GetProperty("path").GetString() is "attack" or "defense" or "cost" or "opCost" or "maxDefense" or "missingDefense")return;
++            throw new InvalidDataException("持续效果数值表达式尚未接入："+expression);
++        }
++        void Query(JsonElement q)
++        {
++            if(q.ValueKind==JsonValueKind.String)return;
++            foreach(var p in q.EnumerateObject())if(p.Name is not ("sel" or "side" or "zone" or "ref" or "where" or "filter" or "excludeSelf" or "includeAnchor"))throw new InvalidDataException("持续效果选靶参数尚未接入："+p.Name);
++            if(q.GetProperty("sel").GetString() is not ("self" or "all" or "ref" or "refAll" or "adjacent"))throw new InvalidDataException("持续效果不允许随机或交互选靶。");
++            if(q.TryGetProperty("zone",out var zone)&&zone.GetString() is not ("field" or "support" or "frontline" or "hand" or "deck"))throw new InvalidDataException("持续效果区域尚未接入。");
++            if(q.TryGetProperty("where",out var where))AuthoringRuntime.ValidateFilter(JsonSerializer.SerializeToElement(new{where}));
++            if(q.TryGetProperty("filter",out var filter))AuthoringRuntime.ValidateFilter(filter);
++        }
++        foreach(var action in actions.EnumerateArray())
++        {
++            var op=action.GetProperty("op").GetString();
++            if(op=="let"){Value(action.GetProperty("value"));continue;}
++            if(op=="sequence"){Validate(action.GetProperty("actions"));continue;}
++            if(op!="changeAttribute")throw new InvalidDataException("持续效果暂不支持此动作："+op);
++            if(action.GetProperty("property").GetString() is not ("attack" or "defense" or "opCost" or "cost"))throw new InvalidDataException("持续效果属性无效。");
++            if(action.GetProperty("mode").GetString() is not ("add" or "set"))throw new InvalidDataException("持续效果写入方式无效。");
++            Query(action.GetProperty("target"));Value(action.GetProperty("value"));
++        }
++    }
++    public static async Task RegisterAsync(Card host,object view,string actionsJson,CancellationToken ct)
++    {
++        var source=(view as CardEventView)?.Effect??host;
++        var keys=Registered.GetOrCreateValue(source);if(!keys.Add(actionsJson))return;
++        var environment=GameEnvironment.ResolveFor(host)??throw new InvalidOperationException("光环缺少对局环境。");
++        using var document=JsonDocument.Parse(actionsJson);var actions=document.RootElement.Clone();
++        foreach(var (name,field) in new[]{("attack",CardStatFields.Attack),("defense",CardStatFields.Defense),("opCost",CardStatFields.OperateCost),("cost",CardStatFields.DeployCost)})
++            environment.Auras.Register(new AuraDeclaration(host,field,(candidate,current)=>Evaluate(host,candidate,name,current,actions),source));
++        await environment.RerunAllCardsAsync(ct);
++    }
++    private static int Evaluate(Card host,Card candidate,string property,int initial,JsonElement actions)
++    {
++        var variables=new Dictionary<string,object?>();var result=initial;
++        void Execute(JsonElement list)
++        {
++            foreach(var a in list.EnumerateArray())
++            {
++                var op=a.GetProperty("op").GetString();
++                if(op=="let"){variables[a.GetProperty("name").GetString()!]=Value(a.GetProperty("value"));continue;}
++                if(op=="sequence"){Execute(a.GetProperty("actions"));continue;}
++                if(a.GetProperty("property").GetString()!=property||!Query(a.GetProperty("target")).Contains(candidate))continue;
++                var amount=Convert.ToInt32(Value(a.GetProperty("value")));result=a.GetProperty("mode").GetString()=="set"?amount:result+amount;
++            }
++        }
++        object? Value(JsonElement e)
++        {
++            if(e.ValueKind==JsonValueKind.Number)return e.GetInt32();
++            if(e.ValueKind==JsonValueKind.String)return e.GetString();
++            if(e.ValueKind is JsonValueKind.True or JsonValueKind.False)return e.GetBoolean();
++            return e.GetProperty("expr").GetString() switch {
++                "query"=>Query(e.GetProperty("query")),"variable"=>variables.GetValueOrDefault(e.GetProperty("name").GetString()!),
++                "count"=>Query(e.GetProperty("query")).Length,"literal"=>Value(e.GetProperty("value")),
++                "read"=>AuthoringRuntime.Int(e.TryGetProperty("of",out var of)&&of.GetString()=="candidate"?candidate:host,e.GetProperty("path").GetString()!),
++                _=>throw new InvalidDataException("持续效果数值表达式尚未接入。") };
++        }
++        Card[] Query(JsonElement q)
++        {
++            if(q.ValueKind==JsonValueKind.String)return q.GetString()=="self"?[host]:variables.GetValueOrDefault(q.GetString()!) as Card[]??[];
++            var sel=q.GetProperty("sel").GetString();Card[] cards;
++            if(sel=="self")cards=[host];
++            else if(sel is "ref" or "refAll")cards=q.GetProperty("ref").GetString()=="self"?[host]:variables.GetValueOrDefault(q.GetProperty("ref").GetString()!) as Card[]??[];
++            else if(sel=="adjacent")cards=AuthoringRuntime.Adjacent(variables.GetValueOrDefault(q.GetProperty("ref").GetString()!) as Card[]??[host],q.TryGetProperty("includeAnchor",out var include)&&include.GetBoolean());
++            else
++            {
++                var match=EffectRuntime.MatchFor(host)!;var zone=q.TryGetProperty("zone",out var z)?z.GetString():"field";
++                var side=q.TryGetProperty("side",out var s)?s.GetString():"friendly";var owner=AuthoringRuntime.Owner(host);
++                if(zone is "hand" or "deck")cards=AuthoringRuntime.Pile(host,side??"friendly",zone);
++                else cards=match.Players.Where(p=>side is "both" or "any"||(side=="enemy"?p!=owner:p==owner))
++                    .SelectMany(p=>zone=="frontline"?match.Battlefield.FrontLine.Members.Where(c=>AuthoringRuntime.Owner(c)==p):zone=="support"?match.Battlefield.GetSupportLine(p).Members:match.Battlefield.GetSupportLine(p).Members.Concat(match.Battlefield.FrontLine.Members.Where(c=>AuthoringRuntime.Owner(c)==p)))
++                    .Where(c=>c is UnitCard).Distinct().ToArray();
++            }
++            if(q.TryGetProperty("where",out var where))cards=cards.Where(c=>AuthoringRuntime.Matches(c,JsonSerializer.Serialize(new {where}))).ToArray();
++            if(q.TryGetProperty("filter",out var filter))cards=cards.Where(c=>AuthoringRuntime.Matches(c,filter.GetRawText())).ToArray();
++            if(q.TryGetProperty("excludeSelf",out var exclude)&&exclude.GetBoolean())cards=cards.Where(c=>!ReferenceEquals(c,host)).ToArray();
++            return cards;
++        }
++        Execute(actions);return result;
++    }
++}
+diff --git a/src/Orc.Game/Effects/AuthoringRuntime.cs b/src/Orc.Game/Effects/AuthoringRuntime.cs
+new file mode 100644
+index 0000000..cf4bc89
+--- /dev/null
++++ b/src/Orc.Game/Effects/AuthoringRuntime.cs
+@@ -0,0 +1,269 @@
++using System.Text.Json;
++using Orc.Cards;
++using Orc.Game;
++using Orc.Game.Cards;
++using Orc.Game.Effects;
++using Orc.Game.Players;
++using Orc.Game.Targeting;
++using Orc.Core;
++using System.Runtime.CompilerServices;
++
++namespace Orc.Game.Effects;
++
++/// <summary>Authoring adapters invoke the native match's services and modifiers.</summary>
++public static class AuthoringRuntime
++{
++    private static readonly ConditionalWeakTable<object, Dictionary<string,int>> Uses = new();
++    public static Card? EventCard(object view) => view switch {
++        CardEventView e => e.Unit as Card ?? e.Card as Card,
++        Orc.Game.Commanding.UnitAttackTriggerView a => a.Attacker?.Value as Card, _ => null };
++    public static Card? EventTarget(object view) => view is Orc.Game.Commanding.UnitAttackTriggerView attack ? attack.Target?.Value as Card : EventCard(view);
++    public static bool ShouldRun(Card host, object view, string graph)
++    {
++        using var doc=JsonDocument.Parse(graph);var effect=doc.RootElement;
++        var trigger=effect.GetProperty("trigger").GetString();
++        var actor=EventCard(view);var owner=view is CardEventView e&&e.Player is Player player?player:actor is null?null:Owner(actor);
++        var side=effect.TryGetProperty("eventSide",out var eventSide)?eventSide.GetString():effect.TryGetProperty("watchOpponent",out var opponent)&&opponent.GetBoolean()?"enemy":trigger is "turnStart" or "turnEnd" or "unitDeployed" or "unitUpgraded" or "orderPlayed" or "friendlyDeath" or "friendlyDamaged"?"friendly":"any";
++        if(side is "self" or "friendly" && owner!=Owner(host)||side is "enemy" or "foe"&&owner==Owner(host))return false;
++        if(effect.TryGetProperty("selfOnly",out var selfOnly)&&selfOnly.GetBoolean()&&!ReferenceEquals(actor,host))return false;
++        if(effect.TryGetProperty("filter",out var filter)&&(actor is null||!MatchFilter(actor,filter)))return false;
++        if(trigger=="orderPlayed"&&actor is not OrderCard)return false;
++        if(effect.TryGetProperty("listenZone",out var zone)&&zone.GetString() is {Length:>0} selected&&selected is not ("any" or "board" or "field"))throw new InvalidDataException("监听区域尚未接入："+selected);
++        if(effect.TryGetProperty("once",out var once)&&once.GetBoolean()||effect.TryGetProperty("oncePerTurn",out var perTurn)&&perTurn.GetBoolean())
++        {
++            var key=graph;var uses=Uses.GetOrCreateValue((view as CardEventView)?.Effect??host);var turn=Match(host).TurnNumber;
++            if(uses.TryGetValue(key,out var previous)&&(once.ValueKind==JsonValueKind.True||previous==turn))return false;
++            uses[key]=turn;
++        }
++        return true;
++    }
++    private static Match Match(Card source) => EffectRuntime.MatchFor(source) ?? throw new InvalidOperationException("效果没有连接到对局。");
++    public static Player Owner(Card source) => source switch { CardBase c when c.Owner is not null => c.Owner, Hq h => h.Owner, _ => throw new InvalidOperationException("效果没有归属玩家。") };
++    public static Card Viewer(Card source, string side) => side is "enemy" or "foe" ? Match(source).Players.Single(p => p != Owner(source)).Hq : Owner(source).Hq;
++    public static int Random(Card source, int min, int max)
++    {
++        if (max < min || (long)max - min >= int.MaxValue) throw new InvalidDataException("随机数范围无效。");
++        return min + Match(source).RandomService.Next(max - min + 1);
++    }
++    public static Card[] Pick(Card source, Card[] candidates, string selection, int count)
++    {
++        count = Math.Clamp(count, 0, candidates.Length);
++        return selection switch { "random" => Match(source).RandomService.PickN(candidates, count).ToArray(), "first" => candidates.Take(count).ToArray(), "last" => candidates.Reverse().Take(count).ToArray(), _ => candidates };
++    }
++    public static Card[] Pile(Card source, string side, string zone)
++    {
++        var players = side is "both" or "any" ? Match(source).Players : new[] { Owner(Viewer(source, side)) };
++        return players.SelectMany(p => zone == "hand" ? p.Hand.Cast<Card>()
++            : Enumerable.Range(0, p.Deck.Count).Select(i => (Card)p.Deck.PeekInstance(i))).ToArray();
++    }
++    public static async Task<Card[]> DrawSpecificAsync(Card source, Card[] candidates, CancellationToken ct)
++    {
++        // A filtered draw takes one card, with the same burn/events rules as an ordinary draw.
++        var card=candidates.FirstOrDefault(c=>c is CardBase b&&b.Owner is { } p&&Enumerable.Range(0,p.Deck.Count).Any(i=>ReferenceEquals(p.Deck.PeekInstance(i),c)));
++        if(card is null)return [];
++        await Match(source).EffectRuntime.FetchFromDeckAsync(card,ct,source);
++        return card is CardBase drawn&&Owner(card).Hand.Contains(drawn)?[card]:[];
++    }
++    public static Card[] Adjacent(Card[] anchors, bool includeAnchor)
++        => anchors.OfType<UnitCard>().SelectMany(unit => {
++            var line = unit.GetData<UnitStateData>().Line;
++            if (line is null) return Array.Empty<Card>();
++            var all = line.Members.ToArray(); var index = Array.IndexOf(all, unit);
++            return all.Where((_, i) => Math.Abs(i - index) == 1 || includeAnchor && i == index).Cast<Card>();
++        }).Distinct().ToArray();
++    public static int Int(Card? card, string property)
++    {
++        if (card is Hq hq && property is "defense" or "hq" or "hqMax" or "maxDefense") return hq.Health;
++        if (card is not CardBase c) return 0;
++        return property switch {
++            "attack" => c.Modifiers.GetEffectiveValue(CardStatFields.Attack),
++            "defense" => c.Modifiers.GetEffectiveValue(CardStatFields.Defense),
++            "maxDefense" => c.Modifiers.GetEffectiveCapValue(CardStatFields.Defense),
++            "missingDefense" => c.Modifiers.GetEffectiveCapValue(CardStatFields.Defense) - c.Modifiers.GetEffectiveValue(CardStatFields.Defense),
++            "cost" => c.Modifiers.GetEffectiveValue(CardStatFields.DeployCost),
++            "opCost" => c.Modifiers.GetEffectiveValue(CardStatFields.OperateCost),
++            "kredits" => c.Owner?.Points ?? 0, "maxKredits" => c.Owner?.PointSlots ?? 0,
++            "owner" => c.Owner?.Index ?? -1,
++            "printed.attack" => c.Definition.Attack, "printed.defense" => c.Definition.Defense,
++            _ => throw new InvalidDataException("尚未接入数值属性：" + property)
++        };
++    }
++    public static string Text(Card? card, string property) => property switch {
++        "name" => card?.Name ?? "", "uid"=>card is null?"":card.Id.ToString("N"),"set" => card is CardBase c ? c.GetData<FactionCostData>().Faction : "",
++        "cardType" => card is UnitCard ? "unit" : card is OrderCard ? "order" : "hq",
++        "unitType" => (card as CardBase)?.Definition.UnitTypes.FirstOrDefault() ?? "",
++        "zone" => card is UnitCard u && u.TryGetData<UnitStateData>(out var s) && s.Line is not null ? "field" : card is Hq ? "hq" : "hand",
++        _ => throw new InvalidDataException("尚未接入文本属性：" + property)
++    };
++    public static bool Flag(Card? card, string property) => property switch {
++        "alive" => card is not null && !(card.TryGetData<UnitStateData>(out var state) && state.IsDestroyed),
++        "damaged" => Int(card, "missingDefense") > 0,
++        "pinned" => card is CardBase c && c.Keywords.Has(KeywordIds.Suppressed),
++        _ => throw new InvalidDataException("尚未接入状态属性：" + property)
++    };
++    /// <summary>跨效果回指：同一张卡上该目标声明最近一次选中的目标（已按存活过滤）。
++    /// 「使 1 个友方单位获得 +3 攻击力。友方回合结束时，将其消灭。」的第二段走这里——
++    /// 回合结束没有再次询问玩家的时机，重新发起选靶只会拿到空集。</summary>
++    public static Card[] RecallTargets(Card source, string declaration) => AuthoringTargetContext.Recall(source, declaration);
++    public static async Task AttributeAsync(Card target, string property, string mode, int value, string duration, CancellationToken ct)
++    {
++        var field = property switch { "attack" => CardStatFields.Attack, "defense" when target is Hq => CardStatFields.HqHealth,
++            "defense" => CardStatFields.Defense, "opCost" => CardStatFields.OperateCost, "cost" => CardStatFields.DeployCost,
++            _ => throw new InvalidDataException("尚未接入属性：" + property) };
++        var expiry = duration == "turn" ? new ModifierExpiry(GameUpdates.TurnEnd) : null;
++        Modifier modifier = mode == "set" ? new SetModifier(field, value, new object(), expiry) : new AddModifier(field, value, new object(), expiry);
++        if (target is CardBase card) await card.Modifiers.AddModifierAsync(modifier, ct);
++        else if (target is Hq hq) await hq.Modifiers.AddModifierAsync(modifier, ct);
++    }
++    public static async Task HealAsync(Card target, int amount, CancellationToken ct)
++    {
++        if (amount <= 0) return;
++        if (target is UnitCard unit) await unit.RepairDefenseAsync(amount, ct);
++        else if (target is Hq) await AttributeAsync(target, "defense", "add", amount, "permanent", ct);
++    }
++    public static async Task ReturnAsync(Card source, Card target, bool returnToHand, CancellationToken ct)
++    {
++        if (target is not UnitCard unit || unit.Owner is not { } owner || !unit.TryGetData<UnitStateData>(out var state) || state.Line is null) return;
++        var match = Match(source); var service = match.CardService;
++        if(returnToHand&&!ReferenceEquals(state.Line,match.Battlefield.GetSupportLine(owner)))
++        {await match.EffectRuntime.MoveAsync(unit,"support",ct,source);return;}
++        if (!service.TryResolveDefinitionId(unit, out var id)) throw new InvalidDataException("无法找到回手卡的定义。");
++        await match.CommandManager.LeaveBattlefieldAsync(unit, ct);
++        await source.Engine.DestroyCard(unit);
++        if (returnToHand) await service.CreateAndPlaceToHandAsync(id, owner, ct);
++    }
++    public static async Task<Card[]> CreateAsync(Card source, string idOrName, string side, string destination, int count, CancellationToken ct)
++    {
++        var service = Match(source).CardService; var owner = Owner(Viewer(source, side));
++        var id = service.RegisteredDefinitions.ContainsKey(idOrName) ? idOrName
++            : service.RegisteredDefinitions.FirstOrDefault(p => p.Value.Name == idOrName).Key;
++        if (id is null) throw new InvalidDataException("本局卡池中没有卡牌：" + idOrName);
++        var created = new List<Card>();
++        for (int i = 0; i < Math.Clamp(count, 0, 100); i++)
++        {
++            var card = await service.CreateAsync(id, owner, ct);
++            if (destination == "hand") await service.PlaceToHandAsync(card, owner, ct);
++            else if (destination == "deck") await service.PlaceIntoDeckShuffledAsync(card, owner, ct);
++            else if (card is UnitCard unit && destination == "frontline") await Match(source).EffectRuntime.JoinFrontlineAsync(source, unit, ct: ct);
++            else if (destination == "support" && card is UnitCard support) await Match(source).EffectRuntime.JoinSupportLineAsync(source, support, ct: ct);
++            else throw new InvalidDataException("卡牌不能加入所选区域。");
++            created.Add(card);
++        }
++        return created.ToArray();
++    }
++    public static async Task DiscardAsync(Card source, Card target, CancellationToken ct)
++    {
++        if (target is not CardBase c || c.Owner is not { } owner || !owner.Hand.Contains(c)) return;
++        owner.Hand.Remove(c); await source.Engine.DestroyCard(c);
++        await GameUpdates.EmitCardDiscarded(source.Engine, c, owner, ct, source: source);
++    }
++    public static async Task<Card[]> ChooseAsync(Card source, Card[] candidates, int count, CancellationToken ct)
++    {
++        if(count<1||count>candidates.Length)return [];
++        Card[] chosen=[];
++        var outcome=await Match(source).TargeterManager.RunAsync(async flow=> {
++            var step=await flow.Step(SelectorTemplates.CardPickerSet,new ReferenceSetParameter(candidates.Select(c=>c.Ref),count,count,
++                domainValidator:r=>r.Value is Card card&&candidates.Contains(card)) {Owner=Owner(source),Action=SelectorActions.Effect});
++            while(step.IsFailed&&step.Failure==SelectorFailureReason.InvalidSelection)step=await flow.Retry<IReadOnlyList<Ref<Entity>>>();
++            if(step.IsCancelled)return TargeterResult.Cancelled();
++            if(!step.IsOk)return TargeterResult.FromSelectorFailure(step.Failure);
++            chosen=step.Value!.Select(r=>(Card)r.Value).ToArray();return TargeterResult.Ok();
++        });
++        ct.ThrowIfCancellationRequested();return outcome.IsOk?chosen:[];
++    }
++    public static async Task<int> ChooseOptionAsync(Card source,string[] options,CancellationToken ct)
++    {
++        string? selected=null;var identifiers=options.Select((label,index)=>index+":"+label).ToArray();
++        var outcome=await Match(source).TargeterManager.RunAsync(async flow=>{
++            var step=await flow.Step(SelectorTemplates.Option,new IdentifierSetParameter(identifiers,1,1){Owner=Owner(source),Action=SelectorActions.Effect});
++            while(step.IsFailed&&step.Failure==SelectorFailureReason.InvalidSelection)step=await flow.Retry<string>();
++            if(step.IsCancelled)return TargeterResult.Cancelled();if(!step.IsOk)return TargeterResult.FromSelectorFailure(step.Failure);
++            selected=step.Value;return TargeterResult.Ok();
++        });ct.ThrowIfCancellationRequested();return outcome.IsOk&&selected is not null?Array.IndexOf(identifiers,selected):-1;
++    }
++    public static async Task<Card[]> DevelopAsync(Card source,string[] definitions,string side,bool random,CancellationToken ct)
++    {
++        var match=Match(source);var offers=(definitions.Length==0?match.CardService.RegisteredDefinitions.Where(p=>!p.Value.Tags.Contains("token")&&!p.Value.Tags.Contains("reserved")).Select(p=>p.Key):definitions).Distinct().ToArray();
++        if(offers.Any(id=>!match.CardService.RegisteredDefinitions.ContainsKey(id)))throw new InvalidDataException("候选卡牌不在本局卡池内。");
++        if(random)offers=match.RandomService.PickN(offers,Math.Min(3,offers.Length)).ToArray();
++        if(offers.Length==0)return [];
++        string? selected=null;var outcome=await match.TargeterManager.RunAsync(async flow=>{
++            var step=await flow.Step(SelectorTemplates.CardPickerList,new IdentifierSetParameter(offers,1,1){Owner=Owner(source),Action=SelectorActions.Effect});
++            while(step.IsFailed&&step.Failure==SelectorFailureReason.InvalidSelection)step=await flow.Retry<IReadOnlyList<string>>();
++            if(step.IsCancelled)return TargeterResult.Cancelled();if(!step.IsOk)return TargeterResult.FromSelectorFailure(step.Failure);
++            selected=step.Value?.SingleOrDefault();return selected is null?TargeterResult.Failed(TargeterFailureReason.InvalidSelection):TargeterResult.Ok();
++        });ct.ThrowIfCancellationRequested();return outcome.IsOk&&selected is not null?await CreateAsync(source,selected,side,"hand",1,ct):[];
++    }
++    public static bool Matches(Card candidate, string json)
++    {
++        using var document = JsonDocument.Parse(json); return MatchFilter(candidate, document.RootElement);
++    }
++    public static void ValidateFilter(JsonElement filter)
++    {
++        foreach(var p in filter.EnumerateObject())
++        {
++            if(p.Name is "minCost" or "maxCost" or "minAttack" or "maxAttack" or "minDefense" or "maxDefense") { if(!p.Value.TryGetInt32(out _))throw new InvalidDataException("筛选阈值必须为整数。"); }
++            else if(p.Name is "unitType" or "keyword" or "nameIncludes") { if(p.Value.ValueKind!=JsonValueKind.String)throw new InvalidDataException("筛选名称必须为文字。"); }
++            else if(p.Name=="where")ValidateTest(p.Value);
++            else throw new InvalidDataException("尚未接入筛选条件："+p.Name);
++        }
++    }
++    private static void ValidateTest(JsonElement test)
++    {
++        var kind=test.GetProperty("test").GetString();
++        if(kind is "all" or "any") {foreach(var child in test.GetProperty("items").EnumerateArray())ValidateTest(child);return;}
++        if(kind=="not"){ValidateTest(test.GetProperty("item"));return;}
++        if(kind!="compare")throw new InvalidDataException("筛选判断尚未接入："+kind);
++        if(test.GetProperty("cmp").GetString() is not ("==" or "!=" or "<" or ">" or "<=" or ">=" or "contains"))throw new InvalidDataException("筛选比较尚未接入。");
++        foreach(var key in new[]{"left","right"})
++        {
++            var value=test.GetProperty(key);if(value.ValueKind!=JsonValueKind.Object)continue;
++            if(value.GetProperty("expr").GetString()!="read"||value.TryGetProperty("of",out var who)&&who.GetString() is not ("candidate" or "current"))throw new InvalidDataException("筛选表达式尚未接入。");
++            if(value.GetProperty("path").GetString() is not ("attack" or "defense" or "cost" or "opCost" or "maxDefense" or "missingDefense" or "unitType" or "cardType" or "set" or "name" or "keywords" or "extraTypes"))throw new InvalidDataException("筛选属性尚未接入。");
++        }
++    }
++    private static bool MatchFilter(Card c, JsonElement f)
++    {
++        if (f.TryGetProperty("where", out var where) && !Test(c, where)) return false;
++        foreach (var p in f.EnumerateObject())
++        {
++            if (p.Name == "where") continue;
++            if (p.Name is "minCost" or "maxCost" or "minAttack" or "maxAttack" or "minDefense" or "maxDefense")
++            { var property = char.ToLowerInvariant(p.Name[3]) + p.Name[4..]; var value = Int(c, property); if (p.Name.StartsWith("min") ? value < p.Value.GetInt32() : value > p.Value.GetInt32()) return false; }
++            else if (p.Name == "unitType") { if (c is not CardBase card || !card.Definition.UnitTypes.Contains(p.Value.GetString()!)) return false; }
++            else if (p.Name == "keyword") { if (c is not CardBase card || !card.Keywords.Has(Keyword(p.Value.GetString()!))) return false; }
++            else if (p.Name == "nameIncludes") { if(!c.Name.Contains(p.Value.GetString()!,StringComparison.Ordinal))return false; }
++            else throw new InvalidDataException("尚未接入筛选条件：" + p.Name);
++        }
++        return true;
++    }
++    public static string Keyword(string key)
++    {
++        if(key=="armor")return KeywordIds.Armor;
++        if(key=="intel")return KeywordIds.Intelligence;
++        return Orc.Game.Cards.Data.CardAttributeMap.TryMap(key,out var declaration)?declaration.Id:key;
++    }
++    private static object? Read(JsonElement value, Card candidate)
++    {
++        if (value.ValueKind == JsonValueKind.String) return value.GetString();
++        if (value.ValueKind == JsonValueKind.Number) return value.GetDouble();
++        if (value.ValueKind is JsonValueKind.True or JsonValueKind.False) return value.GetBoolean();
++        var path = value.GetProperty("path").GetString()!;
++        if(path=="extraTypes")return (candidate as CardBase)?.Definition.UnitTypes.ToArray()??[];
++        if(path=="keywords")return candidate is CardBase card?card.Keywords.Components.Select(k=>k.Keyword).ToArray():Array.Empty<string>();
++        return path is "unitType" or "cardType" or "set" or "name" ? Text(candidate, path) : (object)(double)Int(candidate, path);
++    }
++    private static bool Test(Card c, JsonElement test)
++    {
++        var kind = test.GetProperty("test").GetString();
++        if (kind == "all") return test.GetProperty("items").EnumerateArray().All(t => Test(c, t));
++        if (kind == "any") return test.GetProperty("items").EnumerateArray().Any(t => Test(c, t));
++        if (kind == "not") return !Test(c, test.GetProperty("item"));
++        var left = Read(test.GetProperty("left"), c); var right = Read(test.GetProperty("right"), c);
++        if(test.GetProperty("left").ValueKind==JsonValueKind.Object&&test.GetProperty("left").TryGetProperty("path",out var attribute)&&attribute.GetString()=="set"&&right is string faction&&Faction.TryNormalize(faction,out var canonical))right=canonical;
++        return test.GetProperty("cmp").GetString() switch { "contains"=>left is string[] items&&right is string item&&items.Contains(Keyword(item)),"==" => Equals(left, right), "!=" => !Equals(left, right),
++            ">" => Convert.ToDouble(left) > Convert.ToDouble(right), ">=" => Convert.ToDouble(left) >= Convert.ToDouble(right),
++            "<" => Convert.ToDouble(left) < Convert.ToDouble(right), "<=" => Convert.ToDouble(left) <= Convert.ToDouble(right),
++            _ => throw new InvalidDataException("尚未接入筛选比较。") };
++    }
++}
+diff --git a/src/Orc.Game/Effects/AuthoringTargetContext.cs b/src/Orc.Game/Effects/AuthoringTargetContext.cs
+new file mode 100644
+index 0000000..77608c4
+--- /dev/null
++++ b/src/Orc.Game/Effects/AuthoringTargetContext.cs
+@@ -0,0 +1,194 @@
++﻿using System.Runtime.CompilerServices;
++using System.Text.Json;
++using Orc.Cards;
++using Orc.Core;
++using Orc.Game;
++using Orc.Game.Cards;
++using Orc.Game.Effects;
++using Orc.Game.Players;
++using Orc.Game.Targeting;
++using Orc.Game.Triggers;
++
++
++namespace Orc.Game.Effects;
++
++public sealed record AuthoringSelectorTag(string SlotName);
++
++/// <summary>Declarative targets use native pre-play capture and TargeterManager, never "first unit".
++/// This bridge owns references and selector transport only; the engine owns admission and mutation.</summary>
++public sealed class AuthoringTargetContext : IDisposable
++{
++    private static readonly ConditionalWeakTable<Player,AuthoringTargetContext> Owners=new();
++    private readonly ConditionalWeakTable<Card,Dictionary<string,Card[]>> _captured=new();
++    private readonly ConditionalWeakTable<Card,HashSet<string>> _consumed=new();
++    /// <summary>每个目标声明 id 最近一次真正选中的结果。跨效果回指（「将其消灭」）靠它，
++    /// 否则第二段会自己再发起一次选靶——回合结束这类非交互时机没人应答，效果就静默消失。</summary>
++    private readonly ConditionalWeakTable<Card,Dictionary<string,Card[]>> _recent=new();
++    private readonly List<(Orc.Core.Trigger<CardTriggerView> Trigger,TriggerRegistration Handle)> _registrations=[];
++    private readonly Match _match;
++    private readonly IReadOnlyDictionary<string,string[]> _plans;
++    private readonly ConditionalWeakTable<Card,object> _prepared=new();
++    public AuthoringTargetContext(Match match,IReadOnlyDictionary<string,string[]> plans)
++    {
++        _match=match;_plans=plans;
++        foreach(var owner in match.Players)Owners.Add(owner,this);
++        foreach(var card in match.Players.SelectMany(p=>p.Hand.OfType<CardBase>().Concat(Enumerable.Range(0,p.Deck.Count).Select(p.Deck.PeekInstance))))
++            PrepareCard(card);
++    }
++    /// <summary>Also called before playing dynamically created copies, which did not exist at setup.</summary>
++    public void PrepareCard(CardBase card)
++    {
++        if(_prepared.TryGetValue(card,out _))return;
++        _prepared.Add(card,new object());
++        {
++            if(!_match.CardLibrary.TryGetRegisteredId(card.Definition,out var id)||!_plans.TryGetValue(id,out var graphs))return;
++            var declarations=graphs.SelectMany(g=>
++            {
++                using var d=JsonDocument.Parse(g);var e=d.RootElement;
++                if(!HasInteractivePlayEffect(card,Text(e,"trigger")))return [];
++                // reuse＝跨效果回指（「将其消灭」）：它在执行时取上一次选中的目标，
++                // 打出前不额外问玩家一次，否则同一张卡会连问两遍。
++                return Text(e,"trigger") is "deploy" or "play" or "order"&&e.TryGetProperty("targets",out var targets)
++                    ?targets.EnumerateArray().Where(t=>!(t.TryGetProperty("reuse",out var r)&&r.ValueKind==JsonValueKind.True))
++                        .Select(t=>(Declaration:t.GetRawText(),Scope:Scope(e),Trigger:Text(e,"trigger"))).ToArray():[];
++            }).Distinct().ToArray();
++            if(declarations.Length==0)return;
++            var trigger=card switch{UnitCard unit=>unit.PrePlayTrigger,OrderCard command=>command.PrePlayTrigger,_=>null};
++            if(trigger is null)return;
++            var handle=trigger.Register("desktop/capture",async(view,_,ct)=>
++            {
++                _captured.Remove(card);_consumed.Remove(card);var selection=new Dictionary<string,Card[]>(StringComparer.Ordinal);
++                foreach(var declaration in declarations)
++                {
++                    // 部署指向的目标池要含**这张单位牌自己**：预打出时它还在手牌，
++                    // 引擎查询只能看到旧场面，于是「使 1 个友方单位…」在空场时连自己都选不到。
++                    var includeSource=declaration.Trigger=="deploy"&&card is UnitCard;
++                    using var target=JsonDocument.Parse(declaration.Declaration);
++                    if((await ResolveCandidates(card,target.RootElement,ct,includeSource)).Count==0)continue;
++                    var result=await SelectCore(card,declaration.Declaration,ct,includeSource);
++                    // 有候选却拿不到结果＝玩家取消：放弃这次打出（零副作用）。
++                    // CaptureBox 只存在于工坊预览，真实对局里它是 null——此前无条件解引用会抛 NRE，
++                    // 而事件总线会静默吞掉订阅者异常，表现为"卡已扣费但什么都没发生"。
++                    if(result.Length==0){view.CaptureBox?.CancelPrePlay();return;}
++                    selection[declaration.Scope+"|"+declaration.Declaration]=result;
++                }
++                _captured.Add(card,selection);_consumed.Add(card,new());
++            });
++            _registrations.Add((trigger,handle));
++        }
++    }
++    public static void ValidateTarget(JsonElement target)
++    {
++        var allowed=new[]{"id","kind","side","zone","prompt","filter","reuse"};
++        if(string.IsNullOrWhiteSpace(Text(target,"id")))throw new InvalidDataException("声明目标必须具有唯一 id");
++        foreach(var p in target.EnumerateObject())if(!allowed.Contains(p.Name,StringComparer.Ordinal))throw new InvalidDataException("OrC-KSD 选靶字段尚无无损适配："+p.Name);
++        if(target.TryGetProperty("reuse",out var reuse)&&reuse.ValueKind is not (JsonValueKind.True or JsonValueKind.False))throw new InvalidDataException("选靶复用标记必须是布尔值");
++        if(Text(target,"kind") is not ("unit" or "hq" or "any")||Text(target,"zone") is not ("" or "field" or "frontline" or "support" or "hq"))throw new InvalidDataException("声明选靶区域无效");
++        if(target.TryGetProperty("filter",out var filter))AuthoringRuntime.ValidateFilter(filter);
++        if(Text(target,"side") is not ("" or "any" or "friendly" or "enemy" or "both"))throw new InvalidDataException("选靶阵营无效");
++    }
++    /// <summary>Presentation metadata must not invent a deployment effect removed from native data.</summary>
++    public static bool HasInteractivePlayEffect(CardBase card,string trigger)
++    {
++        var hook=trigger=="deploy"?"unit.deployed":trigger is "play" or "order"?"card.played":null;
++        if(hook is null)return false;
++        return card.Effects.Any(effect=>effect is not DynamicPassiveEffect native || native.Snapshot.Root.MainTrigger.Hooks.Contains(hook));
++    }
++    public static string Scope(JsonElement graph)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(graph.GetRawText())))[..24];
++    public static async Task<Card[]> SelectAsync(Card source,string declaration,string scope,CancellationToken ct)
++    {
++        if(AuthoringRuntime.Owner(source) is null||!Owners.TryGetValue(AuthoringRuntime.Owner(source),out var context))throw new InvalidOperationException("原生声明选靶上下文未装配");
++        if(context._captured.TryGetValue(source,out var selection)&&selection.TryGetValue(scope+"|"+declaration,out var captured))
++        {if(context._consumed.TryGetValue(source,out var consumed))consumed.Add(scope+"|"+declaration);context.Remember(source,declaration,captured);return captured;}
++        return await context.SelectCore(source,declaration,ct);
++    }
++    /// <summary>同一张卡上「其」的回指：取该目标声明最近一次选中的结果（仍要求存活）。
++    /// 与 <see cref="SelectAsync"/> 的区别是它**不发起选靶**——跨效果的指代没有第二次询问的时机。</summary>
++    public static Card[] Recall(Card source,string declaration)
++    {
++        if(AuthoringRuntime.Owner(source) is null||!Owners.TryGetValue(AuthoringRuntime.Owner(source),out var context))return [];
++        if(!context._recent.TryGetValue(source,out var recent))return [];
++        var id=TargetId(declaration);
++        if(id.Length==0||!recent.TryGetValue(id,out var targets))return [];
++        return Array.FindAll(targets,c=>AuthoringRuntime.Flag(c,"alive"));
++    }
++    private static string TargetId(string declaration)
++    {
++        try
++        {
++            using var doc=JsonDocument.Parse(declaration);
++            return Text(doc.RootElement,"id");
++        }
++        catch(JsonException){return "";}
++    }
++    private void Remember(Card source,string declaration,Card[] targets)
++    {
++        var id=TargetId(declaration);
++        if(id.Length==0)return;
++        _recent.GetOrCreateValue(source)[id]=targets;
++    }
++    /// <summary>Older native snapshots request their own selector after desktop pre-play capture.
++    /// Re-submit that captured choice through the native selector once, preserving its validation
++    /// and targeted notifications instead of asking the player to choose a second time.</summary>
++    public bool TryReplayNativeSelection(ISelectorInstance selector)
++    {
++        var data=selector.Presentation;
++        if(data.Parameter is not Card source||data.Identifiers is not null||data.Min!=1||data.Max!=1
++            ||!_captured.TryGetValue(source,out var captured)||!_consumed.TryGetValue(source,out var consumed))return false;
++        foreach(var (key,targets) in captured)
++        {
++            if(consumed.Contains(key)||targets.Length!=1)continue;
++            var candidate=data.Candidates.FirstOrDefault(r=>r.IsAlive&&ReferenceEquals(r.Value,targets[0]));
++            if(candidate is null)continue;
++            consumed.Add(key);selector.Submit(new PickEvent([candidate]));return true;
++        }
++        return false;
++    }
++    private async Task<Card[]> SelectCore(Card source,string declaration,CancellationToken ct,bool includeSource=false)
++    {
++        using var doc=JsonDocument.Parse(declaration);var target=doc.RootElement;ValidateTarget(target);
++        var candidates=(await ResolveCandidates(source,target,ct,includeSource)).ToArray();
++        if(candidates.Length==0)return [];
++        Card? selected=null;
++        var result=await _match.TargeterManager.RunAsync(async flow=>
++        {
++            var references=candidates.Select(c=>c.Ref).ToArray();
++            var step=await flow.Step(SelectorTemplates.FieldUnit,new ReferenceSetParameter(references,1,1,
++                domainValidator:r=>r.Value is Card card&&candidates.Contains(card)&&AuthoringRuntime.Flag(card,"alive"),
++                tag:new AuthoringSelectorTag(Text(target,"id"))));
++            while(step.IsFailed&&step.Failure==SelectorFailureReason.InvalidSelection)step=await flow.Retry<Ref<Entity>>();
++            if(step.IsCancelled)return TargeterResult.Cancelled();
++            if(!step.IsOk)return TargeterResult.FromSelectorFailure(step.Failure);
++            selected=(Card)step.Value!.Value;return TargeterResult.Ok();
++        });
++        ct.ThrowIfCancellationRequested();
++        if(result.IsOk&&selected is not null)
++        {
++            await TargetingRules.NotifyAsync(_match.Engine,selected,source,TargetingRules.KindEffect,triggerCard:source,ct);
++            Remember(source,declaration,[selected]);return [selected];
++        }
++        // 选靶"成功提交但拿不到结果"必须留下判据：这是效果静默不生效的唯一线索。
++        Console.WriteLine($"[desktop-target] empty selection ok={result.IsOk} selected={(selected is null?"null":"set")} "
++            + $"candidates={candidates.Length} declaration={declaration}");
++        return [];
++    }
++    public static Task<IReadOnlyList<Card>> ResolveCandidates(Card source,JsonElement target,CancellationToken ct=default,bool includeSource=false)
++    {
++        var runtime=EffectRuntime.ResolveFor(source)??throw new InvalidOperationException("原生效果服务未装配");
++        var zone=Text(target,"zone");var side=Text(target,"side");
++        var kind=Text(target,"kind");
++        ct.ThrowIfCancellationRequested();
++        var units=kind=="hq"||zone=="hq"?Array.Empty<Card>():runtime.QueryTargetCandidates(source,new("all",side is "any" or ""?"both":side,zone is "frontline" or "support"?zone:null));
++        var hqs=kind=="unit"?Array.Empty<Card>():runtime.QueryTargetCandidates(source,new("all",side is "any" or ""?"both":side,"hq"));
++        IEnumerable<Card> matches=units.Concat(hqs)
++            .Where(c=>!target.TryGetProperty("filter",out var filter)||AuthoringRuntime.Matches(c,filter.GetRawText()));
++        // 部署指向：这张牌即将落位，但在预打出阶段场面里还查不到它。
++        // 「使 1 个友方单位…」在空场时连自己都选不到，候选为 0 就会把整次部署取消掉——
++        // 玩家看到的是"卡丢上去没反应"。按声明本身把来源单位算进候选。
++        if(includeSource&&source is UnitCard self&&kind!="hq"&&zone is not "hq"&&side!="enemy")
++            matches=matches.Prepend(self);
++        return Task.FromResult<IReadOnlyList<Card>>(matches.ToArray());
++    }
++    private static string Text(JsonElement e,string key)=>e.TryGetProperty(key,out var v)&&v.ValueKind==JsonValueKind.String?v.GetString()!:"";
++    public void Dispose(){foreach(var r in _registrations)r.Trigger.Unregister(r.Handle);foreach(var p in _match.Players)Owners.Remove(p);}
++}
+diff --git a/src/Orc.Game/Effects/EffectRuntime.cs b/src/Orc.Game/Effects/EffectRuntime.cs
+index 19e039a..76caccd 100644
+--- a/src/Orc.Game/Effects/EffectRuntime.cs
++++ b/src/Orc.Game/Effects/EffectRuntime.cs
+@@ -88,6 +88,8 @@ public enum EffectDuration
+ /// </summary>
+ public sealed partial class EffectRuntime
+ {
++    /// <summary>The active native match for an effect host; no separate simulation or copied state.</summary>
++    internal static Match? MatchFor(Card host) => KeywordProgramRuntime.TryMatchFor(host.Engine);
+     private readonly Func<CommandManager?> _commands;
+     private readonly Func<PlayerManager?> _players;
+     private readonly Func<JudicatorRegistry?> _judicators;
+@@ -743,6 +745,15 @@ public sealed partial class EffectRuntime
+         return await resources.LosePointsAsync(player, amount, ct).ConfigureAwait(false);
+     }
+ 
++    /// <summary>Read-only candidates for targeting previews. Does not emit targeted notifications.</summary>
++    internal IReadOnlyList<Card> QueryTargetCandidates(Card viewer, EffectSelector selector)
++    {
++        ArgumentNullException.ThrowIfNull(viewer);ArgumentNullException.ThrowIfNull(selector);
++        if(_judicators() is not { } judicators)return Array.Empty<Card>();
++        var rule=new JudicatorSelectionRule(judicators.Resolve(JudicatorNames.TargetCandidateEligibility),viewer,selector);
++        return rule.Candidates().Where(r=>r.IsAlive).Select(r=>r.Value).OfType<Card>().ToArray();
++    }
++
+     /// <summary>无头选靶（经游戏层判定器 <see cref="JudicatorNames.EffectTargetResolve"/> 求值；不可用＝空集）。</summary>
+     /// <exception cref="ArgumentNullException">viewer 或 selector 为 null。</exception>
+     public async Task<IReadOnlyList<Card>> SelectAsync(Card viewer, EffectSelector selector, CancellationToken ct = default)
+diff --git a/src/Orc.Game/Match/Match.cs b/src/Orc.Game/Match/Match.cs
+index 379985d..5f63d2a 100644
+--- a/src/Orc.Game/Match/Match.cs
++++ b/src/Orc.Game/Match/Match.cs
+@@ -730,11 +730,11 @@ public sealed class Match
+             // A.20：行动输入准入通道——查询与提交每次读取前端状态（末位位置参数绑定 inputAllowed）。
+             CanAcceptInput,
+             // 前端资产迁移 S5：**冻结本局词条快照**（运行期"覆盖"只改引擎持有引用，不影响进行中的对局）。
+-            keywordSnapshot: Orc.Game.Cards.KeywordRegistry.Snapshot());
++            keywordSnapshot: _options.Keywords ?? Orc.Game.Cards.KeywordRegistry.Snapshot());
+         // 资产化 P11（甲）：四类内置流程触发器登记**不再硬编码**——由内置插件声明、在本相经绑定面执行。
+         if (_packageActivator is not null)
+         {
+-            var binding = new Orc.Game.Plugins.MatchBindingServices(() => _commandManager, TriggerRegistry, Engine);
++            var binding = new Orc.Game.Plugins.MatchBindingServices(() => _commandManager, TriggerRegistry, Engine, _options.Keywords);
+             var activation = _packageActivator.Activate(
+                 Orc.Core.AssetActivationPhase.PostCommand,
+                 matchServices,
+diff --git a/src/Orc.Game/Match/MatchOptions.cs b/src/Orc.Game/Match/MatchOptions.cs
+index 8d373f4..3e0995f 100644
+--- a/src/Orc.Game/Match/MatchOptions.cs
++++ b/src/Orc.Game/Match/MatchOptions.cs
+@@ -5,6 +5,7 @@ namespace Orc.Game;
+ /// <summary>对局级规则/开局配置（创建参数形态：配置对象；含指挥点上限、起手张数与首回合抽牌等开局规则）。</summary>
+ public sealed class MatchOptions
+ {
++    public Orc.Game.Cards.KeywordSnapshot? Keywords { get; init; }
+     /// <summary>指挥点上限（默认 12；须为正整数，非法配置于创建期抛参数校验异常）。</summary>
+     public int MaxPointSlots { get; init; } = ResourceManager.DefaultMaxPointSlots;
+ 
+diff --git a/src/Orc.Game/Plugins/MatchBindingServices.cs b/src/Orc.Game/Plugins/MatchBindingServices.cs
+index b0049db..c2a06bb 100644
+--- a/src/Orc.Game/Plugins/MatchBindingServices.cs
++++ b/src/Orc.Game/Plugins/MatchBindingServices.cs
+@@ -13,15 +13,17 @@ internal sealed class MatchBindingServices : IMatchBindingServices
+     private readonly Func<Commanding.CommandManager?> _commandManager;
+     private readonly TriggerRegistry _triggerRegistry;
+     private readonly LogicEngine _engine;
++    private readonly KeywordSnapshot? _keywords;
+ 
+     internal MatchBindingServices(
+         Func<Commanding.CommandManager?> commandManager,
+         TriggerRegistry triggerRegistry,
+-        LogicEngine engine)
++        LogicEngine engine, KeywordSnapshot? keywords = null)
+     {
+         _commandManager = commandManager;
+         _triggerRegistry = triggerRegistry;
+         _engine = engine;
++        _keywords = keywords;
+     }
+ 
+     /// <inheritdoc />
+@@ -37,5 +39,5 @@ internal sealed class MatchBindingServices : IMatchBindingServices
+     }
+ 
+     /// <inheritdoc />
+-    public void AssembleKeywordEffectLibrary() => KeywordEffectAssembly.Assemble(_engine);
++    public void AssembleKeywordEffectLibrary() => KeywordEffectAssembly.Assemble(_engine, keywords: _keywords);
+ }
+diff --git a/src/Orc.Mcp/Match/MatchLaunchOptions.cs b/src/Orc.Mcp/Match/MatchLaunchOptions.cs
+index 08daba5..7ebdfb7 100644
+--- a/src/Orc.Mcp/Match/MatchLaunchOptions.cs
++++ b/src/Orc.Mcp/Match/MatchLaunchOptions.cs
+@@ -18,6 +18,7 @@ public sealed record MatchSeatConfig(
+ /// </summary>
+ public sealed class MatchLaunchOptions
+ {
++    public Orc.Game.Cards.KeywordSnapshot? Keywords { get; init; }
+     /// <summary>
+     /// 卡包目录列表（按顺序注册与装载；**加载严格按元数据**——每个目录须含 <c>manifest.json</c>）。
+     /// S7 起目录链（无 manifest 的裸卡目录）已退役：无元数据即无资产身份，不能进入中间层与 lock 定版。
+diff --git a/src/Orc.Mcp/McpService.Hosting.cs b/src/Orc.Mcp/McpService.Hosting.cs
+index f40da0d..5863785 100644
+--- a/src/Orc.Mcp/McpService.Hosting.cs
++++ b/src/Orc.Mcp/McpService.Hosting.cs
+@@ -11,6 +11,7 @@ namespace Orc.Mcp;
+ /// </summary>
+ public sealed partial class McpService : IMcpHost, IMcpActions
+ {
++    private Orc.Game.Effects.AuthoringTargetContext? _authoringTargets;
+     private readonly List<Action<PendingSelection>> _targetingSubscribers = new();
+     private bool _targetingBridgeHooked;
+ 
+@@ -139,6 +140,7 @@ public sealed partial class McpService : IMcpHost, IMcpActions
+     /// <summary>摘除活跃对局并广播生命周期事件（服务层内部使用）。</summary>
+     internal Orc.Game.Match? DetachMatch()
+     {
++        _authoringTargets?.Dispose();_authoringTargets=null;
+         var match = Executor.Detach();
+         CardAssembly = null; // 对局丢弃 ⇒ 本局加载台账随之失效（累积视图是「本局」语义）
+         if (match is not null)
+diff --git a/src/Orc.Mcp/McpService.MatchLaunch.cs b/src/Orc.Mcp/McpService.MatchLaunch.cs
+index 78225ae..6165ca7 100644
+--- a/src/Orc.Mcp/McpService.MatchLaunch.cs
++++ b/src/Orc.Mcp/McpService.MatchLaunch.cs
+@@ -135,6 +135,7 @@ public sealed partial class McpService
+                 seed: options.Seed,
+                 options: new MatchOptions
+                 {
++                    Keywords = options.Keywords,
+                     SkipMulligan = options.SkipMulligan,
+                     OpeningHandSizeFirstPlayer = options.OpeningHandSizeFirstPlayer,
+                     OpeningHandSizeSecondPlayer = options.OpeningHandSizeSecondPlayer,
+@@ -154,6 +155,7 @@ public sealed partial class McpService
+         }
+ 
+         EffectRegistry = effectRegistry;
++        if (Options.ScriptEvaluator is { } evaluator) match.Engine.ScriptEvaluator = evaluator;
+ 
+         // 内联预制体与效果库须在 Initialize 前注册（卡装载链在 Initialize 内解析效果引用）。
+         foreach (var snapshot in assembly.InlinePrefabs)
+@@ -191,6 +193,16 @@ public sealed partial class McpService
+             return outcome;
+         }
+ 
++        var authoringPlans=new Dictionary<string,string[]>(StringComparer.Ordinal);
++        foreach(var directory in options.PackDirectories)
++        {
++            var file=Path.Combine(directory,"desktop-effects.json");if(!File.Exists(file))continue;
++            var manifest=PackageManifest.Parse(File.ReadAllText(Path.Combine(directory,"manifest.json")));
++            using var plans=System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
++            foreach(var item in plans.RootElement.EnumerateObject())
++                authoringPlans["pack/"+manifest.Id+"/"+item.Name]=item.Value.EnumerateArray().Select(g=>g.ValueKind==System.Text.Json.JsonValueKind.String?g.GetString()!:g.GetRawText()).ToArray();
++        }
++        _authoringTargets?.Dispose();_authoringTargets=new Orc.Game.Effects.AuthoringTargetContext(match,authoringPlans);
+         NotifyMatchReady();
+ 
+         var players = new JsonArray();
+diff --git a/src/Orc.Mcp/McpService.Projection.cs b/src/Orc.Mcp/McpService.Projection.cs
+index 31ba287..defa092 100644
+--- a/src/Orc.Mcp/McpService.Projection.cs
++++ b/src/Orc.Mcp/McpService.Projection.cs
+@@ -246,24 +246,19 @@ public sealed partial class McpService
+ 
+             playable.Add(card.Id.ToString("N"));
+ 
+-            if (card is Orc.Game.Cards.UnitCard unit)
+-            {
+-                var gaps = match.PlayManager.GetDeploymentGaps(unit);
+-                if (gaps.Count > 0)
+-                {
+-                    var refs = new JsonArray();
+-                    foreach (var gap in gaps)
+-                    {
+-                        refs.Add(gap.Id.ToString("N"));
+-                    }
++        }
+ 
+-                    deploymentGaps.Add(new JsonObject
+-                    {
+-                        ["uid"] = unit.Id.ToString("N"),
+-                        ["gaps"] = refs,
+-                    });
+-                }
+-            }
++        // UiBattleActions consumes a flat list of formation gaps, shared by hand units.
++        // Keep the live engine identities and neighbours used by deployment targeting.
++        foreach (var gap in battlefield.GetSupportLine(player).GetInsertionGaps())
++        {
++            deploymentGaps.Add(new JsonObject
++            {
++                ["gapId"] = gap.Id.ToString("N"),
++                ["ordinal"] = gap.Ordinal,
++                ["leftUid"] = gap.Left?.Id.ToString("N"),
++                ["rightUid"] = gap.Right?.Id.ToString("N"),
++            });
+         }
+ 
+         var moves = new JsonArray();
+@@ -299,6 +294,7 @@ public sealed partial class McpService
+                                 ["uid"] = unit.Id.ToString("N"),
+                                 ["toZone"] = "support",
+                                 ["slotIndex"] = index,
++                                ["gapId"] = destination.Id.ToString("N"),
+                             });
+                             continue;
+                         }
+@@ -306,8 +302,9 @@ public sealed partial class McpService
+                         moves.Add(new JsonObject
+                         {
+                             ["uid"] = unit.Id.ToString("N"),
+-                            ["toZone"] = "front",
++                            ["toZone"] = "frontline",
+                             ["slotIndex"] = index,
++                            ["gapId"] = destination.Id.ToString("N"),
+                         });
+                     }
+                 }
+@@ -362,7 +359,7 @@ public sealed partial class McpService
+             ["deploymentGaps"] = deploymentGaps,
+             ["canEndTurn"] = inPlay,
+             ["attacksEnabled"] = inPlay,
+-            ["mulliganOpen"] = match.Phase == Orc.Game.MatchPhase.Mulligan,
++            ["mulliganOpen"] = match.Phase == Orc.Game.MatchPhase.Mulligan && !match.MulliganManager.IsConfirmed(player),
+         };
+     }
+ 
+diff --git a/src/Orc.Mcp/McpServiceOptions.cs b/src/Orc.Mcp/McpServiceOptions.cs
+index d491f5f..18b1256 100644
+--- a/src/Orc.Mcp/McpServiceOptions.cs
++++ b/src/Orc.Mcp/McpServiceOptions.cs
+@@ -31,6 +31,7 @@ public sealed class McpServiceOptions
+ 
+     /// <summary>插件根（只读；缺省＝null）。</summary>
+     public string? PluginsRoot { get; init; }
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
+ 
+     /// <summary>
+     /// 是否启用产物提升（沙盒 → 正式卡包）。**默认关闭**；开启后仍要求"无活跃沙盒局"且目标卡包已存在。
+diff --git a/src/Orc.Protocol/InitializeMessages.cs b/src/Orc.Protocol/InitializeMessages.cs
+index 248ac7d..20dcbd0 100644
+--- a/src/Orc.Protocol/InitializeMessages.cs
++++ b/src/Orc.Protocol/InitializeMessages.cs
+@@ -62,6 +62,12 @@ public static class ProtocolMethods
+     /// <summary>服务端推送：视图 ＋ 动作可用性（同一拍；形状由 <c>perspective</c> 区分）。</summary>
+     public const string NotifyView = "notify/view";
+ 
++    /// <summary>
++    /// 服务端推送：对局已开始。**界面入场必须挂这个信号，不能等第一帧 <c>notify/view</c>**——
++    /// 慢半拍的客户端第一帧可能已经是 play 相位，换牌阶段会被整段跳过（2026-10-24 实机复现）。
++    /// </summary>
++    public const string NotifyMatchStarted = "notify/match.started";
++
+     /// <summary>服务端推送：事件段（绑座＝脱敏；全知＝全量）。</summary>
+     public const string NotifySegment = "notify/segment";
+ 
+diff --git a/src/Orc.Protocol/NetworkPackageArchive.cs b/src/Orc.Protocol/NetworkPackageArchive.cs
+new file mode 100644
+index 0000000..4faef0a
+--- /dev/null
++++ b/src/Orc.Protocol/NetworkPackageArchive.cs
+@@ -0,0 +1,104 @@
++using System.IO.Compression;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json.Nodes;
++
++namespace Orc.Protocol;
++
++/// <summary>Bounded card-pack transport. Receiving bytes never installs or executes a package.</summary>
++public static class NetworkPackageArchive
++{
++    public const long MaxBytes = 256L * 1024 * 1024;
++    public const int ChunkBytes = 256 * 1024;
++    public static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
++    public static string Key(string value) => Hash(Encoding.UTF8.GetBytes(value));
++    public static string Child(string root, string relative)
++    {
++        var parts = relative.Replace('\\', '/').Split('/');
++        if (parts.Any(p => p.Length == 0 || p is "." or ".." || p.EndsWith(' ') || p.EndsWith('.')
++            || p.Any(c => c < 32 || "<>:\"|?*".Contains(c))
++            || new[] { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" }.Contains(p.Split('.')[0], StringComparer.OrdinalIgnoreCase)))
++            throw new InvalidDataException("卡包包含非法路径：" + relative);
++        var path = Path.GetFullPath(Path.Combine(root, Path.Combine(parts)));
++        if (!path.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
++            throw new InvalidDataException("卡包路径越界。");
++        return path;
++    }
++    public static IEnumerable<string> Files(string root)
++    {
++        foreach (var entry in Directory.EnumerateFileSystemEntries(root).OrderBy(p => p, StringComparer.Ordinal))
++        {
++            var attributes = File.GetAttributes(entry);
++            if ((attributes & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("卡包不能包含链接。");
++            if ((attributes & FileAttributes.Directory) != 0)
++            { foreach (var file in Files(entry)) yield return file; }
++            else yield return entry;
++        }
++    }
++    public static string Digest(string root)
++    {
++        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
++        long total = 0; int count = 0;
++        foreach (var file in Files(root))
++        {
++            if (++count > 8192 || (total += new FileInfo(file).Length) > MaxBytes) throw new InvalidDataException("卡包超过传输大小限制。");
++            hash.AppendData(Encoding.UTF8.GetBytes(Path.GetRelativePath(root, file).Replace('\\', '/')));
++            hash.AppendData([0]); hash.AppendData(File.ReadAllBytes(file)); hash.AppendData([0]);
++        }
++        return Convert.ToHexString(hash.GetHashAndReset());
++    }
++    public static byte[] Zip(string root)
++    {
++        _ = Digest(root);
++        using var stream = new MemoryStream();
++        using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, true))
++            foreach (var file in Files(root))
++            {
++                var entry = zip.CreateEntry(Path.GetRelativePath(root, file).Replace('\\', '/'), CompressionLevel.Fastest);
++                entry.LastWriteTime = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
++                using var output = entry.Open(); using var input = File.OpenRead(file); input.CopyTo(output);
++            }
++        if (stream.Length > MaxBytes) throw new InvalidDataException("卡包压缩文件过大。");
++        return stream.ToArray();
++    }
++    public static void Extract(byte[] bytes, string root)
++    {
++        if (bytes.LongLength > MaxBytes) throw new InvalidDataException("卡包压缩文件过大。");
++        using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
++        if (zip.Entries.Count > 8192) throw new InvalidDataException("卡包文件过多。");
++        long total = 0; var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
++        Directory.CreateDirectory(root);
++        foreach (var entry in zip.Entries)
++        {
++            var path = Child(root, entry.FullName);
++            var type = (entry.ExternalAttributes >> 16) & 0xF000;
++            if (!seen.Add(path) || type is not 0 and not 0x8000 || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
++                throw new InvalidDataException("卡包包含重复路径或链接。");
++            total = checked(total + entry.Length);
++            if (total > MaxBytes) throw new InvalidDataException("卡包解压后过大。");
++            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
++            using var input = entry.Open(); using var output = File.Create(path);
++            var buffer = new byte[81920]; long written = 0; int read;
++            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
++            {
++                if ((written += read) > entry.Length) throw new InvalidDataException("卡包文件大小异常。");
++                output.Write(buffer, 0, read);
++            }
++            if (written != entry.Length) throw new InvalidDataException("卡包文件不完整。");
++        }
++        if (!File.Exists(Path.Combine(root, "manifest.json"))) throw new InvalidDataException("卡包缺少 manifest.json。");
++    }
++    public static JsonObject Describe(string root)
++    {
++        var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "manifest.json")))!;
++        if (manifest["kind"]?.ToString() != "cardpack") throw new InvalidDataException("联机只能传输 cardpack 卡包。");
++        var bytes = Zip(root);
++        var name = manifest["name"]?.ToString() ?? manifest["id"]!.ToString();
++        if (name.Length > 160) name = name[..160];
++        return new JsonObject { ["id"] = manifest["id"]!.ToString(), ["name"] = name,
++            ["version"] = manifest["version"]!.ToString(), ["guid"] = manifest["guid"]!.ToString(),
++            ["digest"] = Digest(root), ["bytes"] = bytes.Length, ["sha256"] = Hash(bytes) };
++    }
++    public static string Fingerprint(IEnumerable<JsonObject> packages) => Key(string.Join("\n", packages.OrderBy(p => p["id"]!.ToString(), StringComparer.Ordinal)
++        .Select(p => p["id"] + ":" + p["digest"])));
++}
+diff --git a/src/Orc.Script/CSharpPluginScriptEvaluator.cs b/src/Orc.Script/CSharpPluginScriptEvaluator.cs
+index 7e41e38..8c3622c 100644
+--- a/src/Orc.Script/CSharpPluginScriptEvaluator.cs
++++ b/src/Orc.Script/CSharpPluginScriptEvaluator.cs
+@@ -155,20 +155,7 @@ public sealed class CSharpPluginScriptEvaluator : IPluginScriptEvaluator
+                 continue;
+             }
+ 
+-            string location;
+-            try
+-            {
+-                location = assembly.Location;
+-            }
+-            catch (Exception)
+-            {
+-                continue; // 单文件发布等无路径场景：跳过
+-            }
+-
+-            if (!string.IsNullOrEmpty(location))
+-            {
+-                references.Add(MetadataReference.CreateFromFile(location));
+-            }
++            references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+         }
+ 
+         return ScriptOptions.Default.WithReferences(references).WithImports(_options.AllowedImports);
+diff --git a/src/Orc.Script/CSharpScriptEvaluator.cs b/src/Orc.Script/CSharpScriptEvaluator.cs
+index 9da9d43..0c5e47a 100644
+--- a/src/Orc.Script/CSharpScriptEvaluator.cs
++++ b/src/Orc.Script/CSharpScriptEvaluator.cs
+@@ -151,20 +151,7 @@ public sealed class CSharpScriptEvaluator : IScriptEvaluator
+                 continue;
+             }
+ 
+-            string location;
+-            try
+-            {
+-                location = assembly.Location;
+-            }
+-            catch (Exception)
+-            {
+-                continue; // 单文件发布等无路径场景：跳过
+-            }
+-
+-            if (!string.IsNullOrEmpty(location))
+-            {
+-                references.Add(MetadataReference.CreateFromFile(location));
+-            }
++            references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+         }
+ 
+         return ScriptOptions.Default.WithReferences(references).WithImports(_options.AllowedImports);
+diff --git a/src/Orc.Script/CSharpSyncScriptEvaluator.cs b/src/Orc.Script/CSharpSyncScriptEvaluator.cs
+index 65578b8..55d6e20 100644
+--- a/src/Orc.Script/CSharpSyncScriptEvaluator.cs
++++ b/src/Orc.Script/CSharpSyncScriptEvaluator.cs
+@@ -132,22 +132,7 @@ public sealed class CSharpSyncScriptEvaluator : ISyncScriptEvaluator
+                 continue;
+             }
+ 
+-            string location;
+-            try
+-            {
+-                location = assembly.Location;
+-            }
+-            catch
+-            {
+-                continue;
+-            }
+-
+-            if (string.IsNullOrWhiteSpace(location) || !File.Exists(location))
+-            {
+-                continue;
+-            }
+-
+-            references.Add(MetadataReference.CreateFromFile(location));
++            references.Add(ScriptAssemblyReferences.FromAssembly(assembly));
+         }
+ 
+         return ScriptOptions.Default
+diff --git a/src/Orc.Script/Orc.Script.csproj b/src/Orc.Script/Orc.Script.csproj
+index 9849fbd..425d4a6 100644
+--- a/src/Orc.Script/Orc.Script.csproj
++++ b/src/Orc.Script/Orc.Script.csproj
+@@ -5,6 +5,7 @@
+     <LangVersion>12.0</LangVersion>
+     <Nullable>enable</Nullable>
+     <ImplicitUsings>enable</ImplicitUsings>
++    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+     <AssemblyName>Orc.Script</AssemblyName>
+     <RootNamespace>Orc.Script</RootNamespace>
+   </PropertyGroup>
+diff --git a/src/Orc.Script/ScriptAssemblyReferences.cs b/src/Orc.Script/ScriptAssemblyReferences.cs
+new file mode 100644
+index 0000000..4a8223c
+--- /dev/null
++++ b/src/Orc.Script/ScriptAssemblyReferences.cs
+@@ -0,0 +1,24 @@
++using System.Reflection;
++using System.Reflection.Metadata;
++using Microsoft.CodeAnalysis;
++
++namespace Orc.Script;
++
++/// <summary>Uses the loaded assembly's metadata when APK/single-file hosts have no physical DLL.</summary>
++public static class ScriptAssemblyReferences
++{
++    private static string? _directory;
++    /// <summary>Host-owned copies of the same runtime assemblies, for Mono without raw metadata access.</summary>
++    public static void ConfigureDirectory(string directory) => Volatile.Write(ref _directory, Path.GetFullPath(directory));
++    public static unsafe MetadataReference FromAssembly(Assembly assembly)
++    {
++        if (!string.IsNullOrEmpty(assembly.Location) && File.Exists(assembly.Location))
++            return MetadataReference.CreateFromFile(assembly.Location);
++        var directory = Volatile.Read(ref _directory);
++        if (directory is not null && File.Exists(Path.Combine(directory, assembly.GetName().Name + ".dll")))
++            return MetadataReference.CreateFromFile(Path.Combine(directory, assembly.GetName().Name + ".dll"));
++        if (assembly.TryGetRawMetadata(out var blob, out var length))
++            return AssemblyMetadata.Create(ModuleMetadata.CreateFromMetadata((IntPtr)blob, length)).GetReference(filePath: assembly.GetName().Name + ".dll");
++        throw new InvalidDataException("无法取得脚本编译引用：" + assembly.FullName);
++    }
++}
+diff --git a/src/Orc.Server/Admin/AdminApi.cs b/src/Orc.Server/Admin/AdminApi.cs
+index d5f069c..96ff830 100644
+--- a/src/Orc.Server/Admin/AdminApi.cs
++++ b/src/Orc.Server/Admin/AdminApi.cs
+@@ -62,6 +62,7 @@ public sealed class AdminApi
+             AdminOps.PoolList => PoolList(),
+             AdminOps.PoolRegister => await PoolRegisterAsync(args, ct).ConfigureAwait(false),
+             AdminOps.PoolUnregister => await PoolUnregisterAsync(args, ct).ConfigureAwait(false),
++            "pool.transfer.policy" => await _host.SetPackTransferPolicyAsync(args["allowGuestPacks"]?.GetValue<bool>() == true, args["requireAlignment"]?.GetValue<bool>() == true, ct).ConfigureAwait(false),
+             _ => AdminOutcome.Fail(ResultCodes.InvalidArguments, $"未知管理操作 '{op}'。"),
+         };
+     }
+@@ -233,6 +234,9 @@ public sealed class AdminApi
+             return AdminOutcome.Fail(ResultCodes.RoomNotReady, "仍有空座或未批准的座位，不能开局（引擎 1v1 需要两个 controller）。");
+         }
+ 
++        if (_host.PackAlignmentFailure() is { } alignmentFailure)
++            return AdminOutcome.Fail("pool-mismatch", alignmentFailure);
++
+         if (!room.TryBeginStart())
+         {
+             return AdminOutcome.Fail(ResultCodes.RoomStarted, "房间正在开局中。");
+@@ -244,6 +248,8 @@ public sealed class AdminApi
+             var input = _host.Packs.PrepareAssembly();
+             var dirs = input.Directories;
+ 
++            foreach (var directory in dirs) _host.RegisterNetworkVocabulary(directory);
++
+             if (dirs.Count == 0)
+             {
+                 // 空集合是合法状态，但开局必然失败：必须特化说明（不能输出笼统的"卡池装配失败"）。
+@@ -370,6 +376,7 @@ public sealed class AdminApi
+ 
+             var options = new MatchLaunchOptions
+             {
++                Keywords = _host.MatchKeywords(),
+                 PackDirectories = dirs,
+                 Assembly = assembly,
+                 SeatA = new MatchSeatConfig(0, seatDecks[0]!, Name: room.SeatAt(0)?.DisplayName, DeckConfiguration: seatConfigs[0]),
+@@ -395,6 +402,10 @@ public sealed class AdminApi
+ 
+             room.MarkInMatch();
+ 
++            // 先告诉界面"开局了"，再推视图：客户端切战场靠这个信号，
++            // 晚半拍的客户端若只能等第一帧，可能第一帧已是 play，换牌被整段跳过。
++            _host.NotifyMatchStarted(room.RoomId);
++
+             var poolReport = new MatchPoolReport(dirs, assembly.Definitions.Count, fallback);
+             service.Pool = poolReport;
+             _host.PublishEvent("pool.assembled", WithDegradation(poolReport, input, degradation));
+diff --git a/src/Orc.Server/Pool/PackPool.cs b/src/Orc.Server/Pool/PackPool.cs
+index 28be8cc..f084bab 100644
+--- a/src/Orc.Server/Pool/PackPool.cs
++++ b/src/Orc.Server/Pool/PackPool.cs
+@@ -119,6 +119,16 @@ public sealed class PackPool : IPoolControl
+     /// <summary>spawn 初值（历史信息；已剔除沙盒固定包、保留 spawn 顺序）。</summary>
+     public IReadOnlyList<string> InitialDirectories => _initialDirectories.ToArray();
+ 
++    /// <summary>Room rotation, after drain: received session packages must not enter the next lobby.</summary>
++    internal void RemoveSessionDirectories(IReadOnlySet<string> directories)
++    {
++        lock (_sync)
++        {
++            _entries.RemoveAll(entry => directories.Contains(entry.Directory));
++            if (_lastGood?.Any(directory => directories.Contains(directory)) == true) _lastGood = null;
++        }
++    }
++
+     /// <summary>最后一次**成功**装配的输入（R9 回退用；<c>null</c>＝尚未有过成功装配）。</summary>
+     public IReadOnlyList<string>? LastGood
+     {
+diff --git a/src/Orc.Server/ServerOptions.cs b/src/Orc.Server/ServerOptions.cs
+index 02cd26d..d18d1f7 100644
+--- a/src/Orc.Server/ServerOptions.cs
++++ b/src/Orc.Server/ServerOptions.cs
+@@ -52,6 +52,10 @@ public sealed record SeatConfig(
+ /// </summary>
+ public sealed class ServerOptions
+ {
++    /// <summary>Embedded/mobile hosts materialize plugin assets in their private writable directory.</summary>
++    public string? PluginsRoot { get; init; }
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
++    public bool ReuseProcessVocabulary { get; init; }
+     /// <summary>卡包目录列表（管理器按资产库解析后下发；服务端只校验"可索引"）。</summary>
+     public required IReadOnlyList<string> PackDirectories { get; init; }
+ 
+diff --git a/src/Orc.Server/Transport/ServerHost.NetworkVocabulary.cs b/src/Orc.Server/Transport/ServerHost.NetworkVocabulary.cs
+new file mode 100644
+index 0000000..5f5dcb9
+--- /dev/null
++++ b/src/Orc.Server/Transport/ServerHost.NetworkVocabulary.cs
+@@ -0,0 +1,57 @@
++using System.Text.Json;
++using System.Text.Json.Nodes;
++using Orc.Cards;
++using Orc.Game.Cards;
++using Orc.Packages;
++
++namespace Orc.Server.Transport;
++
++public sealed partial class ServerHost
++{
++    private readonly Dictionary<string, string> NetworkKeywords = new(StringComparer.Ordinal);
++    private static readonly HashSet<string> BuiltInKeywordIds = typeof(KeywordIds).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
++        .Where(f => f.IsLiteral && f.FieldType == typeof(string)).Select(f => (string)f.GetRawConstantValue()!).ToHashSet(StringComparer.Ordinal);
++    internal KeywordSnapshot? MatchKeywords()
++    {
++        if (!_options.ReuseProcessVocabulary) return null;
++        lock (NetworkKeywords) return KeywordRegistry.Snapshot().ForKeywords(BuiltInKeywordIds.Concat(NetworkKeywords.Keys));
++    }
++    internal void RegisterNetworkVocabulary(string root)
++    {
++        var presentation = Path.Combine(root, "workshop.presentation.json");
++        if (File.Exists(presentation))
++            foreach (var n in JsonNode.Parse(File.ReadAllText(presentation))?["nations"] as JsonArray ?? new())
++                if (n?["id"]?.GetValue<string>() is { Length: > 0 } id) Faction.RegisterCustom(id);
++        // Built-in legacy nations are also used by the compatibility editor.
++        foreach (var id in new[] { "av76", "deran", "usg", "un" }) Faction.RegisterCustom(id);
++        var declarations = PackageScanner.ReadKeywords(root);
++        var runtime = Path.Combine(root, "network-vocabulary.json");
++        var legacy = File.Exists(runtime) ? JsonNode.Parse(File.ReadAllText(runtime))!.AsArray() : new JsonArray();
++        lock (NetworkKeywords)
++        {
++            foreach (var keyword in declarations)
++            {
++                var signature = JsonSerializer.Serialize(keyword);
++                if (NetworkKeywords.TryGetValue(keyword.Id, out var existing))
++                { if (existing != signature) throw new InvalidDataException("卡包词条冲突：" + keyword.Id); continue; }
++                if (KeywordRegistry.IsDefined(keyword.Id) && (!_options.ReuseProcessVocabulary || BuiltInKeywordIds.Contains(keyword.Id))) throw new InvalidDataException("卡包词条与既有词条重名：" + keyword.Id);
++                if (keyword.Program is { } program) ProgramKeywordComponent.Register(keyword.Id, KeywordProgram.Parse(program), keyword.IsBattleKeyword);
++                else KeywordRegistry.RegisterOrReplace(keyword.Id, (_, value) => new PlainKeywordComponent(keyword.Id, value), keyword.IsBattleKeyword);
++                if (keyword.Bindings.Count > 0) KeywordRegistry.DeclareEffectBindings(keyword.Id, keyword.Bindings);
++                NetworkKeywords.Add(keyword.Id, signature);
++            }
++            foreach (var node in legacy.OfType<JsonObject>())
++            {
++                var id = node["id"]!.ToString(); var signature = node.ToJsonString();
++                if (!id.StartsWith("kw-", StringComparison.Ordinal)) throw new InvalidDataException("工坊词条标识无效。");
++                if (NetworkKeywords.TryGetValue(id, out var existing))
++                { if (signature != existing) throw new InvalidDataException("工坊词条内容冲突：" + id); continue; }
++                if (KeywordRegistry.IsDefined(id) && !_options.ReuseProcessVocabulary) throw new InvalidDataException("工坊词条与既有词条重名：" + id);
++                var battle = node["battle"]?.GetValue<bool>() == true;
++                if (node["program"] is { } program) ProgramKeywordComponent.Register(id, KeywordProgram.Parse(program.ToJsonString()), battle);
++                else DeclarativeKeywordComponent.Register(id, node["snapshots"]!.AsArray().Select(s => PrefabJson.Deserialize(s!.ToJsonString())).ToArray(), battle);
++                NetworkKeywords.Add(id, signature);
++            }
++        }
++    }
++}
+diff --git a/src/Orc.Server/Transport/ServerHost.PackTransfer.cs b/src/Orc.Server/Transport/ServerHost.PackTransfer.cs
+new file mode 100644
+index 0000000..0372cdc
+--- /dev/null
++++ b/src/Orc.Server/Transport/ServerHost.PackTransfer.cs
+@@ -0,0 +1,159 @@
++using System.Text.Json.Nodes;
++using Orc.Mcp.Pool;
++using Orc.Protocol;
++using Orc.Server.Admin;
++using Orc.Server.Execution;
++using Orc.Server.Rooms;
++
++namespace Orc.Server.Transport;
++
++public sealed partial class ServerHost
++{
++    private bool _allowGuestPacks, _requirePackAlignment;
++    private string _transferRoom = "";
++    private readonly Dictionary<string, (string Root, JsonObject Info, byte[] Zip)> _transferPacks = new(StringComparer.Ordinal);
++    private readonly Dictionary<string, (string Room, string Fingerprint)> _packAcks = new();
++    private readonly Dictionary<string, (JsonObject Info, MemoryStream Bytes)> _packUploads = new();
++    private readonly HashSet<string> _receivedPackRoots = new(StringComparer.OrdinalIgnoreCase);
++
++    private void ResetPackTransfers()
++    {
++        Packs.RemoveSessionDirectories(_receivedPackRoots);
++        _receivedPackRoots.Clear(); _transferPacks.Clear(); _packAcks.Clear();
++        foreach (var upload in _packUploads.Values) upload.Bytes.Dispose(); _packUploads.Clear();
++        _allowGuestPacks = false;
++    }
++
++    // Called exclusively through the parent's private admin channel.
++    public Task<AdminOutcome> SetPackTransferPolicyAsync(bool allowGuests, bool requireAlignment, CancellationToken ct)
++        => _queue.EnqueueAsync(WorkPriority.Command, _ =>
++        {
++            if (Room.State != RoomState.Lobby) return Task.FromResult(AdminOutcome.Fail("room-started", "只能在大厅更改卡包接收设置。"));
++            _allowGuestPacks = allowGuests; _requirePackAlignment = requireAlignment;
++            if (!allowGuests) { foreach (var upload in _packUploads.Values) upload.Bytes.Dispose(); _packUploads.Clear(); }
++            return Task.FromResult(AdminOutcome.Success(new JsonObject { ["allowGuestPacks"] = allowGuests }));
++        }, ct);
++
++    private void RefreshTransferCatalog()
++    {
++        if (_transferRoom != Room.RoomId)
++        {
++            _transferRoom = Room.RoomId; _packAcks.Clear();
++            foreach (var upload in _packUploads.Values) upload.Bytes.Dispose(); _packUploads.Clear();
++        }
++        foreach (var owner in _packUploads.Keys.Where(owner => !_sessions.Values.Any(s => s.State == SessionState.Admitted && s.IsController && s.SeatToken == owner)).ToArray())
++        { _packUploads[owner].Bytes.Dispose(); _packUploads.Remove(owner); }
++        foreach (var root in Packs.PrepareAssembly().Directories)
++        {
++            var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(root, "manifest.json")))!;
++            var id = manifest["id"]!.ToString();
++            if (_transferPacks.ContainsKey(id)) continue; // Inputs are frozen session copies.
++            var info = NetworkPackageArchive.Describe(root);
++            _transferPacks.Add(id, (root, info, NetworkPackageArchive.Zip(root)));
++        }
++    }
++    private string TransferFingerprint => NetworkPackageArchive.Fingerprint(_transferPacks.Values.Select(p => p.Info));
++    public string? PackAlignmentFailure()
++    {
++        if (!_requirePackAlignment) return null;
++        RefreshTransferCatalog();
++        var fingerprint = TransferFingerprint;
++        foreach (var s in _sessions.Values.Where(s => s.State == SessionState.Admitted && s.IsController && s.Seat is not null))
++            if (s.SeatToken is null || !_packAcks.TryGetValue(s.SeatToken, out var ack) || ack.Room != Room.RoomId || ack.Fingerprint != fingerprint)
++                return $"座位 {s.Seat + 1} 的卡包尚未同步完成，请等待双方卡池已对齐后开局。";
++        if (_packUploads.Count > 0) return "仍有卡包正在上传，请等待同步完成。";
++        return null;
++    }
++    private async Task<RpcResponse> HandlePackTransferAsync(RpcRequest request, ClientSession session, CancellationToken ct)
++    {
++        if (!CosmeticReader(session)) return RpcResponse.Failure(request.Id, RpcErrorCodes.InvalidRequest, "卡包同步需要已批准的房间会话。");
++        try
++        {
++            return await _queue.EnqueueAsync(WorkPriority.Command, async token =>
++            {
++                if (IsDraining) throw new InvalidOperationException("房间正在轮换，请重试。");
++                RefreshTransferCatalog();
++                var args = request.Params as JsonObject ?? new JsonObject();
++                if (request.Method == "pool.manifest")
++                {
++                    return RpcResponse.Success(request.Id, new JsonObject { ["roomId"] = Room.RoomId,
++                        ["lobby"] = Room.State == RoomState.Lobby, ["fingerprint"] = TransferFingerprint,
++                        ["allowGuestPacks"] = _allowGuestPacks, ["aligned"] = PackAlignmentFailure() is null,
++                        ["packages"] = new JsonArray(_transferPacks.Values.Select(p => (JsonNode)p.Info.DeepClone()).ToArray()) });
++                }
++                if (request.Method == "pool.fetch")
++                {
++                    if (!_transferPacks.TryGetValue(args["id"]!.ToString(), out var pack)) throw new InvalidDataException("卡包不存在。");
++                    if (args["digest"]!.ToString() != pack.Info["digest"]!.ToString()) throw new InvalidDataException("卡包代次已经变化，请重新同步。");
++                    var offset = args["offset"]!.GetValue<int>();
++                    if (offset < 0 || offset >= pack.Zip.Length) throw new InvalidDataException("卡包分块偏移无效。");
++                    var block = pack.Zip.AsSpan(offset, Math.Min(NetworkPackageArchive.ChunkBytes, pack.Zip.Length - offset)).ToArray();
++                    return RpcResponse.Success(request.Id, new JsonObject { ["data"] = Convert.ToBase64String(block), ["sha256"] = NetworkPackageArchive.Hash(block) });
++                }
++                if (Room.State != RoomState.Lobby) throw new InvalidOperationException("对局开始后不能更改卡包。");
++                if (!session.IsController || session.SeatToken is not { } seatToken) throw new InvalidOperationException("只有已批准的玩家可以提交卡包或确认卡池。");
++                if (request.Method == "pool.ack")
++                {
++                    if (args["fingerprint"]!.ToString() != TransferFingerprint) throw new InvalidDataException("卡池已变化，请重新同步。");
++                    _packAcks[seatToken] = (Room.RoomId, TransferFingerprint);
++                    return RpcResponse.Success(request.Id, new JsonObject { ["ok"] = true });
++                }
++                if (!_allowGuestPacks) throw new InvalidOperationException("房主尚未开启接收好友卡包，请房主开启后重新同步。");
++                if (request.Method == "pool.offer")
++                {
++                    var info = (args["package"] as JsonObject)?.DeepClone().AsObject() ?? throw new InvalidDataException("卡包声明为空。");
++                    var id = info["id"]!.ToString(); var size = info["bytes"]!.GetValue<long>();
++                    if (id.Length is < 1 or > 160 || size is < 1 or > NetworkPackageArchive.MaxBytes || info["digest"]!.ToString().Length != 64)
++                        throw new InvalidDataException("卡包声明不合法。");
++                    if (_transferPacks.TryGetValue(id, out var existing))
++                    {
++                        if (existing.Info["digest"]!.ToString() != info["digest"]!.ToString()) throw new InvalidDataException("同名卡包内容不一致：" + id + "。请双方统一版本。");
++                        return RpcResponse.Success(request.Id, new JsonObject { ["exists"] = true });
++                    }
++                    if (_transferPacks.Count >= 128 || _transferPacks.Values.Sum(p => p.Zip.LongLength) + size > 512L * 1024 * 1024)
++                        throw new InvalidDataException("房间卡包缓存已满。");
++                    if (_packUploads.Remove(seatToken, out var previous)) previous.Bytes.Dispose();
++                    _packUploads[seatToken] = (info, new MemoryStream());
++                    return RpcResponse.Success(request.Id, new JsonObject { ["offset"] = 0 });
++                }
++                if (!_packUploads.TryGetValue(seatToken, out var upload)) throw new InvalidDataException("请先声明要上传的卡包。");
++                if (request.Method == "pool.chunk")
++                {
++                    var encoded = args["data"]!.ToString();
++                    if (encoded.Length > 350000) throw new InvalidDataException("分块过大。");
++                    var block = Convert.FromBase64String(encoded);
++                    if (block.Length == 0 || block.Length > NetworkPackageArchive.ChunkBytes || NetworkPackageArchive.Hash(block) != args["sha256"]!.ToString()
++                        || upload.Bytes.Length != args["offset"]!.GetValue<long>() || upload.Bytes.Length + block.Length > upload.Info["bytes"]!.GetValue<long>())
++                        throw new InvalidDataException("分块大小、顺序或校验和不正确。");
++                    upload.Bytes.Write(block);
++                    return RpcResponse.Success(request.Id, new JsonObject { ["offset"] = upload.Bytes.Length });
++                }
++                if (request.Method != "pool.commit") throw new InvalidDataException("未知卡包同步操作。");
++                var bytes = upload.Bytes.ToArray();
++                if (bytes.LongLength != upload.Info["bytes"]!.GetValue<long>() || NetworkPackageArchive.Hash(bytes) != upload.Info["sha256"]!.ToString())
++                    throw new InvalidDataException("卡包尚未传完或校验失败。");
++                var parent = Path.Combine(_options.SandboxRoot, "net-assets", Room.RoomId);
++                var root = Path.Combine(parent, Guid.NewGuid().ToString("N"));
++                Directory.CreateDirectory(parent);
++                try
++                {
++                    NetworkPackageArchive.Extract(bytes, root);
++                    var actual = NetworkPackageArchive.Describe(root);
++                    foreach (var key in new[] { "id", "version", "guid", "digest" })
++                        if (actual[key]!.ToString() != upload.Info[key]!.ToString()) throw new InvalidDataException("卡包身份或内容校验失败：" + key);
++                    actual["bytes"] = bytes.Length; actual["sha256"] = NetworkPackageArchive.Hash(bytes);
++                    RegisterNetworkVocabulary(root);
++                    var registered = await Packs.RegisterAsync(root, PoolAudience.RemotePlay, token).ConfigureAwait(false);
++                    if (!registered.Ok) throw new InvalidDataException(registered.Message ?? registered.Code);
++                    _transferPacks.Add(actual["id"]!.ToString(), (root, actual, bytes));
++                    _receivedPackRoots.Add(Path.GetFullPath(root));
++                }
++                catch { if (Directory.Exists(root)) Directory.Delete(root, true); throw; }
++                finally { upload.Bytes.Dispose(); _packUploads.Remove(seatToken); }
++                return RpcResponse.Success(request.Id, new JsonObject { ["ok"] = true });
++            }, ct).ConfigureAwait(false);
++        }
++        catch (Exception e) when (e is not OperationCanceledException)
++        { return RpcResponse.Failure(request.Id, RpcErrorCodes.InvalidParams, e.Message); }
++    }
++}
+diff --git a/src/Orc.Server/Transport/ServerHost.cs b/src/Orc.Server/Transport/ServerHost.cs
+index e732d18..f6473b1 100644
+--- a/src/Orc.Server/Transport/ServerHost.cs
++++ b/src/Orc.Server/Transport/ServerHost.cs
+@@ -199,6 +199,8 @@ public sealed partial class ServerHost : IAsyncDisposable
+         {
+             Mode = _options.Mode == ServerMode.Sandbox ? McpServiceMode.Authoring : McpServiceMode.Player,
+             SandboxRoot = _options.SandboxRoot,
++            PluginsRoot = _options.PluginsRoot,
++            ScriptEvaluator = _options.ScriptEvaluator,
+             MatchId = room.RoomId,
+             TargetSelectionTimeout = _options.TargetSelectionTimeout,
+             Seed = _options.Seed,
+@@ -397,6 +399,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+             ProtocolMethods.ToolsList => HandleToolsList(request, session),
+             ProtocolMethods.ToolsCall => await HandleToolsCallAsync(request, session, ct).ConfigureAwait(false),
+             "cosmetics.get" or "cosmetics.set" or "cosmetics.asset" or "cosmetics.image" or "cosmetics.emote" => HandleCosmetics(request, session),
++            "pool.manifest" or "pool.fetch" or "pool.offer" or "pool.chunk" or "pool.commit" or "pool.ack" => await HandlePackTransferAsync(request, session, ct).ConfigureAwait(false),
+             _ => RpcResponse.Failure(request.Id, RpcErrorCodes.MethodNotFound, $"未知方法 '{request.Method}'。"),
+         };
+     }
+@@ -428,7 +431,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+         {
+             ProtocolVersion = ProtocolInfo.ProtocolVersion,
+             SchemaVersion = Service.Options.ContractSchemaVersion,
+-            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1"],
++            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1", "pack-transfer-v1"],
+             ConnectionId = session.Id,
+             Label = session.Label,
+             RoomId = Room.RoomId,
+@@ -1155,6 +1158,22 @@ public sealed partial class ServerHost : IAsyncDisposable
+         }
+     }
+ 
++    /// <summary>
++    /// 广播"对局已开始"。收件人筛选与 <see cref="PushViewsAsync"/> 一致（绑座 viewer ＋ 全知），
++    /// 但**先于第一帧视图**发出：客户端靠它切战场，才不会错过换牌相位。
++    /// </summary>
++    internal void NotifyMatchStarted(string roomId)
++    {
++        var payload = new JsonObject { ["roomId"] = roomId };
++        foreach (var session in _sessions.Values)
++        {
++            // 按"谁在对局里"筛，不按 IsViewer 筛：纯 controller 角色（无 viewer）同样是玩家。
++            var receives = session.State is SessionState.Admitted or SessionState.Viewer or SessionState.Omniscient;
++            if (!receives) continue;
++            SendNotification(session, ProtocolMethods.NotifyMatchStarted, payload.DeepClone());
++        }
++    }
++
+     /// <summary>
+     /// 按角色态分发视图帧（S7）：绑座 viewer＝单视角帧；全知 viewer＝两份视角打包帧；
+     /// 其余角色（<c>Pending</c>/<c>Connected</c>/调试面/纯 controller）**不收**对局数据。
+@@ -1302,8 +1321,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+                     omniscientPayload = new JsonArray();
+                     foreach (var segment in segments)
+                     {
+-                        omniscientPayload.Add(JsonNode.Parse(
+-                            Orc.Output.EventSegmentJson.Serialize(segment, indented: false)));
++                        omniscientPayload.Add(PresentationSegment(segment, match, null));
+                     }
+                 }
+ 
+@@ -1329,8 +1347,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+                 payload = new JsonArray();
+                 foreach (var segment in segments)
+                 {
+-                    payload.Add(JsonNode.Parse(Orc.Output.EventSegmentJson.Serialize(
+-                        segment, indented: false, visibility, match.Players[seat])));
++                    payload.Add(PresentationSegment(segment, match, seat));
+                 }
+ 
+                 seatPayloads[seat] = payload;
+@@ -1350,6 +1367,31 @@ public sealed partial class ServerHost : IAsyncDisposable
+         return (segments[0].Sequence, segments[^1].Sequence);
+     }
+ 
++    private JsonNode PresentationSegment(Orc.Output.EventSegment segment, Orc.Game.Match match, int? seat)
++    {
++        var visibility = seat is null ? null : new Orc.Game.Ui.MatchEventVisibility(match);
++        var viewer = match.Players[seat ?? 0];
++        var node = JsonNode.Parse(Orc.Output.EventSegmentJson.Serialize(segment, false, visibility, seat is null ? null : viewer))!;
++        var entries = node["entries"]!.AsArray();
++        var provider = match.UiProjections.CreateProvider(null, Service.Options.MatchId, null);
++        for (var i = 0; i < segment.Entries.Count; i++)
++        {
++            var entry = segment.Entries[i];
++            // Player identity is public even when draw-card identities are redacted.
++            if (entry.Data.GetValueOrDefault("Player") is Orc.Game.Players.Player player)
++                entries[i]!["playerSeat"] = player.Index;
++            // A played order has left the projected board. Supply only this public face;
++            // never project arbitrary event cards (opponent draws/hand remain hidden).
++            if (entry.Message == "card.played" && entry.Data.GetValueOrDefault("Card") is Orc.Game.Cards.OrderCard order
++                && visibility?.IsEntityVisible(order, viewer) != false && provider is not null)
++            {
++                entries[i]!["cardView"] = JsonSerializer.SerializeToNode(provider.ReadCard(match, order, viewer, "hand", 0), ProtocolJson.Options);
++                entries[i]!["ownerSeat"] = order.Owner?.Index;
++            }
++        }
++        return node;
++    }
++
+     private void OnSeatsChanged()
+     {
+         var room = Room;
+@@ -1492,6 +1534,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+             oldService.Bridge.FailAll("room-rotated");
+             DetachService(oldService, oldRoom);
+             oldService.DisposeMatch();
++            ResetPackTransfers();
+ 
+             // 5/6/7. 建新房间与新服务层，**原子交换**引用并递增纪元。
+             var room = CreateRoom();
+@@ -1614,6 +1657,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+                                 var step = await pilot.StepAsync(token).ConfigureAwait(false);
+                                 if (step.Performed)
+                                 {
++                                    DrainSegments();
+                                     await PushViewsAsync(token).ConfigureAwait(false);
+                                 }
+ 
+diff --git a/tests/Orc.Game.Tests/CommandRulesTests.cs b/tests/Orc.Game.Tests/CommandRulesTests.cs
+index 0bda125..a4e4527 100644
+--- a/tests/Orc.Game.Tests/CommandRulesTests.cs
++++ b/tests/Orc.Game.Tests/CommandRulesTests.cs
+@@ -190,8 +190,8 @@ public class CommandRulesTests
+         await match.Initialize();
+         var playerA = match.Players[0];
+         var playerB = match.Players[1];
+-        var infantry = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.InfantryId, 1);
+-        var artillery = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.ArtilleryId, 2);
++        var infantry = await CommandTestKit.PrepareOnFrontAsync(match, playerA, CommandTestKit.InfantryId, 0);
++        var artillery = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.ArtilleryId, 1);
+         var smokeOwnerSide = await CommandTestKit.PrepareOnSupportAsync(match, playerA, CommandTestKit.SmokeId, 1); // 我方烟幕兵
+         CommandTestKit.Activate(infantry);
+         CommandTestKit.Activate(artillery);
+@@ -202,14 +202,17 @@ public class CommandRulesTests
+         var selfReport = match.CommandManager.GetCommandAvailability(smokeOwnerSide);
+         Assert.True(selfReport.Move.CanUse);
+ 
+-        // 敌方烟幕兵（不可被攻击）：放入敌方前线（对步兵/炮兵均在可达范围内——区分度保留）。
+-        var enemySmoke = await CommandTestKit.PrepareOnFrontAsync(match, playerB, CommandTestKit.SmokeId, 0);
++        // 烟幕只能留在支援线。两名攻击者都能到达该线，用无烟幕对照证明排除来自词条。
++        var enemySmoke = await CommandTestKit.PrepareOnSupportAsync(match, playerB, CommandTestKit.SmokeId, 1);
++        var control = await CommandTestKit.PrepareOnSupportAsync(match, playerB, CommandTestKit.InfantryId, 2);
+ 
+         // 烟幕：不可被攻击（对一切攻击者生效——含炮/轰；不进任何攻击目标候选、置黑）。
+         var infantryReport = match.CommandManager.GetCommandAvailability(infantry);
+         Assert.DoesNotContain(enemySmoke.Ref, infantryReport.Attack.Candidates);
++        Assert.Contains(control.Ref, infantryReport.Attack.Candidates);
+         var artilleryReport = match.CommandManager.GetCommandAvailability(artillery);
+         Assert.DoesNotContain(enemySmoke.Ref, artilleryReport.Attack.Candidates);
++        Assert.Contains(control.Ref, artilleryReport.Attack.Candidates);
+     }
+ 
+     // ---------- 守护 ----------
+diff --git a/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs b/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs
+index 1be8f4f..26618e8 100644
+--- a/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs
++++ b/tests/Orc.Game.Tests/RandomBattleKeywordChainTests.cs
+@@ -100,8 +100,7 @@ public class RandomBattleKeywordChainTests
+         var hostDefense = host.Modifiers.GetEffectiveValue(CardStatFields.Defense);
+         var enemyDefense = enemy.Modifiers.GetEffectiveValue(CardStatFields.Defense);
+ 
+-        // 行为②（烟幕·攻击候选筛选的真实消费）：敌方回合检查敌方坦克的攻击候选——宿主被烟幕排除、
+-        // 无烟幕对照仍在候选（证明候选面本身工作正常）。
++        // 主动攻击已移除烟幕：敌方回合宿主与无烟幕对照都应进入攻击候选。
+         await match.EndTurn(); // → T2（B）
+         CommandTestKit.Activate(enemy);
+         var availability = match.CommandManager.GetCommandAvailability(enemy);
+@@ -134,8 +133,8 @@ public class RandomBattleKeywordChainTests
+         Assert.Equal(2, run.EnemyDefenseAfterAttack);
+         Assert.Equal(3, run.HostDefenseAfterAttack);
+ 
+-        // 行为②（烟幕·被消费真实地点）：敌方攻击候选排除宿主、保留无烟幕对照。
+-        Assert.True(run.EnemyCandidatesExcludeHost);
++        // 宿主已经主动攻击，烟幕应被移除；敌方可攻击宿主和无烟幕对照。
++        Assert.False(run.EnemyCandidatesExcludeHost);
+         Assert.True(run.EnemyCandidatesContainControl);
+     }
+ 
+diff --git a/tests/Orc.Game.Tests/SmokeScreenLifecycleTests.cs b/tests/Orc.Game.Tests/SmokeScreenLifecycleTests.cs
+new file mode 100644
+index 0000000..d47d5ef
+--- /dev/null
++++ b/tests/Orc.Game.Tests/SmokeScreenLifecycleTests.cs
+@@ -0,0 +1,58 @@
++using Orc.Game.Cards;
++using Orc.Game.Commanding;
++using Xunit;
++
++namespace Orc.Game.Tests;
++
++public class SmokeScreenLifecycleTests
++{
++    [Fact]
++    public async Task MovingToFrontRemovesSmokeAndRetreatDoesNotRestoreIt()
++    {
++        var bridge = new MockTargeterBridge();
++        var match = CommandTestKit.CreateCommandMatch(bridge);
++        await match.Initialize();
++        var unit = await CommandTestKit.PrepareOnSupportAsync(match, match.Players[0], CommandTestKit.SmokeId, 1);
++        CommandTestKit.Activate(unit);
++        bridge.CollectScript = CommandTestKit.AllRefsScript(match);
++        Assert.True(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        var result = await CommandTestKit.RunCommandAsync(match, bridge, unit, match.Battlefield.FrontLine.GetInsertionGaps()[0].Ref);
++        Assert.Equal(CommandResultStatus.Success, result.Status);
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        Assert.False(await unit.Keywords.GrantAsync(KeywordIds.SmokeScreen));
++        var runtime = Orc.Game.Effects.EffectRuntime.ResolveFor(unit)!;
++        Assert.True(await runtime.MoveAsync(unit, "support"));
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++    }
++
++    [Fact]
++    public async Task DirectFrontPlacementCannotKeepOrGainSmoke()
++    {
++        var match = CommandTestKit.CreateCommandMatch();
++        await match.Initialize();
++        var unit = await CommandTestKit.PrepareOnFrontAsync(match, match.Players[0], CommandTestKit.SmokeId, 0);
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        Assert.False(await unit.Keywords.GrantAsync(KeywordIds.SmokeScreen));
++        while (!ReferenceEquals(match.CurrentPlayer, match.Players[1])) await match.EndTurn();
++        var attacker = await CommandTestKit.PrepareOnSupportAsync(match, match.Players[1], CommandTestKit.ArtilleryId, 1);
++        CommandTestKit.Activate(attacker);
++        Assert.Contains(unit.Ref, match.CommandManager.GetCommandAvailability(attacker).Attack.Candidates);
++    }
++
++    [Fact]
++    public async Task AttackingFromSupportRemovesSmokeButCancellationKeepsIt()
++    {
++        var bridge = new MockTargeterBridge();
++        var match = CommandTestKit.CreateCommandMatch(bridge);
++        await match.Initialize();
++        var unit = await CommandTestKit.PrepareOnSupportAsync(match, match.Players[0], CommandTestKit.SmokeId, 1);
++        var enemy = await CommandTestKit.PrepareOnFrontAsync(match, match.Players[1], CommandTestKit.InfantryId, 0);
++        CommandTestKit.Activate(unit);
++        bridge.CollectScript = CommandTestKit.AllRefsScript(match);
++        await CommandTestKit.CancelCommandAsync(match, bridge, unit);
++        Assert.True(unit.Keywords.Has(KeywordIds.SmokeScreen));
++        var result = await CommandTestKit.RunCommandAsync(match, bridge, unit, enemy.Ref);
++        Assert.Equal(CommandResultStatus.Success, result.Status);
++        Assert.False(unit.Keywords.Has(KeywordIds.SmokeScreen));
++    }
++}
+diff --git a/tests/Orc.Game.Tests/VeteranMechanismTests.cs b/tests/Orc.Game.Tests/VeteranMechanismTests.cs
+index 04cb0a6..d271ce8 100644
+--- a/tests/Orc.Game.Tests/VeteranMechanismTests.cs
++++ b/tests/Orc.Game.Tests/VeteranMechanismTests.cs
+@@ -153,7 +153,7 @@ public class VeteranMechanismTests
+         await match.Initialize();
+         var playerA = match.Players[0];
+ 
+-        var unit = await CommandTestKit.PrepareOnFrontAsync(match, playerA, GuardsId, 0);
++        var unit = await CommandTestKit.PrepareOnSupportAsync(match, playerA, GuardsId, 1);
+         Assert.Equal(1, unit.TurnsInPlay); // 在场回合数（既有读取面——入场即第 1 回合）
+         Assert.True(unit.Keywords.Has(KeywordIds.SmokeScreen));
+         Assert.Equal(1, DefenseOf(unit));
+diff --git a/tests/Orc.Mcp.Tests/ProjectionTests.cs b/tests/Orc.Mcp.Tests/ProjectionTests.cs
+index 69fb91d..79e314d 100644
+--- a/tests/Orc.Mcp.Tests/ProjectionTests.cs
++++ b/tests/Orc.Mcp.Tests/ProjectionTests.cs
+@@ -58,7 +58,54 @@ public class ProjectionTests
+         Assert.NotNull(actions["mulliganOpen"]);
+     }
+ 
+-    private static async Task CreateMatchAsync(SandboxFixture fixture)
++    [Fact]
++    public async Task DeploymentGaps_AreFlatUiGapsWithLiveReferences()
++    {
++        using var fixture = new SandboxFixture(McpServiceMode.Player);
++        await CreateMatchAsync(fixture);
++        using (ConsumerContext.Enter())
++        {
++            for (var seat = 0; seat < 2; seat++)
++            {
++                fixture.Service.Caller = new CallerView(Seat: seat);
++                var frame = await fixture.InvokeAsync("observe.view");
++                Assert.True(frame.Ok, frame.Message);
++                var gaps = Assert.IsType<System.Text.Json.Nodes.JsonArray>(frame.Details!["actions"]!["deploymentGaps"]);
++                Assert.NotEmpty(gaps);
++                var hq = frame.Details!["view"]!["selfHq"]!["uid"]!.GetValue<string>();
++                for (var i = 0; i < gaps.Count; i++)
++                {
++                    Assert.False(string.IsNullOrEmpty(gaps[i]!["gapId"]?.GetValue<string>()));
++                    Assert.Equal(i, gaps[i]!["ordinal"]!.GetValue<int>());
++                }
++                Assert.Contains(gaps, g => g?["leftUid"]?.GetValue<string>() == hq || g?["rightUid"]?.GetValue<string>() == hq);
++            }
++        }
++    }
++
++    [Theory]
++    [InlineData(0)]
++    [InlineData(1)]
++    public async Task ConfirmedSeatWaitsWithoutReopeningMulligan(int confirmedSeat)
++    {
++        using var fixture = new SandboxFixture(McpServiceMode.Player);
++        await CreateMatchAsync(fixture, skipMulligan: false);
++        using (ConsumerContext.Enter())
++        {
++            var confirmed = await fixture.Service.MulliganDoneAsync(confirmedSeat);
++            Assert.Equal(ActionOutcome.StatusCompleted, confirmed.Status);
++            for (var seat = 0; seat < 2; seat++)
++            {
++                fixture.Service.Caller = new CallerView(Seat: seat);
++                var frame = await fixture.InvokeAsync("observe.view");
++                Assert.True(frame.Ok, frame.Message);
++                Assert.Equal("mulligan", frame.Details!["view"]!["phase"]!.GetValue<string>());
++                Assert.Equal(seat != confirmedSeat, frame.Details["actions"]!["mulliganOpen"]!.GetValue<bool>());
++            }
++        }
++    }
++
++    private static async Task CreateMatchAsync(SandboxFixture fixture, bool skipMulligan = true)
+     {
+         var deck = Enumerable.Repeat("ai.sample.infantry", 39).ToArray();
+         var created = await fixture.Service.CreateMatchAsync(new MatchLaunchOptions
+@@ -67,7 +114,7 @@ public class ProjectionTests
+             SeatA = new MatchSeatConfig(0, deck),
+             SeatB = new MatchSeatConfig(1, deck),
+             Seed = 42,
+-            SkipMulligan = true,
++            SkipMulligan = skipMulligan,
+             EnforceDeckRules = false,
+         });
+ 
+diff --git a/tests/Orc.Server.Tests/MatchStartedNoticeTests.cs b/tests/Orc.Server.Tests/MatchStartedNoticeTests.cs
+new file mode 100644
+index 0000000..c7382ee
+--- /dev/null
++++ b/tests/Orc.Server.Tests/MatchStartedNoticeTests.cs
+@@ -0,0 +1,50 @@
++using System.Text.Json.Nodes;
++using Orc.Client;
++using Orc.Server.Admin;
++using Xunit;
++
++namespace Orc.Server.Tests;
++
++/// <summary>
++/// 入场信号：<c>notify/match.started</c> 必须真的发出去，而且**先于第一帧视图**。
++/// <para>
++/// 没有它，客户端只能靠"第一帧 notify/view"判断对局开始了；慢半拍的客户端拿到的那一帧
++/// 可能已经是 play 相位，换牌阶段就被整段跳过（2026-10-24 实机复现：房主换完牌，客机才进场）。
++/// </para>
++/// </summary>
++public sealed class MatchStartedNoticeTests
++{
++    private static async Task Admit(HostFixture fixture, OrcClient client, int seat)
++    {
++        await HostFixture.AttachControllerAsync(client, seat);
++        Assert.True((await fixture.AdminAsync(AdminOps.ConnectionAdmit,
++            new JsonObject { ["connectionId"] = client.ConnectionId })).Ok);
++    }
++
++    [Fact]
++    public async Task BothSeatsReceiveMatchStarted_BeforeTheirFirstView()
++    {
++        await using var fixture = await HostFixture.StartAsync();
++        await using var host = await fixture.ConnectAsync();
++        await using var guest = await fixture.ConnectAsync();
++        await using var hostNotes = new NotificationCollector(host);
++        await using var guestNotes = new NotificationCollector(guest);
++
++        await Admit(fixture, host, 0);
++        await Admit(fixture, guest, 1);
++
++        Assert.True((await fixture.AdminAsync(AdminOps.MatchStart)).Ok);
++
++        var started = await guestNotes.WaitAsync("notify/match.started");
++        Assert.False(string.IsNullOrWhiteSpace(started.Params?["roomId"]?.GetValue<string>()));
++        Assert.True(hostNotes.Has("notify/match.started"), "房主侧没收到 match.started");
++
++        // 换牌面板靠"先入场再收帧"才能弹出，所以顺序是被断言的契约，不是巧合。
++        var received = guestNotes.Received.ToList();
++        var startedAt = received.FindIndex(n => n.Method == "notify/match.started");
++        var firstViewAt = received.FindIndex(n => n.Method == "notify/view");
++        Assert.True(startedAt >= 0, "客人没收到 match.started");
++        Assert.True(firstViewAt < 0 || startedAt < firstViewAt,
++            $"match.started 落在了第一帧视图之后（started={startedAt}, view={firstViewAt}）");
++    }
++}
+diff --git a/tests/Orc.Server.Tests/NetworkPackageTransferTests.cs b/tests/Orc.Server.Tests/NetworkPackageTransferTests.cs
+new file mode 100644
+index 0000000..2739a01
+--- /dev/null
++++ b/tests/Orc.Server.Tests/NetworkPackageTransferTests.cs
+@@ -0,0 +1,75 @@
++using System.IO.Compression;
++using System.Text.Json.Nodes;
++using Orc.Protocol;
++using Orc.Server.Admin;
++using Xunit;
++
++namespace Orc.Server.Tests;
++
++public sealed class NetworkPackageTransferTests
++{
++    [Theory]
++    [InlineData("../escape.json")] [InlineData("/absolute.json")] [InlineData("cards/CON.png")]
++    [InlineData("cards/A.json:stream")] [InlineData("cards/../escape.json")]
++    public void ExtractionRejectsUnsafePaths(string path)
++    {
++        var root = Path.Combine(Path.GetTempPath(), "orc-net-archive-" + Guid.NewGuid().ToString("N"));
++        using var memory = new MemoryStream();
++        using (var zip = new ZipArchive(memory, ZipArchiveMode.Create, true))
++        { using var writer = new StreamWriter(zip.CreateEntry(path).Open()); writer.Write("{}"); }
++        try { Assert.Throws<InvalidDataException>(() => NetworkPackageArchive.Extract(memory.ToArray(), root)); }
++        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
++    }
++    [Fact]
++    public void ExtractionRejectsCaseConflictsAndLinks()
++    {
++        var root = Path.Combine(Path.GetTempPath(), "orc-net-archive-" + Guid.NewGuid().ToString("N"));
++        try
++        {
++            foreach (var link in new[] { false, true })
++            {
++                using var memory = new MemoryStream();
++                using (var zip = new ZipArchive(memory, ZipArchiveMode.Create, true))
++                {
++                    var entry = zip.CreateEntry("file.json"); if (link) entry.ExternalAttributes = unchecked((int)0xA0000000);
++                    using (var writer = new StreamWriter(entry.Open())) writer.Write("{}");
++                    if (!link) { using var writer = new StreamWriter(zip.CreateEntry("FILE.json").Open()); writer.Write("{}"); }
++                }
++                Assert.Throws<InvalidDataException>(() => NetworkPackageArchive.Extract(memory.ToArray(), root));
++            }
++        }
++        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
++    }
++    [Fact]
++    public async Task PendingCannotReadOrOfferAndApprovedPlayerCannotEnableUploads()
++    {
++        await using var fixture = await HostFixture.StartAsync();
++        await using var client = await fixture.ConnectAsync();
++        await HostFixture.AttachControllerAsync(client, 0);
++        foreach (var method in new[] { "pool.manifest", "pool.fetch", "pool.offer", "pool.ack" })
++            Assert.NotNull((await client.CallRawAsync(method, new JsonObject())).Error);
++        Assert.True((await fixture.AdminAsync(AdminOps.ConnectionAdmit, new JsonObject { ["connectionId"] = client.ConnectionId })).Ok);
++        Assert.Null((await client.CallRawAsync("pool.manifest", new JsonObject())).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.offer", new JsonObject())).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.transfer.policy", new JsonObject { ["allowGuestPacks"] = true })).Error);
++    }
++    [Fact]
++    public async Task CorruptOrOutOfOrderUploadCannotEnterPoolAndWrongFingerprintCannotAcknowledge()
++    {
++        await using var fixture = await HostFixture.StartAsync();
++        await using var client = await fixture.ConnectAsync();
++        await HostFixture.AttachControllerAsync(client, 0);
++        await fixture.AdminAsync(AdminOps.ConnectionAdmit, new JsonObject { ["connectionId"] = client.ConnectionId });
++        Assert.True((await fixture.AdminAsync("pool.transfer.policy", new JsonObject { ["allowGuestPacks"] = true, ["requireAlignment"] = true })).Ok);
++        var before = (await client.CallRawAsync("pool.manifest", new JsonObject())).Result!["fingerprint"]!.ToString();
++        Assert.NotNull((await client.CallRawAsync("pool.ack", new JsonObject { ["fingerprint"] = new string('0', 64) })).Error);
++        var bytes = new byte[] { 1, 2, 3 };
++        Assert.Null((await client.CallRawAsync("pool.offer", new JsonObject { ["package"] = new JsonObject {
++            ["id"] = "new-pack", ["digest"] = new string('0', 64), ["bytes"] = bytes.Length, ["sha256"] = NetworkPackageArchive.Hash(bytes) } })).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.chunk", new JsonObject { ["offset"] = 0, ["data"] = Convert.ToBase64String(bytes), ["sha256"] = new string('0', 64) })).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.chunk", new JsonObject { ["offset"] = 1, ["data"] = Convert.ToBase64String(bytes), ["sha256"] = NetworkPackageArchive.Hash(bytes) })).Error);
++        Assert.NotNull((await client.CallRawAsync("pool.commit", new JsonObject())).Error);
++        var after = (await client.CallRawAsync("pool.manifest", new JsonObject())).Result!["fingerprint"]!.ToString();
++        Assert.Equal(before, after);
++    }
++}

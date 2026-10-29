@@ -8,7 +8,9 @@ namespace Kards.Ui.OrcBridge;
 internal sealed class DesktopNativeCodegen
 {
     private const string Card="Orc.Cards.Card",Base="Orc.Game.Cards.CardBase",Unit="Orc.Game.Cards.UnitCard",Fields="Orc.Game.Cards.CardStatFields";
-    private const string Runtime="Orc.Game.Effects.AuthoringRuntime";
+    // v4：引擎的 Orc.Game.Effects.AuthoringRuntime 已删除，辅助调用全部改指本仓库的门面
+    // （逐字移植旧实现，见 DesktopNativeRuntime 的类注释）。
+    private const string Runtime="Kards.Ui.OrcBridge.DesktopNativeRuntime";
     private readonly Dictionary<string,(string Code,bool Cards)> _vars=new(StringComparer.Ordinal);
     private int _serial;
     private string Fresh()=>"orcV"+_serial++;
@@ -27,21 +29,78 @@ internal sealed class DesktopNativeCodegen
             _vars.TryAdd("target",(local,true));
             // reuse＝跨效果回指（「…。友方回合结束时，将其消灭」）：沿用上一段选中的目标，
             // 不再发起一次选靶——回合结束这类时机没人能应答，重新问就是空集。
+            // 声明的目标**都是必选**（DSL 没有"可选目标"字段，ValidateTarget 也拒收未知字段）：
+            // 选靶被玩家取消／无合法候选时拿到空集，这一段效果就不能装作"什么都没发生"继续往下跑
+            // ——那会变成"牌打出去了、费扣了、目标没死还抽了两张"。`ctx.Interrupt()` 是引擎自己的
+            // 中止语义（CounterCard：牌留手／不扣费＝命中），整条打出链回滚。
+            // 唯一例外是 reuse：它取的是上一段的既有结果，空集＝上一段没发生，后续子句照常跳过。
             selections.Add(target.TryGetProperty("reuse",out var reuse)&&reuse.ValueKind==JsonValueKind.True
                 ? $"var {local}={Runtime}.RecallTargets(orcSelf,{Literal(target.GetRawText())});"
-                : $"var {local}=await Orc.Game.Effects.AuthoringTargetContext.SelectAsync(orcSelf,{Literal(target.GetRawText())},{Literal(DesktopTargetContext.Scope(graph))},ct);");
+                : $"var {local}=await {Runtime}.SelectAsync(orcSelf,{Literal(target.GetRawText())},{Literal(DesktopTargetContext.Scope(graph))},ct);\nif({local}.Length==0){{ctx.Interrupt();return;}}");
         }
         var normalized=DesktopOrc.Request(new {method="nativeActions",actions=graph.GetProperty("actions")});
-        if(T(graph,"trigger")=="passive")
-        {
-            if(graph.TryGetProperty("condition",out _)||graph.TryGetProperty("filter",out _))throw Gap("持续效果的附加条件");
-            Orc.Game.Effects.AuthoringAuraRuntime.Validate(normalized);
-            return $"if(self is {Card} orcAuraHost) await Orc.Game.Effects.AuthoringAuraRuntime.RegisterAsync(orcAuraHost,view,{Literal(normalized.GetRawText())},ct);";
-        }
-        var body=Actions(normalized);
+        // 持续效果（光环）：v4 **有**入口（`EffectRuntime.DeclareAuraAsync`），只是表达力比旧实现窄——
+        // 常量增量＋描述式受益谓词，没有"逐候选跑一段程序"的位置。所以这里只接**真能无损表达**的那一档
+        // （单个 changeAttribute/add ＋ 阵营/区域/排除自己），其余仍在作者期明确拒绝：
+        // 硬翻会丢掉 where 条件与 set 模式（玩家看到数值不对，却查不出原因）。
+        var body = T(graph,"trigger")=="passive" ? Aura(graph) : Actions(normalized);
         if(graph.TryGetProperty("condition",out var condition))body=$"if({Predicate(condition,"orcSelf")}){{{body}}}"+(graph.TryGetProperty("else",out var alternative)?$"else{{{Actions(alternative)}}}":"");
-        return $"var orcRuntime = self is null ? null : Orc.Game.Effects.EffectRuntime.ResolveFor(self);\nif (orcRuntime is not null && self is {Card} orcSelf && {Runtime}.ShouldRun(orcSelf,view,{Literal(graph.GetRawText())}))\n{{\n{string.Join("\n",selections)}\n{body}\n}}";
+        // **v4 必须先把视图"静态化"再写业务代码**：迁移器把 csx 入口头改成了 `Func<dynamic, …>`，
+        // 于是模板里的 `var self = view.Host as Card;` 会得到一个 dynamic 的 `self`。
+        // 而 dynamic 参与的条件表达式里，模式变量**不被视为已赋值**（CS0165「使用了未赋值的局部变量 orcSelf」）——
+        // 这是 v4 才出现的问题：旧模型的入口头是强类型视图，`self` 是 `Card`。
+        // 所以这里先落两个静态局部：`orcView`（object?）与 `orcSelf`（Card?，取自 Host 字段——
+        // **不是**把视图本身转成卡：v4 的视图是 ViewCarrier，转卡恒为 null，效果会静默不执行）。
+        // 后面所有调用都按静态绑定走，既编得过，也不会因为 dynamic 派发把重载/返回值悄悄变成 dynamic。
+        // **生成的 csx 里不许出现 System.Console**：脚本求值器的引用集是白名单制
+        // （`CSharpScriptSecurityOptions.DefaultAllowedAssemblies` 只有 System.Private.CoreLib／System.Runtime／
+        // System.Collections／System.Linq／System.Text／System.Threading.Tasks／Microsoft.CSharp／
+        // System.Linq.Expressions／Orc／Orc.Game），`System.Console` 是**独立程序集**，不在白名单里。
+        // 以前这里有一行 `System.Console.WriteLine("[cg] enter ev=…")` 的迁移期调试打印，
+        // 结果是**每一张** DIY 卡都编译失败（CS0234 命名空间 System 中不存在 Console），
+        // 而失败点看起来像"某个效果写错了"，实际是生成器自己带进去的。要留痕请用引擎的日志面，不要用 Console。
+        return $"object? orcView = view;\n{Card}? orcSelf = {Runtime}.Host(orcView);\nvar orcRuntime = orcSelf is null ? null : Orc.Game.Effects.EffectRuntime.ResolveFor(orcSelf);\nif (orcRuntime is not null && orcSelf is not null && {Runtime}.ShouldRun(orcSelf,orcView,{Literal(graph.GetRawText())}))\n{{\n{string.Join("\n",selections)}\n{body}\n}}";
     }
+    /// <summary>
+    /// 持续效果（光环）→ <c>DeclareAuraAsync(host, field, delta, EffectAuraFilter)</c>。
+    /// <para>
+    /// **只接 v4 能无损表达的那一档**：单个 <c>changeAttribute/add</c>，受益面是
+    /// "阵营 ＋ 区域（＋排除自己）"这种**描述式**谓词——正好一一对应 <c>EffectAuraFilter</c> 的字段。
+    /// 带 <c>where</c> 逐候选求值、<c>set</c> 模式、多动作、显式选靶、条件的，一律仍然拒绝：
+    /// 硬翻成常量增量会丢掉条件（玩家看到数值不对，却查不出原因），那是比"不支持"更糟的结果。
+    /// </para>
+    /// <para>
+    /// 挂载时机由 <c>DiyCardCompiler</c> 决定（单位卡＝<c>unit.deployed</c>），所以光环在**入场时**声明；
+    /// 宿主离场/死亡由引擎的 <c>AuraDeclaration</c> 自动撤销，不需要在这里订卸载。
+    /// </para>
+    /// </summary>
+    private static string Aura(JsonElement graph)
+    {
+        if(graph.TryGetProperty("targets",out _))throw Gap("持续效果（光环）带显式选靶");
+        if(graph.TryGetProperty("condition",out _))throw Gap("持续效果（光环）带条件");
+        if(graph.GetProperty("actions").GetArrayLength()!=1)throw Gap("持续效果（光环）包含多个动作");
+        var action=graph.GetProperty("actions")[0];
+        Only(action,"op","target","property","mode","value");
+        if(T(action,"op")!="changeAttribute")throw Gap("持续效果（光环）的动作 "+T(action,"op"));
+        if(T(action,"mode")!="add")throw Gap("持续效果（光环）的 set 模式（v4 的光环入口只有常量增量）");
+        var property=T(action,"property");
+        if(property is not ("attack" or "defense"))throw Gap("持续效果（光环）作用于 "+property);
+        if(!action.TryGetProperty("value",out var value)||value.ValueKind!=JsonValueKind.Number)throw Gap("持续效果（光环）的增量");
+        var delta=value.GetInt32();
+        if(delta==0)throw Gap("持续效果（光环）的增量为 0");
+
+        var target=action.GetProperty("target");
+        Only(target,"sel","side","zone","excludeSelf");
+        if(T(target,"sel")!="all")throw Gap("持续效果（光环）的选择方式 "+T(target,"sel"));
+        var side=T(target,"side");
+        if(side is not ("" or "friendly"))throw Gap("持续效果（光环）的受益阵营 "+side);
+        var zone=T(target,"zone");
+        if(zone is not ("field" or "frontline" or "support"))throw Gap("持续效果（光环）的受益区域 "+zone);
+        var excludeSelf=target.TryGetProperty("excludeSelf",out var exclude)&&exclude.ValueKind==JsonValueKind.True;
+        var filter=$"new Orc.Game.Effects.EffectAuraFilter(Side:\"friendly\",Zone:{Literal(zone)},ExcludeSelf:{(excludeSelf?"true":"false")})";
+        return $"await orcRuntime.DeclareAuraAsync(orcSelf,{Literal(property)},{delta},{filter},ct);";
+    }
+
     private string Actions(JsonElement actions)=>string.Join("\n",actions.EnumerateArray().Select(Action));
     private string Action(JsonElement a)
     {
@@ -143,10 +202,11 @@ internal sealed class DesktopNativeCodegen
                     case "battleUnits":Only(a,"op","target","with");body=$"foreach(var orcOpponent in {Query(a.GetProperty("with"))}) await orcRuntime.BattleAsync({item},orcOpponent,orcSelf,ct);";break;
                     case "bindEvent":case "grantEffect":
                     {
-                        Only(a,"op","target","effect");var nested=DesktopNativeLowering.Lower(a.GetProperty("effect").GetRawText());
-                        var key=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(a.GetProperty("effect").GetRawText())))[..16];
-                        var snapshot=OrcImportService.CompileOrcEffect("diy.grant."+key,nested).JsonText;
-                        body=$"var orcAttached=await orcRuntime.AttachSnapshotAsync({item},{Literal(snapshot)},ct); if(!orcAttached.IsSuccess)throw new InvalidOperationException(orcAttached.ToString());";break;
+                        // v4 明确不支持：`EffectRuntime.AttachSnapshotAsync` 随 Effect 家族删除，
+                        // 新模型里"给一张卡临时挂一段效果"只能走**组件资产**（effects-v4/*.component.json
+                        // ＋ mounts 声明），那是打包期的事，运行期没有等价入口。
+                        // 在作者期拒绝，编辑器里立刻能看到原因，而不是做出一张哑弹。
+                        throw Gap("给目标临时附加效果（bindEvent／grantEffect）：v4 没有运行期挂载效果快照的入口");
                     }
                     case "suppressUnit":Only(a,"op","target");body=$"await orcRuntime.SilenceAsync({item},ct);";break;
                     case "setPinned":
@@ -200,7 +260,7 @@ internal sealed class DesktopNativeCodegen
         if(sel is "ref" or "refAll")
         {
             var reference=T(q,"ref");
-            return reference is "self" or "source"?$"new {Card}[]{{orcSelf}}":reference is "eventUnit" or "eventCard" or "dead" or "attacker"?$"new {Card}[]{{{Runtime}.EventCard(view)}}.Where(c=>c is not null).ToArray()":
+            return reference is "self" or "source"?$"new {Card}[]{{orcSelf}}":reference is "eventUnit" or "eventCard" or "dead" or "attacker"?$"new {Card}[]{{{Runtime}.EventCard(orcView)}}.Where(c=>c is not null).ToArray()":
                 _vars.TryGetValue(reference,out var v)&&v.Cards?v.Code:throw Gap("选靶引用 "+reference);
         }
         if(sel=="adjacent")
@@ -255,8 +315,8 @@ internal sealed class DesktopNativeCodegen
     private string Subject(string name,string candidate)=>_vars.TryGetValue(name,out var variable)&&variable.Cards?$"({variable.Code}).FirstOrDefault()":name switch
     {
         "self" or "source"=>"orcSelf","candidate" or "current"=>candidate,
-        "eventUnit" or "eventCard" or "dead" or "attacker"=>$"{Runtime}.EventCard(view)",
-        "target" or "defender" or "attackTarget"=>$"{Runtime}.EventTarget(view)",
+        "eventUnit" or "eventCard" or "dead" or "attacker"=>$"{Runtime}.EventCard(orcView)",
+        "target" or "defender" or "attackTarget"=>$"{Runtime}.EventTarget(orcView)",
         _=>_vars.TryGetValue(name,out var v)&&v.Cards?$"({v.Code}).FirstOrDefault()":throw Gap("对象引用 "+name)
     };
     private string Read(JsonElement e,string candidate)

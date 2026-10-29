@@ -26,13 +26,13 @@ public sealed class NetworkWorkshopSession
         {
             var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(source, "manifest.json")))!;
             var id = manifest["id"]!.ToString();
-            var target = Path.Combine(directory, NetworkPackageArchive.Key(id));
+            var target = Path.Combine(directory, PackPaths.Key(id));
             WorkshopPackageArchive.Copy(source, target);
             if (!roots.TryAdd(id, target)) throw new InvalidDataException("重复卡包：" + id);
         }
         // IDs depend on the authored identity, never on machine paths or connection order.
         string Package(DiyCardDraft c) => c.PackId.StartsWith("pack/", StringComparison.Ordinal) ? c.PackId[5..] : "workshop.loose";
-        var ids = drafts.ToDictionary(c => c.RuntimeId, c => c.SourceCardId.Length > 0 ? c.SourceCardId : "pack/" + Package(c) + "/card." + NetworkPackageArchive.Key(c.Id)[..32].ToLowerInvariant(), StringComparer.Ordinal);
+        var ids = drafts.ToDictionary(c => c.RuntimeId, c => c.SourceCardId.Length > 0 ? c.SourceCardId : "pack/" + Package(c) + "/card." + PackPaths.Key(c.Id)[..32].ToLowerInvariant(), StringComparer.Ordinal);
         if (deck.FirstOrDefault(id => id.StartsWith("diy/", StringComparison.Ordinal) && !ids.ContainsKey(id)) is { } missing)
             throw new InvalidDataException("找不到所选 DIY 卡牌的可执行草稿：" + missing);
         var selected = drafts.Where(c => deck.Contains(c.RuntimeId)).Select(Package).ToHashSet(StringComparer.Ordinal);
@@ -47,7 +47,7 @@ public sealed class NetworkWorkshopSession
             var id = group.Key;
             if (!roots.TryGetValue(id, out var root))
             {
-                root = Path.Combine(directory, NetworkPackageArchive.Key(id)); System.IO.Directory.CreateDirectory(root); roots.Add(id, root);
+                root = Path.Combine(directory, PackPaths.Key(id)); System.IO.Directory.CreateDirectory(root); roots.Add(id, root);
                 var manifest = new JsonObject { ["schemaVersion"] = 2, ["id"] = id, ["kind"] = "cardpack",
                     ["guid"] = StableGuid("package/" + id), ["version"] = "1.0.0", ["name"] = WorkshopAuthoring.PackNames.GetValueOrDefault("pack/" + id, "工坊自建卡包"), ["metadata"] = new JsonArray() };
                 Save(root, "manifest.json", manifest);
@@ -66,6 +66,25 @@ public sealed class NetworkWorkshopSession
             presentation["nations"] = new JsonArray(nations.Values.ToArray());
             var family = Kards.Ui.Core.DeckCardPacks.Family("pack/" + id);
             if (family != "pack/" + id) presentation["basePackId"] = family.StartsWith("pack/") ? family[5..] : family;
+            // 阵营声明随包落盘（factions.json）：卡定义的 faction 是引擎**进程级值域**的硬校验项。
+            // 只在宿主进程里 RegisterCustom 是不够的——桌面联机的服务端是独立子进程，
+            // 那边没有这些阵营，于是本包每张卡都在装载期被判失败（卡池里一张都没有，读面还报"一切正常"）。
+            // 清单取三处并集：① 游戏自带的独立国家（av76/deran/usg/un/nsf，不是引擎常量表里的）；
+            // ② 工坊自建国家；③ 这批卡实际用到的国家（作者改了国家但没进声明时兜底）。
+            var declared = Kards.Ui.Core.DeckNations.CustomNations
+                .Select(Kards.Ui.Core.DeckNations.Canonical)
+                .Concat(WorkshopAuthoring.NetworkNations(group.First().PackId).Select(n => n.Id))
+                .Concat(family != "pack/" + id ? WorkshopAuthoring.NetworkNations(family).Select(n => n.Id) : [])
+                .Concat(group.Select(draft => Kards.Ui.Core.DeckNations.Canonical(draft.Nation)))
+                .Where(nation => nation.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(nation => nation, StringComparer.Ordinal)
+                .ToArray();
+            Save(root, "factions.json", new JsonObject {
+                ["schemaVersion"] = 1,
+                ["factions"] = new JsonArray(declared
+                    .Select(n => (JsonNode)new JsonObject { ["id"] = n, ["major"] = true }).ToArray()),
+            });
             // 词条名字：规则在 network-vocabulary.json（只有引擎 id），名字只能进展示层。
             // 少了这一段，收包人的卡面把自定义词条显示成 "◇ kw-76e1c7658f9a…"。
             var keywordNames = (presentation["keywords"] as JsonArray ?? new()).OfType<JsonObject>()
@@ -114,10 +133,10 @@ public sealed class NetworkWorkshopSession
                 entry["flavor"] = draft.Flavor;
                 if (draft.ArtFile.Length > 0 && artDirectory is not null)
                 {
-                    var source = NetworkPackageArchive.Child(artDirectory, draft.ArtFile);
+                    var source = PackPaths.Child(artDirectory, draft.ArtFile);
                     if (!File.Exists(source)) throw new InvalidDataException("缺少自建卡图：" + draft.Name);
-                    var art = "art/" + NetworkPackageArchive.Hash(File.ReadAllBytes(source)) + ".png";
-                    System.IO.Directory.CreateDirectory(Path.Combine(root, "art")); File.Copy(source, NetworkPackageArchive.Child(root, art), true);
+                    var art = "art/" + PackPaths.Hash(File.ReadAllBytes(source)) + ".png";
+                    System.IO.Directory.CreateDirectory(Path.Combine(root, "art")); File.Copy(source, PackPaths.Child(root, art), true);
                     entry["art"] = art; entry["artKind"] = draft.ArtImportMode == "full" ? "full" : "illustration";
                 }
                 presentation["cards"]![localId] = entry;
@@ -134,11 +153,11 @@ public sealed class NetworkWorkshopSession
         foreach (var group in chosen.GroupBy(Package))
         {
             var root = roots[group.Key]; var manifest = Read(root, "manifest.json");
-            manifest["version"] = NetworkPackageArchive.Digest(root)[..32]; Save(root, "manifest.json", manifest);
+            manifest["version"] = PackPaths.Digest(root)[..32]; Save(root, "manifest.json", manifest);
         }
         return new() { Directory = directory, Roots = roots.Values.ToArray(), CardIds = ids };
     }
-    private static string StableGuid(string id) => new Guid(Convert.FromHexString(NetworkPackageArchive.Key(id)[..32])).ToString();
+    private static string StableGuid(string id) => new Guid(Convert.FromHexString(PackPaths.Key(id)[..32])).ToString();
     private static void CleanupExpired(string sessionRoot)
     {
         if (!System.IO.Directory.Exists(sessionRoot)) return;
@@ -147,15 +166,15 @@ public sealed class NetworkWorkshopSession
         {
             if (!Guid.TryParseExact(Path.GetFileName(candidate), "N", out _) || !Path.GetFullPath(candidate).StartsWith(parent, StringComparison.OrdinalIgnoreCase)
                 || (File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0 || System.IO.Directory.GetCreationTimeUtc(candidate) > DateTime.UtcNow.AddHours(-24)) continue;
-            try { _ = NetworkPackageArchive.Files(candidate).Count(); System.IO.Directory.Delete(candidate, true); }
+            try { _ = PackPaths.Files(candidate).Count(); System.IO.Directory.Delete(candidate, true); }
             catch (IOException) { } catch (UnauthorizedAccessException) { } catch (InvalidDataException) { }
         }
     }
-    private static JsonObject Read(string root, string path) => JsonNode.Parse(File.ReadAllText(NetworkPackageArchive.Child(root, path)))!.AsObject();
+    private static JsonObject Read(string root, string path) => JsonNode.Parse(File.ReadAllText(PackPaths.Child(root, path)))!.AsObject();
     private static JsonObject ReadOptional(string root, string path) => File.Exists(Path.Combine(root, path)) ? Read(root, path) : new();
     private static void Save(string root, string path, JsonNode value)
     {
-        var target = NetworkPackageArchive.Child(root, path); System.IO.Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        var target = PackPaths.Child(root, path); System.IO.Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         File.WriteAllText(target, value.ToJsonString());
     }
     private static void ReplaceReferences(JsonNode node, IReadOnlyDictionary<string, string> ids)

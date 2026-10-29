@@ -639,37 +639,37 @@ P4 组合设置的「应用修改」、P5「重新绑定」的 OK、P7「移除/
 5. 子进程退出依赖引擎的 2 秒轮询，不是即时；PID 复用窗口在服务端这种短命进程上可接受
    （引擎注释里已写明这个取舍）。
 
-## P9 发版收口 — ⏸ 未发版（按指示停在"只准备、不发布"）
-
-版本号、补丁、GitHub Release、`check-consistency.ps1` = `CONSISTENCY_OK`，
-并按[验收矩阵](DEPLOY_TARGETING_ALPHA5_REOPEN_HANDOFF_20261025.md)跑一遍双端。
-
-### 本轮做到哪一步
-
-用户明确**本轮不发版**，所以只做"发布前能做的事"，一步都不越过 tag：
+## P9 发版收口 — ✅ 已发版 2.0.0-alpha.6（2026-10-28）
 
 | 项 | 状态 |
 |---|---|
-| `check-consistency.ps1` | ✅ `CONSISTENCY_OK`（0 红 1 黄，黄项＝工作区有未提交文件） |
-| 发行说明 | ✅ 草稿已写：[RELEASE_2.0.0_ALPHA6_DRAFT](../release/RELEASE_2.0.0_ALPHA6_DRAFT.md) |
-| 版本号 | ⏸ **故意不动**，仍是 `2.0.0-alpha.5` |
-| 发行目录 / 补丁 / APK / tag / 推送 | ⏸ 全部没做 |
-| 双端验收矩阵 | ⏸ 未跑（需要真机与导出产物） |
+| `VERSION` / Android 版本 | `2.0.0-alpha.6`，`versionCode=11` |
+| Windows 全量 | `dist/releases/2.0.0-alpha.6/full/OrC-KSD-2.0.0-alpha.6-win-x64.zip`（1,223,387,432 字节，本机保留不上传） |
+| 增量补丁 | `from-E78E6CD6D59B-to-12CD07C37C83`，6,908,561 字节（alpha.5 → 本版，45 个文件变化） |
+| 更新器 | 1.2.0（未升版，补丁校验规则没变） |
+| 构建标识 | `12CD07C37C83A93F788897D864A9801C4B4DF7BF56110BA8CEBDEF94CC8264542` |
+| 升级验证 | 真实更新器 `GODOT_UPDATER_VERIFY_OK` → 逐文件一致 → 玩家文件未被改动 → 升级后 EXE `EXPORT_VERIFY_OK` |
+| Android | 签名 APK，`arm64-v8a` + `x86_64`，`versionCode=11` |
+| 发行说明 | [RELEASE_2.0.0_ALPHA6_20261028](../release/RELEASE_2.0.0_ALPHA6_20261028.md) |
+| `check-consistency.ps1` | `CONSISTENCY_OK` |
 
-**为什么版本号必须和发行目录一起动**：`check-consistency.ps1` 的 R2 规则是
-`VERSION` 必须等于 `dist/releases/` 里最新的目录名。只改 `VERSION` 不改目录，核对立刻变红——
-于是"绿着"这个信号就废了。所以顺序永远是：先建目录与产物，再改 `VERSION`，最后跑核对。
+### 发版时踩到的三件事（写下来，下次省一次排查）
 
-### 发版前还差什么（写清，免得下次又从头猜）
+1. **引擎侧不是"没动"**。`4c238db`（10-25 23:39）比 alpha.5 打包时间（22:09）晚，所以本版带一个引擎提交，
+   累计补丁要按 `a0b3511..HEAD` 重新生成，不能照抄 alpha.5 那份。
+   **判据：比的是"打包时间"，不是"我记得没改过"。** 补丁生成后用 `git worktree` 拉一个 `a0b3511` 的干净树
+   `git apply --check` 过一遍，确认能干净应用。
+2. **`prepare-android-platform.ps1` 缺 BOM**。它是 `tools/` 下唯一一个"有中文却没有 BOM"的脚本，
+   PowerShell 5.1 按 ANSI 读会把中文和引号配错，报的是 `Unexpected token 'RoomHostService.java')`——
+   看起来像脚本写错了，其实是编码。已补 BOM（内容未改）。这就是交接文档里"外部 .ps1 不要写中文"那条坑的翻版。
+3. **引擎 `Orc.Server.Tests` 有 1 条时序用例偶发红**：`MatchStartedNoticeTests` 在断言"房主侧收到入场信号"时
+   没有等待（只等了客人侧），整机满载并行跑时可能抢不到。单独复跑 5/5 通过，与本版改动无关。
+   发行说明里如实写了，没有粉饰成"全绿"。
 
-1. **ARM64 实体机验收**——这是唯一还悬着的"能不能信"。模拟器只能替一部分；
-   P8 的切后台提示、前台服务重开、ARM64 打包都没上过实体机。
-2. 改 `VERSION` + 新建 `dist/releases/2.0.0-alpha.6/`（两者同时）。
-3. Windows 导出 + 增量补丁（`release.ps1` → `build-compatible-update.ps1`）。
-4. Android 签名 APK（`export-android.ps1`），更新 `versionCode`。
-5. `check-consistency.ps1 -WriteIndex` 重生成 `docs/release/RELEASE_INDEX.md`。
-6. 打 tag `v2.0.0-alpha.6`、推送、建 prerelease、传补丁/更新器/APK/SHA256。
-7. 把发行说明改名去掉 `_DRAFT`，补构建标识、体积与校验值。
+### 发版后仍然悬着的
+
+**ARM64 实体机验收**——模拟器只能替一部分；P8 的切后台提示、前台服务重开、ARM64 打包都没上过实体机。
+本版发行说明已明确写"不宣称实体手机实测"，没有把模拟器结论冒充真机结论。
 
 ---
 

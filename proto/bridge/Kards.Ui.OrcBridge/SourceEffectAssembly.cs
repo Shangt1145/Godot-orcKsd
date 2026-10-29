@@ -2,6 +2,7 @@ using System.Text.Json;
 using Kards.Ui.Contracts;
 using Orc.Cards;
 using Orc.Core;
+using Orc.Core.Model;
 using Orc.Game;
 using Orc.Game.Cards;
 using Orc.Game.Effects;
@@ -11,7 +12,33 @@ using Orc.Game.Triggers;
 
 namespace Kards.Ui.OrcBridge;
 
-/// <summary>Reviewed source DSL adapters. All state changes use the engine's rule services.</summary>
+/// <summary>
+/// Reviewed source DSL adapters. All state changes use the engine's rule services.
+/// <para>
+/// **v4 装配形态（S13 迁移）**：旧实现把主动效果挂成 <c>OrderCard.AddEffect(ActiveEffect&lt;TView&gt;)</c>、
+/// 把反制的死亡触发挂成 <c>Trigger&lt;CardEventView&gt;</c> + <c>Engine.Bus.Mount</c>。
+/// v4 删除了 <c>ActiveEffect</c>／<c>Trigger</c>／<c>Bus</c> 三者，主动效果的承载点改成了**引擎成员上的边**：
+/// </para>
+/// <list type="bullet">
+/// <item>指令主动效果 → <c>engine#card.played</c>（<see cref="GameUpdates.CardPlayed"/>）。
+///   该信号由 <c>PlayManager</c> 在 <c>engine#order.cast</c> 的宣告点（priority 100）发出，
+///   位次在**反制检查之后**（被反制的指令不发本信号 ⇒ 效果不触发）、在**扣费/离手之前**——
+///   与旧 <c>ICastAction</c> 在 <c>OnResolve</c> 里执行的位次等价。</item>
+/// <item>反制的「友方单位死亡」被动 → <c>engine#card.died</c>（<see cref="GameUpdates.CardDied"/>），
+///   仍是全局一条边 + 卡内 <c>IsActive</c> 闸门，与旧 <c>Trigger.Passive + Bus.Mount</c> 同构。</item>
+/// </list>
+/// <para>
+/// **为什么不用 <c>engine#order.cast</c> 直接挂结算边**：那要依赖该成员内部的优先级布局（0＝反制、
+/// 100＝宣告点、自有边最后），属于引擎流程的私有排序；<c>card.played</c> 是引擎文档里写明的主动效果承载点
+/// （见 <c>IOrderAction</c>／<c>OrderCard</c> 注释），排序由引擎保证。代价是拿不到流程载荷里的
+/// <c>Target</c>（<c>card.played</c> 载荷只有 Card／Player／Source），目标一律取自预打出捕获——
+/// 见 <see cref="TakeCastSelection"/> 的说明。
+/// </para>
+/// <para>
+/// **异常口径**：v4 成员边不做隔离，异常直接上抛、打出段不发生（<c>Signals.cs</c>："隔离＋继续"随 b5 退役）。
+/// 因此这里凡是「拿不到本该有的选靶/选项」都**明确抛错**，不静默跳过——静默会让牌打出去却什么都没发生。
+/// </para>
+/// </summary>
 internal sealed class SourceEffectAssembly : IDisposable
 {
     private static readonly HashSet<string> Supported = new(StringComparer.Ordinal)
@@ -24,6 +51,8 @@ internal sealed class SourceEffectAssembly : IDisposable
     private readonly Match _match;
     private readonly Action<string> _targetFailure;
     private readonly IReadOnlyDictionary<string, JsonElement> _plans;
+    /// <summary>本装配挂出去的全部成员边（句柄即权限；<see cref="Dispose"/> 逐条撤销——取代旧的 <c>Bus.UnmountOwner(this)</c>）。</summary>
+    private readonly List<IDisposable> _edges = [];
     private bool _disposed;
     /// <summary>
     /// 预打出阶段捕获的完整选择。指向只有三种：单选择（玩家选一个）、全部指向（所有单位）、随机指向（随机一个）；
@@ -43,30 +72,25 @@ internal sealed class SourceEffectAssembly : IDisposable
             var plan = declarations.EnumerateArray().Single();
             if (card is OrderCard command)
             {
+                // 预打出捕获（S2）：v4 保留了 AddPrePlayHandler（接为 host#pre-play 的自有边），签名不变。
                 command.AddPrePlayHandler("source/choose", (view, ctx, ct) => CaptureAsync(command, plan, view, ct));
-                // S13：引擎删除了 OrderCard.AddActiveHandler，主动效果统一经 AddEffect + ActiveEffect 承载
-                // （见 OrderCard 注释：施放时由 OrderFlow 按登记序执行 ICastAction）。
-                command.AddEffect(new SourceOrderCast(this, command, plan));
+                // 主动效果：engine#card.played 上的一条外来边（见类注释的位次论证）。
+                // 闸门＝引用相等：card.played 对单位部署也会发，只有本卡自己的宣告才执行本效果。
+                _edges.Add(match.Engine.AttachMemberEdge(
+                    GameUpdates.CardPlayed,
+                    "source/execute:" + id,
+                    this,
+                    MemberEdges.For<CardEventView>((view, _, ct) => CastAsync(command, plan, view, ct))));
             }
             else if (card is CounterCard counter)
             {
                 // Activation/cancellation and reservation/refund stay in UseCounterAsync. The source
                 // condition listens to an actual death, not the engine's activation notification.
-                var trigger = new Trigger<CardEventView>("source/friendly-death", TriggerKind.Passive,
-                    events: [new TriggerEvent<CardEventView>("source/counter", async (view, ctx, ct) =>
-                    {
-                        if (_disposed || !counter.GetData<CounterActivationData>().IsActive || counter.Owner is not { } owner
-                            || view.Card is not UnitCard dead || !ReferenceEquals(dead.Owner, owner)) return;
-                        counter.GetData<CounterActivationData>().IsActive = false;
-                        owner.Hand.Remove(counter); // Consume the reserved card once; spending is not refunded.
-                        await match.Engine.Emit(GameUpdates.CounterTriggered, new Dictionary<string, object?>
-                        {
-                            [GameUpdates.PayloadCard] = counter, [GameUpdates.PayloadPlayer] = owner,
-                            ["UiCounterStage"] = "triggered"
-                        }, ct);
-                        await ExecuteAsync(counter, plan.GetProperty("actions"), new(), ct);
-                    })], hooks: [GameUpdates.CardDied], owner: this);
-                match.Engine.Bus.Mount(trigger);
+                _edges.Add(match.Engine.AttachMemberEdge(
+                    GameUpdates.CardDied,
+                    "source/friendly-death:" + id,
+                    this,
+                    MemberEdges.For<CardEventView>((view, _, ct) => OnFriendlyDeathAsync(counter, plan, view, ct))));
             }
         }
     }
@@ -75,6 +99,34 @@ internal sealed class SourceEffectAssembly : IDisposable
     {
         public Dictionary<string, Card> Targets { get; } = new(StringComparer.Ordinal);
         public string? Option { get; set; }
+    }
+
+    /// <summary>
+    /// 指令主动效果的执行入口（<c>engine#card.played</c> 的订阅体）。
+    /// 只处理本卡自己的宣告：<c>card.played</c> 是全局信号，单位的部署宣告也走它。
+    /// </summary>
+    private async Task CastAsync(OrderCard card, JsonElement plan, CardEventView view, CancellationToken ct)
+    {
+        if (_disposed || !ReferenceEquals(view.Card, card)) return;
+        await ExecuteAsync(card, plan.GetProperty("actions"), TakeCastSelection(plan), ct);
+    }
+
+    /// <summary>
+    /// 反制的「友方单位死亡」被动（<c>engine#card.died</c> 的订阅体）。
+    /// 消耗与更新语义逐字沿用旧实现：置未激活 → 离手（不退费）→ 发 <c>counter.triggered</c> → 执行 actions。
+    /// </summary>
+    private async Task OnFriendlyDeathAsync(CounterCard counter, JsonElement plan, CardEventView view, CancellationToken ct)
+    {
+        if (_disposed || !counter.GetData<CounterActivationData>().IsActive || counter.Owner is not { } owner
+            || view.Card is not UnitCard dead || !ReferenceEquals(dead.Owner, owner)) return;
+        counter.GetData<CounterActivationData>().IsActive = false;
+        owner.Hand.Remove(counter); // Consume the reserved card once; spending is not refunded.
+        await _match.Engine.Emit(GameUpdates.CounterTriggered, new Dictionary<string, object?>
+        {
+            [GameUpdates.PayloadCard] = counter, [GameUpdates.PayloadPlayer] = owner,
+            ["UiCounterStage"] = "triggered"
+        }, ct);
+        await ExecuteAsync(counter, plan.GetProperty("actions"), new Selection(), ct);
     }
 
     public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
@@ -172,7 +224,10 @@ internal sealed class SourceEffectAssembly : IDisposable
                 case "damageHQ":
                     await runtime.DamageAsync(_match.Players.Single(p => p != source.Owner).Hq, Number(action, "amount"), source, ct); break;
                 case "chooseOne":
-                    await ExecuteAsync(source, action.GetProperty("options")[int.Parse(selection.Option!)].GetProperty("actions"), selection, ct); break;
+                    if (selection.Option is not { } choice)
+                        throw new InvalidOperationException(
+                            $"指令 '{source.Name}' 的选项结果缺失（预打出阶段没有捕获到 chooseOne 选项）：拒绝执行以避免选项错位。");
+                    await ExecuteAsync(source, action.GetProperty("options")[int.Parse(choice)].GetProperty("actions"), selection, ct); break;
                 case "conditional":
                     var condition = action.GetProperty("condition");
                     var types = condition.GetProperty("unitType").EnumerateArray().Select(t => t.GetString()!).ToArray();
@@ -207,57 +262,57 @@ internal sealed class SourceEffectAssembly : IDisposable
     private static async Task<IReadOnlyList<Card>> TargetsAsync(Card source, JsonElement target, Selection selection,
         EffectRuntime runtime, CancellationToken ct)
     {
-        if (target.ValueKind == JsonValueKind.String) return [selection.Targets[target.GetString()!]];
-        if (target.TryGetProperty("id", out var id)) return [selection.Targets[id.GetString()!]];
+        if (target.ValueKind == JsonValueKind.String) return [RequireTarget(source, selection, target.GetString()!)];
+        if (target.TryGetProperty("id", out var id)) return [RequireTarget(source, selection, id.GetString()!)];
         return await runtime.SelectAsync(source, new(Text(target, "sel"), Text(target, "side")), ct);
     }
+
+    /// <summary>
+    /// 取预打出阶段捕获的目标。缺失＝明确失败（不静默跳过）：v4 的 <c>card.played</c> 载荷不带流程的
+    /// <c>Target</c>，目标唯一来源就是预打出捕获；拿不到却继续执行会变成"效果打空"这种查不出来的错。
+    /// </summary>
+    private static Card RequireTarget(Card source, Selection selection, string key) =>
+        selection.Targets.TryGetValue(key, out var card)
+            ? card
+            : throw new InvalidOperationException(
+                $"指令 '{source.Name}' 的选靶结果里没有 '{key}'（预打出阶段未捕获到该目标）：拒绝执行以避免效果打空。");
+
     private static string Text(JsonElement e, string key, string fallback = "") =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var v) ? v.GetString()! : fallback;
     private static int Number(JsonElement e, string key) => e.TryGetProperty(key, out var v) ? v.GetInt32() : 0;
-    public void Dispose() { _disposed = true; _pendingCapture = null; _match.Engine.Bus.UnmountOwner(this); }
 
-    /// <summary>
-    /// S13 迁移：指令的主动效果。引擎把「主动 handler 集」换成了 ActiveEffect（见 OrderCard 注释），
-    /// 施放时由 OrderFlow 按登记序调用，语义与原 AddActiveHandler 一致——每次打出执行一次。
-    /// 视图用 <see cref="OrderCastView"/>：施放载荷只有 Source/Target/Amount 三个键，
-    /// 而引擎的 OrderFlowView 还要求必填的 Orders（载荷里没有），会绑定失败并被静默吞掉。
-    /// </summary>
-    private sealed class SourceOrderCast : ActiveEffect<OrderCastView>
+    /// <summary>撤销本装配挂出的全部成员边（幂等）。</summary>
+    public void Dispose()
     {
-        public SourceOrderCast(SourceEffectAssembly assembly, CardBase card, JsonElement plan)
-            : base("source/execute", castEvents:
-            [
-                new TriggerEvent<OrderCastView>("source/execute",
-                    (view, ctx, ct) => assembly.ExecuteAsync(card, plan.GetProperty("actions"),
-                        assembly.TakeCastSelection(plan, view), ct))
-            ])
-        { }
+        if (_disposed) return;
+        _disposed = true;
+        _pendingCapture = null;
+        foreach (var edge in _edges) edge.Dispose();
+        _edges.Clear();
     }
 
     /// <summary>
-    /// 施放侧重建选择。指向只有三种：**单选择**（玩家选一个）、**全部指向**（所有单位）、**随机指向**（随机一个），
-    /// 后两种由效果自己遍历/抽取，不需要玩家传目标。所以这里只需把单选择的那个目标补回来：
-    /// 引擎只把捕获箱里第一个可解析的 Card 作为 <c>view.Target</c> 传下来。
-    /// chooseOne 的选项从预打出阶段留下的 <see cref="_pendingCapture"/> 取回。
+    /// 施放侧取走预打出留下的完整选择。
+    /// <para>
+    /// 与旧 <c>TakeCastSelection(plan, view)</c> 的差别：旧实现会拿 <c>OrderCastView.Target</c>（流程载荷里的
+    /// 施放目标）补一遍 <c>selection.Targets</c>；v4 的 <c>card.played</c> 载荷没有 <c>Target</c> 键，
+    /// 这条补位路径没有了。目标改由预打出捕获**单独**承载——两者本来就是同一张卡
+    /// （捕获箱里第一个可解析的 Card 就是 <c>PlayManager.ResolveOrderTarget</c> 交给流程的那一个），
+    /// 所以语义等价；差异只在于捕获缺失时旧实现会退化成"无目标"，这里改成明确抛错。
+    /// </para>
     /// </summary>
-    private Selection TakeCastSelection(JsonElement plan, OrderCastView view)
+    private Selection TakeCastSelection(JsonElement plan)
     {
-        var selection = new Selection();
-        if (view.Target is { } target && plan.TryGetProperty("targets", out var targets))
-        {
-            foreach (var entry in targets.EnumerateArray())
-            {
-                if (entry.TryGetProperty("id", out var id) && id.GetString() is { Length: > 0 } key)
-                    selection.Targets.TryAdd(key, target);
-            }
-        }
-
-        if (_pendingCapture?.Option is { } option)
-        {
-            selection.Option = option;
-            foreach (var pair in _pendingCapture.Targets) selection.Targets.TryAdd(pair.Key, pair.Value);
-        }
+        var captured = _pendingCapture;
         _pendingCapture = null;
-        return selection;
+        if (captured is not null) return captured;
+
+        if (plan.TryGetProperty("targets", out var targets) && targets.GetArrayLength() > 0)
+            throw new InvalidOperationException(
+                "指令的选靶结果缺失（预打出捕获未发生）：本卡的主动效果无法确定目标，拒绝执行。");
+        if (plan.GetProperty("actions").EnumerateArray().Any(a => Text(a, "op") == "chooseOne"))
+            throw new InvalidOperationException(
+                "指令的选项结果缺失（预打出捕获未发生）：本卡的 chooseOne 无法确定分支，拒绝执行。");
+        return new Selection();
     }
 }

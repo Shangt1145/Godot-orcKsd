@@ -16,11 +16,11 @@ dotnet build -p:OrcEngineRoot="D:\dev\OrC-KSD\src\Orc.Game"
 ```
 
 找不到引擎时构建会直接报 `error ORC001` 并列出这三种办法，不会静默失败。
-alpha.5 的引擎版本及累计配套补丁见 [接入基线](docs/engine/ENGINE_INTEGRATION_BASELINE.md)；只克隆引擎主干尚不足以构建本版。
+beta.1 的引擎版本及累计配套补丁见 [接入基线](docs/engine/ENGINE_INTEGRATION_BASELINE.md)；只克隆引擎主干尚不足以构建本版。
 另需 .NET 8/9 SDK 与 Godot 4.7 **.NET(mono)** 版；编辑器一键入口 `tools\open-editor.bat`，
 构建/验证/运行 `tools\run.ps1`。原版美术不进 Git，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
-**当前发行：2.0.0-alpha.5（2026-10-25）**。PC 与 Android 同步更新：图形化调试台、部署选靶与取消不扣费、跨段目标复用及工坊联机同步。Windows 增量从已发布 alpha.2 构建升级，使用更新器 1.2.0；Android 使用完整 APK。安装路径与验证见 [发行说明](docs/release/RELEASE_2.0.0_ALPHA5_20261025.md)。
+**当前发行：2.0.0-beta.1（2026-10-28）**。**整代换引擎**：客户端从旧引擎线整体切到新引擎 `v4`，界面、对局、工坊的全部流程在新引擎上跑通。内建词条（伏击／装甲／闪击／免疫／情报／动员／压制）在新引擎里改成 csx 组件资产，本次接上后真的有效果；DIY 主动效果经新门面 `DesktopNativeRuntime` 重新可用；工坊包产物改成新引擎唯一认的 `effects-v4/*.component.json`。Windows 增量从已发布 alpha.5 构建升级，使用更新器 1.2.0；Android 使用完整 APK（versionCode 12）。**已知缺口**：DIY 卡牌／词条的效果在联机服务端不执行（单机正常），修法已定，见 [发行说明](docs/release/RELEASE_2.0.0_BETA1_20261028.md)。
 
 **多人能力边界**：已接通启用的原生工坊卡包、扩展包及可编译 DIY 卡的会话打包、规则/卡图同步与开局校验；无法编译的机制保留为草稿，不进入对战。双方客户端及服务端需一同更新，详见 [工坊联机说明](docs/acceptance/NETWORK_WORKSHOP_20261025.md)。原版美术不进入 Git，发行包已携带；源码运行须另行准备这些素材，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 

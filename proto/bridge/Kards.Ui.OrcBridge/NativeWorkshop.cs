@@ -251,6 +251,8 @@ public sealed partial class NativeWorkshop
     }
     public void DeleteAsset(NativeWorkshopAsset asset)
     {
+        // v4 组件不在引擎编辑面的索引里，删它得自己动手（引擎的 DeleteAsset 会 AssetNotFound）。
+        if (IsComponentAsset(asset)) { DeleteComponentAsset(asset); return; }
         Editor.DeleteAsset(Enum.Parse<AssetKind>(asset.Kind), asset.Id);
         if (asset.Kind != "Card") { CheckpointRecovery(); return; }
         var presentation = Presentation(); (presentation["cards"] as JsonObject)?.Remove(asset.Id); SavePresentation(presentation);
@@ -261,7 +263,16 @@ public sealed partial class NativeWorkshop
         CheckpointRecovery();
     }
 
-    public IReadOnlyList<NativeWorkshopAsset> Assets() => Editor.ListAssets().Select(a => new NativeWorkshopAsset(a.Kind.ToString(), a.LocalId, a.AppId, a.Version.ToString(), a.SourcePath)).ToArray();
+    public IReadOnlyList<NativeWorkshopAsset> Assets()
+    {
+        var listed = Editor.ListAssets()
+            .Select(a => new NativeWorkshopAsset(a.Kind.ToString(), a.LocalId, a.AppId, a.Version.ToString(), a.SourcePath))
+            .ToList();
+        // v4 组件不在引擎编辑面的索引里（引擎只索引 effects/*.prefab.json），但它们是这个包真实存在、
+        // 玩家能看见的效果：不补进来，只有 effects-v4/ 的包在工坊里就是"零效果"。
+        listed.AddRange(ComponentAssets(listed));
+        return listed;
+    }
     public IReadOnlyList<Orc.UI.Contracts.UiCardDefinition> PreviewCards()
     {
         var root = Editor.Session!.TemporaryRoot;

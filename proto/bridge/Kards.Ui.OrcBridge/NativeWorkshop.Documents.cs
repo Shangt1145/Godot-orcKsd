@@ -38,7 +38,18 @@ public sealed partial class NativeWorkshop
         return File.Exists(file) ? JsonNode.Parse(File.ReadAllText(file))!.AsObject() : new JsonObject { ["schemaVersion"] = 1 };
     }
     private void SavePresentation(JsonObject root)
-    { File.WriteAllText(Path.Combine(Editor.Session!.TemporaryRoot, "workshop.presentation.json"), root.ToJsonString(_json)); CheckpointRecovery(); }
+    {
+        File.WriteAllText(Path.Combine(Editor.Session!.TemporaryRoot, "workshop.presentation.json"), root.ToJsonString(_json));
+        // 写包时同步把阵营声明落成引擎可读的 factions.json：卡定义的 faction 是引擎**进程级值域**的硬校验项，
+        // 只有宿主进程登记过是不够的——桌面联机的服务端是独立子进程，那边不认识自建国家，
+        // 这个包每张卡都会在装载期被判失败（卡池里一张都没有）。声明随包走，换任何进程装载都自洽。
+        // 放在这里而不是"读包"路径：读别人的包不能改人家目录（会改指纹、破坏"导入-导出逐字节一致"）。
+        SaveFactions(Editor.Session.TemporaryRoot,
+            (root["nations"] as JsonArray ?? new()).OfType<JsonObject>()
+                .Select(n => new UiDiyChoice(n["id"]?.ToString() ?? "", n["name"]?.ToString() ?? ""))
+                .ToArray());
+        CheckpointRecovery();
+    }
     public NativeCardPresentation CardPresentation(string localId)
     {
         var session = Editor.Session!;

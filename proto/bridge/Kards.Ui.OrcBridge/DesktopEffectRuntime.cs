@@ -14,6 +14,6 @@ public static class DesktopEffectRuntime
         var catalog=DesktopOrc.Catalog.GetProperty("keywords");
         return catalog.TryGetProperty(key,out var item)?item.GetProperty("cn").GetString()!:key;
     }
-    public static void ValidateFilter(JsonElement filter)=>AuthoringRuntime.ValidateFilter(filter);
-    public static bool Matches(Card card,string json)=>AuthoringRuntime.Matches(card,json);
+    public static void ValidateFilter(JsonElement filter)=>DesktopTargetContext.ValidateFilter(filter);
+    public static bool Matches(Card card,string json)=>DesktopTargetContext.Matches(card,json);
 }

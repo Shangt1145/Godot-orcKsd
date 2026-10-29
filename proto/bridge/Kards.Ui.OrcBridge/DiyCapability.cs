@@ -86,11 +86,10 @@ public static class DiyCapability
         foreach(var (effect,index) in OrcEffectEditing.Compile(draft.Id.Replace('/','.'),draft.OrcEffects).Select((e,i)=>(e,i)))
         {
             var reasons=new List<string>();if(effect.Error is { } error)reasons.Add(error);
-            else foreach(var snapshot in effect.Snapshots)
-            {
-                var instance=DynamicEffectFactory.Instantiate(new LogicEngine{ScriptEvaluator=NativeScriptHost.Evaluator},snapshot);
-                if(!instance.Success)reasons.Add("效果不能实例化："+instance.Error);
-            }
+            // v4：`DynamicEffectFactory.Instantiate`（把旧效果快照实例化成 Effect 对象）随 Effect 家族一起删除，
+            // 新模型里效果是**资产文本**（effects-v4/*.component.json），不存在"能不能实例化"这一步。
+            // 因此这里只剩编译期判据（effect.Error）；资产能否被引擎装载由装配期判定——
+            // 真哑弹会在开局时被 OrcMatchSession 的 IsEffectAssembled 闸门拦下，不会带进对局。
             rows.Add(new(index,reasons.Count==0?DiyPlayability.Playable:DiyPlayability.DraftOnly,reasons));
         }
         // Legacy rows are diagnosed even when a structured program currently takes precedence.

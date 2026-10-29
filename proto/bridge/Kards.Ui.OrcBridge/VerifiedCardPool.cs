@@ -147,10 +147,7 @@ public static class VerifiedCardPool
         string cardId, string cardType, CardDefinitionEntry entry, DiyEffectDraft[] drafts)
     {
         var (snapshot, jsonText) = DiyCardCompiler.CompileEffects(cardType, drafts, cardId.Replace('/', '.'));
-        var engine = new LogicEngine { ScriptEvaluator = NativeScriptHost.Evaluator };
-        var instance = DynamicEffectFactory.Instantiate(engine, snapshot);
-        if (!instance.Success)
-            throw new InvalidDataException($"Converted effects of {cardId} failed to instantiate: {instance.ErrorCategory} · {instance.Error}");
+        // v4：DynamicEffectFactory.Instantiate 已删除（Effect 家族不存在），不再有"实例化"终检。
         using var snapshotJson = JsonDocument.Parse(jsonText);
         using var effectsJson = JsonDocument.Parse(JsonSerializer.Serialize(new
         {

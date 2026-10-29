@@ -310,6 +310,20 @@ public sealed partial class OrcMatchSession : IDisposable
         => CreateNativeAsync(definitions, deckA, deckB, seed, matchId, viewerIndex, artLookup, ct,
             openingHand, deckConfiguration, opponentDeckConfiguration, firstPlayerIndex: firstPlayerIndex);
 
+    /// <summary>
+    /// 断言某个效果资产已经**装配**到这张卡上。**v4 换口径**：效果不再是卡上的对象
+    /// （<c>card.Effects</c>／<c>IsMounted</c> 全族删除），而是卡编排实体上的**组件**——
+    /// 判据＝该卡实体上存在 <paramref name="prefabId"/> 的组件且 <c>IsAssembled</c>（<c>active-when</c> 相位已到达）。
+    /// <para>
+    /// 这与旧判据（"在 card.Effects 里且 IsMounted"）是同一个可玩性口径：**没装配＝牌打出去什么都不发生**。
+    /// 保留这道闸门的理由不变——宁可在开局时明确失败，也不要让玩家打完一局才发现某张卡是哑弹。
+    /// </para>
+    /// </summary>
+    private static bool IsEffectAssembled(CardBase card, string prefabId)
+        => card.ModelEntity is { } model
+           && model.Runtime.ComponentsOf(model)
+               .Any(a => a.IsAssembled && string.Equals(a.Type.Id, prefabId, StringComparison.Ordinal));
+
     private static async Task<OrcMatchSession> CreateNativeAsync(
         IReadOnlyList<CardDefinitionEntry> definitions,
         IReadOnlyList<string> deckA, IReadOnlyList<string> deckB,
@@ -372,10 +386,26 @@ public sealed partial class OrcMatchSession : IDisposable
         // 种子默认来自 Random.Shared.Next()，所以每局不同；显式给种子时仍可整体复现。
         // 诊断路径可显式传 firstPlayerIndex 固定座位——只有验证夹具用它，玩家入口永远走随机。
         var openingPlayer = firstPlayerIndex ?? new MatchRandomService(seed).Next(2);
-        var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: openingPlayer, targeterBridge: bridge, effectRegistry: registry,
+        // v4 起引擎把「选择器取样」与「裁定」分开，并默认**禁止** sel=random（R2c：生产对局不掷骰子，
+        // 关闭时执行到 random＝明确错误，不静默降级为"取首个"）。这里显式开启，理由是**本客户端是作者/沙盒宿主**：
+        // 工坊的选靶方式里「随机」是一项玩家可选的合法写法（OrcEffectEditing 的目标下拉），
+        // 反制卡代码生成（OrcCounterCodegen）会把 sel=random 原样交给 EffectRuntime.SelectAsync——
+        // 不开启的话，玩家自己写的一张「随机打 1 个敌人」的卡会在打出的瞬间抛异常，整局卡死，
+        // 而这既不是玩家的错也不是可诊断的错。开启后随机取样仍归引擎随机服务（种子可复现、不产生 targeter），
+        // 且每次取样都会记进 Engine.RandomSelections（审查导出 randomSelectors 段）——留下审计痕迹，不是无声掷骰。
+        // 其余默认值（起手张数、首回合抽牌、沙盒授权 SandboxAuthorized=false）一律保持引擎缺省，不在这里放宽。
+        // ScriptEvaluator 必须**在建局前**交进去（不是建完再赋 Engine.ScriptEvaluator）：引擎在 Match 构造器
+        // 末段就用它预编译内建词条效果组件，而那时宿主还拿不到 Engine 引用。Godot 按字节加载程序集
+        // （Assembly.Location 恒为空），引擎默认求值器因此取不到任何 Orc 引用——不交自己的求值器，
+        // 伏击/装甲/闪击/免疫/情报/动员/压制的 csx 会全部编译失败，对局直接开不起来。
+        var options = new MatchOptions { AllowRandomTargeting = true, ScriptEvaluator = NativeScriptHost.Evaluator };
+        var match = new Match(listA, listB, definitions, seed: seed, firstPlayerIndex: openingPlayer, options: options,
+            targeterBridge: bridge, effectRegistry: registry,
             deckConfigForPlayerA: Config(deckConfiguration), deckConfigForPlayerB: Config(opponentDeckConfiguration),
             packageActivator: new SnapshotPackageActivator(packSet.Snapshot));
-        match.Engine.ScriptEvaluator = NativeScriptHost.Evaluator;
+        // v4：EffectRuntime 没有 MatchFor(card)，DIY 生成的效果代码拿不到 Match 句柄，
+        // 由本层在开局时登记一次（DesktopNativeRuntime 按 card.Engine 反查）。
+        DesktopNativeRuntime.Bind(match);
         foreach (var card in customCards ?? [])
             foreach (var snapshot in card.Effects) match.Engine.Prefabs.RegisterPrefab(snapshot);
         if (convertedEffects is not null)
@@ -411,22 +441,19 @@ public sealed partial class OrcMatchSession : IDisposable
                     var expected = customCards?.FirstOrDefault(c => c.Entry.Id == id);
                     foreach (var snapshot in expected?.Effects ?? [])
                     {
-                        var loaded = card.Effects.Where(e => e.Name == snapshot.Root.Id).ToArray();
-                        if (loaded.Length != 1 || !loaded[0].IsMounted)
+                        if (!IsEffectAssembled(card, snapshot.Root.Id))
                             throw new InvalidDataException($"DIY 卡牌 {id} 的效果 {snapshot.Root.Id} 未完整装载，拒绝开始对局");
                     }
                     if (importedEffects is not null && importedEffects.TryGetValue(id, out var wanted))
                         foreach (var snapshot in wanted)
                         {
-                            var loadedOrc = card.Effects.Where(e => e.Name == snapshot.Root.Id).ToArray();
-                            if (loadedOrc.Length != 1 || !loadedOrc[0].IsMounted)
+                            if (!IsEffectAssembled(card, snapshot.Root.Id))
                                 throw new InvalidDataException($"OrC 导入卡牌 {id} 的效果 {snapshot.Root.Id} 未完整装载，拒绝开始对局");
                         }
                     foreach (var prefabIds in packExpected[id])
                         foreach (var prefabId in prefabIds.Distinct(StringComparer.Ordinal))
                         {
-                            var packLoaded = card.Effects.Where(e => e.Name == prefabId).ToArray();
-                            if (packLoaded.Length != 1 || !packLoaded[0].IsMounted)
+                            if (!IsEffectAssembled(card, prefabId))
                                 throw new InvalidDataException($"卡包卡牌 {id} 的效果 {prefabId} 未完整装载，拒绝开始对局");
                         }
                 }

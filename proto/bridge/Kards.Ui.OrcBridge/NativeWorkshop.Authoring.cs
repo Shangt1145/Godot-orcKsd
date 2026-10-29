@@ -107,6 +107,8 @@ public sealed partial class NativeWorkshop
 
     public IReadOnlyList<NativeWorkshopAsset> DeleteImpact(NativeWorkshopAsset asset)
     {
+        // v4 组件没有 sidecar 元数据可读（引擎编辑面不索引它），引用面改由卡的 components[] 现查。
+        if (IsComponentAsset(asset)) return ComponentImpact(asset);
         var kind = Enum.Parse<Orc.Core.AssetKind>(asset.Kind);
         var info = Editor.GetAsset(kind, asset.Id);
         using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(WorkshopPackageArchive.Child(Editor.Session!.TemporaryRoot, info.SidecarPath)));

@@ -26,8 +26,8 @@ public sealed partial class OrcMatchSession
             selector.Submit(new CancelEvent()); return;
         }
         var data = selector.Presentation;
+        // v4：AuthoringSelectorTag 随 AuthoringRuntime 一起删除——选靶标签只剩本仓库的 OrderSelectorTag 一种来源。
         var tag = data.Parameter as OrderSelectorTag;
-        if(tag is null&&data.Parameter is Orc.Game.Effects.AuthoringSelectorTag nativeTag)tag=new OrderSelectorTag(nativeTag.SlotName);
         var name = tag?.SlotName ?? "default";
         var kind = data.Identifiers is null ? ChoiceKind.Reference
             : selector.SelectorName == SelectorNames.CardPicker ? ChoiceKind.CardDefinition : ChoiceKind.Option;

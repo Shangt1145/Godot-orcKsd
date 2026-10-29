@@ -25,9 +25,24 @@ public sealed partial class OrcMatchSession
         Match.CardService.RegisteredDefinitions.Select(p=>new DebugCardDefinition(p.Key,p.Value.Name,
             p.Value.UnitTypes.Count>0)).OrderBy(p=>p.Name,StringComparer.Ordinal).ToArray(),
         _host.Index.Select(p=>new DebugCardRuntime(p.Key,
-            p.Value.Effects.Select(e=>e.Name+" · "+e.DisposalState+(e is DynamicPassiveEffect native?" · "+string.Join(",",native.Snapshot.Root.MainTrigger.Hooks):"")).ToArray(),
+            DescribeComponents(p.Value),
             (p.Value is CardBase c?c.Modifiers.All:p.Value is Hq h?h.Modifiers.All:[]).Select(m=>
                 m.Field+" "+(m is AddModifier add?"增量 "+add.Delta:m is SetModifier set?"设为 "+set.Value:m.GetType().Name)+" · "+(m.Expiry?.Phase??"永久")).ToArray())).ToArray());
+
+    /// <summary>
+    /// 调试面板的「效果」列。**v4 换口径**：卡上不再有 <c>Effect</c> 实例（<c>Effects</c>／
+    /// <c>DynamicPassiveEffect</c>／<c>DisposalState</c> 全族删除），效果＝编排实体上的**组件**，
+    /// 所以这里投影的是「组件 id · 装配状态 · 它挂到哪些引擎信号」。
+    /// 旧的「效果名 · 卸载状态 · hooks」三列信息在新模型里由组件 id ＋ 挂载目标共同表达。
+    /// </summary>
+    private static IReadOnlyList<string> DescribeComponents(Card card)
+    {
+        if (card is not CardBase { ModelEntity: { } model }) return [];
+        return model.Runtime.ComponentsOf(model)
+            .Select(a=>a.Type.Id+" · "+(a.IsAssembled?"已装配":"未装配")
+                +(a.Type.Mounts.Count>0?" · 挂载 "+string.Join(",",a.Type.Mounts.Select(m=>m.Target)):""))
+            .ToArray();
+    }
 
     /// <summary>Local-only debug boundary. Mutations share the normal command lock and native services.</summary>
     public async Task<MatchDebugResult> DebugAsync(MatchDebugCommand command, CancellationToken ct = default)
@@ -78,11 +93,24 @@ public sealed partial class OrcMatchSession
                 case MatchDebugAction.CreateHand:case MatchDebugAction.Summon:
                     if(command.CardId is null||!Match.CardService.RegisteredDefinitions.ContainsKey(command.CardId))return new(false,"卡牌不在本局已加载卡池内");
                     if(command.Action==MatchDebugAction.Summon&&!ReadDebugSnapshot().Definitions.Any(d=>d.Id==command.CardId&&d.Unit))return new(false,"只能召唤单位");
-                    await AuthoringRuntime.CreateAsync(player.Hq,command.CardId,"self",command.Action==MatchDebugAction.Summon?"support":"hand",1,ct);break;
+                    // v4：AuthoringRuntime.CreateAsync 已删除，创建＋放置改走 MatchCardService 的复合入口
+                    // （失败自动回收，不留半放置态）。召唤落位＝相邻空位里的第一个（与旧实现的落点口径一致）。
+                    {
+                        var placed = command.Action==MatchDebugAction.Summon
+                            ? await Match.CardService.CreateAndPlaceToAdjacentAsync(command.CardId,player,gaps=>gaps[0],ct)
+                            : await Match.CardService.CreateAndPlaceToHandAsync(command.CardId,player,ct);
+                        if(!placed.IsSuccess)return new(false,"卡牌放置失败："+placed.FailureReason);
+                    }
+                    break;
                 case MatchDebugAction.Damage:await runtime.DamageAsync(target!,command.Amount,ct:ct);break;
-                case MatchDebugAction.Heal:await AuthoringRuntime.HealAsync(target!,command.Amount,ct);break;
+                case MatchDebugAction.Heal:await runtime.BuffAsync(target!,0,command.Amount,ct:ct);break;
                 case MatchDebugAction.SetAttack:case MatchDebugAction.SetDefense:
-                    await AuthoringRuntime.AttributeAsync(target!,command.Action==MatchDebugAction.SetAttack?"attack":"defense","set",command.Amount,"permanent",ct);break;
+                    // v4：AttributeAsync 已删除；"设为"＝SetModifier（与 SourceEffectAssembly 的 setOpCost 同路）。
+                    if(target is not CardBase statTarget)return new(false,"此目标没有可设置的数值");
+                    await statTarget.Modifiers.AddModifierAsync(new SetModifier(
+                        command.Action==MatchDebugAction.SetAttack?CardStatFields.Attack:CardStatFields.Defense,
+                        command.Amount,this),ct);
+                    break;
                 case MatchDebugAction.Silence:await runtime.SilenceAsync(target!,ct);break;
                 case MatchDebugAction.Destroy:await runtime.KillAsync(target!,ct:ct);break;
                 case MatchDebugAction.EndTurn:await Match.EndTurn(ct);break;
