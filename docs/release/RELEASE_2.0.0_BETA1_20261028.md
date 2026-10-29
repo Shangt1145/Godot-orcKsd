@@ -79,6 +79,7 @@
 | `dotnet test OrcEngine.sln`（引擎全量） | **2116 通过 / 0 失败 / 0 跳过**（与打补丁前同数 ⇒ 钩子确为纯加性） |
 | `dotnet build -c Debug`（桥接层，引擎在 `v4`） | 0 错误 / 3 个既有警告 |
 | `dotnet test tests/Kards.Ui.Tests.csproj`（宿主单测） | **2 失败 / 701 通过 / 703** —— 见下 |
+| `tools/release.ps1` 发版闸门（274 条子集） | **274 通过 / 0 失败**；导出包、离线补丁、升级后 exe 三条实测探针全绿 |
 | `--verify-ui --verify-effects` | **未完成**：无头模式下 1 小时 6 分仍在跑（同路径去掉画廊遍历的 `--verify-ui` 只要 6m42s），已终止。动画画廊属补充探针，不是流程门 |
 
 ### 宿主单测剩 2 条的分布（TRX 解析，非目测）
@@ -176,10 +177,33 @@ csx 求值器的引用集是**白名单制**，`System.Console` 是独立程序�
 ⇒ 那个旧路径**根本不会生成**，桌面房主恒判 `CanHost=false`，联机单测整组红。
 已补上产物槽候选（旧布局保留，两条都认）。
 
-## 未收口项（发布前必须清掉）
+## 发版时撞出来的两个工具链问题（2026-10-29 深夜）
+
+这两个都不是游戏缺陷，但都会让"发版"这件事本身说谎，所以一并修了。
+
+### ① 发版闸门红在"找不到 Orc.Server.dll"，而手工跑同一批用例全绿
+
+差别的唯一变量是 `ORC_ENGINE_ROOT`：`tools/release.ps1` 确实设了，但测试宿主进程里读不到。
+根因是两个来源不同源——构建侧 `OrcEngineRoot` 是按目录约定推出来的（csproj 先认 `-github` 后缀），
+所以编译一直找得到引擎；运行期 `ServerLauncher` **只**认环境变量，读不到就一路落到"找不到服务端"。
+
+修法：构建时把解析到的引擎仓库根写进 `AssemblyMetadata`，运行期读回（候选顺序＝环境变量 → 元数据）。
+二进制自己知道它是在哪套引擎上编的，不再依赖调用方 shell。
+判据：`env -u ORC_ENGINE_ROOT` 直接跑那条联机用例——修前 2 条全红，修后 2 条全绿。
+
+### ② 一致性核对报 `[OK]`，却指着一套**旧引擎**
+
+`check-consistency.ps1` 先认同级 `OrC-KSD`，而 csproj 明确先认 `OrC-KSD-github`（注释原话"后者才是对的"）。
+本机两套都在，于是它打印 `引擎路径 H:\Working Folder\OrC-KSD`（旧基线）并判绿——
+"绿灯但指错了引擎"比红灯更难发现。已改成与 csproj 同序。
+判据：核对输出里 `引擎路径` 应为 `…\OrC-KSD-github`。
+
+## 未收口项（已随本版发布，下一版清）
 
 1. **联机 DIY 效果**（见「已知问题」第一行）：`DesktopNativeCodegen` 的输出还是宿主运行时调用，
-   要改成引擎原生 csx 才能在服务端跑。这是本版唯一**功能级**缺口，两条用例已经把它钉住。
+   服务端沙箱引不到宿主程序集。改成引擎原生 csx 后，**确定性选靶与无选靶**的效果就能在服务端跑；
+   需要点选目标的仍跑不了（引擎 R2：无前端桥接就抛 `BridgeNotAssembled`），那要改协议。
+   这是本版唯一**功能级**缺口，两条用例已经把它钉住。
 2. **2 条同进程注册残留**：需要引擎给注册面一个 `Reset`／`Clear` 钩子，或让这两个类各占一个进程。
 3. **`--verify-effects` 在无头模式下跑不完**（1h06m 仍在跑，同路径去掉画廊遍历只要 6m42s）。
    动画画廊属补充探针，不是流程门。
@@ -192,3 +216,29 @@ csx 求值器的引用集是**白名单制**，`System.Console` 是独立程序�
   "旧格式 effects/ 目录已不再装载（v4-only：请提供 effects-v4/*.component.json）"。
   在工坊里重新保存一次该效果即可生成 v4 组件资产。
 - 回退：把引擎 checkout 切回 `legacy-main` 并重装 `2.0.0-alpha.6` 即可（两条线的存档格式不通用，建议先备份）。
+
+## 本版产物
+
+构建命令与结果（2026-10-29，本机实测）：
+
+```
+tools/release.ps1 -BaselineZip dist/releases/2.0.0-alpha.6/full/OrC-KSD-2.0.0-alpha.6-win-x64.zip `
+                  -BaselineVersion 2.0.0-alpha.6 -SingleBaseline
+→ RELEASE_OK dist/releases/2.0.0-beta.1/full/OrC-KSD-2.0.0-beta.1-win-x64.zip
+```
+
+| 产物 | 大小 | SHA256（前 16 位） |
+| --- | --- | --- |
+| `dist/releases/2.0.0-beta.1/full/OrC-KSD-2.0.0-beta.1-win-x64.zip` | 1167 MB | `3B8929EABDD740E2` |
+| `dist/releases/2.0.0-beta.1/patches/OrC-KSD-2.0.0-beta.1-from-12CD07C37C83-to-12CF67AC2BF1.orcupdate` | 35 MB | `3ADED89A5FC4D344` |
+| `dist/updaters/1.2.0/OrC-KSD-offline-updater-1.2.0-win-x64.zip` | — | `D8F0AF41F2B97442` |
+
+完整哈希见同目录 `SHA256.txt`。补丁从 alpha.6 起算，60 个变更文件；
+`PATCH_EXACT_FILES_OK`（升级后逐文件一致）、`OFFLINE_UPGRADE_EXE_VERIFY_OK`（离线升级后的 exe 实测能跑）、
+`EXPORTED_PLAYER_VERIFY_OK`（导出包实测能跑）三条都在 `verification/` 里留了日志。
+
+一致性核对：`tools/check-consistency.ps1` → `CONSISTENCY_OK 红=0 黄=11`
+（黄项全是历史版本的既成事实：无 tag、超大补丁，按规则不阻塞）。
+tag `v2.0.0-beta.1` = `a8ee9ba` = HEAD，工作区干净。
+
+**没有发布上线**：本版只出包，未上传任何站点或分发渠道。
