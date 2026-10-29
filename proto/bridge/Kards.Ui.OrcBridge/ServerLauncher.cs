@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 using Kards.Ui.Core;
 using Orc.Manager;
@@ -135,8 +136,7 @@ public sealed class ServerLauncher : IAsyncDisposable
             if (File.Exists(shipped)) return shipped;
         }
 
-        var engineRoot = Environment.GetEnvironmentVariable("ORC_ENGINE_ROOT");
-        if (!string.IsNullOrWhiteSpace(engineRoot))
+        foreach (var engineRoot in EngineRoots())
         {
             // 两条判据同时成立才认（都是踩过的坑）：
             //
@@ -184,7 +184,35 @@ public sealed class ServerLauncher : IAsyncDisposable
         throw new FileNotFoundException(
             "找不到 Orc.Server.dll。任选其一：设置环境变量 ORC_SERVER_DLL 指向它；" +
             $"或把服务端放到 {Path.Combine(AppContext.BaseDirectory, "OrcServer")}；" +
-            "或设置 ORC_ENGINE_ROOT 指向引擎源码并先构建 Orc.Server。");
+            "或设置 ORC_ENGINE_ROOT 指向引擎源码并先构建 Orc.Server。" +
+            $"（本次已试过的引擎根：{string.Join("、", EngineRoots())}）");
+    }
+
+    /// <summary>
+    /// 候选引擎仓库根：环境变量优先，其次**构建时写进程序集的元数据**。
+    /// <para>
+    /// 为什么要有第二个来源：构建侧 <c>OrcEngineRoot</c> 是按目录约定推出来的（见 csproj），
+    /// 而运行期原先只认环境变量。两者不同源，就会出现"编译时找得到引擎、运行时说找不到服务端"——
+    /// 2026-10-29 发版闸门正是栽在这里：<c>tools/release.ps1</c> 确实设了环境变量，
+    /// 但测试宿主进程读不到，联机用例集体报"找不到 Orc.Server.dll"。
+    /// 元数据由构建写入，与二进制一一对应，不会再和实际用哪套引擎脱节。
+    /// </para>
+    /// </summary>
+    private static IEnumerable<string> EngineRoots()
+    {
+        var recorded = typeof(ServerLauncher).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => attribute.Key == "OrcEngineRoot")?.Value;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in new[] { Environment.GetEnvironmentVariable("ORC_ENGINE_ROOT"), recorded })
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            string full;
+            try { full = Path.GetFullPath(candidate); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { continue; }
+            if (seen.Add(full)) yield return full;
+        }
     }
 
     /// <summary>

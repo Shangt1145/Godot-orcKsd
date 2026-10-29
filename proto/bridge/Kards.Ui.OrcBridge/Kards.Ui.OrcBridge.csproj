@@ -34,6 +34,15 @@
   </Target>
 
   <ItemGroup>
+    <!--
+      把「构建时解析到的引擎仓库根」写进程序集元数据，运行期由 ServerLauncher 读回。
+      为什么必须写：解析服务端 dll 原先只认环境变量 ORC_ENGINE_ROOT，而构建侧的
+      OrcEngineRoot 是按目录约定推出来的（见上面的 PropertyGroup）。两者不同源，
+      于是"构建明明找得到引擎、运行期却说找不到服务端"——2026-10-29 发版闸门就栽在这：
+      tools/release.ps1 设了环境变量，但测试宿主进程里读不到，NetworkWorkshopTests
+      报"找不到 Orc.Server.dll"。写进元数据后，二进制自己知道它是在哪套引擎上编的。
+    -->
+    <AssemblyMetadata Include="OrcEngineRoot" Value="$([System.IO.Path]::GetFullPath('$(OrcEngineRoot)/../..'))" />
     <!-- 中立 UI 契约（view 三件）：全局导入，保持源码零改动。 -->
     <Using Include="Orc.UI.Contracts" />
     <EmbeddedResource Include="Resources/verified-cards.json" LogicalName="Kards.Ui.OrcBridge.verified-cards.json" />
