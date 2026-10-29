@@ -131,10 +131,13 @@ else { Bad '最新版增量补丁' '没有补丁——老玩家只能整包重�
 # ── R6 引擎路径可解析 ────────────────────────────────────────────
 $engine = $env:ORC_ENGINE_ROOT
 if (!$engine) {
-    $siblingA = Join-Path (Split-Path -Parent $root) 'OrC-KSD'
-    $siblingB = Join-Path (Split-Path -Parent $root) 'OrC-KSD-github'
-    if (Test-Path -LiteralPath (Join-Path $siblingA 'src\Orc.Game\Orc.Game.csproj')) { $engine = $siblingA }
-    elseif (Test-Path -LiteralPath (Join-Path $siblingB 'src\Orc.Game\Orc.Game.csproj')) { $engine = $siblingB }
+    # 顺序必须和 csproj 的 OrcEngineRoot 推导一致：先认 -github 后缀。
+    # 本机同时存在 OrC-KSD（旧基线）与 OrC-KSD-github（工作副本）时，后者才是构建实际用的那套；
+    # 反过来的话这里会指着一套旧引擎报 [OK]——"绿灯但指错了引擎"，比红灯更难发现。
+    $siblingGithub = Join-Path (Split-Path -Parent $root) 'OrC-KSD-github'
+    $siblingPlain = Join-Path (Split-Path -Parent $root) 'OrC-KSD'
+    if (Test-Path -LiteralPath (Join-Path $siblingGithub 'src\Orc.Game\Orc.Game.csproj')) { $engine = $siblingGithub }
+    elseif (Test-Path -LiteralPath (Join-Path $siblingPlain 'src\Orc.Game\Orc.Game.csproj')) { $engine = $siblingPlain }
 }
 if ($engine -and (Test-Path -LiteralPath (Join-Path $engine 'src\Orc.Game\Orc.Game.csproj'))) { Ok '引擎路径' $engine }
 else { Bad '引擎路径' '无法解析——外部贡献者将无法构建（ORC_ENGINE_ROOT / 同级目录）' }
