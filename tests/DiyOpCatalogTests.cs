@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Kards.Ui.OrcBridge;
 using Xunit;
 using Xunit.Abstractions;
@@ -79,5 +81,75 @@ public sealed class DiyOpCatalogTests(ITestOutputHelper output)
         output.WriteLine($"alpha={alpha.Count} preview={preview.Count} total={DiyOpCatalog.All.Count}");
         foreach (var group in alpha.GroupBy(e => e.Group).OrderByDescending(g => g.Count()))
             output.WriteLine($"  {group.Key}: alpha {group.Count()} / 预览 {preview.Count(p => p.Group == group.Key)}");
+    }
+
+    /// <summary>
+    /// 种子里必须真的带着这个动作的关键字段——否则"能编过"可能是靠一个空形状蒙过去的。
+    ///
+    /// <para>
+    /// 这条**不是** <c>OperationProblem</c> 的复述：判据是"声明里有没有那个字段"，与编译器怎么答无关。
+    /// 防的是一种很隐蔽的坏法——某天有人把 <see cref="InspectorVocabulary.Action"/> 的退回条件写松了，
+    /// <c>{"op":"conditional"}</c> 这种空壳又被当成能跑，分区数字还是绿的，玩家的条件却静默失效。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void 转正动作的种子里带着关键字段()
+    {
+        (string Op, string Field)[] required =
+        [
+            ("conditional", "condition"), ("conditional", "then"), ("conditional", "else"),
+            ("repeat", "times"), ("repeat", "actions"),
+            ("setVar", "name"), ("setVar", "value"),
+            ("reveal", "target"), ("setStats", "target"), ("upgradeSelf", "target"),
+        ];
+        foreach (var (op, field) in required)
+        {
+            Assert.Equal(DiyOpStage.Alpha, DiyOpCatalog.All.Single(e => e.Op == op).Stage);
+            Assert.True(InspectorVocabulary.Action(op).ContainsKey(field), $"{op} 的种子缺关键字段 {field}");
+        }
+
+        // 种子必须稳定：连着问两次不能给出不同形状（缓存/顺序都不该影响玩家的草稿）。
+        foreach (var entry in DiyOpCatalog.Alpha)
+            Assert.Equal(InspectorVocabulary.Action(entry.Op).ToJsonString(), InspectorVocabulary.Action(entry.Op).ToJsonString());
+    }
+
+    /// <summary>
+    /// 复杂 DIY 的判据：把条件、循环、变量**叠在一张卡里**，整张效果必须编成没有错误项的程序。
+    ///
+    /// <para>
+    /// 光有"单个动作能过 lowering"不够——玩家的真实写法是"如果……就重复 N 次……并把结果记进变量"。
+    /// 这三样以前全在预览区，等于复杂 DIY 根本不存在。这条用例守的就是"它真的能写出来"：
+    /// 走的是 <see cref="DiyCapability.CheckEffect"/>（内部 <c>OrcEffectEditing.Compile</c>），
+    /// 和卡库保存时的编译是同一条路。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void 条件循环变量叠在一张卡里能编成程序()
+    {
+        // 「重复 2 次：把 hits 记成 1」
+        var repeat = InspectorVocabulary.Action("repeat");
+        repeat["times"] = JsonValue.Create(2);
+        repeat["actions"] = new JsonArray(new JsonObject
+        {
+            ["op"] = "setVar", ["name"] = "hits", ["value"] = JsonValue.Create(1),
+        });
+
+        // 「如果自身攻击 > 0，就抽一张；否则走上面那个循环」
+        var conditional = InspectorVocabulary.Action("conditional");
+        conditional["condition"] = JsonNode.Parse(
+            """{"test":"compare","left":{"expr":"read","of":"self","path":"attack"},"cmp":">","right":0}""")!;
+        conditional["then"] = new JsonArray(InspectorVocabulary.Action("drawOne"));
+        conditional["else"] = new JsonArray(repeat);
+
+        var effect = new JsonObject
+        {
+            ["trigger"] = "deploy",
+            ["targets"] = new JsonArray(),
+            ["actions"] = new JsonArray(conditional),
+        };
+
+        var errors = DiyCapability.CheckEffect(JsonSerializer.SerializeToElement(effect));
+        output.WriteLine($"嵌套效果编译：{errors.Count} 个错误" + (errors.Count == 0 ? "" : " → " + string.Join("；", errors)));
+        Assert.Empty(errors);
     }
 }

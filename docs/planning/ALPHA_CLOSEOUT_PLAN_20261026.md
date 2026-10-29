@@ -257,9 +257,12 @@ OrC 侧对缺失字段的 `undefined` 再 `JSON.parse` 一次就是 SyntaxError�
 
 验证：
 
-- `DiyOpCatalogTests` 2 条：目录不裁剪/不重复/与词表逐项一致；分区判据与编译器**逐条**重算一致；
+- `DiyOpCatalogTests` 4 条：目录不裁剪/不重复/与词表逐项一致；分区判据与编译器**逐条**重算一致；
   分区顺序成立（所有 alpha 在 preview 之前，表头只画一次靠这条）；161/62/99 记账，
-  并把 `conditional`／`repeat`／`setVar` 等 7 个"修好的"动作钉在 alpha 区防回退。
+  并把 `conditional`／`repeat`／`setVar` 等 7 个"修好的"动作钉在 alpha 区防回退；
+  再一条内容判据（种子必须带着关键字段，不是靠空形状蒙过编译器）；
+  一条玩家视角的**嵌套**判据：`conditional` 的 `then` 放 `drawOne`、`else` 放 `repeat`＋`setVar`，
+  整张效果经 `DiyCapability.CheckEffect`（＝卡库保存时那条 `OrcEffectEditing.Compile`）必须 0 错误。
 - `-VerifyAuthoring`（本轮新增开关）→ `DESKTOP_AUTHORING_UI_VERIFY_OK … operations=161`。
 - `-VerifyNavigation` → `NAVIGATION_VERIFY_OK`（这条探针也走动作选择器加 `drawOne`）。
   注意它**不带 `--headless`**，且走 `run.ps1` 时前面还有一段静默的资源导入，可能十几分钟没有输出——
