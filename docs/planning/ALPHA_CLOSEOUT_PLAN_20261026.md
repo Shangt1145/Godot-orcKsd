@@ -214,7 +214,7 @@ GUI 证据：`tools/run.ps1 -VerifyDiy` 新增两步（`pack-zip-export` / `pack
 
 | 项 | 现状 | 收口标准 |
 |---|---|---|
-| 161 个动作里 57 个可执行 | ✅ 已分区 | 选择器分区：「alpha 可用」/「预览（后续引擎版）」，并说明 |
+| 161 个动作里 62 个可执行（2026-10-29 复测；原 57） | ✅ 已分区 | 选择器分区：「alpha 可用」/「预览（后续引擎版）」，并说明 |
 
 **判据来自编译器，不是手写名单**：新增 `DiyOpCatalog`，对每个动作拿一份默认声明过一遍
 `DiyCapability.OperationProblem`（真实的 `DesktopNativeLowering`），过不去的进"预览"。
@@ -224,11 +224,25 @@ GUI 证据：`tools/run.ps1 -VerifyDiy` 新增两步（`pack-zip-export` / `pack
 实测（2026-10-27，`DiyOpCatalogTests` 记账并断言）：目录 **161** 个，alpha **57** / 预览 **104**。
 分组：单位与总部 30/41、卡牌 13/40、资源与环境 6/10、流程 5/5、记录 3/8。
 
+**2026-10-29 复测（切 v4 之后）：161 个，alpha 62 / 预览 99。**
+
+中间掉过一次 55 / 106，掉的那 2 个不是引擎没了机制，是 `InspectorVocabulary.Action` 拼默认声明时
+把目录的字段表整份塞进去了。那张表是**按原语汇总的并集**——`heal` 里列着 `attack`／`defense`
+（那是 `changeAttribute` 的参数），`changeAttribute` 里又列着 `keyword`／`opCostMod`——而 OrC 侧的
+正常化器是**按"哪些字段在场"来认变体**的，塞满并集就把形状撑坏了，22 个原本能跑的动作全被拒。
+
+修法不是回头"跳过可选字段"（那样 `conditional`／`repeat`／`setVar` 会塌成 `{"op":"conditional"}`，
+OrC 侧对缺失字段的 `undefined` 再 `JSON.parse` 一次就是 SyntaxError，条件与循环直接不存在），
+而是**先拼精简形状、过不了编译器才退回全量**：判据还是问编译器，不写死名单。结果 62 / 99——
+条件、循环、变量这三个复杂 DIY 最需要的东西回来了，另有 `reveal`／`setStats`／`upgradeSelf`／
+`removeKeyword` 四个同类（全字段 `optional`）一并转正，且**零回归**。
+`DiyOpCatalogTests` 里 62/99 与这 7 个名字都被钉住，掉了会红。
+
 界面（`NativeEffectInspector.Friendly.cs`）：
 
-- 选择器里两个**不可选表头**：「✓ alpha 可用 (57)」「○ 预览（后续引擎版） (104)」，
+- 选择器里两个**不可选表头**：「✓ alpha 可用 (62)」「○ 预览（后续引擎版） (99)」，
   表头用金色/灰色区分。
-- 说明写在选择器下方那行常驻文字里（"动作目录 161 个：57 个这版能真跑（✓）…"），
+- 说明写在选择器下方那行常驻文字里（"动作目录 161 个：62 个这版能真跑（✓）…"），
   **不是"首次弹一次"**。理由：能跑的动作会随引擎版本变，一次性提示必然过期；
   这行每次打开都说当前实话。也没有另开一行 Label——对话框是固定高度的，多一行会把
   「添加这个动作」挤出可点区域（实测：探针的坐标点击会直接落空）。
@@ -244,7 +258,8 @@ GUI 证据：`tools/run.ps1 -VerifyDiy` 新增两步（`pack-zip-export` / `pack
 验证：
 
 - `DiyOpCatalogTests` 2 条：目录不裁剪/不重复/与词表逐项一致；分区判据与编译器**逐条**重算一致；
-  分区顺序成立（所有 alpha 在 preview 之前，表头只画一次靠这条）；161/57/104 记账。
+  分区顺序成立（所有 alpha 在 preview 之前，表头只画一次靠这条）；161/62/99 记账，
+  并把 `conditional`／`repeat`／`setVar` 等 7 个"修好的"动作钉在 alpha 区防回退。
 - `-VerifyAuthoring`（本轮新增开关）→ `DESKTOP_AUTHORING_UI_VERIFY_OK … operations=161`。
 - `-VerifyNavigation` → `NAVIGATION_VERIFY_OK`（这条探针也走动作选择器加 `drawOne`）。
   注意它**不带 `--headless`**，且走 `run.ps1` 时前面还有一段静默的资源导入，可能十几分钟没有输出——

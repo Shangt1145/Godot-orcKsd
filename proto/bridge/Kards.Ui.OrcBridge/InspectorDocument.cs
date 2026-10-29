@@ -89,23 +89,57 @@ public static class InspectorVocabulary
         return key;
     }
     public static JsonObject Effect()=>new(){["trigger"]="deploy",["targets"]=new JsonArray(),["actions"]=new JsonArray()};
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string,bool> SeedIsMinimal=new(StringComparer.Ordinal);
+    /// <summary>
+    /// 玩家从选择器里挑一个动作时，草稿里被塞进去的那份声明。
+    ///
+    /// <para>
+    /// **这份声明必须是编译器认的**，否则玩家"加了个动作"就等于"这张卡存不下来"。
+    /// 而目录的字段表是**按原语汇总的并集**：<c>changeAttribute</c> 同时列着 <c>attack</c>／<c>defense</c>／
+    /// <c>keyword</c>／<c>opCostMod</c>（那是它兄弟变体的参数），<c>heal</c> 也一样。OrC 侧的
+    /// 正常化器是**按"哪些字段在场"来认变体**的，把并集整份塞进去，形状就认不出来了。
+    /// </para>
+    ///
+    /// <para>
+    /// 所以先拼"只填必填字段"的精简形状；只有当它过不了编译器时，才退回整份默认值。
+    /// 退回这一档是必需的：<c>conditional</c>／<c>repeat</c>／<c>setVar</c> 把**每一个**字段都标成
+    /// <c>optional</c>，精简形状只剩 <c>{"op":"conditional"}</c>，而 OrC 侧对缺失字段的
+    /// <c>undefined</c> 再 <c>JSON.parse</c> 一次就是 SyntaxError——条件与循环连"存在"都不成立。
+    /// 判据不写死名单，直接问编译器（<see cref="DesktopNativeLowering"/>），引擎补上机制后自动跟进。
+    /// </para>
+    /// </summary>
     public static JsonObject Action(string op)
     {
+        if(!SeedIsMinimal.TryGetValue(op,out var minimal))SeedIsMinimal[op]=minimal=Lowers(Declaration(op,requiredOnly:true));
+        return Declaration(op,requiredOnly:minimal);
+    }
+    /// <summary>按目录拼一份声明。<paramref name="requiredOnly"/>＝只填没标 <c>optional</c> 的字段。</summary>
+    private static JsonObject Declaration(string op,bool requiredOnly)
+    {
         var result=new JsonObject{["op"]=op};
-        if(Catalog.GetProperty("vocabulary").GetProperty("ops").TryGetProperty(op,out var primitive))
-            foreach(var field in primitive.GetProperty("fields").EnumerateArray())
-            {
-                if(field.TryGetProperty("optional",out var optional)&&optional.GetBoolean())continue;
-                if(!field.TryGetProperty("initial",out var initial))continue;
-                // 目录里有些必填字段的 initial 是 JS 的 `undefined`（序列化过来就是一个字符串 "undefined"）。
-                // 原样塞进声明里，请求体就成了 `{"x":"undefined"}`，OrC 侧对那个字符串再 JSON.parse 一次
-                // 直接 SyntaxError ⇒ 这个动作在目录里永远编不过、被划进"预览"（conditional／repeat 就是这样）。
-                // 省略该字段＝让 OrC 用它自己的默认值，才是"没给值"的正确表达。
-                if(initial.ValueKind==JsonValueKind.String&&initial.GetString()=="undefined")continue;
-                try{result[field.GetProperty("name").GetString()!]=JsonNode.Parse(initial.GetRawText());}
-                catch(JsonException){/* initial 本身不是合法 JSON：同样按"没给值"处理，不拖垮整张选择器。*/}
-            }
+        if(!Catalog.GetProperty("vocabulary").GetProperty("ops").TryGetProperty(op,out var primitive))return result;
+        foreach(var field in primitive.GetProperty("fields").EnumerateArray())
+        {
+            if(!field.TryGetProperty("initial",out var initial))continue;
+            if(requiredOnly&&field.TryGetProperty("optional",out var optional)&&optional.ValueKind==JsonValueKind.True)continue;
+            // 目录里有些字段的 initial 是 JS 的 `undefined`（序列化过来就是一个字符串 "undefined"）。
+            // 原样塞进声明里，请求体就成了 `{"x":"undefined"}`，OrC 侧对那个字符串再 JSON.parse 一次
+            // 直接 SyntaxError。省略该字段＝让 OrC 用它自己的默认值，才是"没给值"的正确表达。
+            if(initial.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)continue;
+            if(initial.ValueKind==JsonValueKind.String&&initial.GetString()=="undefined")continue;
+            try{result[field.GetProperty("name").GetString()!]=JsonNode.Parse(initial.GetRawText());}
+            catch(JsonException){/* initial 本身不是合法 JSON：同样按"没给值"处理，不拖垮整张选择器。*/}
+        }
         return result;
+    }
+    private static bool Lowers(JsonObject action)
+    {
+        try
+        {
+            DesktopNativeLowering.Lower(new JsonObject{["trigger"]="deploy",["actions"]=new JsonArray(action.DeepClone())}.ToJsonString());
+            return true;
+        }
+        catch(Exception error) when(error is not OutOfMemoryException){return false;}
     }
     public static IEnumerable<string> Fields(JsonObject node)
     {

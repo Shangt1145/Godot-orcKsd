@@ -30,19 +30,20 @@ public sealed class DiyOpCatalogTests(ITestOutputHelper output)
         //    和计划文档 P4 一致。引擎补上机制后这三个数会变——**变了就回来改这里和计划文档**，
         //    别把它改成"自动生成、没人再看"的报表：数字变了却没人知道，正是这次要收口的病。
         //
-        //    2026-10-29 切到 v4 后实测 55 / 106。**少掉的这 2 个不是"引擎没了这个机制"**，是目录里
-        //    几个动作的默认声明本身坏了（见下面第 2.1 条把它们钉住）：`conditional`／`repeat` 的必填
-        //    字段 initial 是 JS 的 `undefined`，请求体里就成了字符串 "undefined"，OrC 侧再 JSON.parse
-        //    直接 SyntaxError；`setVar` 缺目录键（KeyNotFound）。三者都属工具链缺陷、待修，
-        //    修好之后这里会红，提醒把数字改回去。
+        //    2026-10-29 切到 v4 后实测 55 / 106。少掉的 2 个**不是"引擎没了这个机制"**，
+        //    是 `InspectorVocabulary.Action` 自己把默认声明拼坏了：它按目录的字段表逐字段填默认值，
+        //    可那张表是**按原语汇总的并集**（`heal` 里列着 `attack`／`defense`，那是它兄弟变体的参数），
+        //    而 OrC 侧的正常化器是**按"哪些字段在场"认变体**的——塞满并集就把形状撑坏了。
+        //    改成"先拼精简形状、过不了编译器才退回全量"之后 **62 / 99**：条件、循环、变量这三个
+        //    复杂 DIY 最需要的东西回来了，另有 4 个同类（全字段 optional）也一并转正。
         Assert.Equal(161, all.Count);
-        Assert.Equal(55, DiyOpCatalog.Alpha.Count);
-        Assert.Equal(106, DiyOpCatalog.Preview.Count);
+        Assert.Equal(62, DiyOpCatalog.Alpha.Count);
+        Assert.Equal(99, DiyOpCatalog.Preview.Count);
 
-        // 2.1 把"工具链缺陷"和"引擎确实没有"分开记：这三条是前者，修好了本用例必须红。
-        Assert.Contains(DiyOpCatalog.Preview, e => e.Op == "conditional" && e.Problem.Contains("undefined"));
-        Assert.Contains(DiyOpCatalog.Preview, e => e.Op == "repeat" && e.Problem.Contains("undefined"));
-        Assert.Contains(DiyOpCatalog.Preview, e => e.Op == "setVar");
+        // 2.1 这 7 个曾经是"工具链缺陷"而不是"引擎确实没有"，修好后必须留在 alpha 区。
+        //    钉住它们是为了防止回退：条件与循环是复杂 DIY 最需要的东西，掉了不会有人立刻发现。
+        foreach (var op in new[] { "conditional", "repeat", "setVar", "removeKeyword", "reveal", "setStats", "upgradeSelf" })
+            Assert.Contains(DiyOpCatalog.Alpha, e => e.Op == op);
 
         // 3. 判据来自编译器：alpha ⇔ 默认声明过得了 DesktopNativeLowering，没有第三态。
         foreach (var entry in all)
