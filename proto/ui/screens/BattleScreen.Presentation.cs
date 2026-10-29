@@ -140,7 +140,13 @@ public partial class BattleScreen
         StartMulliganArrival(supplied.After);
         await _mulliganArrivalTask;
         await WaitForGestureReleaseAsync();
-        if (!IsInsideTree() || initialGeneration != _generation || supplied.MatchId != _state.MatchId) return;
+        if (!IsInsideTree() || supplied.MatchId != _state.MatchId) return;
+        if (initialGeneration != _generation)
+        {
+            // 入口就被别人抢先画过一帧：本条的状态不会落地。留痕，别静默。
+            NotePresentationDropped("entry", supplied, initialGeneration);
+            return;
+        }
         CancelSelection();
         var resolution = UiSnapshots.Freeze(supplied); var actions = UiSnapshots.Freeze(afterActions);
         _pendingPresentation = resolution; _pendingPresentationActions = actions;
@@ -314,9 +320,21 @@ public partial class BattleScreen
                 var reason = ResultReasonText(resolution.After) ?? "对局结束";
                 await _sequence.ResultBannerAsync(victory, reason);
             }
-            if (generation != _generation || _pendingPresentation != resolution) return;
+            if (generation != _generation || _pendingPresentation != resolution)
+            {
+                // 只有"更新的演出接管了"才是正当让位。若**仍归本演出所有**（_pendingPresentation == resolution）
+                // 却因 generation 变了就返回，那么 resolution.After 永远不会被画到屏上——画面停在旧的一帧，
+                // 直到下一次演出顺手把它带过来。玩家看到的就是"移动后不刷新，再动一个单位才刷新"。
+                if (_pendingPresentation == resolution) NotePresentationDropped("pre-render", resolution, generation);
+                return;
+            }
             await WaitForGestureReleaseAsync();
-            if (!IsInsideTree() || generation != _generation || _pendingPresentation != resolution) return;
+            if (!IsInsideTree()) return;
+            if (generation != _generation || _pendingPresentation != resolution)
+            {
+                if (_pendingPresentation == resolution) NotePresentationDropped("pre-render-after-gesture", resolution, generation);
+                return;
+            }
             Render(resolution.After, actions, true); generation = _generation;
             // Layout movements belong to this item too; a later item must not kill them on render.
             while (IsInsideTree() && generation == _generation && _pendingPresentation == resolution
@@ -458,4 +476,22 @@ public partial class BattleScreen
             Record(moved, $"{moved.Definition.Name} → {(moved.Zone == "frontline" ? "前线" : "支援线")}", BattleLogKind.Move);
         }
     }
+
+    /// <summary>
+    /// 演出被丢弃时点名（只在**仍归本条所有**却被 generation 挡下时调用）。
+    /// <para>
+    /// 为什么需要它：<see cref="PresentSequenceAsync"/> 的收尾只有一个 <c>Render(resolution.After, …)</c>，
+    /// 它是"把这条演出的状态画到屏上"的唯一出口。这条出口前面有三处 <c>return</c>，全是静默的——
+    /// 一旦命中，<c>resolution.After</c> 永远不会上屏，画面停在旧的一帧，直到下一次演出顺手把它带过来。
+    /// 玩家侧的表现就是"单位移动后画面不刷新，再移动另一个单位才刷新"。
+    /// </para>
+    /// <para>
+    /// 正常流程不该命中：若日志里出现这一行，说明就是它——并且同时给出当时的 generation 差值和阶段，
+    /// 可以直接定位是谁在演出中途又画了一帧（<c>PresentCombatAsync</c>／<c>ApplyProjection</c>／另一次演出）。
+    /// </para>
+    /// </summary>
+    private void NotePresentationDropped(string where, UiPresentationResolution resolution, int generation)
+        => GD.Print($"[battle] presentation dropped at {where}: generation {generation} -> {_generation}, "
+            + $"phase={resolution.After.Phase}, steps={resolution.Steps.Count}, "
+            + $"turn={resolution.After.Turn}, owner={(ReferenceEquals(_pendingPresentation, resolution) ? "self" : "other")}");
 }
