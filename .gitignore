@@ -25,3 +25,7 @@ tests/TestResults/
 # Android 构建模板由 Godot 的 "Install Android Build Template" 生成（约 200 MB），不入库
 /android/
 /dist/android/
+
+# 本地生成的「更新档案」静态网页：资料快照，不是游戏源码，也不随仓库更新。
+# （README 里已写明"仅保留本地文件、未同步源码"，所以不进 Git。）
+/sites/
