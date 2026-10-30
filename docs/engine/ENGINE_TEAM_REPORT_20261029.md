@@ -19,6 +19,15 @@
 每条都写了"怎么验"，都可以在 5 分钟内复现或否证。**如果哪条你判定不是引擎的问题，请直接说，
 我会把它挪到宿主侧的欠账清单里**——这份报告的目的是分账，不是甩锅。
 
+### 已提交 issue
+
+| # | 对应条目 | 链接 | 状态 |
+|---|---|---|---|
+| 1 | §8 反制激活无入口 + 回合门禁冲突 | https://github.com/hitman-OLD6/OrC-KSD/issues/1 | OPEN（2026-10-30） |
+
+本报告其余条目仍以文档形式交付。需要逐条开 issue 的话说一声，我按 §8 同样的格式拆——
+那条之所以单独开，是因为它卡住了玩家投稿的 DIY 卡，有具体卡面可以对照。
+
 ---
 
 ## 1. 【P0·契约】目录给出的默认值，按原样拼出来不是合法声明
@@ -351,6 +360,49 @@ ShuffleIn  Silence     Upgrade     Select
 ```
 
 如果其中有哪个入口你们计划在下个版本**改签名或删掉**，请提前说——宿主有 97 条映射要落在上面。
+
+---
+
+## 8. 【P1·能力】反制激活没有入口，且回合门禁与「敌方回合触发」天然冲突
+
+> **已单独提交 issue**：https://github.com/hitman-OLD6/OrC-KSD/issues/1 （2026-10-30，OPEN）
+> 下面是摘要，完整论证与最小复现在 issue 里。
+
+### 现象
+
+玩家投稿的 DIY 卡里有一类需要「**把手里的一张反制激活**」：
+
+- 「敌方单位被消灭时，随机激活手牌中的 1 张反制」
+- 「部署：随机复制手牌中的 1 张花费不大于 4 的反制，并将其激活」
+
+第二张除「激活」外每一步都已有公开 API——随机 `MatchRandomService.PickOne`、
+复制 `MatchCardService.CreateAndPlaceToHandAsync`、打总部 `SelectAsync + DamageAsync`。
+所以这不是在要新机制，是在要一个**已有机制的出口**。
+
+### 为什么绕不过去
+
+| 尝试 | 堵在哪 |
+|---|---|
+| `EffectRuntime` 找入口 | 28 个公开入口里没有激活反制 |
+| 取 `PlayManager` | `Player.EffectRuntime` 是 `internal`；`Player` 不暴露 `Match`/`PlayManager` |
+| 换 `KeywordEffectActionFace` | 只有一个 `DeathAsync`，不是更大的门面 |
+
+我们也考虑过 `card.InvokeMemberAsync(CardProcesses.UseCounter, 自建 Context, ct)` 硬穿过去，
+**放弃了**：那会绕过终局门禁、扣点与守卫，必然漂移成两套口径。
+
+### 希望引擎侧做的
+
+1. 补 `EffectRuntime.ActivateCounterAsync(Card counter, CancellationToken ct = default)`，
+   **完全委托** `PlayManager.UseCounterAsync`，不另写判定；失败零副作用。
+2. **（更重要）裁决一条规则**：`CounterUseJudicator` 在非己方回合直接拒
+   （`NotOwnerTurn`），但「**敌方**单位被消灭」大量发生在对手回合——入口补了照样静默不激活。
+   三条路：① 定义「效果驱动的激活」为独立语义（不经玩家回合门禁、仍扣点）← 我们首选；
+   ② 卡面改成「己方回合」；③ 入口加 `bypassTurnGate`（等于允许免费武装，风险最大）。
+
+### 怎么验
+
+issue 里有一段最小复现代码，命名空间与类型逐个核对过、可编译：卡能进对局、
+随机与手牌读取都正常，**只在最后一步「激活」处无 API 可调**。
 
 ---
 

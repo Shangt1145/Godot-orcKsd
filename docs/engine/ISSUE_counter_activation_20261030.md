@@ -1,5 +1,6 @@
 # Issue：`EffectRuntime` 缺「激活反制」入口，且反制激活的回合门禁与「敌方回合触发的效果」语义冲突
 
+> **已提交**：https://github.com/hitman-OLD6/OrC-KSD/issues/1 （2026-10-30，OPEN，提交账号 `Shangt1145`）
 > 提交目标：`hitman-OLD6/OrC-KSD`（GitHub Issues）
 > 依据版本：`origin/main` @ `a3d6678`（2026-10-30）
 > 提交方：宿主 `OrC-KSD.Godot`（Godot 客户端）
