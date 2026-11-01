@@ -41,6 +41,7 @@ public partial class Main : Control
     private DiyCardLibrary _diy = null!;
     private DiyEditorScreen _diyEditor = null!;
     private DiyEffectEditorScreen _diyEffects = null!;
+    private HandlerBlockEditorScreen _blockEditor = null!;
     private OrcImportLibrary _orcImports = null!;
     private IReadOnlyList<OrcImportOutcome> _importedOutcomes = [];
     private CollectionScreen _collection = null!;
@@ -357,6 +358,16 @@ public partial class Main : Control
         _diyEffects.Applied += (orc, legacy) => _diyEditor.ApplyEffects(orc, legacy);
         _diyEffects.Finished += () => Show("editor");
         AddScreen(content, "diyfx", _diyEffects);
+        // 积木式 handler 编辑（Handler DSL v1）：从效果编辑器进入，先独立成屏，暂不写回卡牌草稿。
+        _blockEditor = new HandlerBlockEditorScreen();
+        _blockEditor.Initialize();
+        _blockEditor.Finished += () => Show("diyfx");
+        AddScreen(content, "hdsl", _blockEditor);
+        _diyEffects.BlockEditorRequested += () =>
+        {
+            _blockEditor.Open("样例：打出时");
+            Show("hdsl");
+        };
         _helpTabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
         _gallery = new AnimationGallery { Name = "动画演示" };
         _helpTabs.AddChild(_gallery);
@@ -467,6 +478,8 @@ public partial class Main : Control
             CallDeferred(MethodName.CaptureP11);
         else if (args.Contains("--capture-ui"))
             CallDeferred(MethodName.CaptureUi);
+        else if (args.Contains("--capture-hdsl"))
+            CallDeferred(MethodName.CaptureHdsl);
         else if (args.Contains("--capture-real"))
             CallDeferred(MethodName.CaptureReal);
         else if (args.Contains("--capture-placement"))
@@ -974,7 +987,7 @@ public partial class Main : Control
     private void Show(string id)
     {
         if (_active == "deck" && id != "deck") { _deckEditor.GuardLeaving(() => NavigateFromRoom(id)); return; }
-        if (_active is "editor" or "diyfx" && id is not ("editor" or "diyfx")) { _workshop.GuardLeaving(() => NavigateFromRoom(id)); return; }
+        if (_active is "editor" or "diyfx" or "hdsl" && id is not ("editor" or "diyfx" or "hdsl")) { _workshop.GuardLeaving(() => NavigateFromRoom(id)); return; }
         NavigateFromRoom(id);
     }
     private void ShowCore(string id)
@@ -1174,6 +1187,24 @@ public partial class Main : Control
         }
         catch (Exception e) { GD.PushError(e.ToString()); GetTree().Quit(1); }
     }
+    /// <summary>积木式 handler 编辑面的截图（布局回归用；不开对局、不写盘）。</summary>
+    private async void CaptureHdsl()
+    {
+        _blockEditor.Open("样例：打出时");
+        Show("hdsl");
+        // Show() 会起一段 0.20s 的入场淡入（Main.MenuMotion）。只等两帧会截到 alpha≈0.55 的半透明画面，
+        // 整张图偏暗、颜色看着像配错了——所以这里必须等淡入跑完。
+        await ToSignal(GetTree().CreateTimer(0.32), SceneTreeTimer.SignalName.Timeout);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        var dir = ProjectSettings.GlobalizePath("res://artifacts");
+        System.IO.Directory.CreateDirectory(dir);
+        System.IO.File.WriteAllText(dir + "/.gdignore", "");
+        GetViewport().GetTexture().GetImage().SavePng(dir + "/hdsl-editor.png");
+        GD.Print("HDSL_CAPTURE_OK");
+        GetTree().Quit();
+    }
+
     private async void CaptureUi()
     {
         Show("collection");

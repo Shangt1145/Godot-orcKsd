@@ -52,6 +52,8 @@ public partial class DiyEffectEditorScreen : VBoxContainer
     public Func<IReadOnlyList<DiyCardDraft>>? Drafts {get;set;}
     public event Action<DiyCardDraft>? InspectorSaved;
     public event Action<DiyCardDraft>? DraftEdited;
+    /// <summary>进入积木式编辑面（契约 v1 的 handler DSL）。</summary>
+    public event Action? BlockEditorRequested;
 
 
     public void Initialize()
@@ -75,6 +77,9 @@ public partial class DiyEffectEditorScreen : VBoxContainer
             OrcNotice.Text = "已添加「" + OrcEffectEditing.Recipes[RecipePick.Selected - 1].Name + "」。";
         }));
         FinishButton = MenuStyles.Button("完成", () => {if(NativeInspector.CommitPendingRaw())Finished?.Invoke();}); heading.AddChild(FinishButton);
+        var blocks = MenuStyles.Button("积木编辑", () => BlockEditorRequested?.Invoke());
+        blocks.TooltipText = "用积木拼 handler（Handler DSL v1，树状、无连线）";
+        heading.AddChild(blocks);
         SaveButton=MenuStyles.Button("保存卡牌",SaveNative);heading.AddChild(SaveButton);
         var compatibility = MenuStyles.Button("兼容工具", () => ShowCompatibility()); heading.AddChild(compatibility);
         compatibility.TooltipText = "需要处理旧卡数据时再打开结构与检查工具";
