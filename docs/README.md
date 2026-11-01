@@ -188,7 +188,7 @@
 | [VERSIONING](release/VERSIONING.md) | 一版一补丁、发版顺序、资产上传规则 | **现行（硬约束）** |
 | [RELEASE_INDEX](release/RELEASE_INDEX.md) | 发行文件索引，`tools/` 生成，勿手改 | 生成物 |
 | [2.0.0-beta.2](release/RELEASE_2.0.0_BETA2_20261101.md) | 当前发行：积木式效果编辑面、界面去术语 | 现行 |
-| [2.0.0-beta.1](release/RELEASE_2.0.0_ALPHA5_20261025.md) | 整代换 v4 引擎（补丁基线，无独立说明） | 记录 |
+| [2.0.0-beta.1](release/RELEASE_2.0.0_BETA1_20261028.md) | 整代换 v4 引擎（本版补丁基线） | 记录 |
 | [2.0.0-alpha.5](release/RELEASE_2.0.0_ALPHA5_20261025.md) | 调试台、部署选靶、工坊联机 | 记录 |
 | [2.0.0-alpha.2](release/RELEASE_2.0.0_ALPHA2_20261024.md) | 增量基线 | 记录 |
 | [2.0.0-alpha.1](release/RELEASE_2.0.0_ALPHA1_20261024.md) | 整代起点 | 历史 |

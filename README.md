@@ -20,7 +20,7 @@ beta.1 的引擎版本及累计配套补丁见 [接入基线](docs/engine/ENGINE
 另需 .NET 8/9 SDK 与 Godot 4.7 **.NET(mono)** 版；编辑器一键入口 `tools\open-editor.bat`，
 构建/验证/运行 `tools\run.ps1`。原版美术不进 Git，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
-**当前发行：2.0.0-beta.1（2026-10-28）**。**整代换引擎**：客户端从旧引擎线整体切到新引擎 `v4`，界面、对局、工坊的全部流程在新引擎上跑通。内建词条（伏击／装甲／闪击／免疫／情报／动员／压制）在新引擎里改成 csx 组件资产，本次接上后真的有效果；DIY 主动效果经新门面 `DesktopNativeRuntime` 重新可用；工坊包产物改成新引擎唯一认的 `effects-v4/*.component.json`。Windows 增量从已发布 alpha.5 构建升级，使用更新器 1.2.0；Android 使用完整 APK（versionCode 12）。**已知缺口**：DIY 卡牌／词条的效果在联机服务端不执行（单机正常），修法已定，见 [发行说明](docs/release/RELEASE_2.0.0_BETA1_20261028.md)。
+**当前发行：2.0.0-beta.2（2026-11-01）**。**积木式效果编辑面**：新增「效果搭建」屏，左栏工具箱列出引擎支持的全部 **37 块积木**（10 个内建 op ＋ 27 个目录动作），按用途分组、可搜索，点一块就插到画布当前选中的位置；画布按 Scratch 的**形状**读（缺口／凸榫／C 形子体），配色换成本项目的军绿＋黄铜＋羊皮纸土色系；右栏实时显示生成的 `.hdsl.json` 与本地检查结果，装载期由后端最终裁定。界面术语整体简化（绑定→起个名、`le`→小于或等于、`‹f›.defense`→‹f›的防御力、错误码→一句人话）。契约 v1（11-01 版）对齐：`read.of` 支持**实体表达式**、可读项按**实体种类**分组、新增只读查询 `unitsOf`、`bind` 按**节点级字段**、`choice` 的 `options` 按 `[{label, actions}]`。Windows 增量从已发布 beta.1 构建升级，使用更新器 1.2.0；Android 使用完整 APK（versionCode 13）。**已知缺口**：编辑面尚未写回（只产出 DSL 文本，不接 `AssetEditor.Commit`）；DIY 卡牌／词条的效果在联机服务端不执行（单机正常）。详见 [发行说明](docs/release/RELEASE_2.0.0_BETA2_20261101.md)。
 
 **多人能力边界**：已接通启用的原生工坊卡包、扩展包及可编译 DIY 卡的会话打包、规则/卡图同步与开局校验；无法编译的机制保留为草稿，不进入对战。双方客户端及服务端需一同更新，详见 [工坊联机说明](docs/acceptance/NETWORK_WORKSHOP_20261025.md)。原版美术不进入 Git，发行包已携带；源码运行须另行准备这些素材，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
