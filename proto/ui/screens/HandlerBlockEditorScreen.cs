@@ -297,8 +297,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         foreach (var group in groups)
         {
             _toolboxList.AddChild(ToolboxGroupHeader(group.Key));
-            // 组内保持目录顺序（按 op 名排），不用中文字序——那种排序对作者没有意义，稳定才重要。
-            foreach (var spec in group) _toolboxList.AddChild(ToolboxRow(spec));
+            // 组内：先 alpha、后 preview（OrderBy 是稳定排序，同档内保持目录顺序）。
+            // 不把 preview 抽出来单列一张表——那样它会离开自己的分组，作者反而找不到。
+            foreach (var spec in group.OrderBy(spec => spec.Stage))
+                _toolboxList.AddChild(ToolboxRow(spec));
         }
     }
 
@@ -348,15 +350,20 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private Control ToolboxRow(HandlerNodeSpec spec)
     {
         var color = BlockTheme.ForGroup(spec.Group);
+        // 预览态：颜色降饱和、加角标、tooltip 摆原因。**照常可点**——契约要求「允许先搭图，
+        // 保存前再拦」，藏起来或点不动都会让作者以为这版没这个能力（FRONTEND §5.5）。
+        var preview = spec.IsPreview;
         var row = new PanelContainer
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             MouseDefaultCursorShape = CursorShape.PointingHand,
-            TooltipText = spec.Name + "　" + PinSummary(spec),
+            TooltipText = preview
+                ? spec.Name + "　还不能用：" + (spec.Problem ?? "")
+                : spec.Name + "　" + PinSummary(spec),
         };
-        row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, false));
-        row.MouseEntered += () => row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, true));
-        row.MouseExited += () => row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, false));
+        row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, false, preview));
+        row.MouseEntered += () => row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, true, preview));
+        row.MouseExited += () => row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, false, preview));
         row.GuiInput += @event =>
         {
             if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
@@ -365,20 +372,25 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         var line = new HBoxContainer();
         line.AddThemeConstantOverride("separation", 6);
-        line.AddChild(MenuStyles.Label(spec.Title, 12, BlockTheme.InkFor(color)));
-        // 右侧只标「带子块」——这是唯一影响插入后操作量的信息，引脚数放 tooltip。
-        var tail = MenuStyles.Label(spec.IsContainer ? "带子块" : "", 10, BlockTheme.MutedInkFor(color));
+        line.AddChild(MenuStyles.Label(spec.Title, 12,
+            preview ? new Color(BlockTheme.InkFor(color), 0.55f) : BlockTheme.InkFor(color)));
+        // 右侧优先标「还不能用」——它比「带子块」重要得多：一个影响能不能跑，一个只影响点几下。
+        var tail = MenuStyles.Label(
+            preview ? "还不能用" : spec.IsContainer ? "带子块" : "", 10,
+            preview ? new Color(MenuStyles.Gold, 0.85f) : BlockTheme.MutedInkFor(color));
         tail.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         tail.HorizontalAlignment = HorizontalAlignment.Right;
+        tail.ClipText = true;
         line.AddChild(tail);
         row.AddChild(line);
         return row;
     }
 
-    private static StyleBoxFlat ToolboxRowStyle(Color color, bool hover) => new()
+    private static StyleBoxFlat ToolboxRowStyle(Color color, bool hover, bool preview = false) => new()
     {
-        BgColor = hover ? new Color(color, 0.95f) : new Color(color, 0.62f),
-        BorderColor = hover ? MenuStyles.Gold : new Color(color.Lightened(0.35f), 0.85f),
+        // 预览态整体压暗：alpha 降一档，读起来是「灰的」，不是「换了个颜色」。
+        BgColor = hover ? new Color(color, preview ? 0.45f : 0.95f) : new Color(color, preview ? 0.22f : 0.62f),
+        BorderColor = hover ? MenuStyles.Gold : new Color(color.Lightened(0.35f), preview ? 0.45f : 0.85f),
         // 左边那道色脊是分组色的「标签」，一行扫过去就能认出这组是什么颜色。
         BorderWidthLeft = 3,
         BorderWidthTop = 1,
@@ -436,11 +448,20 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _blocks.AddChild(RenderArray(_doc.Actions, "actions", [], 0, "整段的最后"));
 
         foreach (var child in _issues.GetChildren()) { _issues.RemoveChild(child); child.QueueFree(); }
+
+        // 预览态提示（SPEC §12.11／FRONTEND §5.5）：**不是**校验错误——13 个错误码是封闭的，
+        // 这里不加第 14 个。它是一条「能存但跑不起来」的警告：允许作者先把图搭完，保存前再拦。
+        var previewOps = PreviewOpsIn(_doc.Actions);
+        if (previewOps.Count > 0)
+            _issues.AddChild(PreviewWarning(previewOps));
+
         if (issues.Count == 0)
         {
-            _issues.AddChild(MenuStyles.Label("都没问题，可以保存了。", 12, MenuStyles.Dim));
-            _issueCount.Text = "没问题";
-            _issueCount.AddThemeColorOverride("font_color", UiStyles.Green);
+            if (previewOps.Count == 0)
+                _issues.AddChild(MenuStyles.Label("都没问题，可以保存了。", 12, MenuStyles.Dim));
+            _issueCount.Text = previewOps.Count == 0 ? "没问题" : previewOps.Count + " 块跑不起来";
+            _issueCount.AddThemeColorOverride("font_color",
+                previewOps.Count == 0 ? UiStyles.Green : MenuStyles.Gold);
         }
         else
         {
@@ -734,6 +755,13 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var head = new HBoxContainer();
         head.AddThemeConstantOverride("separation", 8);
         head.AddChild(MenuStyles.Label(spec?.Title ?? node.Op, 15, ink));
+        // 画布上也标一次预览态：作者是在这块积木上做决定，不能只在右栏提一句。
+        if (spec is { IsPreview: true })
+        {
+            var badge = MenuStyles.Label("还不能用", 10, new Color(MenuStyles.Gold, 0.9f));
+            badge.TooltipText = spec.Problem;
+            head.AddChild(badge);
+        }
         head.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
         head.AddChild(BlockButton("↑", "上移", ink, () => MoveNode(node, -1)));
         head.AddChild(BlockButton("↓", "下移", ink, () => MoveNode(node, 1)));
@@ -1243,6 +1271,63 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     }
 
     // ── 杂项 ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 文档里用到的**预览态** op（SPEC §12.11）：能存、能生成 csx，但运行期跑不起来。
+    /// <para>
+    /// 与校验错误分开统计——预览态不是错误码，是「这版还没接通」的事实。
+    /// 界面据此在检查结果里出一条警告，并在保存前拦（保存链路接上时用）。
+    /// </para>
+    /// </summary>
+    private List<(string Op, string? Problem, int Count)> PreviewOpsIn(IReadOnlyList<HandlerNode> list)
+    {
+        var found = new Dictionary<string, (string? Problem, int Count)>(StringComparer.Ordinal);
+
+        void Walk(IReadOnlyList<HandlerNode> nodes)
+        {
+            foreach (var node in nodes)
+            {
+                if (_catalog.StageOf(node.Op) == HandlerNodeStage.Preview)
+                {
+                    var problem = _catalog.ProblemOf(node.Op);
+                    found[node.Op] = found.TryGetValue(node.Op, out var at)
+                        ? (at.Problem, at.Count + 1)
+                        : (problem, 1);
+                }
+
+                foreach (var body in node.Bodies.Values) Walk(body);
+                foreach (var option in node.Options) Walk(option.Actions);
+            }
+        }
+
+        Walk(list);
+        return found.Select(pair => (pair.Key, pair.Value.Problem, pair.Value.Count)).ToList();
+    }
+
+    private Control PreviewWarning(IReadOnlyList<(string Op, string? Problem, int Count)> ops)
+    {
+        var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        box.AddThemeConstantOverride("separation", 2);
+
+        var total = ops.Sum(op => op.Count);
+        box.AddChild(MenuStyles.Label("有 " + total + " 块现在还跑不起来", 11, MenuStyles.Gold));
+
+        foreach (var (op, problem, count) in ops)
+        {
+            var line = MenuStyles.Label(
+                "· " + HandlerVocabulary.NodeTitle(op) + (count > 1 ? " ×" + count : "") + "：" +
+                (problem ?? "这版还跑不起来。"), 10, MenuStyles.Dim);
+            line.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            line.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            line.TooltipText = op;
+            box.AddChild(line);
+        }
+
+        var margin = new MarginContainer();
+        margin.AddThemeConstantOverride("margin_bottom", 4);
+        margin.AddChild(box);
+        return margin;
+    }
 
     private static int CountNodes(IEnumerable<HandlerNode> list)
     {

@@ -44,11 +44,26 @@ public sealed record HandlerPinSpec(
 /// 界面层不需要改（见 docs/design/INSPECTOR_SELECTION_20261031.md §6 前置条件）。
 /// </para>
 /// </summary>
+/// <summary>
+/// 能力分区（SPEC §12.11／FRONTEND-GUIDE §5.5）：
+/// <see cref="Alpha"/>＝这版真能跑；<see cref="Preview"/>＝目录里有、**现在跑不起来**。
+/// <para>
+/// 判据是**显式登记**，不是自动探针——`choice` 编译能过、运行才炸，按「编译一次」判会误判成 alpha。
+/// 分区只影响排序与提示，**绝不裁剪**：藏起来会让作者以为这版没这个能力。
+/// </para>
+/// </summary>
+public enum HandlerNodeStage
+{
+    Alpha,
+    Preview,
+}
+
 public sealed class HandlerNodeSpec
 {
     public HandlerNodeSpec(string name, bool hasAwait, bool hasSideEffect,
         IReadOnlyList<HandlerPinSpec> inputs, IReadOnlyList<HandlerPinSpec> outputs,
-        bool builtIn = false, IReadOnlyList<string>? bodies = null)
+        bool builtIn = false, IReadOnlyList<string>? bodies = null,
+        HandlerNodeStage stage = HandlerNodeStage.Alpha, string? problem = null)
     {
         Name = name;
         HasAwait = hasAwait;
@@ -57,10 +72,21 @@ public sealed class HandlerNodeSpec
         Outputs = outputs;
         BuiltIn = builtIn;
         Bodies = bodies ?? [];
+        Stage = stage;
+        Problem = problem;
     }
 
     public string Name { get; }
     public bool BuiltIn { get; }
+
+    /// <summary>能力分区；缺省 <see cref="HandlerNodeStage.Alpha"/>。</summary>
+    public HandlerNodeStage Stage { get; }
+
+    /// <summary>人读原因（<see cref="HandlerNodeStage.Alpha"/> 恒为 null）。</summary>
+    public string? Problem { get; }
+
+    /// <summary>现在跑不起来（界面据此置灰＋角标）。</summary>
+    public bool IsPreview => Stage == HandlerNodeStage.Preview;
     public bool HasAwait { get; }
     public bool HasSideEffect { get; }
     public IReadOnlyList<HandlerPinSpec> Inputs { get; }
@@ -130,6 +156,47 @@ public sealed class HandlerCatalog
     public HandlerNodeSpec? Find(string op) => _byName.GetValueOrDefault(op);
     public bool Knows(string op) => _byName.ContainsKey(op);
 
+    /// <summary>
+    /// 内建 op 的能力分区（契约 <c>builtInOps</c>，顺序＝<c>HandlerDslContract.BuiltinOps</c>）。
+    /// <para>
+    /// 契约把它们单列一张表，是因为内建 op 由前端硬编码、目录里没有引脚条目，
+    /// 而 <c>choice</c> 的运行时实现 <c>ChooseAsync</c> 在排除清单里、扫描器根本扫不到——
+    /// 可用性无处可标，只能登记。**这里照抄，不自行推导。**
+    /// </para>
+    /// </summary>
+    public static readonly IReadOnlyList<(string Op, HandlerNodeStage Stage, string? Problem)> BuiltInOps =
+    [
+        ("sequence", HandlerNodeStage.Alpha, null),
+        ("branch", HandlerNodeStage.Alpha, null),
+        ("loop", HandlerNodeStage.Alpha, null),
+        ("while", HandlerNodeStage.Alpha, null),
+        ("iterate", HandlerNodeStage.Alpha, null),
+        ("choice", HandlerNodeStage.Preview,
+            "选项呈现需要先接通交互通道（S10）：现在编译能过，一跑就抛 NotSupportedException。"),
+        ("let", HandlerNodeStage.Alpha, null),
+        ("write", HandlerNodeStage.Alpha, null),
+        ("ask", HandlerNodeStage.Alpha, null),
+        ("script", HandlerNodeStage.Alpha, null),
+    ];
+
+    /// <summary>op 的分区：先看节点自带标注，再看内建表，都没有＝alpha。</summary>
+    public HandlerNodeStage StageOf(string op)
+    {
+        if (Find(op) is { } spec) return spec.Stage;
+        foreach (var built in BuiltInOps)
+            if (built.Op == op) return built.Stage;
+        return HandlerNodeStage.Alpha;
+    }
+
+    /// <summary>op 的预览原因（alpha＝null）。</summary>
+    public string? ProblemOf(string op)
+    {
+        if (Find(op) is { } spec) return spec.IsPreview ? spec.Problem : null;
+        foreach (var built in BuiltInOps)
+            if (built.Op == op) return built.Problem;
+        return null;
+    }
+
     private static HandlerCatalog? _snapshot;
 
     /// <summary>内置快照（26 节点 = 24 动作 + stop/interrupt）。</summary>
@@ -151,7 +218,11 @@ public sealed class HandlerCatalog
             new("loop", false, false, [V("times", "number")], [], true, ["actions"]),
             new("while", false, false, [V("test", "boolean"), V("limit", "number")], [], true, ["actions"]),
             new("iterate", false, false, [V("over", "list<entity>"), B("as")], [], true, ["actions"]),
-            new("choice", true, true, [T("prompt")], [], true, ["options"]),
+            // choice 是**预览态**（SPEC §12.11）：编译能过，运行期 ChooseAsync 无条件抛。
+            // 分区写在这里而不是「等界面自己判断」——判据必须是登记，不是探针。
+            new("choice", true, true, [T("prompt")], [], true, ["options"],
+                HandlerNodeStage.Preview,
+                "选项呈现需要先接通交互通道（S10）：现在编译能过，一跑就抛 NotSupportedException。"),
             new("let", false, false, [B("name"), V("value", "number")], [], true),
             new("write", false, true,
                 [new("field", "string", true, null, null, HandlerPinKind.Field), V("value", "number")], [], true),

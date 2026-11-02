@@ -518,4 +518,51 @@ public class HandlerDslEditorTests
         Assert.Equal("pin-missing", second.Code);
         Assert.Equal("actions[0].options[0].label", second.NodePath);
     }
+
+    // ── 能力分区（SPEC §12.11／FRONTEND §5.5）─────────────────────────────────
+
+    [Fact]
+    public void choice是唯一的预览态节点()
+    {
+        // 契约说得很明确：choice 编译能过、运行期 ChooseAsync 无条件抛，所以是 preview。
+        // 这条断言是**行为测试背书**的那一半——引擎接通 S10 后它会先红，逼人回来改分区。
+        var choice = Catalog.Find("choice");
+        Assert.NotNull(choice);
+        Assert.Equal(HandlerNodeStage.Preview, choice.Stage);
+        Assert.True(choice.IsPreview);
+        Assert.False(string.IsNullOrWhiteSpace(choice.Problem));
+
+        // 其余节点（27 个扫描节点 ＋ 另外 9 个内建 op）全是 alpha：今天没有第二个预览态。
+        var preview = Catalog.Nodes.Where(n => n.IsPreview).Select(n => n.Name).ToArray();
+        Assert.Equal(["choice"], preview);
+    }
+
+    [Fact]
+    public void 内建op表与契约的十个op一一对应()
+    {
+        // 顺序也照契约（HandlerDslContract.BuiltinOps）：前端不自行推导这张表。
+        Assert.Equal(
+            ["sequence", "branch", "loop", "while", "iterate", "choice", "let", "write", "ask", "script"],
+            HandlerCatalog.BuiltInOps.Select(b => b.Op));
+
+        // 表里的每个 op 都必须是目录里真实存在的内建节点，反之亦然——
+        // 两边错一个就会静默失效（引擎那边也有一条守护测试专门校验这个）。
+        Assert.Equal(
+            Catalog.Nodes.Where(n => n.BuiltIn).Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal),
+            HandlerCatalog.BuiltInOps.Select(b => b.Op).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void 分区查询对未知op退回alpha()
+    {
+        Assert.Equal(HandlerNodeStage.Alpha, Catalog.StageOf("damage"));
+        Assert.Null(Catalog.ProblemOf("damage"));
+
+        Assert.Equal(HandlerNodeStage.Preview, Catalog.StageOf("choice"));
+        Assert.NotNull(Catalog.ProblemOf("choice"));
+
+        // 未知 op 不编造预览态：它该走 node-unknown，不是「还没接通」。
+        Assert.Equal(HandlerNodeStage.Alpha, Catalog.StageOf("没有这个op"));
+        Assert.Null(Catalog.ProblemOf("没有这个op"));
+    }
 }
