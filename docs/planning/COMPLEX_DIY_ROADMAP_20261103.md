@@ -119,13 +119,36 @@ headless 与带窗口两种模式都通过，截图见 `block-canvas.png`。
 **仍未做**：改一个**已有**脚本效果（草案的产物 id 不能等于父 id，覆盖父这件事没定策略）；
 「草案落后于父」目前只在保存后显示，不是保存前拦截。
 
-### M3 让目录与视图变成真的
+### M3 让目录与视图变成真的——**目录与视图已完成（2026-11-03），多输出 bind 未做**
 
 **做什么**：`HandlerDslCatalog` 改成 `HandlerCatalogFacade.GetCatalog()` 的投影（保留镜像作为离线兜底）；
 视图字段改用 `DescribePrefab` 的真实 `viewFields`；补多输出 `bind` 对象形态。
 
 **验收**：删掉镜像里一个节点，界面跟着少一个（证明不是读本地表）；给成员加一个视图字段，
 `write` 的下拉里立刻出现它。
+
+**实际落地**：
+
+1. **目录＝引擎投影，镜像退成兜底**。`HandlerCatalog.Default` 调
+   `new HandlerCatalogFacade().GetCatalog()`，`HandlerCatalog.FromEngine(dto)` 单向投影；
+   扫描失败（反射找不到类型／程序集被裁／缺 Roslyn）才退回 `Snapshot`，并且**照实说**
+   （`DefaultFallbackReason` → 工具箱头部一条红字「目录来自本地镜像」）。
+   三处刻意的不对称：
+   - 内建 op 的**引脚仍取本地表**（引擎的 `BuiltInOps` 只报能力分区，没有引脚），stage 取引擎；
+   - 扫描节点的引脚**一律 `Value`**：引擎的 `EnumValues` 是取值建议，不是「写成裸字符串」的授权
+     （`unitsOf.side` 在 DSL 里是 `{"lit":"enemy"}`，标成文本枚举会把产物写坏）；
+   - 子类型集照抄（引擎已把列表约束挂在元素上）。
+2. **对照测试**：`引擎目录与本地镜像一一对应` 逐节点比引脚（名／类型／必填／枚举取值／实体子类型）、
+   比 `hasAwait`／`hasSideEffect`、比可读项、比内建 op 分区。**首跑即全绿**——说明镜像当初是准的，
+   现在这条测试是漂移报警器，引擎改了什么这里先红。
+3. **视图字段来自父成员声明**：`HandlerDslAuthoring.ViewFieldsOf(parentId, member)` →
+   `AssetEditor.DescribePrefab`（引擎会做继承展开、草案覆写、模板合并，我们不解析第二遍）。
+   保存对话框里**换父效果就换视图**，`read`／`write` 的候选立刻跟着变。
+   读不出来＝保持现状 + 一条警告，不清空（清空会让画布上每个读取都变红，看起来像作者的图坏了）。
+
+**仍未做**：多输出节点的 `bind` 对象形态（`{"status": "s", "card": "c"}`）。当前只能单输出绑定，
+`fetchFromDeck`／`pickHandCards` 这类两输出的节点只能取第一个输出。这条要同时改
+`HandlerDslDocument` 的序列化、校验器与画布的绑定编辑，单独一段做。
 
 ### M4 把契约钉死
 
