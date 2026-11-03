@@ -288,6 +288,16 @@ public sealed partial class NativeWorkshop
         return cards;
     }
     private AssetEditor Editor => HasSession ? _editor! : throw new InvalidOperationException("请先进入原生卡包编辑。");
+
+    /// <summary>
+    /// 积木画布的写回出口（复杂 DIY）：没有打开的编辑会话＝null，界面据此把「保存」置灰而不是报错。
+    /// <para>
+    /// 每次现取而不是缓存：会话会结束、会换包，缓存下来的实例会往**上一个包**里写。
+    /// </para>
+    /// </summary>
+    public HandlerDsl.HandlerDslAuthoring? HandlerAuthoring
+        => HasSession ? new HandlerDsl.HandlerDslAuthoring(Editor, Editor.Session!.TemporaryRoot) : null;
+
     public string Read(string sourcePath) => File.ReadAllText(WorkshopPackageArchive.Child(Editor.Session!.TemporaryRoot, sourcePath));
     public NativeWorkshopAsset Commit(string sourcePath, string json)
     {

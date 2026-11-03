@@ -40,6 +40,9 @@ public sealed class HandlerDslAuthoring
     /// <summary>草案后缀（引擎 <c>ModingFileSuffix</c> 同形）。</summary>
     public const string DraftSuffix = ".draft.moding.json";
 
+    /// <summary>v4 组件文件后缀（引擎 <c>AssetSchema.FilePattern</c> 同形）。</summary>
+    public const string ComponentSuffix = ".component.json";
+
     private static readonly Lazy<HandlerDslEnvironment> SharedEnvironment = new(HandlerDslAssembly.Create);
 
     /// <param name="editor">已 <c>BeginSession</c> 的编辑面（提交走它，才能落到会话的临时包）。</param>
@@ -87,6 +90,81 @@ public sealed class HandlerDslAuthoring
     /// <summary>`flatten --check`：草案是否落后于父／DSL 改过没重新摊平。</summary>
     public ModingFlattenCheckResult Check(string draftRelativePath)
         => ModingFlattener.Check(PackRoot, draftRelativePath);
+
+    /// <summary>
+    /// 本包里**能当父效果**的「组件#成员」清单（草案的 <c>extends</c> ＋ 成员名必须成对，所以一起列）。
+    /// <para>
+    /// 只收 <c>mountable</c> 成员：草案的价值就是**重载一个会被信号触发的成员**，<c>hostable</c>／
+    /// <c>callable</c> 单独存在时改写它没有触发点，作者会得到一份「保存成功但永远不跑」的产物。
+    /// </para>
+    /// <para>
+    /// 坏文件跳过而不是整体失败：一个手改坏的组件不该让整个下拉空掉——作者会以为包是空的。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<HandlerParentOption> DescribeParents()
+    {
+        var directory = Path.Combine(PackRoot, Orc.Packages.PackageScanner.ComponentsDirectoryName);
+        if (!Directory.Exists(directory)) return [];
+
+        var options = new List<HandlerParentOption>();
+        foreach (var file in Directory.EnumerateFiles(directory, "*" + ComponentSuffix, SearchOption.TopDirectoryOnly)
+                     .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            ComponentAsset asset;
+            try { asset = AssetSchema.Read(File.ReadAllText(file), "product"); }
+            catch (Exception error) when (error is InvalidDataException or ArgumentException or System.Text.Json.JsonException)
+            {
+                continue;
+            }
+
+            foreach (var member in asset.Members)
+            {
+                if (!member.Visibility.HasFlag(MemberVisibility.Mountable)) continue;
+                var target = asset.Mounts
+                    .FirstOrDefault(mount => string.Equals(mount.Member, member.Name, StringComparison.Ordinal))?.Target;
+                options.Add(new HandlerParentOption(asset.Id, member.Name, target));
+            }
+        }
+        return options;
+    }
+
+    /// <summary>
+    /// **一条龙保存**：DSL 文档 → 草案 → 摊平，一次做完。
+    /// <para>
+    /// 三步分开调是给测试与「只想看产物」的场景用的；界面上一律走这里——少一步就是一份
+    /// 「草案还在、产物没更新」的半成品，而作者看不出区别。
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentException">产物 id 含路径分隔符或非法字符。</exception>
+    /// <exception cref="AssetEditorException">引擎拒绝提交（内容不合法等）。</exception>
+    public HandlerDslSaveResult Save(HandlerDslSaveRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var productId = Slug(request.ProductId);
+        if (string.Equals(productId, request.ParentId, StringComparison.Ordinal))
+        {
+            // 摊平会往 effects-v4/<productId>.component.json 写：与父同名＝覆盖父，而父是这次摊平的输入。
+            throw new ArgumentException(
+                $"产物 id 不能和父效果一样（'{productId}'）：那会把父效果覆盖掉，而父效果正是这次摊平的输入。",
+                nameof(request));
+        }
+
+        var dslPath = CommitDsl(productId, request.DslJson);
+        var draftPath = CommitDraft(productId, BuildDraft(
+            productId + ".draft", request.ParentId, request.Member, dslPath,
+            dslJson: request.DslJson, productId: productId));
+
+        var flatten = Flatten(draftPath);
+        if (!flatten.Success)
+        {
+            return new HandlerDslSaveResult(false, dslPath, draftPath, null, null,
+                flatten.Errors.Select(error => $"[{error.Category}] {error.Target}：{error.Message}").ToArray(),
+                UpToDate: false);
+        }
+
+        return new HandlerDslSaveResult(true, dslPath, draftPath, flatten.ProductId, flatten.ProductRelativePath,
+            [], Check(draftPath).UpToDate);
+    }
 
     /// <summary>
     /// 造一份草案 JSON（<c>schemaVersion: 4</c>，<c>kind: moding</c>）。
@@ -206,3 +284,48 @@ public sealed class HandlerDslAuthoring
 /// <param name="Target">信号地址，例 <c>engine#card.played</c>。</param>
 /// <param name="Member">被挂载的成员名。</param>
 public sealed record HandlerMount(string Target, string Member);
+
+/// <summary>
+/// 一个可作父效果的「组件#成员」。草案的 <c>asset.extends</c> 要的是**组件 id**，成员名单独一项，
+/// 两者必须配对，所以这里合成一个选项。
+/// </summary>
+/// <param name="ParentId">父组件 id（草案 <c>extends</c> 的值）。</param>
+/// <param name="Member">被重载的成员名（草案 <c>members[].name</c>）。</param>
+/// <param name="MountedTarget">父效果**已经**为该成员挂的信号（null＝父没挂，产物不会有触发点）。
+/// 界面据此提醒作者：这条挂载会被继承，不要再声明一遍。</param>
+public sealed record HandlerParentOption(string ParentId, string Member, string? MountedTarget)
+{
+    /// <summary>下拉里显示的一行。</summary>
+    public string Label => ParentId + " · " + Member
+        + (MountedTarget is null ? "（父效果没挂信号）" : "  ← " + MountedTarget);
+}
+
+/// <summary>一条龙保存的输入。</summary>
+/// <param name="ParentId">父组件 id。</param>
+/// <param name="Member">被重载的成员名。</param>
+/// <param name="ProductId">产物 id（同时是文件名与资产 id）。不能等于 <paramref name="ParentId"/>。</param>
+/// <param name="DslJson">DSL 文档原文。</param>
+public sealed record HandlerDslSaveRequest(string ParentId, string Member, string ProductId, string DslJson);
+
+/// <summary>一条龙保存的结果。</summary>
+/// <param name="Success">摊平是否成功（提交失败会抛异常，不走这里）。</param>
+/// <param name="DslPath">DSL 文档的包内相对路径。</param>
+/// <param name="DraftPath">草案的包内相对路径。</param>
+/// <param name="ProductId">产物 id（失败＝null）。</param>
+/// <param name="ProductPath">产物的包内相对路径（失败＝null）。</param>
+/// <param name="Errors">摊平失败明细（成功＝空）。</param>
+/// <param name="UpToDate">保存后 `flatten --check` 是否干净（false＝草案已落后，界面要提示）。</param>
+public sealed record HandlerDslSaveResult(
+    bool Success,
+    string? DslPath,
+    string? DraftPath,
+    string? ProductId,
+    string? ProductPath,
+    IReadOnlyList<string> Errors,
+    bool UpToDate)
+{
+    /// <summary>给作者看的一句话。</summary>
+    public string Describe() => Success
+        ? "已保存：" + ProductPath + (UpToDate ? "（产物是最新的）" : "（草案已落后于父效果，建议重新摊平）")
+        : "没保存成功：" + string.Join("；", Errors);
+}

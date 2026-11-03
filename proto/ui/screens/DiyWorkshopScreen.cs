@@ -26,6 +26,13 @@ public partial class DiyWorkshopScreen : VBoxContainer
     internal LineEdit PackName=null!,KeywordName=null!;
     internal Button SaveKeyword=null!;
     internal DiyPackDraft? CurrentPack=>_pack;
+
+    /// <summary>
+    /// 「用积木搭一个效果」被点了。宿主负责切屏并给画布接上保存出口——
+    /// 工坊屏不知道画布长什么样，也不该知道（FRONTEND §2 边界）。
+    /// </summary>
+    public event Action? BlockAuthoringRequested;
+
     public void Initialize(DiyWorkshopLibrary store,DiyCardLibrary cards,DiyEditorScreen editor,DeckConstructionService service,TextureCache textures,Action changed,Func<bool> reduced)
     {
         _store=store;_cards=cards;_editor=editor;_service=service;_textures=textures;_changed=changed;_reduced=reduced;

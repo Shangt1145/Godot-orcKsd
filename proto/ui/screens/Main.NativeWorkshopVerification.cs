@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
+using Kards.Ui.OrcBridge.HandlerDsl;
 
 namespace Kards.Ui;
 
@@ -59,6 +60,33 @@ public partial class Main
         await Capture("effect-composer.png"); await DeckClickAsync(effectComposer.GetOkButton());
         Check(_nativeWorkshop.Effects().Any(e => e.Name == "补给训练" && e.Rules is { Length: 1 }), "Human effect composer did not save native source");
         await DeckClickAsync(effectDialog.GetOkButton());
+        // 复杂 DIY：工坊 → 积木画布 → 保存。这条路以前只到「画得出、存不下」为止。
+        _workshop.EffectLibraryButton.EmitSignal(Button.SignalName.Pressed);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        var library = _workshop.FindChildren("*", "AcceptDialog", true, false).OfType<AcceptDialog>()
+            .Single(d => d.Visible && d.Title == "词条与效果");
+        await DeckClickAsync(library.FindChildren("*", "Button", true, false).OfType<Button>()
+            .Single(b => b.IsVisibleInTree() && b.Text == "用积木搭…"));
+        await WaitFor(() => _blockEditor.Visible);
+        // 样例文档是 unitsOf/iterate/branch 那一套，探针要确定性，换成最小的一段：只有 draw 2。
+        var canvas = new HandlerDocument();
+        canvas.Actions.Add(new HandlerNode("draw").Set("count", HandlerValue.Num(2)));
+        _blockEditor.Open("探针：抽两张", canvas);
+        await DeckClickAsync(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+            .Single(b => b.IsVisibleInTree() && b.Text == "保存到卡包"));
+        var saveDialog = _blockEditor.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>()
+            .Single(d => d.Visible && d.Title == "保存到卡包");
+        Check(saveDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single().ItemCount > 0,
+            "Save dialog listed no parent effect");
+        var productId = saveDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(l => l.Name == "ProductId").Text;
+        // 直接发按下信号而不是模拟鼠标：这个对话框挂在积木屏下，headless 里坐标映射点不中（探针实测）。
+        saveDialog.GetOkButton().EmitSignal(Button.SignalName.Pressed);
+        await WaitFor(() => _blockEditor.SaveNote is not null);
+        Check(_blockEditor.SaveNote!.Contains("已保存", StringComparison.Ordinal), "Block canvas did not save: " + _blockEditor.SaveNote);
+        Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", productId + ".component.json")),
+            "Block canvas did not write the flattened product");
+        await Capture("block-canvas.png");
+        Show("editor"); await MenuSettledAsync();
         var shippedFace = _workshop.FindChildren("*", "Control", true, false).OfType<CardControl>().First(c => c.IsVisibleInTree() && c.Definition.CardId.StartsWith("pack/orc.bulwark/", StringComparison.Ordinal));
         Check(shippedFace.Definition.ArtPath.Length > 0, "Shipped artwork missing in native library"); await DeckClickAsync(shippedFace);
         Check(_workshop.NativeSaveButton.IsVisibleInTree(), "Shipped card did not open native authoring"); await Capture("shipped-editor.png");
@@ -128,6 +156,6 @@ public partial class Main
         native.SettleProjection(); Check(native.View.SelfLine.Any(c => c.Uid == actor.Uid), "Imported card absent from native field");
         var battle = new BattleCard { Size = new(160, 224) }; AddChild(battle); battle.Bind(actor, BattleCardMode.Inspect, _textures);
         Check(battle.UsesGeneratedFace, "Imported illustration did not use shared card face"); battle.QueueFree();
-        GD.Print("NATIVE_WORKSHOP_VERIFY_OK shipped-home-route shipped-art zip-install idempotent portable-art native-form custom-faction three-masters four-pages commit-draft promote-refresh unknown-fields export-reimport real-native-deploy shared-face " + artifacts);
+        GD.Print("NATIVE_WORKSHOP_VERIFY_OK shipped-home-route shipped-art zip-install idempotent portable-art native-form custom-faction three-masters four-pages commit-draft promote-refresh unknown-fields export-reimport real-native-deploy shared-face block-canvas " + artifacts);
     }
 }

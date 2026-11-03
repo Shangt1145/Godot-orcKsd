@@ -166,6 +166,52 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         Assert.Throws<ArgumentException>(() => _authoring.CommitDsl("a/b", DrawTwo));
     }
 
+    [Fact]
+    public void 能当父的效果按可挂载成员列出来()
+    {
+        var parents = _authoring.DescribeParents();
+
+        // 示例包 6 个组件、7 个可挂载成员（`diy.memorial.effect` 有两个：打出时／死亡时）。
+        Assert.Equal(7, parents.Count);
+        Assert.Equal(parents.Count, parents.Select(p => p.ParentId + "#" + p.Member).Distinct().Count());
+
+        var played = parents.Single(p => p.ParentId == "diy.fire-support.effect" && p.Member == "onPlayed");
+        Assert.Equal("engine#card.played", played.MountedTarget);
+        Assert.Contains("engine#card.played", played.Label, StringComparison.Ordinal);
+
+        // 父效果**没有**为这个成员挂信号：产物不会有触发点，界面必须标出来，
+        // 否则作者会得到一份「保存成功但永远不跑」的效果。
+        var orphan = parents.Single(p => p.ParentId == "diy.adjacent-cover.mitigation");
+        Assert.Equal("onDamageApply", orphan.Member);
+        Assert.Null(orphan.MountedTarget);
+        Assert.Contains("没挂信号", orphan.Label, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 一条龙保存写出三份文件且Check是干净的()
+    {
+        var saved = _authoring.Save(new HandlerDslSaveRequest(ParentId, Member, "demo.saved", DrawTwo));
+
+        Assert.True(saved.Success, saved.Describe());
+        Assert.Equal("handler-dsl/demo.saved.hdsl.json", saved.DslPath);
+        Assert.Equal("modings/demo.saved.draft.moding.json", saved.DraftPath);
+        Assert.Equal("effects-v4/demo.saved.component.json", saved.ProductPath);
+        Assert.True(saved.UpToDate, "刚保存完，Check 必须是干净的——否则作者会被一条永远消不掉的警告追着跑");
+        Assert.Empty(saved.Errors);
+
+        foreach (var path in new[] { saved.DslPath!, saved.DraftPath!, saved.ProductPath! })
+            Assert.True(File.Exists(Path.Combine(SessionRoot, path)), path);
+    }
+
+    [Fact]
+    public void 产物id不能和父效果同名()
+    {
+        // 同名＝摊平会覆盖父效果，而父效果正是这次摊平的输入。
+        var error = Assert.Throws<ArgumentException>(() =>
+            _authoring.Save(new HandlerDslSaveRequest(ParentId, Member, ParentId, DrawTwo)));
+        Assert.Contains("父效果", error.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// **M1 的收尾那一锤**：前三步绿了只证明「产物长得对、装载器认得」，
     /// 不证明**打出来真的会抽牌**。这里把四步钉成一条：提交 → 摊平 → 开局 → 打出。

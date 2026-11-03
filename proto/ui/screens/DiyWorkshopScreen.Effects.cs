@@ -75,6 +75,9 @@ public partial class DiyWorkshopScreen
             MenuStyles.Clear(list); foreach (var effect in _native!.Effects()) list.AddChild(MenuStyles.Button(effect.Name, () => Select(effect)));
         }
         left.AddChild(MenuStyles.Button("＋ 新建效果", () => NativeNameDialog("新建效果", "效果名称", name => NativeTry(() => { var effect = _native!.CreateEffect(name); RefreshList(); Select(effect); }), dialog)));
+        // 复杂 DIY 的入口：积木搭出来的效果只能走 DSL → 草案 → 摊平这条路写回包，
+        // 而这条路要求一个打开的编辑会话——所以入口放在工坊里，不放在卡牌草稿那边。
+        left.AddChild(MenuStyles.Button("用积木搭…", () => { BlockAuthoringRequested?.Invoke(); dialog.QueueFree(); }));
         RefreshList(); if (_native!.Effects().FirstOrDefault() is { } first) Select(first); else Note(detail, "为卡包创建一个效果，再设置触发时机、条件和动作。");
         dialog.Confirmed += () => dialog.QueueFree(); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
     }

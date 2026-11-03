@@ -56,6 +56,12 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// <summary>节点 → 它的那块积木。插入后要滚到它那儿，否则「点了没反应」（块落在折叠区外）。</summary>
     private readonly Dictionary<HandlerNode, Control> _nodeControls = [];
 
+    /// <summary>保存出口（复杂 DIY）：返回 null＝当前没有打开的卡包编辑会话。</summary>
+    private Func<HandlerDslAuthoring?>? _authoring;
+    /// <summary>上一次保存的结果（跨 Rebuild 保留：重画会清空检查结果列，作者的反馈不能被顺手抹掉）。</summary>
+    private string? _saveNote;
+    private bool _saveFailed;
+
     public event Action? Finished;
     public event Action<string>? Changed;
 
@@ -71,6 +77,15 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     public HandlerDocument Document => _doc;
     public HandlerCatalog Catalog => _catalog;
+
+    /// <summary>上一次保存的结果文本（null＝这次打开后还没保存过）。探针与调试用。</summary>
+    public string? SaveNote => _saveNote;
+
+    /// <summary>
+    /// 接上「保存到卡包」的出口。**给的是取值的函数而不是实例**：会话会结束、会换包，
+    /// 缓存下来的作者面会往上一个包里写。
+    /// </summary>
+    public void ConfigureSave(Func<HandlerDslAuthoring?> authoring) => _authoring = authoring;
 
     private static IReadOnlyDictionary<string, HandlerViewField> DemoView() =>
         new Dictionary<string, HandlerViewField>(StringComparer.Ordinal)
@@ -96,6 +111,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     {
         _doc = doc?.Clone() ?? HandlerDocument.Sample();
         _cardLabel.Text = title;
+        // 上一份文档的「已保存」不能留给下一份：作者会以为这份也存过了。
+        _saveNote = null;
+        _saveFailed = false;
         _history.Clear();
         _historyAt = 0;
         _history.Add(_doc.Clone());
@@ -124,6 +142,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         head.AddChild(_toolboxToggle);
         head.AddChild(_undo);
         head.AddChild(_redo);
+        var save = MenuStyles.Button("保存到卡包", OpenSaveDialog);
+        save.TooltipText = "把这段积木写成包内的一个效果（DSL 文档 ＋ 草案 ＋ 摊平产物）";
+        MenuStyles.Primary(save);
+        head.AddChild(save);
         head.AddChild(MenuStyles.Button("完成", () => Finished?.Invoke()));
         return head;
     }
@@ -449,6 +471,16 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         foreach (var child in _issues.GetChildren()) { _issues.RemoveChild(child); child.QueueFree(); }
 
+        // 上一次保存的结果排在最前：作者点完「保存」后看到的第一句话应该是「存到哪儿了／为什么没存成」，
+        // 而不是被一堆校验条目顶下去。
+        if (_saveNote is not null)
+        {
+            var note = MenuStyles.Label(_saveNote, 12, _saveFailed ? new Color("e0705f") : UiStyles.Green);
+            note.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            note.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            _issues.AddChild(note);
+        }
+
         // 预览态提示（SPEC §12.11／FRONTEND §5.5）：**不是**校验错误——13 个错误码是封闭的，
         // 这里不加第 14 个。它是一条「能存但跑不起来」的警告：允许作者先把图搭完，保存前再拦。
         var previewOps = PreviewOpsIn(_doc.Actions);
@@ -476,6 +508,103 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _redo.Disabled = _historyAt >= _history.Count - 1;
         RefreshToolbox();   // 插入位置可能在这次重画里变了（撤销、切换文档）
         Changed?.Invoke(_json.Text);
+    }
+
+    // ── 保存（复杂 DIY：DSL → 草案 → 摊平）────────────────────────────────
+
+    /// <summary>
+    /// 保存对话框。只有两个必填：**父效果**（挂载与视图字段都从它继承）与**产物 id**
+    /// （卡牌的 <c>effects.prefabs</c> 引用它）。
+    ///
+    /// <para>
+    /// 为什么不让作者填挂载：父效果已有的挂载会被摊平器带进产物，再声明一遍就是**挂两遍**
+    /// （`draw 2` 变抽 4 张，产物却完全合法）。这里只提示「父效果挂在哪个信号上」，
+    /// 不给第二个输入框——少一个能写错的地方。
+    /// </para>
+    /// </summary>
+    private void OpenSaveDialog()
+    {
+        var authoring = _authoring?.Invoke();
+        if (authoring is null)
+        {
+            ShowSaveNote("没保存：先在工坊里打开一个卡包——没有编辑会话就无处可存。", failed: true);
+            return;
+        }
+
+        IReadOnlyList<HandlerParentOption> parents;
+        try { parents = authoring.DescribeParents(); }
+        catch (Exception error) { ShowSaveNote("没保存：读不出这个包里的效果——" + error.Message, failed: true); return; }
+
+        if (parents.Count == 0)
+        {
+            ShowSaveNote("没保存：这个包里还没有能当父效果的效果（effects-v4 里没有可挂载的成员）。", failed: true);
+            return;
+        }
+
+        var dialog = new ConfirmationDialog
+        {
+            Title = "保存到卡包",
+            OkButtonText = "保存",
+            CancelButtonText = "取消",
+            DialogHideOnOk = false,   // 失败要留在原地让作者改，不能一关就丢
+            // 高度不能给 0：窗口会按 0 高布局，确认按钮落到可见区外，鼠标点不到（探针实测）。
+            MinSize = new Vector2I(640, 260),
+        };
+        AddChild(dialog);
+
+        var page = new VBoxContainer();
+        page.AddThemeConstantOverride("separation", 10);
+        dialog.AddChild(page);
+
+        var parent = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        foreach (var option in parents) parent.AddItem(option.Label);
+        parent.Select(0);
+        DiyEditorScreen.Field(page, "父效果（挂载与视图字段从它继承）", parent);
+
+        var product = new LineEdit { Name = "ProductId", Text = "effect." + Guid.NewGuid().ToString("N")[..8] };
+        DiyEditorScreen.Field(page, "产物 id（卡牌的 effects.prefabs 引用它）", product);
+
+        var hint = MenuStyles.Label(
+            "保存会写三份文件：DSL 文档、草案、摊平产物。产物是自包含的——之后改父效果不会影响它。",
+            12, MenuStyles.Dim);
+        hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        page.AddChild(hint);
+
+        var result = MenuStyles.Label("", 12, MenuStyles.Dim);
+        result.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        page.AddChild(result);
+
+        dialog.Confirmed += () =>
+        {
+            var option = parents[Math.Max(0, parent.Selected)];
+            try
+            {
+                var saved = authoring.Save(new HandlerDslSaveRequest(
+                    option.ParentId, option.Member, product.Text.Trim(), _doc.ToJsonText(_catalog)));
+                result.Text = saved.Describe();
+                result.AddThemeColorOverride("font_color", saved.Success ? UiStyles.Green : new Color("e0705f"));
+                ShowSaveNote(saved.Describe(), failed: !saved.Success);
+                if (saved.Success) dialog.QueueFree();
+            }
+            catch (Exception error)
+            {
+                // 引擎的拒绝理由（校验、命名、会话状态）本来就是写给作者看的，原话带出去。
+                result.Text = "没保存成功：" + error.Message;
+                result.AddThemeColorOverride("font_color", new Color("e0705f"));
+                GD.PushWarning("积木保存：" + error.Message);
+                // 同时落到检查结果列：对话框一关，作者还能看见刚才为什么没成。
+                ShowSaveNote("没保存成功：" + error.Message, failed: true);
+            }
+        };
+        dialog.Canceled += dialog.QueueFree;
+        dialog.PopupCentered();
+    }
+
+    private void ShowSaveNote(string note, bool failed)
+    {
+        _saveNote = note;
+        _saveFailed = failed;
+        Rebuild();
     }
 
     private Control IssueRow(HandlerIssue issue)

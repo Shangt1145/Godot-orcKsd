@@ -361,11 +361,18 @@ public partial class Main : Control
         // 积木式 handler 编辑（Handler DSL v1）：从效果编辑器进入，先独立成屏，暂不写回卡牌草稿。
         _blockEditor = new HandlerBlockEditorScreen();
         _blockEditor.Initialize();
+        // 复杂 DIY 的写回出口：保存目标永远是**当前打开的卡包**（没有会话＝null，画布会给出明确提示）。
+        _blockEditor.ConfigureSave(() => _nativeWorkshop.HandlerAuthoring);
         _blockEditor.Finished += () => Show("diyfx");
         AddScreen(content, "hdsl", _blockEditor);
         _diyEffects.BlockEditorRequested += () =>
         {
             _blockEditor.Open("样例：打出时");
+            Show("hdsl");
+        };
+        _workshop.BlockAuthoringRequested += () =>
+        {
+            _blockEditor.Open("新效果：从积木开始");
             Show("hdsl");
         };
         _helpTabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
