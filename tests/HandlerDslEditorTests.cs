@@ -477,6 +477,71 @@ public class HandlerDslEditorTests
     }
 
     [Fact]
+    public void DSL文本读回文档_再写出去是同一份()
+    {
+        var doc = HandlerDocument.Sample();
+        var text = doc.ToJsonText(Catalog);
+
+        var back = HandlerDocument.FromJson(text, Catalog);
+
+        // 往返必须稳定：不稳定就意味着「读回来的图」和作者上次看到的不是同一份，
+        // 而覆盖式保存会把它写进包里。
+        Assert.Equal(text, back.ToJsonText(Catalog));
+
+        var units = back.Actions[0];
+        Assert.Equal("unitsOf", units.Op);
+        Assert.Equal("foes", units.Text("bind"));
+        Assert.Equal("enemy", units.Value("side")!.Text);
+
+        var iterate = back.Actions[1];
+        Assert.Equal("f", iterate.Text("as"));
+        var branch = iterate.Body("actions").Single();
+        Assert.Equal("branch", branch.Op);
+
+        // read.of 的实体表达式形态（读被遍历的那个单位）——反序列化最容易退化成 self 的地方。
+        var test = branch.Value("test")!;
+        Assert.Equal("le", test.Name);
+        Assert.Equal("defense", test.Args[0].Name);
+        Assert.NotNull(test.Args[0].ReadTarget);
+
+        Assert.Single(branch.Body("then"));
+        Assert.Single(branch.Body("else"));
+    }
+
+    [Fact]
+    public void choice的选项能原样读回()
+    {
+        var doc = new HandlerDocument();
+        var choice = new HandlerNode("choice").SetText("prompt", "选一个");
+        var fight = new HandlerOption("打");
+        fight.Actions.Add(new HandlerNode("draw").Set("count", HandlerValue.Num(2)));
+        choice.Options.Add(fight);
+        choice.Options.Add(new HandlerOption("算了"));
+        doc.Actions.Add(choice);
+
+        var text = doc.ToJsonText(Catalog);
+        var back = HandlerDocument.FromJson(text, Catalog);
+
+        Assert.Equal(text, back.ToJsonText(Catalog));
+        var read = back.Actions.Single();
+        Assert.Equal(2, read.Options.Count);
+        Assert.Equal("打", read.Options[0].Label);
+        Assert.Equal("draw", read.Options[0].Actions.Single().Op);
+        Assert.Empty(read.Options[1].Actions);
+    }
+
+    [Fact]
+    public void 读不认识的DSL直接抛而不是猜()
+    {
+        // 猜错的图会让作者在不知情的情况下把结构改掉，而保存是覆盖式的。
+        Assert.Throws<FormatException>(() => HandlerDocument.FromJson("不是 json", Catalog));
+        Assert.Throws<FormatException>(() => HandlerDocument.FromJson(
+            """{"schemaVersion":1,"actions":[{"count":{"lit":2}}]}""", Catalog));
+        Assert.Throws<FormatException>(() => HandlerDocument.FromJson(
+            """{"schemaVersion":1,"actions":[{"op":"draw","count":{"nope":2}}]}""", Catalog));
+    }
+
+    [Fact]
     public void choice的选项是label加actions而不是动作数组()
     {
         // SPEC §3：options 是 [{ label, actions }]。写成普通动作数组后端会按 graph-shape 拒。

@@ -92,6 +92,120 @@ public sealed class HandlerDslAuthoring
         => ModingFlattener.Check(PackRoot, draftRelativePath);
 
     /// <summary>
+    /// 覆盖模式下产物的**确定性** id：<c>&lt;父 id&gt;.dsl</c>。
+    /// <para>
+    /// 为什么不直接用父 id：引擎 <c>ModingFlattener.ResolveProductId</c> 明确拒绝
+    /// 「产物 id 等于父 id」（R11 第 5 条），而且父正是这次摊平的**输入**——读写同一个文件，
+    /// 摊平失败时父也一起没了。派生 id ＋ 改写卡牌引用能得到作者想要的同一个结果
+    /// （「这张卡现在用积木版本」），而且**可以反复保存**。
+    /// </para>
+    /// <para>
+    /// 确定性是关键：每次覆盖都落到同一个 id、同一份草案、同一份 DSL 文档，
+    /// 所以二次编辑不会变成 <c>x.dsl.dsl</c>。
+    /// </para>
+    /// </summary>
+    public static string ReplaceProductIdOf(string parentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentId);
+        return parentId + ".dsl";
+    }
+
+    /// <summary>
+    /// 读回某个父效果**已有的**积木 DSL（覆盖模式下打开画布用）；没有＝null。
+    /// <para>
+    /// 覆盖不等于「从空白重写」：作者点「覆盖」时若包里已经有这份效果，应当看到他上次搭的图。
+    /// </para>
+    /// </summary>
+    public string? ReadExistingDsl(string parentId)
+    {
+        var path = Path.Combine(PackRoot, DslDirectory, Slug(ReplaceProductIdOf(parentId)) + DslSuffix);
+        return File.Exists(path) ? File.ReadAllText(path) : null;
+    }
+
+    /// <summary>
+    /// 把包内所有卡牌的 <c>components[effects].prefabs[]</c> 里 <paramref name="fromId"/> 改成
+    /// <paramref name="toId"/>——覆盖模式的最后一跳：产物是新 id，引用得跟着走，否则「保存成功但没生效」。
+    /// <para>
+    /// 走 <see cref="AssetEditor.Commit(string, string)"/> 而不是直接写文件：卡牌是资产，
+    /// 提交要过引擎的 schema 校验、要 bump 版本、要被拒时原样恢复。直接写盘会造出「界面说改了、
+    /// 引擎没记账」的资产。
+    /// </para>
+    /// <para>
+    /// 只动 <c>cards/*.card.json</c>：效果引用只出现在这里（组件之间的 <c>wraps</c> 是成员包装，
+    /// 不引用组件 id；卡组引用的是卡 id）。
+    /// </para>
+    /// </summary>
+    public HandlerDslRetargetResult RetargetReferences(string fromId, string toId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fromId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(toId);
+
+        var directory = Path.Combine(PackRoot, "cards");
+        if (!Directory.Exists(directory)) return new HandlerDslRetargetResult(0, [], []);
+
+        var cards = new List<string>();
+        var failed = new List<string>();
+        var references = 0;
+
+        foreach (var file in Directory.EnumerateFiles(directory, "*.card.json", SearchOption.TopDirectoryOnly)
+                     .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            var name = Path.GetFileName(file);
+            JsonObject? card;
+            try
+            {
+                card = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
+            }
+            catch (JsonException error)
+            {
+                failed.Add(name + "：不是合法 JSON（" + error.Message + "）");
+                continue;
+            }
+
+            if (card is null) continue;
+
+            var hits = 0;
+            if (card["components"] is JsonArray components)
+            {
+                foreach (var component in components.OfType<JsonObject>())
+                {
+                    if (component["component"]?.GetValue<string>() != "effects") continue;
+                    if (component["prefabs"] is not JsonArray prefabs) continue;
+                    for (var i = 0; i < prefabs.Count; i++)
+                    {
+                        if (prefabs[i]?.GetValue<string>() != fromId) continue;
+                        prefabs[i] = toId;
+                        hits++;
+                    }
+                }
+            }
+
+            if (hits == 0) continue;
+
+            var relative = "cards/" + name;
+            try
+            {
+                var committed = Editor.Commit(relative, card.ToJsonString(Options));
+                if (committed.Violations is { Count: > 0 } violations)
+                {
+                    failed.Add(relative + "：" + string.Join("；", violations.Select(item => item.ToString())));
+                    continue;
+                }
+
+                cards.Add(relative);
+                references += hits;
+            }
+            catch (AssetEditorException error)
+            {
+                // 引擎拒绝＝文件已恢复原样（Commit 的回滚），这张卡仍然用旧效果。
+                failed.Add(relative + "：" + error.Message);
+            }
+        }
+
+        return new HandlerDslRetargetResult(references, cards, failed);
+    }
+
+    /// <summary>
     /// 本包里**能当父效果**的「组件#成员」清单（草案的 <c>extends</c> ＋ 成员名必须成对，所以一起列）。
     /// <para>
     /// 只收 <c>mountable</c> 成员：草案的价值就是**重载一个会被信号触发的成员**，<c>hostable</c>／
@@ -116,6 +230,10 @@ public sealed class HandlerDslAuthoring
             {
                 continue;
             }
+
+            // 带 generated 的组件是**积木产物**，不是可编辑的基线：把它当父只会派生 x.dsl.dsl，
+            // 而作者真正想改的是它的源 DSL（覆盖模式会自动载入那一份）。
+            if (asset.Members.Any(member => member.Handler?.Generated is not null)) continue;
 
             foreach (var member in asset.Members)
             {
@@ -174,12 +292,17 @@ public sealed class HandlerDslAuthoring
     public HandlerDslSaveResult Save(HandlerDslSaveRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var productId = Slug(request.ProductId);
-        if (string.Equals(productId, request.ParentId, StringComparison.Ordinal))
+
+        var replace = request.Mode == HandlerDslSaveMode.ReplaceExisting;
+        // 覆盖模式不让人填产物 id：id 必须是确定性的，否则二次保存就换成另一份资产，
+        // 卡牌引用还指着上一份，作者会得到「改了一次，第二次没生效」。
+        var productId = Slug(replace ? ReplaceProductIdOf(request.ParentId) : request.ProductId);
+        if (!replace && string.Equals(productId, request.ParentId, StringComparison.Ordinal))
         {
             // 摊平会往 effects-v4/<productId>.component.json 写：与父同名＝覆盖父，而父是这次摊平的输入。
             throw new ArgumentException(
-                $"产物 id 不能和父效果一样（'{productId}'）：那会把父效果覆盖掉，而父效果正是这次摊平的输入。",
+                $"产物 id 不能和父效果一样（'{productId}'）：那会把父效果覆盖掉，而父效果正是这次摊平的输入。"
+                + "想改已有的效果，请用覆盖模式（产物落到 '<父 id>.dsl'，引用由工具改写）。",
                 nameof(request));
         }
 
@@ -193,11 +316,14 @@ public sealed class HandlerDslAuthoring
         {
             return new HandlerDslSaveResult(false, dslPath, draftPath, null, null,
                 flatten.Errors.Select(error => $"[{error.Category}] {error.Target}：{error.Message}").ToArray(),
-                UpToDate: false);
+                UpToDate: false, Retarget: null);
         }
 
+        // 顺序是刻意的：先让产物真的存在，再改引用。反过来会出现「卡指向还不存在的效果」的中间态。
+        var retarget = replace ? RetargetReferences(request.ParentId, productId) : null;
+
         return new HandlerDslSaveResult(true, dslPath, draftPath, flatten.ProductId, flatten.ProductRelativePath,
-            [], Check(draftPath).UpToDate);
+            [], Check(draftPath).UpToDate, retarget);
     }
 
     /// <summary>
@@ -334,12 +460,32 @@ public sealed record HandlerParentOption(string ParentId, string Member, string?
         + (MountedTarget is null ? "（父效果没挂信号）" : "  ← " + MountedTarget);
 }
 
+/// <summary>保存的两种意图。</summary>
+public enum HandlerDslSaveMode
+{
+    /// <summary>新建一个效果（产物 id 由作者填，卡牌要自己引用它）。</summary>
+    NewEffect,
+
+    /// <summary>
+    /// 改一个**已有**的效果：产物落到确定性的 <c>&lt;父 id&gt;.dsl</c>，
+    /// 包内引用父 id 的卡牌自动改指产物，父效果原样保留（它是摊平输入，也是「还原」的退路）。
+    /// </summary>
+    ReplaceExisting,
+}
+
 /// <summary>一条龙保存的输入。</summary>
 /// <param name="ParentId">父组件 id。</param>
 /// <param name="Member">被重载的成员名。</param>
-/// <param name="ProductId">产物 id（同时是文件名与资产 id）。不能等于 <paramref name="ParentId"/>。</param>
+/// <param name="ProductId">产物 id（同时是文件名与资产 id）。新建模式下不能等于 <paramref name="ParentId"/>；
+/// 覆盖模式下**被忽略**（由 <see cref="HandlerDslAuthoring.ReplaceProductIdOf"/> 派生）。</param>
 /// <param name="DslJson">DSL 文档原文。</param>
-public sealed record HandlerDslSaveRequest(string ParentId, string Member, string ProductId, string DslJson);
+/// <param name="Mode">新建还是覆盖。</param>
+public sealed record HandlerDslSaveRequest(
+    string ParentId,
+    string Member,
+    string ProductId,
+    string DslJson,
+    HandlerDslSaveMode Mode = HandlerDslSaveMode.NewEffect);
 
 /// <summary>一条龙保存的结果。</summary>
 /// <param name="Success">摊平是否成功（提交失败会抛异常，不走这里）。</param>
@@ -349,6 +495,7 @@ public sealed record HandlerDslSaveRequest(string ParentId, string Member, strin
 /// <param name="ProductPath">产物的包内相对路径（失败＝null）。</param>
 /// <param name="Errors">摊平失败明细（成功＝空）。</param>
 /// <param name="UpToDate">保存后 `flatten --check` 是否干净（false＝草案已落后，界面要提示）。</param>
+/// <param name="Retarget">覆盖模式的引用改写结果（新建模式＝null）。</param>
 public sealed record HandlerDslSaveResult(
     bool Success,
     string? DslPath,
@@ -356,10 +503,36 @@ public sealed record HandlerDslSaveResult(
     string? ProductId,
     string? ProductPath,
     IReadOnlyList<string> Errors,
-    bool UpToDate)
+    bool UpToDate,
+    HandlerDslRetargetResult? Retarget)
 {
     /// <summary>给作者看的一句话。</summary>
-    public string Describe() => Success
-        ? "已保存：" + ProductPath + (UpToDate ? "（产物是最新的）" : "（草案已落后于父效果，建议重新摊平）")
-        : "没保存成功：" + string.Join("；", Errors);
+    public string Describe()
+    {
+        if (!Success) return "没保存成功：" + string.Join("；", Errors);
+
+        var text = "已保存：" + ProductPath + (UpToDate ? "（产物是最新的）" : "（草案已落后于父效果，建议重新摊平）");
+        if (Retarget is not { } retarget) return text;
+
+        // 覆盖模式最要紧的一句是「卡到底改了没」——产物存在但没人引用，等于没改。
+        text += retarget.References == 0
+            ? "；没有任何卡引用原效果，这是一份孤立效果"
+            : $"；{retarget.Cards.Count} 张卡已改用它（{retarget.References} 处引用）";
+        if (retarget.Failed.Count > 0)
+            text += $"；{retarget.Failed.Count} 张卡没改成功：" + string.Join("；", retarget.Failed);
+        return text;
+    }
+}
+
+/// <summary>覆盖模式的引用改写结果。</summary>
+/// <param name="References">改掉的引用处数（同一张卡可能有多处）。</param>
+/// <param name="Cards">改成功的卡（包内相对路径）。</param>
+/// <param name="Failed">没改成功的卡与原因——引擎拒绝提交时文件会原样恢复，那张卡仍用旧效果。</param>
+public sealed record HandlerDslRetargetResult(
+    int References,
+    IReadOnlyList<string> Cards,
+    IReadOnlyList<string> Failed)
+{
+    /// <summary>是否全部改成功。</summary>
+    public bool Clean => Failed.Count == 0;
 }

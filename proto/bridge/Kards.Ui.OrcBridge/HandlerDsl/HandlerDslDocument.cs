@@ -170,6 +170,50 @@ public sealed class HandlerValue
                 return new JsonObject { ["op"] = Name, ["args"] = args };
         }
     }
+
+    /// <summary>
+    /// 表达式反序列化（SPEC §4 的五个变体）。判别键是 <c>lit</c>／<c>var</c>／<c>view</c>／<c>read</c>／<c>op</c>，
+    /// 恰有一个——这正是 <see cref="ToJson"/> 写出去的形态。
+    /// </summary>
+    /// <exception cref="FormatException">不是五个变体之一。</exception>
+    public static HandlerValue FromJson(JsonNode? node)
+    {
+        if (node is not JsonObject json)
+            throw new FormatException("表达式必须是对象：" + (node?.ToJsonString() ?? "null"));
+
+        if (json["lit"] is { } literal)
+        {
+            switch (literal.GetValueKind())
+            {
+                case System.Text.Json.JsonValueKind.String: return Str(literal.GetValue<string>());
+                case System.Text.Json.JsonValueKind.True: return Bool(true);
+                case System.Text.Json.JsonValueKind.False: return Bool(false);
+                case System.Text.Json.JsonValueKind.Number: return Num(literal.GetValue<double>());
+                default: throw new FormatException("lit 只能是字符串、数字或布尔：" + literal.ToJsonString());
+            }
+        }
+
+        if (json["var"] is { } binding) return Var(binding.GetValue<string>());
+        if (json["view"] is { } view) return ViewField(view.GetValue<string>());
+
+        if (json["read"] is JsonObject read)
+        {
+            var path = read["path"]?.GetValue<string>()
+                ?? throw new FormatException("read 缺少 path：" + json.ToJsonString());
+            // of 有两种形态：保留字面量（self／viewer）或实体表达式（读被遍历的那个单位）。
+            return read["of"] is JsonObject target
+                ? ReadFrom(FromJson(target), path)
+                : Read(read["of"]?.GetValue<string>() ?? "self", path);
+        }
+
+        if (json["op"] is { } op)
+        {
+            var args = json["args"] is JsonArray array ? array.Select(FromJson).ToArray() : [];
+            return Call(op.GetValue<string>(), args);
+        }
+
+        throw new FormatException("表达式缺少判别键（lit／var／view／read／op）：" + json.ToJsonString());
+    }
 }
 
 /// <summary>
@@ -307,6 +351,64 @@ public sealed class HandlerNode
         }
         return json;
     }
+
+    /// <summary>
+    /// 动作节点反序列化（<see cref="ToJson"/> 的逆）。
+    /// <para>
+    /// 三类字段靠 JSON 形状区分，不靠目录：数组＝子动作、对象＝值引脚、字符串＝文本引脚。
+    /// 目录只用来判断哪个数组是子动作——所以目录里没声明的字段也不会被吃掉（与
+    /// <see cref="ToJson"/> 的「额外声明照写」对称）。
+    /// </para>
+    /// </summary>
+    /// <exception cref="FormatException">不是动作对象／缺少 op。</exception>
+    public static HandlerNode FromJson(JsonNode? node, HandlerCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        if (node is not JsonObject json)
+            throw new FormatException("动作必须是对象：" + (node?.ToJsonString() ?? "null"));
+
+        var op = json["op"]?.GetValue<string>()
+            ?? throw new FormatException("动作缺少 op：" + json.ToJsonString());
+        var result = new HandlerNode(op);
+
+        foreach (var (key, value) in json)
+        {
+            if (key == "op") continue;
+
+            // choice 的 options 是 [{ label, actions }]，不是普通动作数组（SPEC §3）。
+            if (op == "choice" && key == "options")
+            {
+                if (value is not JsonArray options) continue;
+                foreach (var item in options)
+                {
+                    if (item is not JsonObject option) continue;
+                    var choice = new HandlerOption(option["label"]?.GetValue<string>() ?? "");
+                    if (option["actions"] is JsonArray acts)
+                        foreach (var child in acts) choice.Actions.Add(FromJson(child, catalog));
+                    result.Options.Add(choice);
+                }
+                continue;
+            }
+
+            if (value is JsonArray array)
+            {
+                var body = result.Body(key);
+                foreach (var child in array) body.Add(FromJson(child, catalog));
+                continue;
+            }
+
+            if (value is JsonObject expression)
+            {
+                result.Set(key, HandlerValue.FromJson(expression));
+                continue;
+            }
+
+            if (value is JsonValue scalar && scalar.TryGetValue<string>(out var text))
+                result.SetText(key, text);
+        }
+
+        return result;
+    }
 }
 
 /// <summary>一份 handler DSL 文档：<c>{ schemaVersion, catalogRevision?, actions[] }</c>。</summary>
@@ -341,6 +443,49 @@ public sealed class HandlerDocument
             WriteIndented = true,
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         });
+
+    /// <summary>
+    /// 把一份 DSL 文本读回文档（<see cref="ToJson"/> 的逆）。
+    /// <para>
+    /// 为什么必须有：覆盖一个已有效果时，画布要显示作者**上次搭的图**。没有这条，
+    /// 「改一个效果」就退化成「用一份空白文档覆盖它」——那是数据丢失，不是编辑。
+    /// </para>
+    /// <para>
+    /// 不认识的东西一律抛 <see cref="FormatException"/>，不做「尽力而为」的猜测：
+    /// 猜错的图会让作者在不知情的情况下把结构改掉，而保存是覆盖式的。
+    /// </para>
+    /// </summary>
+    /// <exception cref="FormatException">不是合法的 DSL 文档。</exception>
+    public static HandlerDocument FromJson(string text, HandlerCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(text) as JsonObject ?? throw new FormatException("DSL 文档的根必须是对象");
+        }
+        catch (System.Text.Json.JsonException error)
+        {
+            throw new FormatException("DSL 文档不是合法 JSON：" + error.Message, error);
+        }
+
+        var document = new HandlerDocument
+        {
+            SchemaVersion = root["schemaVersion"] is JsonValue version && version.TryGetValue<int>(out var schema)
+                ? schema
+                : CurrentSchemaVersion,
+            CatalogRevision = root["catalogRevision"] is JsonValue revision && revision.TryGetValue<int>(out var rev)
+                ? rev
+                : null,
+        };
+
+        if (root["actions"] is JsonArray actions)
+        {
+            foreach (var node in actions) document.Actions.Add(HandlerNode.FromJson(node, catalog));
+        }
+
+        return document;
+    }
 
     /// <summary>把「我在这份文档里改了什么」做成可撤销的一步。</summary>
     /// <summary>

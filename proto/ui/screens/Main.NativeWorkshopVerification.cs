@@ -88,6 +88,37 @@ public partial class Main
         Check(_blockEditor.SaveNote!.Contains("已保存", StringComparison.Ordinal), "Block canvas did not save: " + _blockEditor.SaveNote);
         Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", productId + ".component.json")),
             "Block canvas did not write the flattened product");
+
+        // 覆盖路径：改一个**已有**效果。产物 id 必须由父 id 派生（作者不填），
+        // 卡牌引用由工具改写，父效果保留。这条以前完全走不通——只能新建。
+        _blockEditor.Open("探针：抽两张", canvas);   // 清掉上一轮的「已保存」，否则下面的等待立刻满足
+        await DeckClickAsync(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+            .Single(b => b.IsVisibleInTree() && b.Text == "保存到卡包"));
+        var replaceDialog = _blockEditor.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>()
+            .Single(d => d.Visible && d.Title == "保存到卡包");
+        var parentPicker = replaceDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single();
+        var parentId = parentPicker.GetItemText(parentPicker.Selected).Split(" · ")[0];
+        var replaceToggle = replaceDialog.FindChildren("*", "CheckBox", true, false).OfType<CheckBox>().Single();
+        replaceToggle.ButtonPressed = true;
+        var replaceId = replaceDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>()
+            .Single(l => l.Name == "ProductId");
+        Check(replaceId.Text == parentId + ".dsl", $"Replace mode did not derive the product id: '{replaceId.Text}' vs '{parentId}.dsl'");
+        Check(!replaceId.Editable, "Replace mode left the product id editable");
+        replaceDialog.GetOkButton().EmitSignal(Button.SignalName.Pressed);
+        await WaitFor(() => _blockEditor.SaveNote is not null);
+        var replaceNote = _blockEditor.SaveNote!;
+        Check(replaceNote.Contains("已保存", StringComparison.Ordinal), "Replace mode did not save: " + replaceNote);
+        Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", parentId + ".dsl.component.json")),
+            "Replace mode did not write the derived product");
+        Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", parentId + ".component.json")),
+            "Replace mode destroyed the parent effect");
+        // 只有包里真有卡引用这个效果时才断言改写：报告说改了、卡却没变，是最坏的那种「成功」。
+        if (replaceNote.Contains("张卡已改用它", StringComparison.Ordinal))
+        {
+            var cards = System.IO.Directory.EnumerateFiles(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "cards"), "*.card.json");
+            Check(cards.Any(file => System.IO.File.ReadAllText(file).Contains("\"" + parentId + ".dsl\"", StringComparison.Ordinal)),
+                "Replace mode reported retargeted cards but no card points at the product");
+        }
         await Capture("block-canvas.png");
         Show("editor"); await MenuSettledAsync();
         var shippedFace = _workshop.FindChildren("*", "Control", true, false).OfType<CardControl>().First(c => c.IsVisibleInTree() && c.Definition.CardId.StartsWith("pack/orc.bulwark/", StringComparison.Ordinal));
@@ -159,6 +190,6 @@ public partial class Main
         native.SettleProjection(); Check(native.View.SelfLine.Any(c => c.Uid == actor.Uid), "Imported card absent from native field");
         var battle = new BattleCard { Size = new(160, 224) }; AddChild(battle); battle.Bind(actor, BattleCardMode.Inspect, _textures);
         Check(battle.UsesGeneratedFace, "Imported illustration did not use shared card face"); battle.QueueFree();
-        GD.Print("NATIVE_WORKSHOP_VERIFY_OK shipped-home-route shipped-art zip-install idempotent portable-art native-form custom-faction three-masters four-pages commit-draft promote-refresh unknown-fields export-reimport real-native-deploy shared-face block-canvas " + artifacts);
+        GD.Print("NATIVE_WORKSHOP_VERIFY_OK shipped-home-route shipped-art zip-install idempotent portable-art native-form custom-faction three-masters four-pages commit-draft promote-refresh unknown-fields export-reimport real-native-deploy shared-face block-canvas block-replace " + artifacts);
     }
 }

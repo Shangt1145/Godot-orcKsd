@@ -567,11 +567,15 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var parent = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         foreach (var option in parents) parent.AddItem(option.Label);
         parent.Select(0);
-        // 选了哪个父效果，画布的「视图字段」就跟着换成它的——作者能读什么由父声明决定，
-        // 而不是由这份界面猜（猜错的代价是「校验通过、装载期报字段不存在」）。
-        parent.ItemSelected += index => ApplyView(authoring, parents[Math.Clamp((int)index, 0, parents.Count - 1)]);
         DiyEditorScreen.Field(page, "父效果（挂载与视图字段从它继承）", parent);
         ApplyView(authoring, parents[0]);
+
+        var replace = new CheckBox
+        {
+            Text = "覆盖这个效果（包里引用它的卡都改用它）",
+            TooltipText = "产物落到 <父 id>.dsl，卡牌的 effects.prefabs 自动改指它；父效果保留为基线，可再次编辑",
+        };
+        page.AddChild(replace);
 
         var product = new LineEdit { Name = "ProductId", Text = "effect." + Guid.NewGuid().ToString("N")[..8] };
         DiyEditorScreen.Field(page, "产物 id（卡牌的 effects.prefabs 引用它）", product);
@@ -581,6 +585,16 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             12, MenuStyles.Dim);
         hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         page.AddChild(hint);
+
+        // 选了哪个父效果，画布的「视图字段」就跟着换成它的——作者能读什么由父声明决定，
+        // 而不是由这份界面猜（猜错的代价是「校验通过、装载期报字段不存在」）。
+        // 覆盖模式下还要顺带换产物 id、并载入这个效果上次的积木图。
+        parent.ItemSelected += index =>
+        {
+            ApplyView(authoring, parents[Math.Clamp((int)index, 0, parents.Count - 1)]);
+            SyncReplaceMode(authoring, parents, parent, replace, product, hint);
+        };
+        replace.Toggled += _ => SyncReplaceMode(authoring, parents, parent, replace, product, hint);
 
         var result = MenuStyles.Label("", 12, MenuStyles.Dim);
         result.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -592,7 +606,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             try
             {
                 var saved = authoring.Save(new HandlerDslSaveRequest(
-                    option.ParentId, option.Member, product.Text.Trim(), _doc.ToJsonText(_catalog)));
+                    option.ParentId, option.Member, product.Text.Trim(), _doc.ToJsonText(_catalog),
+                    replace.ButtonPressed ? HandlerDslSaveMode.ReplaceExisting : HandlerDslSaveMode.NewEffect));
                 result.Text = saved.Describe();
                 result.AddThemeColorOverride("font_color", saved.Success ? UiStyles.Green : new Color("e0705f"));
                 ShowSaveNote(saved.Describe(), failed: !saved.Success);
@@ -610,6 +625,54 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         };
         dialog.Canceled += dialog.QueueFree;
         dialog.PopupCentered();
+    }
+
+    /// <summary>
+    /// 覆盖开关的联动：产物 id、提示、以及「载入上次的积木图」。
+    /// <para>
+    /// 载入这一条是覆盖模式能用的**前提**：不载入，作者第二次进来看到的是样例文档，
+    /// 一保存就把上次的图换成样例——那不是编辑，是数据丢失。
+    /// </para>
+    /// </summary>
+    private void SyncReplaceMode(
+        HandlerDslAuthoring authoring,
+        IReadOnlyList<HandlerParentOption> parents,
+        OptionButton parent,
+        CheckBox replace,
+        LineEdit product,
+        Label hint)
+    {
+        var option = parents[Math.Clamp(parent.Selected, 0, parents.Count - 1)];
+        product.Editable = !replace.ButtonPressed;
+
+        if (!replace.ButtonPressed)
+        {
+            // 勾选期间 id 被改写成派生值；取消勾选＝回到「新建」，必须换回一个新 id，
+            // 否则会以新建模式写出与覆盖模式同名的产物。
+            product.Text = "effect." + Guid.NewGuid().ToString("N")[..8];
+            hint.Text = "保存会写三份文件：DSL 文档、草案、摊平产物。产物是自包含的——之后改父效果不会影响它。";
+            return;
+        }
+
+        var productId = HandlerDslAuthoring.ReplaceProductIdOf(option.ParentId);
+        product.Text = productId;
+
+        var existing = authoring.ReadExistingDsl(option.ParentId);
+        if (existing is null)
+        {
+            hint.Text = $"这个效果还没有积木版本：保存后包内引用 {option.ParentId} 的卡会改用它，父效果保留。";
+            return;
+        }
+
+        try
+        {
+            Open(_cardLabel.Text, HandlerDocument.FromJson(existing, _catalog));
+            hint.Text = $"已载入上次的积木图（保存会覆盖 {productId}）。";
+        }
+        catch (FormatException error)
+        {
+            hint.Text = "上次的图读不出来：" + error.Message + "；保存会用当前画布替换它。";
+        }
     }
 
     /// <summary>

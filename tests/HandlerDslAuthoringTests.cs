@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json.Nodes;
 using Kards.Ui.Contracts;
 using Kards.Ui.Core;
 using Kards.Ui.OrcBridge;
@@ -230,8 +231,119 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         Assert.Contains("父效果", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 覆盖已有卡牌效果_卡牌引用改指产物而父效果保留()
+    {
+        var saved = _authoring.Save(new HandlerDslSaveRequest(
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting));
+
+        Assert.True(saved.Success, saved.Describe());
+
+        // 产物 id 是**确定性派生**的：作者不填，也不该填——填了，二次保存就会换成另一份资产，
+        // 而卡牌还指着上一份，作者会得到「改了一次、第二次没生效」。
+        Assert.Equal("diy.fire-support.effect.dsl", saved.ProductId);
+        Assert.Equal("effects-v4/diy.fire-support.effect.dsl.component.json", saved.ProductPath);
+
+        var retarget = Assert.IsType<HandlerDslRetargetResult>(saved.Retarget);
+        Assert.True(retarget.Clean, string.Join("；", retarget.Failed));
+        Assert.Equal(1, retarget.References);
+        Assert.Equal(["cards/diy.fire-support.card.json"], retarget.Cards);
+
+        // 卡牌引用**真的**改了。产物存在但没人引用，等于没改——这是覆盖模式唯一的意义所在。
+        var card = JsonNode.Parse(File.ReadAllText(
+            Path.Combine(SessionRoot, "cards", "diy.fire-support.card.json")))!.AsObject();
+        var prefabs = card["components"]!.AsArray()
+            .Single(component => component!["component"]!.GetValue<string>() == "effects")!["prefabs"]!.AsArray();
+        Assert.Equal(["diy.fire-support.effect.dsl"], prefabs.Select(item => item!.GetValue<string>()));
+
+        // 父效果原样留着：它是摊平输入，也是「还原」的退路（删掉就没法再改第二次）。
+        Assert.True(File.Exists(Path.Combine(SessionRoot, "effects-v4", "diy.fire-support.effect.component.json")));
+        Assert.True(saved.UpToDate);
+    }
+
+    [Fact]
+    public void 覆盖模式二次保存落在同一份产物上_引用不再变化()
+    {
+        var first = _authoring.Save(new HandlerDslSaveRequest(
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting));
+        Assert.True(first.Success, first.Describe());
+
+        var secondDsl = DrawTwo.Replace("\"lit\":2", "\"lit\":3", StringComparison.Ordinal);
+        var second = _authoring.Save(new HandlerDslSaveRequest(
+            ParentId, Member, "", secondDsl, HandlerDslSaveMode.ReplaceExisting));
+
+        Assert.True(second.Success, second.Describe());
+        Assert.Equal(first.ProductId, second.ProductId);
+        Assert.Equal(first.DslPath, second.DslPath);
+        Assert.Equal(first.DraftPath, second.DraftPath);
+
+        // 卡已经指过去了，第二次没有可改的引用——这不是失败，是幂等。
+        Assert.Equal(0, second.Retarget!.References);
+        Assert.True(second.Retarget.Clean);
+
+        // 包里只有一个积木产物：`x.dsl.dsl` 正是这条要防的事。
+        var products = Directory.EnumerateFiles(
+                Path.Combine(SessionRoot, "effects-v4"), "*" + HandlerDslAuthoring.ComponentSuffix)
+            .Select(Path.GetFileName)
+            .Where(name => name!.Contains(".dsl.", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Single(products);
+
+        // 第二次的内容真的写进产物了（用哈希判，比匹配生成代码的形态稳）。
+        var product = AssetSchema.Read(File.ReadAllText(Path.Combine(SessionRoot, second.ProductPath!)), "product");
+        Assert.Equal(HandlerContent.Hash(secondDsl),
+            product.Members.Single(m => m.Name == Member).Handler!.Generated!.DslHash);
+    }
+
+    [Fact]
+    public void 覆盖产物不再出现在父效果清单里()
+    {
+        Assert.True(_authoring.Save(new HandlerDslSaveRequest(
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting)).Success);
+
+        var parents = _authoring.DescribeParents();
+
+        // 产物带 generated，是「结果」不是「基线」：列出来就会派生 x.dsl.dsl，而且那份永远改不动。
+        Assert.DoesNotContain(parents, option => option.ParentId == "diy.fire-support.effect.dsl");
+        // 基线仍在，作者还能再改一次。
+        Assert.Contains(parents, option => option.ParentId == ParentId && option.Member == Member);
+    }
+
     /// <summary>
-    /// **M1 的收尾那一锤**：前三步绿了只证明「产物长得对、装载器认得」，
+    /// **覆盖模式的收尾那一锤**：与 M1 的端到端同构，但**不再手工改卡牌 JSON**——
+    /// 引用是工具改的。这条绿了，「改一个已有的脚本效果」才算真的能走。
+    /// </summary>
+    [Fact]
+    public async Task 覆盖之后真实对局里打出走的是积木版本()
+    {
+        var saved = _authoring.Save(new HandlerDslSaveRequest(
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting));
+        Assert.True(saved.Success, saved.Describe());
+        Assert.Equal(1, saved.Retarget!.References);
+
+        // 会话写的是临时副本，宿主只认磁盘上的包：整份搬过去（卡牌引用已经是改过的）。
+        var engineBase = Path.Combine(_root, "engine");
+        CopyDirectory(SessionRoot, Path.Combine(engineBase, "packs", "demo"));
+
+        OrcEngineHost.Reset();
+        OrcEngineHost.Initialize(engineBase);
+        _hostRebuilt = true;
+
+        using var session = await OpenSampleMatchAsync("hdsl-replace");
+        var card = session.View.SelfHand.First(c => c.CardId == SampleCard);
+
+        var handBefore = session.View.SelfHand.Count;
+        var outcome = await session.SubmitAsync(new PlayCard(card.Uid));
+        session.Pump();
+
+        Assert.Equal(UiSubmitOutcome.Applied, outcome);
+        // 打出 -1、DSL 的 draw 2 → 净 +1。与 M1 相同的判据：手牌是玩家看得见的事实。
+        Assert.True(session.View.SelfHand.Count == handBefore - 1 + 2,
+            $"手牌应净 +1：打出前 {handBefore}、打出后 {session.View.SelfHand.Count}；"
+            + $"outcome={outcome} reason={session.LastRejectionReason}");
+    }
+
+    /// <summary>
     /// 不证明**打出来真的会抽牌**。这里把四步钉成一条：提交 → 摊平 → 开局 → 打出。
     /// </summary>
     /// <remarks>
@@ -280,25 +392,8 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         var cards = new DeckConstructionService(catalog.Cards, nations).Cards;
         Assert.NotEmpty(cards);
 
-        using var session = await OrcMatchSession.CreateFromCatalogAsync(cards, 31, "hdsl-draw2", SampleCard,
-            openingHand: [SampleCard], sourceDirectory: nations, firstPlayerIndex: 0);
-        session.DriveOpponent = false;
-        await session.SettleMulliganAsync(interactive: false);
-        session.Pump();
-
-        var card = session.View.SelfHand.FirstOrDefault(c => c.CardId == SampleCard)
-            ?? throw new InvalidOperationException(
-                $"起手没有 {SampleCard}：[{string.Join(' ', session.View.SelfHand.Select(c => c.CardId))}]");
-
-        // 攒费（这张是指令，1 费；回合初才涨费，所以可能要空过几轮）。
-        var cost = card.Definition.Cost ?? 1;
-        for (var turn = 0; turn < 8 && session.View.SelfKredits < cost; turn++)
-        {
-            await session.SubmitAsync(new EndTurn());
-            session.Pump();
-        }
-        Assert.True(session.View.SelfKredits >= cost,
-            $"攒不到费用：kredits={session.View.SelfKredits} cost={cost}");
+        using var session = await OpenSampleMatchAsync("hdsl-draw2");
+        var card = session.View.SelfHand.First(c => c.CardId == SampleCard);
 
         var handBefore = session.View.SelfHand.Count;
         var deckBefore = session.View.SelfDeckCount;
@@ -311,6 +406,44 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         Assert.True(handAfter == handBefore - 1 + 2,
             $"手牌应净 +1：打出前 {handBefore}（牌库 {deckBefore}）、打出后 {handAfter}（牌库 {session.View.SelfDeckCount}）"
             + $"；outcome={outcome} reason={session.LastRejectionReason}");
+    }
+
+    /// <summary>
+    /// 用示例包建一局：起手就一张「火力支援」，对手不动，先把费攒够。
+    /// <para>
+    /// 宿主必须**已经**指向要用的包（包是宿主快照的一部分，建局时才读）。
+    /// 攒费这段是必需的：这张是指令、1 费，而回合初才涨费——不空过几轮就打出，会以
+    /// 「费用不足」被拒，看起来像效果没生效。
+    /// </para>
+    /// </summary>
+    private static async Task<OrcMatchSession> OpenSampleMatchAsync(string tag)
+    {
+        var nations = Path.Combine(RepoRoot(), "proto", "data", "nations");
+        var catalog = new CardCatalog();
+        catalog.Load(nations, CardCatalog.ResolveArtResource);
+        var cards = new DeckConstructionService(catalog.Cards, nations).Cards;
+        Assert.NotEmpty(cards);
+
+        var session = await OrcMatchSession.CreateFromCatalogAsync(cards, 31, tag, SampleCard,
+            openingHand: [SampleCard], sourceDirectory: nations, firstPlayerIndex: 0);
+        session.DriveOpponent = false;
+        await session.SettleMulliganAsync(interactive: false);
+        session.Pump();
+
+        var card = session.View.SelfHand.FirstOrDefault(c => c.CardId == SampleCard)
+            ?? throw new InvalidOperationException(
+                $"起手没有 {SampleCard}：[{string.Join(' ', session.View.SelfHand.Select(c => c.CardId))}]");
+
+        var cost = card.Definition.Cost ?? 1;
+        for (var turn = 0; turn < 8 && session.View.SelfKredits < cost; turn++)
+        {
+            await session.SubmitAsync(new EndTurn());
+            session.Pump();
+        }
+
+        Assert.True(session.View.SelfKredits >= cost,
+            $"攒不到费用：kredits={session.View.SelfKredits} cost={cost}");
+        return session;
     }
 
     /// <summary>引擎仓库根：由构建写进程序集元数据，与二进制一一对应（不依赖环境变量）。</summary>
