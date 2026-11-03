@@ -4,6 +4,10 @@
 > 标题：**`choice` 节点运行期无条件抛 NotSupportedException——建议复用既有 targeter 提交通道实现选项呈现**
 > 提交日期：2026-11-02　　基线：`299d93d`
 
+> **状态：已解决（2026-11-03）**——引擎 `5475abbf`／`9b62d965`（R38）按本稿的建议接入了通道，
+> `choice` 转 alpha，`PreviewOps` 清空。核对记录见 `ENGINE_UPDATE_20261103.md`；
+> issue `hitman-OLD6/OrC-KSD#2` 已回帖关闭。**以下为提交时的原文，不再修改。**
+
 ---
 
 ## 现象

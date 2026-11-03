@@ -509,36 +509,80 @@ public class HandlerDslEditorTests
         Assert.Equal("pin-missing", issue.Code);
         Assert.Equal("actions[0].options", issue.NodePath);
 
-        // 选项文字是给玩家看的，空着必须拦——这正是新插入的 choice 默认留空的原因
+        // 选项文字是给玩家看的，空着必须拦——这正是新插入的 choice 默认留空的原因。
+        // 码是 pin-unknown（SPEC §14.1／check 向量 025），**不是** pin-missing：
+        // 字段在、只是值不合法；13 个码封闭，不为这个新增第 14 个。
         var blank = new HandlerDocument();
         var choice = new HandlerNode("choice").SetText("prompt", "选一个");
         choice.Options.Add(new HandlerOption(""));
         blank.Actions.Add(choice);
         var second = Assert.Single(HandlerDslValidator.Validate(blank, Catalog));
-        Assert.Equal("pin-missing", second.Code);
+        Assert.Equal("pin-unknown", second.Code);
         Assert.Equal("actions[0].options[0].label", second.NodePath);
+    }
+
+    [Fact]
+    public void choice的选项文案纯空白与运行期同口径()
+    {
+        // 引擎 Reader 用 IsNullOrWhiteSpace 拒（向量 027）——只拒 "" 会把纯空白留在同一条失败路径上。
+        var doc = new HandlerDocument();
+        var choice = new HandlerNode("choice").SetText("prompt", "选一个");
+        choice.Options.Add(new HandlerOption("   "));
+        doc.Actions.Add(choice);
+
+        var issue = Assert.Single(HandlerDslValidator.Validate(doc, Catalog));
+        Assert.Equal("pin-unknown", issue.Code);
+        Assert.Equal("actions[0].options[0].label", issue.NodePath);
+    }
+
+    [Fact]
+    public void choice的选项文案重复要指出跟谁撞了()
+    {
+        // 交互通道按**文案**回填被选项（标识集＝labels）：重复＝IndexOf 恒命中第一个＝生效到错误分支上
+        // （check 向量 026）。报错必须指到「跟第几个撞了」，否则作者得自己一项项比。
+        var doc = new HandlerDocument();
+        var choice = new HandlerNode("choice").SetText("prompt", "选一个");
+        choice.Options.Add(new HandlerOption("抽 1 张"));
+        choice.Options.Add(new HandlerOption("抽 1 张"));
+        doc.Actions.Add(choice);
+
+        var issue = Assert.Single(HandlerDslValidator.Validate(doc, Catalog));
+        Assert.Equal("pin-unknown", issue.Code);
+        Assert.Equal("actions[0].options[1].label", issue.NodePath);
+        Assert.Contains("options[0].label", issue.Message);
+    }
+
+    [Fact]
+    public void choice的选项文案互不相同就放行()
+    {
+        var doc = new HandlerDocument();
+        var choice = new HandlerNode("choice").SetText("prompt", "选一个");
+        choice.Options.Add(new HandlerOption("抽 1 张"));
+        choice.Options.Add(new HandlerOption("抽 2 张"));
+        doc.Actions.Add(choice);
+
+        Assert.Empty(HandlerDslValidator.Validate(doc, Catalog));
     }
 
     // ── 能力分区（SPEC §12.11／FRONTEND §5.5）─────────────────────────────────
 
     [Fact]
-    public void choice是唯一的预览态节点()
+    public void 今天没有预览态节点但机制留着()
     {
-        // 契约说得很明确：choice 编译能过、运行期 ChooseAsync 无条件抛，所以是 preview。
-        // 这条断言是**行为测试背书**的那一半——引擎接通 S10 后它会先红，逼人回来改分区。
-        var choice = Catalog.Find("choice");
-        Assert.NotNull(choice);
-        Assert.Equal(HandlerNodeStage.Preview, choice.Stage);
-        Assert.True(choice.IsPreview);
-        Assert.False(string.IsNullOrWhiteSpace(choice.Problem));
+        // 2026-11-03（引擎 R38）：choice 接通了交互通道（有桥走 target.submit、无桥明确失败），
+        // 契约的 PreviewOps 登记表清空——**注意清空的是登记表，不是 BuiltInOps**：
+        // 后者恒有十项，导出时按 PreviewOps 决定各自的 stage。
+        Assert.Equal(10, HandlerCatalog.BuiltInOps.Count);
+        Assert.All(HandlerCatalog.BuiltInOps, b => Assert.Equal(HandlerNodeStage.Alpha, b.Stage));
+        Assert.All(HandlerCatalog.BuiltInOps, b => Assert.Null(b.Problem));
 
-        // 其余节点（27 个扫描节点 ＋ 另外 9 个内建 op）全是 alpha：今天没有第二个预览态。
-        var preview = Catalog.Nodes.Where(n => n.IsPreview).Select(n => n.Name).ToArray();
-        Assert.Equal(["choice"], preview);
+        Assert.Empty(Catalog.Nodes.Where(n => n.IsPreview).Select(n => n.Name));
+        Assert.Equal(HandlerNodeStage.Alpha, Catalog.StageOf("choice"));
+        Assert.Null(Catalog.ProblemOf("choice"));
     }
 
     [Fact]
-    public void 内建op表与契约的十个op一一对应()
+    public void 内建op表与目录里的十个内建节点一一对应()
     {
         // 顺序也照契约（HandlerDslContract.BuiltinOps）：前端不自行推导这张表。
         Assert.Equal(
@@ -548,8 +592,8 @@ public class HandlerDslEditorTests
         // 表里的每个 op 都必须是目录里真实存在的内建节点，反之亦然——
         // 两边错一个就会静默失效（引擎那边也有一条守护测试专门校验这个）。
         Assert.Equal(
-            Catalog.Nodes.Where(n => n.BuiltIn).Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal),
-            HandlerCatalog.BuiltInOps.Select(b => b.Op).OrderBy(n => n, StringComparer.Ordinal));
+            HandlerCatalog.BuiltInOps.Select(b => b.Op).OrderBy(n => n, StringComparer.Ordinal),
+            Catalog.Nodes.Where(n => n.BuiltIn).Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal));
     }
 
     [Fact]
@@ -557,9 +601,6 @@ public class HandlerDslEditorTests
     {
         Assert.Equal(HandlerNodeStage.Alpha, Catalog.StageOf("damage"));
         Assert.Null(Catalog.ProblemOf("damage"));
-
-        Assert.Equal(HandlerNodeStage.Preview, Catalog.StageOf("choice"));
-        Assert.NotNull(Catalog.ProblemOf("choice"));
 
         // 未知 op 不编造预览态：它该走 node-unknown，不是「还没接通」。
         Assert.Equal(HandlerNodeStage.Alpha, Catalog.StageOf("没有这个op"));

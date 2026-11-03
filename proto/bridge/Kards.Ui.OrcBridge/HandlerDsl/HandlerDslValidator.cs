@@ -148,13 +148,28 @@ public static class HandlerDslValidator
                     if (node.Options.Count == 0)
                         issues.Add(new HandlerIssue("pin-missing", path + ".options",
                             "至少要给一个选项", node, "options"));
+
+                    // SPEC §14.1（引擎 R38／check 向量 025-027）：label 必须**非空且唯一**，
+                    // 码复用 pin-unknown（13 个码是封闭的，不新增第 14 个）。
+                    // 这不是审美要求：交互通道按**文案**回填被选项（标识集＝labels），
+                    // 重复＝恒命中第一个＝「生效到错误分支上」，空＝标识集构造期就抛。
+                    // 「空」的口径与运行期一致＝IsNullOrWhiteSpace——只拒 "" 会把纯空白留在同一条失败路径上。
+                    var seen = new Dictionary<string, string>(StringComparer.Ordinal);
                     for (var j = 0; j < node.Options.Count; j++)
                     {
                         var option = node.Options[j];
                         var optionPath = path + ".options[" + j + "]";
-                        if (string.IsNullOrEmpty(option.Label))
-                            issues.Add(new HandlerIssue("pin-missing", optionPath + ".label",
-                                "选项上要写一句给玩家看的话", node, "options"));
+                        var labelPath = optionPath + ".label";
+                        var label = option.Label ?? "";
+                        if (string.IsNullOrWhiteSpace(label))
+                            issues.Add(new HandlerIssue("pin-unknown", labelPath,
+                                "选项上要写一句给玩家看的话（不能空，也不能只填空格）", node, "options"));
+                        else if (seen.TryGetValue(label, out var firstPath))
+                            issues.Add(new HandlerIssue("pin-unknown", labelPath,
+                                "这个选项文案和 " + firstPath + " 一模一样：玩家分不清点的是哪个", node, "options"));
+                        else
+                            seen[label] = labelPath;
+
                         Walk(option.Actions, optionPath + ".actions", local.Clone(), loopDepth + 1, depth + 1);
                     }
                 }

@@ -394,6 +394,7 @@
 
 今天**只有 `choice` 是 preview**，零个扫描节点带 `[HandlerDslPreview]`。测试里那条
 `choice是唯一的预览态节点` 就是「行为测试背书」——引擎接通 S10 后它会先红，逼人回来改。
+（**这句话在 2026-11-03 兑现了**：引擎 R38 接通后那条测试确实先红，见 §11.4。）
 
 ### 11.2 界面怎么表现（不裁剪）
 
@@ -412,3 +413,44 @@
 - 全量 **744 通过 / 2 失败**，失败两条仍是 `CrossEffectTargetTests`、`MatchDebugTests`（已知引擎漂移）。
 - 截图验证：临时把 `choice` 塞进样例 → 工具箱该行压暗带角标、画布块带角标、
   右栏「1 块跑不起来」＋原因；钩子只加在运行副本，已清理，正式截图仍是干净的 5 块。
+
+---
+
+## 11.4 登记表清空：`choice` 接通了（2026-11-03 追加）
+
+引擎 `9b62d965`（R38）把 `choice` 的交互通道接上了——复用既有 targeter 提交通道
+（`option` 选择器，标识集＝选项文案，`picks` 1 起），协议**零变更**。
+于是 `HandlerDslContract.PreviewOps` 变空表，`choice` 从 preview 转 alpha。
+
+这次是「行为背书」那条规矩的**反向兑现**：§11.1 说过「引擎接通后测试会先红」，
+它确实红了（`choice是唯一的预览态节点`），逼我们回来删登记。
+
+### 11.4.1 两件事别混成一个
+
+| 表 | 现在 |
+|---|---|
+| `HandlerCatalogDto.BuiltInOps` | **恒十项**，每项带 stage —— 现在全部 alpha |
+| `HandlerDslContract.PreviewOps` | **空表**（清空的是它） |
+
+引擎导出逻辑是 `BuiltinOps.Select(op => PreviewOps 有 ? preview : alpha)`。
+SPEC 里那句「该表当前为空」说的是 `PreviewOps`——第一次读成 `builtInOps` 空表，
+被引擎自己的守护测试（`Catalog().BuiltInOps.Single(o => o.Op == "choice")` 仍能取到）纠正。
+
+### 11.4.2 界面：一行代码没改
+
+角标、压暗、金色警告全是 `StageOf` 驱动的，登记表一空，它们自然不再出现。
+**机制不拆**：`HandlerNodeStage`、`PreviewOpsIn`、`PreviewWarning` 全部保留——
+下一个「语法合法但跑不起来」的 op 迟早会来，那时只需在 `BuiltInOps` 表里标一格。
+
+### 11.4.3 顺带补上的校验
+
+`choice.options[].label` 现在必须**非空且唯一**（SPEC §14.1，check 向量 025-027），
+复用 `pin-unknown`，没有第 14 个码。理由不是审美：交互通道按**文案**回填被选项，
+重复＝恒命中第一个＝「生效到错误分支上」，空＝标识集构造期就抛。
+校验器里重复的那条会指到「跟第几个撞了」（`options[0].label`），否则作者得自己一项项比。
+
+### 11.4.4 验证
+
+- `HandlerDslEditorTests` **35/35**（32 → 35：改写 1 条、新增 2 条）。
+- 全量 **747 通过 / 2 失败**，失败两条仍是 `CrossEffectTargetTests`、`MatchDebugTests`（已知引擎漂移）。
+- 详情见 `docs/engine/ENGINE_UPDATE_20261103.md`。

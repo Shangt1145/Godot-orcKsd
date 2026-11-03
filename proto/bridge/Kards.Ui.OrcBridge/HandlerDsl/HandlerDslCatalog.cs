@@ -48,8 +48,12 @@ public sealed record HandlerPinSpec(
 /// 能力分区（SPEC §12.11／FRONTEND-GUIDE §5.5）：
 /// <see cref="Alpha"/>＝这版真能跑；<see cref="Preview"/>＝目录里有、**现在跑不起来**。
 /// <para>
-/// 判据是**显式登记**，不是自动探针——`choice` 编译能过、运行才炸，按「编译一次」判会误判成 alpha。
+/// 判据是**显式登记**，不是自动探针——`choice` 当年编译能过、运行才炸，按「编译一次」判会误判成 alpha。
 /// 分区只影响排序与提示，**绝不裁剪**：藏起来会让作者以为这版没这个能力。
+/// </para>
+/// <para>
+/// 2026-11-03（引擎 R38）起 `choice` 接通，契约的 `PreviewOps` 登记表清空：**当前没有任何预览态节点**。
+/// 枚举与界面路径保留，因为「下一个跑不起来的 op」迟早还会出现。
 /// </para>
 /// </summary>
 public enum HandlerNodeStage
@@ -157,11 +161,17 @@ public sealed class HandlerCatalog
     public bool Knows(string op) => _byName.ContainsKey(op);
 
     /// <summary>
-    /// 内建 op 的能力分区（契约 <c>builtInOps</c>，顺序＝<c>HandlerDslContract.BuiltinOps</c>）。
+    /// 内建 op 的能力分区（契约顶层 <c>builtInOps</c>，即 <c>HandlerCatalogDto.BuiltInOps</c>）。
     /// <para>
     /// 契约把它们单列一张表，是因为内建 op 由前端硬编码、目录里没有引脚条目，
     /// 而 <c>choice</c> 的运行时实现 <c>ChooseAsync</c> 在排除清单里、扫描器根本扫不到——
     /// 可用性无处可标，只能登记。**这里照抄，不自行推导。**
+    /// </para>
+    /// <para>
+    /// **2026-11-03 起十项全为 <see cref="HandlerNodeStage.Alpha"/>**（引擎 R38）：<c>choice</c> 接通了
+    /// 交互通道（有桥走 <c>target.submit</c>、无桥明确失败），契约的 <c>PreviewOps</c> 登记表随之清空。
+    /// 注意两张表不是一回事：<c>BuiltInOps</c> 恒有十项（导出时由 <c>PreviewOps</c> 决定各自的 stage），
+    /// 清空的是 <c>PreviewOps</c>。机制不拆——将来再出现「语法合法但跑不起来」的 op，登记后这里自然会标出来。
     /// </para>
     /// </summary>
     public static readonly IReadOnlyList<(string Op, HandlerNodeStage Stage, string? Problem)> BuiltInOps =
@@ -171,8 +181,7 @@ public sealed class HandlerCatalog
         ("loop", HandlerNodeStage.Alpha, null),
         ("while", HandlerNodeStage.Alpha, null),
         ("iterate", HandlerNodeStage.Alpha, null),
-        ("choice", HandlerNodeStage.Preview,
-            "选项呈现需要先接通交互通道（S10）：现在编译能过，一跑就抛 NotSupportedException。"),
+        ("choice", HandlerNodeStage.Alpha, null),
         ("let", HandlerNodeStage.Alpha, null),
         ("write", HandlerNodeStage.Alpha, null),
         ("ask", HandlerNodeStage.Alpha, null),
@@ -199,7 +208,7 @@ public sealed class HandlerCatalog
 
     private static HandlerCatalog? _snapshot;
 
-    /// <summary>内置快照（26 节点 = 24 动作 + stop/interrupt）。</summary>
+    /// <summary>内置快照（37 节点 = 27 目录节点〔含 stop／interrupt〕+ 10 内建 op）。</summary>
     public static HandlerCatalog Snapshot => _snapshot ??= BuildSnapshot();
 
     private static HandlerCatalog BuildSnapshot()
@@ -218,11 +227,11 @@ public sealed class HandlerCatalog
             new("loop", false, false, [V("times", "number")], [], true, ["actions"]),
             new("while", false, false, [V("test", "boolean"), V("limit", "number")], [], true, ["actions"]),
             new("iterate", false, false, [V("over", "list<entity>"), B("as")], [], true, ["actions"]),
-            // choice 是**预览态**（SPEC §12.11）：编译能过，运行期 ChooseAsync 无条件抛。
-            // 分区写在这里而不是「等界面自己判断」——判据必须是登记，不是探针。
-            new("choice", true, true, [T("prompt")], [], true, ["options"],
-                HandlerNodeStage.Preview,
-                "选项呈现需要先接通交互通道（S10）：现在编译能过，一跑就抛 NotSupportedException。"),
+            // choice 自 2026-11-03（引擎 R38）起是 **alpha**：复用 targeter 提交通道
+            // （option 选择器，标识集＝选项文案），有桥即呈现 prompt ＋ N 个选项。
+            // 无桥／取消／非法选择＝抛 InvalidOperationException（消息以 choice-failed[...] 开头），
+            // 整条效果中断——所以校验期必须保证文案非空且唯一（见 HandlerDslValidator）。
+            new("choice", true, true, [T("prompt")], [], true, ["options"]),
             new("let", false, false, [B("name"), V("value", "number")], [], true),
             new("write", false, true,
                 [new("field", "string", true, null, null, HandlerPinKind.Field), V("value", "number")], [], true),
