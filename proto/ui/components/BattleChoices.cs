@@ -18,10 +18,13 @@ public partial class BattleChoices : Control
     private UiCardView? _source;
     private DeploymentPose? _origin;
     private int _page;
+    private string _prompt = "";
     private Label? _selectionCount;
     private readonly Dictionary<string, MulliganStamp> _marks = new();
     public Button? NextPageButton { get; private set; }
     public IReadOnlyList<string> SelectedIds => _selection?.Selected ?? [];
+    /// <summary>当前呈现的提示文案（空串＝这题没有话要说）。验证与测试用。</summary>
+    public string PromptText => _prompt;
     public event Action<IReadOnlyList<string>>? Confirmed;
     public event Action<string>? Chosen;
     public event Action? Cancelled;
@@ -31,10 +34,12 @@ public partial class BattleChoices : Control
     public void Initialize(TextureCache textures, AnimClock clock)
     { _textures = textures; _clock = clock; Size = new(1280, 720); MouseFilter = MouseFilterEnum.Stop; Visible = false; }
 
-    public void Open(UiChoiceSlot slot, UiCardView? source, DeploymentPose? origin, IReadOnlyList<string>? selected = null)
+    public void Open(UiChoiceSlot slot, UiCardView? source, DeploymentPose? origin, IReadOnlyList<string>? selected = null,
+        string prompt = "")
     {
         Reset(); Visible = true; _accepting = true;
         _slot = slot; _source = source; _origin = origin; _selection = new(slot);
+        _prompt = prompt ?? "";
         if (selected is not null) foreach (var id in selected) _selection.Toggle(id);
         RenderPage();
 
@@ -50,6 +55,20 @@ public partial class BattleChoices : Control
         var pageChoices = slot.Allowed.Skip(_page * 5).Take(5).ToArray();
         // The board remains visible. Clicking its empty space cancels the pending play.
         AddChild(new ColorRect { Size = Size, Color = new(0, 0, 0, .12f), MouseFilter = MouseFilterEnum.Ignore });
+        // 选项请求的提示语（引擎 choice.prompt）。引用类选靶没有这句话——空串时整条不出现，
+        // 所以「选个目标」那套界面一个像素都不变。
+        if (_prompt.Length > 0)
+        {
+            var bar = new Panel { Position = new(330, 164), Size = new(620, 48), MouseFilter = MouseFilterEnum.Ignore };
+            bar.AddThemeStyleboxOverride("panel", UiStyles.Box(new Color(.06f, .07f, .06f, .92f), new Color("79705b"), 5));
+            AddChild(bar);
+            var text = UiStyles.Label(_prompt, 15);
+            text.Position = new(12, 6); text.Size = new(596, 36);
+            text.HorizontalAlignment = HorizontalAlignment.Center;
+            text.VerticalAlignment = VerticalAlignment.Center;
+            text.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            bar.AddChild(text);
+        }
         var count = pageChoices.Length;
         var width = Math.Min(180f, 960f / Math.Max(1, count) - 20);
         var size = new Vector2(width, width * 1.4f);
@@ -212,7 +231,7 @@ public partial class BattleChoices : Control
     public void Reset()
     {
         _epoch++; _selection = null; _slot = null; _page = 0; NextPageButton = null; _selectionCount = null;
-        _marks.Clear(); StopMotions(); _accepting = false; Visible = false; _cards.Clear();
+        _marks.Clear(); StopMotions(); _accepting = false; Visible = false; _cards.Clear(); _prompt = "";
         foreach (var child in GetChildren()) { RemoveChild(child); child.QueueFree(); }
     }
     public override void _GuiInput(InputEvent e)

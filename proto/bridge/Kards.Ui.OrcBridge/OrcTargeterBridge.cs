@@ -59,13 +59,36 @@ public sealed class OrcTargeterBridge(Action<ISelectorInstance>? present = null)
         }
     }
 
-    /// <summary>把 AI 的选择提交到挂起的选择器（picks 为候选序号；空表＝空选择，Min&gt;0 时空选择按取消算）。</summary>
+    /// <summary>
+    /// 把 AI 的选择提交到挂起的选择器（引用类：picks＝候选下标；选项类：picks＝标识集的 **1 起序号**；
+    /// 空表＝空选择，Min&gt;0 时空选择按取消算）。
+    /// <para>
+    /// 两种口径不同不是笔误：引用类的序号是本仓库 <c>AiCandidate.Index</c>（0 起），
+    /// 标识类跟 <c>target.submit</c> 同口径（1 起，引擎 R38 Q6）——<c>AiPilot.ChoosePickAsync</c>
+    /// 对标识类回的就是 <c>1</c>。以前这里只认 candidates，选项请求恒判空 ⇒ 取消 ⇒
+    /// 「AI 死活不出带 choice 的牌」，且日志里只剩一句 cancelled。
+    /// </para>
+    /// </summary>
     public bool SubmitAiPick(ISelectorInstance selector, IReadOnlyList<int> picks, bool cancel)
     {
         try
         {
             if (cancel) { selector.Submit(new CancelEvent()); return true; }
             var candidates = selector.Presentation.Candidates;
+            if (candidates.Count == 0 && selector.Presentation.Identifiers is { Count: > 0 } identifiers)
+            {
+                // 越界一律当「没选」：不静默改成第 1 项（那等于替 AI 做决定），Min>0 时按取消收场。
+                var picked = picks.Where(i => i >= 1 && i <= identifiers.Count)
+                    .Select(i => identifiers[i - 1]).Distinct(StringComparer.Ordinal).ToArray();
+                if (picked.Length == 0)
+                {
+                    if (selector.Presentation.Min > 0) { selector.Submit(new CancelEvent()); return false; }
+                    selector.Submit(new PickEvent());
+                    return true;
+                }
+                selector.Submit(new PickEvent(identifiers: picked));
+                return true;
+            }
             var chosen = picks.Where(i => i >= 0 && i < candidates.Count).Select(i => candidates[i]).ToArray();
             if (chosen.Length == 0)
             {

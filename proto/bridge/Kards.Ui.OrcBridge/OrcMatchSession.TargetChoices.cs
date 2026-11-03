@@ -56,7 +56,9 @@ public sealed partial class OrcMatchSession
         {
             SourceCard = View.SelfHand.FirstOrDefault(c=>c.Uid==_choiceSourceUid) ?? visible.FirstOrDefault(c => c.Uid == _choiceSourceUid),
             SelectorName = selector.SelectorName,
-            IsDrag = selector.Mode == SelectorInteractionMode.Drag
+            IsDrag = selector.Mode == SelectorInteractionMode.Drag,
+            // R38：只有 choice 会填这句（ask 的 prompt 仍被引擎丢弃），所以空串就是「没有话要说」。
+            Prompt = data.Prompt ?? "",
         };
         var choice = new ChoiceResponder(this, selector, request.RequestId, name);
         _targetChoice = choice;

@@ -168,12 +168,30 @@ Assert.Null(choice.Problem);
 
 ---
 
-## 8 下一步：选项弹窗现在很便宜
+## 8 选项弹窗：已接（同日）
 
-上一轮我说「等引擎定下『选项请求』的 DTO 形状再接弹窗」。现在形状定下来了，而且**协议零变更**：
+上一轮说「等引擎定下『选项请求』的 DTO 形状再接弹窗」。形状定了，而且**协议零变更**，
+所以当天就接了——改的是我们自己一直漏的两处，不是新造面板：
 
-1. 收到 `notify/target.request`，看 `pending.identifiers` 非空且 `candidates` 空 ⇒ 这是选项请求
-2. `pending.prompt` 有就显示，`identifiers` 按序摆成按钮
-3. 点了第 n 个 ⇒ `target.submit { sessionId, picks: [n+1] }` —— 跟选靶完全同一条路
+1. **提示语没传**：引擎 R38 的 `pending.prompt` / `SelectorPresentation.Prompt` 我们根本没读。
+   现在 `UiTargetRequest.Prompt` 一路到牌面上方那条提示条（空串时整条不出现，选靶界面零变化）。
+2. **AI 提交路径只认 candidates**：`SubmitAiPick` 拿 `picks` 当 0 起候选下标，
+   而选项请求的 `candidates` 是空的 ⇒ 恒判空 ⇒ 取消 ⇒ 「AI 死活不出带 choice 的牌」。
+   现在按 **1 起序号** 解 `identifiers`（与 `target.submit` 同口径，也正好是 `AiPilot` 回的 `1`）。
 
-唯一的判断题是**视觉**：选项面板要不要复用选靶面板的骨架。这是我能做的部分。
+细节与验证见 `docs/design/CHOICE_DIALOG_20261103.md`。
+
+## 9 本地引擎检出已合并到 `9b62d965`
+
+要真跑起来，光同步镜像不够——我们编译的是**引擎源码**（`$(OrcEngineRoot)` 的 ProjectReference），
+检出停在 `169e575` 时 `ChooseAsync` 还是那行 `throw`。所以把引擎仓库 `v4` 分支合到了
+`origin/main`（`716d7d3`，无冲突，未手改任何引擎文件）。
+
+- 合并后 `SelectorPresentation.Prompt` 与新的 `ChooseAsync` 都可直接引用，不需要反射或临时兜底。
+- 要退回：引擎仓库里 `git reset --hard ORIG_HEAD`（会把 `v4` 退回合并前）。
+
+## 10 顺手修的一条测试隔离问题
+
+`AssaultPresentationTests` 直接 `new Match(...)` 却没登记动作实现集，靠「别的测试类先跑过
+`FoundationActions.Register()`」的运气过关；加三条测试换了顺序就翻脸
+（`未注册动作实现：请先注册默认实现集`）。已加静态构造显式登记，不再赌顺序。

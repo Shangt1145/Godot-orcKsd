@@ -634,11 +634,28 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
                     kind is "card" or "unit" ? ChoiceKind.CardDefinition : ChoiceKind.Reference));
             }
 
+        // 选项请求（引擎 R38 的 choice）：candidates 空、identifiers 非空。
+        // 标识集按 **1 起序号** 提交（与引用类同一口径，协议零变更），所以 _picksByChoiceId 直接记序号，
+        // 下面的 SubmitTargetAsync 一行都不用改。
+        if (allowed.Count == 0 && body["identifiers"] is JsonArray identifiers && identifiers.Count > 0)
+        {
+            for (var i = 0; i < identifiers.Count; i++)
+            {
+                var label = identifiers[i]?.GetValue<string>() ?? "";
+                if (label.Length == 0) continue;
+                var id = (i + 1).ToString(CultureInfo.InvariantCulture);
+                _picksByChoiceId[id] = i + 1;
+                allowed.Add(new UiChoice(id, label, ChoiceKind.Option));
+            }
+        }
+
         var selector = body["selector"]?.GetValue<string>() ?? "";
         var isDrag = string.Equals(body["mode"]?.GetValue<string>(), "Drag", StringComparison.OrdinalIgnoreCase);
-        var slotKind = allowed.Count > 0 && allowed.All(choice => choice.Kind == ChoiceKind.CardDefinition)
-            ? ChoiceKind.CardDefinition
-            : ChoiceKind.Reference;
+        var slotKind = allowed.Count > 0 && allowed.All(choice => choice.Kind == ChoiceKind.Option)
+            ? ChoiceKind.Option
+            : allowed.Count > 0 && allowed.All(choice => choice.Kind == ChoiceKind.CardDefinition)
+                ? ChoiceKind.CardDefinition
+                : ChoiceKind.Reference;
 
         var slot = new UiChoiceSlot(
             selector, slotKind,
@@ -696,6 +713,8 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         {
             SelectorName = selector,
             IsDrag = isDrag,
+            // 只有选项请求带这句（引擎 R38 的 pending.prompt）；引用类选靶没有。
+            Prompt = body["prompt"]?.GetValue<string>() ?? "",
         };
 
         // 无人值守：自己答完，别把请求挂在那儿。

@@ -77,7 +77,7 @@ public partial class BattleScreen
         }
         _aim.Visible = false;
         var origin = request.SourceCard is { } card && _orderOrigins.TryGetValue(card.Uid, out var pose) ? pose : (DeploymentPose?)null;
-        _choicePanel.Open(slot, request.SourceCard, origin, selected);
+        _choicePanel.Open(slot, request.SourceCard, origin, selected, request.Prompt);
         if (request.SourceCard is { } source && _cards.TryGetValue(source.Uid, out var hand)) hand.Visible = false;
     }
     private static bool IsBoardTarget(UiCardView? card) => card is not null

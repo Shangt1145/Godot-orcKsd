@@ -164,4 +164,53 @@ public sealed class SelectorMigrationTests
         Assert.Equal(deck, session.View.SelfDeckCount);
         Assert.Equal(cancelRetry, session.View.SelfHand.Any(c => c.Uid == order.Uid));
     }
+
+    // ── 选项请求（引擎 R38 的 choice）：AI 与快照两条路径 ─────────────────────
+
+    [Fact]
+    public async Task AiOptionPicksAreOneBasedIdentifiers()
+    {
+        // 标识集的序号是 **1 起**（与 target.submit 同口径，R38 Q6），不是候选下标。
+        // 以前 SubmitAiPick 只认 candidates，选项请求恒判空 ⇒ 取消 ⇒ 「AI 死活不出带 choice 的牌」。
+        var gate = new TaskCompletionSource<ISelectorInstance>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new OrcTargeterBridge(s => gate.TrySetResult(s));
+        var manager = new TargeterManager(bridge);
+        string? picked = null;
+        var pending = manager.RunAsync(async flow =>
+        {
+            var step = await flow.Step(SelectorTemplates.Option, new IdentifierSetParameter(["抽 1 张", "抽 2 张"], 1, 1));
+            picked = step.Value;
+            return step.IsOk ? TargeterResult.Ok() : TargeterResult.FromSelectorFailure(step.Failure);
+        });
+        var selector = await gate.Task.WaitAsync(Limit);
+        Assert.Empty(selector.Presentation.Candidates);
+        Assert.True(bridge.SubmitAiPick(selector, [2], false));
+        Assert.True((await pending.WaitAsync(Limit)).IsOk);
+        Assert.Equal("抽 2 张", picked);
+    }
+
+    [Fact]
+    public async Task AiOutOfRangeOptionCancelsInsteadOfPickingTheFirst()
+    {
+        // 越界不许静默改成第 1 项——那等于替 AI 做决定，而 switch 没有 default，选错就是错分支。
+        var gate = new TaskCompletionSource<ISelectorInstance>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new OrcTargeterBridge(s => gate.TrySetResult(s));
+        var manager = new TargeterManager(bridge);
+        var pending = manager.RunAsync(async flow =>
+        {
+            var step = await flow.Step(SelectorTemplates.Option, new IdentifierSetParameter(["甲", "乙"], 1, 1));
+            return step.IsCancelled ? TargeterResult.Cancelled() : TargeterResult.Ok();
+        });
+        var selector = await gate.Task.WaitAsync(Limit);
+        Assert.False(bridge.SubmitAiPick(selector, [99], false));
+        Assert.True((await pending.WaitAsync(Limit)).IsCancelled);
+    }
+
+    [Fact]
+    public void PromptSurvivesTheSnapshotFreeze()
+    {
+        // UiSnapshots.Freeze 是 record with：新加的字段必须跟着过去，否则界面拿到的是空串。
+        var request = new UiTargetRequest("r", []) { Prompt = "选一项" };
+        Assert.Equal("选一项", UiSnapshots.Freeze(request).Prompt);
+    }
 }

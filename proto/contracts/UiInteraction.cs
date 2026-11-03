@@ -15,6 +15,16 @@ public sealed record UiTargetRequest(string RequestId, IReadOnlyList<UiChoiceSlo
     public UiCardView? SourceCard { get; init; }
     public string SelectorName { get; init; } = "";
     public bool IsDrag { get; init; }
+
+    /// <summary>
+    /// 呈现给玩家的提示文案（引擎 <c>choice.prompt</c>；没有＝空串）。
+    /// <para>
+    /// 只有「选项请求」（<c>choice</c> 节点）会带它——引用类选靶没有这句话。
+    /// 引擎 R38 起 <c>pending.prompt</c> 只在有文案时出现，<c>ask</c> 的输出逐条不变，
+    /// 所以这里缺省空串、界面按空串当「没有话要说」。
+    /// </para>
+    /// </summary>
+    public string Prompt { get; init; } = "";
 }
 
 /// <summary>Adapter returns true for any terminal result, including engine-side failure.</summary>

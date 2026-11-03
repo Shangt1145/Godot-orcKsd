@@ -18,6 +18,17 @@ namespace Kards.Ui.Tests;
 /// </summary>
 public sealed class AssaultPresentationTests
 {
+    /// <summary>
+    /// 动作实现集是**进程级**注册（引擎 R17）：直接 new Match 的测试必须先登记，
+    /// 否则 <c>MatchActionCatalog</c> 装配期就 fail-fast（「未注册动作实现」）。
+    /// <para>
+    /// 以前这条能过，是因为别的测试类先跑过 <c>FoundationActions.Register()</c>——
+    /// 靠测试执行顺序的运气，加几条测试就会翻脸（2026-11-03 实测）。
+    /// <c>SetDefault</c> 可重复调用，这里显式登记一次，不再赌顺序。
+    /// </para>
+    /// </summary>
+    static AssaultPresentationTests() => Orc.Foundation.Actions.FoundationActions.Register();
+
     private const string InfantryId = "assault-infantry";
 
     private static Match NewMatch(Action<Orc.Game.Targeting.ISelectorInstance>? present = null)

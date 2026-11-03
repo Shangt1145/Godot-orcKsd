@@ -19,7 +19,11 @@ public partial class BattleScreen
                 ? new UiChoice(i.ToString(), _demo.Cards[i].Name, ChoiceKind.CardDefinition,
                     new UiCardView { Uid = "candidate-" + i, Definition = _demo.Cards[i], EffectiveCost = _demo.Cards[i].Cost })
                 : new UiChoice(i.ToString(), i == 0 ? "使友方总部获得+7防御力" : i == 1 ? "抽两张牌" : "获得一个指挥点槽", ChoiceKind.Option)).ToArray())])
-        { SourceCard = source };
+        {
+            SourceCard = source,
+            // 选项请求带提示语（引擎 choice.prompt）；卡牌定义选择那组不带——两类界面的差别就在这一行。
+            Prompt = definitions ? "" : "选一项：这牌怎么打",
+        };
 
     private async Task WaitChoiceClosedAsync()
     {
@@ -54,6 +58,9 @@ public partial class BattleScreen
                 var request = ChoiceFixture(count, definitions, source);
                 var responder = new MockTargetResponder(request); ShowTargetChoice(request, responder);
                 while (_choicePanel.IsEntering) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                // 提示语只在选项请求上出现：卡牌定义选择那条路径必须还是「一句话都没有」。
+                if (_choicePanel.PromptText != request.Prompt || (!definitions && _choicePanel.PromptText.Length == 0))
+                    throw new Exception($"Prompt did not reach the table ({definitions}): '{_choicePanel.PromptText}'.");
                 if (_cards[source.Uid].Visible || _choicePanel.Papers.Count != count || _choicePanel.Papers.Any(c => c.Mode == BattleCardMode.Hidden)
                     || (definitions ? _choicePanel.Papers.Any(c => c.ChoiceCaption is not null)
                         : _choicePanel.Papers.Select(c => c.ChoiceCaption).SequenceEqual(request.Slots[0].Allowed.Select(c => c.Label)) == false))
