@@ -1,0 +1,81 @@
+# 引擎建议：产物覆盖父资产这件事，缺一个正式原语
+
+> 状态：**未解决**（我们这边已用等价路径绕过，见 §3）
+> 发现于 2026-11-03，对应 `HandlerDslAuthoring.Save(HandlerDslSaveMode.ReplaceExisting)`。
+> 引擎版本：`9b62d965`（v4 分支）。
+
+## 1 现象
+
+作者要「用积木重写一个已有的脚本效果」。最直觉的做法是让草案的 `asset.product.id` 等于
+`asset.extends`——产物就地替换父，包里仍然只有一个效果。
+
+引擎拒绝（`src/Orc.Packages/Editing/ModingFlattener.cs:872`）：
+
+```
+产物 id 不能等于父 id（'{parent}'）：moding 产物必须是新 id、不得覆盖父（Constraints「id 唯一」）。
+```
+
+三条理由都成立，我们不复述反方意见：
+
+1. 摊平的输入是父、输出是产物。同一个文件既读又写，`FlattenAndWrite` 的原子性只覆盖
+   「失败不写产物」，覆盖不了「失败救回父」。
+2. 产物自包含（`extends: null`）。父被替换后，下次摊平的 `extends` 指向自己，
+   父的 `mounts`／成员的 `handler` 会被再合并一遍（我们已经在 `parent.Mounts.Concat(draft.Mounts)`
+   上踩过一次「draw 2 抽 4」，整份资产翻倍只会更难查）。
+3. R11 第 5 条：同 id 两副面孔＝资产声明错误。
+
+## 2 但作者的心智模型是「改这个效果」
+
+拒绝本身没问题，问题是**没有替代路径**。作者只有两个选择：
+
+- 派生新 id，然后自己去改所有卡的 `effects.prefabs`（包大一点就是几十处，改漏一处就是
+  「有的卡生效、有的不生效」）；
+- 放弃积木，回去手写 csx。
+
+这正是我们现在的 UI 在做的事（自动改引用），但它属于**应用层在替引擎补一个编辑原语**。
+
+## 3 我们的等价实现（当前状态）
+
+`HandlerDslAuthoring.Save(ReplaceExisting)`：
+
+1. 产物 id 派生为 `<父 id>.dsl`（确定性，作者不填）；
+2. 摊平（父始终是输入，永不写）；
+3. 扫描 `cards/*.card.json` 的 `components[effects].prefabs[]`，把父 id 改成派生 id，逐张走 `Commit`；
+4. 父保留。
+
+幂等：二次保存落在同一份 DSL／草案／产物上，引用替换 0 处。
+代价：包里多一个「基线」效果（作者看得见，但没有任何卡引用它）。
+
+## 4 引擎侧可以怎么补（按推荐度）
+
+### 方案 A：`asset.replace` 原语（推荐）
+
+一个明确的操作，而不是放宽 `product.id == extends`：
+
+```
+replace(packRoot, draftPath) →
+  ① 摊平到临时 id；
+  ② 校验通过后，原子替换 effects-v4/<父 id>.component.json；
+  ③ 把所有引用父 id 的资产（cards 的 effects.prefabs、未来可能的其它引用点）改成新 id；
+  ④ 失败＝一个字节都不写。
+```
+
+好处：语义集中在一处，引用重定向由引擎做（它知道全部引用点），应用层不用扫包。
+第 ③ 步的「引用点清单」是引擎知识，不是每个客户端各写一份。
+
+### 方案 B：放宽 `product.id == extends`，但要求草案带 `replaces: true`
+
+摊平器识别这个标记后：先把父读进内存、产物写临时文件、成功才 rename 覆盖父。
+仍然要解决自引用问题——需要把「产物没有 extends」与「产物是从这个父派生的」分开记，
+否则第二次摊平会继承自己。
+
+### 方案 C：什么也不做
+
+可以接受，只要明确写进契约：**moding 产物永远是新 id，覆盖由应用层用引用重定向实现**。
+那我们这边就不用再猜「是不是该等引擎」。
+
+## 5 为什么我们不自己改引擎
+
+本项目约定：引擎端需要的改动先写 md，不直接改源码。
+这条建议若被采纳，我们这边可以删掉 `RetargetReferences`（约 70 行）与
+`ReplaceProductIdOf`，改成调一个引擎 API。
