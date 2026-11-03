@@ -19,7 +19,9 @@ namespace Kards.Ui;
 /// </summary>
 public partial class HandlerBlockEditorScreen : VBoxContainer
 {
-    private HandlerCatalog _catalog = HandlerCatalog.Snapshot;
+    // 目录来自引擎扫描（`HandlerCatalog.Default`）；扫描不可用时自动退回本地镜像，
+    // 并在工具箱头部照实说明——不能让作者以为这就是引擎的全部能力。
+    private HandlerCatalog _catalog = HandlerCatalog.Default;
     private HandlerDocument _doc = HandlerDocument.Sample();
     private IReadOnlyDictionary<string, HandlerViewField> _view = DemoView();
 
@@ -248,9 +250,15 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var count = MenuStyles.Label(_catalog.Nodes.Count + " 块", 11, MenuStyles.Dim);
         count.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         count.HorizontalAlignment = HorizontalAlignment.Right;
-        count.TooltipText = "引擎当前支持的全部积木";
+        count.TooltipText = HandlerCatalog.DefaultIsFallback
+            ? "引擎目录读不出来，这份清单来自本地镜像：" + HandlerCatalog.DefaultFallbackReason
+            : "引擎当前支持的全部积木（目录版本 " + _catalog.Revision + "）";
         head.AddChild(count);
         box.AddChild(head);
+
+        // 退回镜像时必须说出来：作者会以为「工具箱里没有＝引擎做不到」，而真实原因是目录没读出来。
+        if (HandlerCatalog.DefaultIsFallback)
+            box.AddChild(MenuStyles.Label("目录来自本地镜像（引擎目录不可用）", 11, new Color("e0705f")));
 
         box.AddChild(MenuStyles.Label("点一块，就插到「插入到」写的位置。", 11, MenuStyles.Dim));
 
@@ -559,7 +567,11 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var parent = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         foreach (var option in parents) parent.AddItem(option.Label);
         parent.Select(0);
+        // 选了哪个父效果，画布的「视图字段」就跟着换成它的——作者能读什么由父声明决定，
+        // 而不是由这份界面猜（猜错的代价是「校验通过、装载期报字段不存在」）。
+        parent.ItemSelected += index => ApplyView(authoring, parents[Math.Clamp((int)index, 0, parents.Count - 1)]);
         DiyEditorScreen.Field(page, "父效果（挂载与视图字段从它继承）", parent);
+        ApplyView(authoring, parents[0]);
 
         var product = new LineEdit { Name = "ProductId", Text = "effect." + Guid.NewGuid().ToString("N")[..8] };
         DiyEditorScreen.Field(page, "产物 id（卡牌的 effects.prefabs 引用它）", product);
@@ -598,6 +610,32 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         };
         dialog.Canceled += dialog.QueueFree;
         dialog.PopupCentered();
+    }
+
+    /// <summary>
+    /// 把画布的视图换成这个父成员声明的视图字段（`read`／`write` 的合法范围）。
+    /// <para>
+    /// 读不出来（父没了、成员没了）＝**保持现状**并留一条警告，不清空：把视图清成空表会让画布上
+    /// 每个读取都变红，看起来像「作者的图坏了」，其实是父效果没读到。
+    /// </para>
+    /// </summary>
+    private void ApplyView(HandlerDslAuthoring authoring, HandlerParentOption option)
+    {
+        try
+        {
+            var fields = authoring.ViewFieldsOf(option.ParentId, option.Member);
+            if (fields.Count == 0)
+            {
+                GD.PushWarning($"父效果 {option.ParentId}#{option.Member} 没有声明视图字段。");
+                return;
+            }
+            _view = fields;
+            Rebuild();
+        }
+        catch (Exception error)
+        {
+            GD.PushWarning("读不出父效果的视图字段：" + error.Message);
+        }
     }
 
     private void ShowSaveNote(string note, bool failed)

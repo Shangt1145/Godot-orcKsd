@@ -188,6 +188,24 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     }
 
     [Fact]
+    public void 视图字段来自父效果的成员声明()
+    {
+        // 画布能读什么由父声明决定。示例包「火力支援」的 onPlayed 声明了七个字段。
+        var fields = _authoring.ViewFieldsOf(ParentId, Member);
+        Assert.Equal(
+            ["Card", "Effect", "Unit", "Player", "Killer", "Source", "TriggerCard"],
+            fields.Keys.OrderBy(k => k, StringComparer.Ordinal).OrderBy(k => Array.IndexOf(
+                new[] { "Card", "Effect", "Unit", "Player", "Killer", "Source", "TriggerCard" }, k)));
+        Assert.Equal("entity", fields["Card"].Type);
+        Assert.False(fields["Card"].Writable);
+
+        // 成员不存在＝空表：界面据此把视图引用标红，而不是假装有。
+        Assert.Empty(_authoring.ViewFieldsOf(ParentId, "onDied"));
+        // 父不存在＝引擎给诊断、不抛（DescribePrefab 的契约），这里只要求它别炸。
+        Assert.Empty(_authoring.ViewFieldsOf("no.such.effect", Member));
+    }
+
+    [Fact]
     public void 一条龙保存写出三份文件且Check是干净的()
     {
         var saved = _authoring.Save(new HandlerDslSaveRequest(ParentId, Member, "demo.saved", DrawTwo));

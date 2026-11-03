@@ -211,6 +211,105 @@ public sealed class HandlerCatalog
     /// <summary>内置快照（37 节点 = 27 目录节点〔含 stop／interrupt〕+ 10 内建 op）。</summary>
     public static HandlerCatalog Snapshot => _snapshot ??= BuildSnapshot();
 
+    private static HandlerCatalog? _default;
+
+    /// <summary>
+    /// 界面真正该用的目录：**引擎扫描结果优先**，扫描不可用才退回 <see cref="Snapshot"/>。
+    /// <para>
+    /// 为什么要退回：目录扫描依赖反射装配（`HandlerDslAssembly.Create()`），在裁剪过的运行期
+    /// 或程序集缺失时会抛。界面因此空着比「用旧表」更糟——旧表至少能让作者看见有什么积木。
+    /// 但**必须让人知道退回了**，所以有 <see cref="DefaultFallbackReason"/>。
+    /// </para>
+    /// </summary>
+    public static HandlerCatalog Default => _default ??= BuildDefault();
+
+    /// <summary>退回本地镜像的原因（null＝目录来自引擎）。</summary>
+    public static string? DefaultFallbackReason { get; private set; }
+
+    /// <summary>目录是不是本地镜像（true＝引擎目录不可用）。</summary>
+    public static bool DefaultIsFallback => DefaultFallbackReason is not null;
+
+    private static HandlerCatalog BuildDefault()
+    {
+        try
+        {
+            var catalog = FromEngine(new Orc.Game.Effects.HandlerCatalogFacade().GetCatalog());
+            DefaultFallbackReason = null;
+            return catalog;
+        }
+        catch (Exception error)
+        {
+            // 这里必须宽：装配失败的花样（反射找不到类型、程序集被裁、Roslyn 缺编译器）都只在运行期现形，
+            // 而「编辑面打不开」对作者来说是一样的。原因记下来，界面照实说。
+            DefaultFallbackReason = error.GetType().Name + "：" + error.Message;
+            return Snapshot;
+        }
+    }
+
+    /// <summary>
+    /// 引擎全量目录 → 编辑面目录（**单向投影，不推导**）。
+    /// <para>
+    /// 三处刻意的不对称：
+    /// <list type="bullet">
+    ///   <item><b>内建 op 的引脚仍取本地表</b>：引擎的 <c>BuiltInOps</c> 只报能力分区，没有引脚
+    ///     （内建 op 由前端硬编码，目录扫描根本扫不到它们）。所以「引脚＝本地、stage＝引擎」。</item>
+    ///   <item><b>扫描节点的引脚一律 <see cref="HandlerPinKind.Value"/></b>：引擎给的 <c>EnumValues</c>
+    ///     是**取值建议**，不是「写成裸字符串」的授权。`unitsOf.side` 在 DSL 里是 <c>{"lit":"enemy"}</c>
+    ///     （gen 向量 010），标成文本枚举会把产物写成 <c>"enemy"</c>，摊平期才炸。</item>
+    ///   <item><b>子类型集照抄</b>：引擎已把列表引脚的约束挂在元素上，这里不再展开一次。</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentNullException">dto 为 null。</exception>
+    public static HandlerCatalog FromEngine(Orc.Game.Effects.HandlerCatalogDto dto)
+    {
+        ArgumentNullException.ThrowIfNull(dto);
+
+        // 内建 op：引脚与容器形态取本地表（引擎没有这张表），能力分区取引擎。
+        var builtIns = Snapshot.Nodes.Where(node => node.BuiltIn).ToArray();
+        var stages = dto.BuiltInOps.ToDictionary(
+            op => op.Op,
+            op => (Stage: op.Stage == "preview" ? HandlerNodeStage.Preview : HandlerNodeStage.Alpha, op.Problem),
+            StringComparer.Ordinal);
+
+        var merged = new List<HandlerNodeSpec>(builtIns.Length + dto.Nodes.Count);
+        foreach (var spec in builtIns)
+        {
+            if (stages.TryGetValue(spec.Name, out var stage))
+            {
+                merged.Add(new HandlerNodeSpec(spec.Name, spec.HasAwait, spec.HasSideEffect,
+                    spec.Inputs, spec.Outputs, builtIn: true, bodies: spec.Bodies, stage.Stage, stage.Problem));
+            }
+            else
+            {
+                // 引擎的 builtInOps 里没有它＝引擎不认这个 op（契约漂了）。照旧收着，但标成预览态，
+                // 免得作者搭出一段引擎装不下的图。
+                merged.Add(new HandlerNodeSpec(spec.Name, spec.HasAwait, spec.HasSideEffect,
+                    spec.Inputs, spec.Outputs, builtIn: true, bodies: spec.Bodies,
+                    HandlerNodeStage.Preview, "引擎目录里没有这个内建 op（契约可能已变更）。"));
+            }
+        }
+
+        foreach (var node in dto.Nodes)
+        {
+            merged.Add(new HandlerNodeSpec(
+                node.Name, node.HasAwait, node.HasSideEffect,
+                node.Inputs.Select(Pin).ToArray(),
+                node.Outputs.Select(Pin).ToArray(),
+                builtIn: false,
+                bodies: null,
+                node.Stage == "preview" ? HandlerNodeStage.Preview : HandlerNodeStage.Alpha,
+                node.Problem));
+        }
+
+        return new HandlerCatalog(dto.CatalogRevision, merged, dto.Readables);
+    }
+
+    private static HandlerPinSpec Pin(Orc.Game.Effects.HandlerCatalogPinDto pin) =>
+        new(pin.Name, pin.Type, pin.Required,
+            pin.EnumValues.Count > 0 ? pin.EnumValues : null,
+            pin.Subtypes.Count > 0 ? pin.Subtypes : null);
+
     private static HandlerCatalog BuildSnapshot()
     {
         // ── 内建 op（契约固定，不由扫描产生）─────────────────────────────

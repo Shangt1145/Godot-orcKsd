@@ -597,6 +597,66 @@ public class HandlerDslEditorTests
     }
 
     [Fact]
+    public void 引擎目录与本地镜像一一对应()
+    {
+        // 目录的真实来源是引擎扫描（HandlerCatalogFacade.GetCatalog），本地镜像是兜底。
+        // 这条就是两边的对照表：引擎加节点、改引脚、改枚举取值，这里先红。
+        var engine = HandlerCatalog.Default;
+        Assert.False(HandlerCatalog.DefaultIsFallback, HandlerCatalog.DefaultFallbackReason);
+        Assert.True(engine.Revision > 0, "引擎目录的内容版本应当来自扫描，而不是镜像的 0");
+
+        var mirror = HandlerCatalog.Snapshot;
+        Assert.Equal(
+            mirror.Nodes.Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal),
+            engine.Nodes.Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        foreach (var expected in mirror.Nodes)
+        {
+            var actual = engine.Find(expected.Name)!;
+            Assert.Equal(expected.HasAwait, actual.HasAwait);
+            Assert.Equal(expected.HasSideEffect, actual.HasSideEffect);
+            SamePins(expected.Name + ".in", expected.Inputs, actual.Inputs);
+            SamePins(expected.Name + ".out", expected.Outputs, actual.Outputs);
+        }
+
+        // 可读项（read.path 的合法范围）也是引擎给的面。
+        Assert.Equal(
+            mirror.Readables.Keys.OrderBy(k => k, StringComparer.Ordinal),
+            engine.Readables.Keys.OrderBy(k => k, StringComparer.Ordinal));
+        foreach (var (kind, table) in mirror.Readables)
+        {
+            Assert.Equal(
+                table.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Key + ":" + p.Value),
+                engine.Readables[kind].OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Key + ":" + p.Value));
+        }
+
+        // 内建 op 的分区以引擎为准；引脚仍取本地表（引擎没有这张表）。
+        Assert.Equal(
+            mirror.Nodes.Where(n => n.BuiltIn).Select(n => n.Name + ":" + n.Stage),
+            engine.Nodes.Where(n => n.BuiltIn).Select(n => n.Name + ":" + n.Stage));
+
+        static void SamePins(string where, IReadOnlyList<HandlerPinSpec> expected, IReadOnlyList<HandlerPinSpec> actual)
+        {
+            Assert.True(expected.Count == actual.Count,
+                $"{where}：引脚个数不一致（镜像 {expected.Count}，引擎 {actual.Count}）");
+            for (var i = 0; i < expected.Count; i++)
+            {
+                var (e, a) = (expected[i], actual[i]);
+                Assert.True(e.Name == a.Name && e.Type == a.Type && e.Required == a.Required,
+                    $"{where}[{i}]：镜像 {e.Name}:{e.Type}:{e.Required}，引擎 {a.Name}:{a.Type}:{a.Required}");
+                Assert.True(
+                    (e.EnumValues ?? []).SequenceEqual(a.EnumValues ?? []),
+                    $"{where}[{i}]（{e.Name}）枚举取值不一致：镜像 [{string.Join(",", e.EnumValues ?? [])}]，"
+                    + $"引擎 [{string.Join(",", a.EnumValues ?? [])}]");
+                Assert.True(
+                    (e.Subtypes ?? []).SequenceEqual(a.Subtypes ?? []),
+                    $"{where}[{i}]（{e.Name}）实体子类型不一致：镜像 [{string.Join(",", e.Subtypes ?? [])}]，"
+                    + $"引擎 [{string.Join(",", a.Subtypes ?? [])}]");
+            }
+        }
+    }
+
+    [Fact]
     public void 分区查询对未知op退回alpha()
     {
         Assert.Equal(HandlerNodeStage.Alpha, Catalog.StageOf("damage"));

@@ -129,6 +129,40 @@ public sealed class HandlerDslAuthoring
     }
 
     /// <summary>
+    /// 父效果的编辑面（引擎 <c>AssetEditor.DescribePrefab</c>）：**展开后**的成员表、每成员的视图字段、
+    /// 已有挂载、可挂载信号（带 <c>timing</c>）。
+    /// <para>
+    /// 为什么不自己解析组件文件：继承展开、草案覆写、模板层合并这三件事引擎已经做过一遍，
+    /// 我们再解析一次就是第二套展开——两套迟早不一致（R24 第 2 条）。
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentException">父 id 为空。</exception>
+    public PrefabDescription DescribeParent(string parentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentId);
+        return Editor.DescribePrefab(PackRoot, parentId);
+    }
+
+    /// <summary>
+    /// 某个成员的视图字段（<c>read</c>／<c>write</c> 的合法范围）。
+    /// <para>
+    /// 这就是画布「视图」的来源：父效果声明了 <c>Card</c>／<c>Defense</c>／<c>Units</c>，
+    /// 作者的积木才读得到它们。用一份写死的演示视图会让作者搭出「校验通过、装载期报字段不存在」的图。
+    /// </para>
+    /// <para>父不存在／成员不存在＝空表（界面据此把所有视图引用标红，而不是假装有）。</para>
+    /// </summary>
+    public IReadOnlyDictionary<string, HandlerViewField> ViewFieldsOf(string parentId, string member)
+    {
+        var description = DescribeParent(parentId);
+        var found = description.Members.FirstOrDefault(item => string.Equals(item.Name, member, StringComparison.Ordinal));
+        if (found is null) return new Dictionary<string, HandlerViewField>(StringComparer.Ordinal);
+        return found.ViewFields.ToDictionary(
+            field => field.Name,
+            field => new HandlerViewField(field.Name, field.Type, field.Writable),
+            StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// **一条龙保存**：DSL 文档 → 草案 → 摊平，一次做完。
     /// <para>
     /// 三步分开调是给测试与「只想看产物」的场景用的；界面上一律走这里——少一步就是一份

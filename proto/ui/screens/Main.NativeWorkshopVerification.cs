@@ -68,6 +68,8 @@ public partial class Main
         await DeckClickAsync(library.FindChildren("*", "Button", true, false).OfType<Button>()
             .Single(b => b.IsVisibleInTree() && b.Text == "用积木搭…"));
         await WaitFor(() => _blockEditor.Visible);
+        Check(!HandlerCatalog.DefaultIsFallback, "Block canvas fell back to the local mirror: " + HandlerCatalog.DefaultFallbackReason);
+        Check(_blockEditor.Catalog.Revision > 0, "Block canvas catalog did not come from the engine scan");
         // 样例文档是 unitsOf/iterate/branch 那一套，探针要确定性，换成最小的一段：只有 draw 2。
         var canvas = new HandlerDocument();
         canvas.Actions.Add(new HandlerNode("draw").Set("count", HandlerValue.Num(2)));
@@ -78,6 +80,7 @@ public partial class Main
             .Single(d => d.Visible && d.Title == "保存到卡包");
         Check(saveDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single().ItemCount > 0,
             "Save dialog listed no parent effect");
+        await Capture("block-save-dialog.png");
         var productId = saveDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(l => l.Name == "ProductId").Text;
         // 直接发按下信号而不是模拟鼠标：这个对话框挂在积木屏下，headless 里坐标映射点不中（探针实测）。
         saveDialog.GetOkButton().EmitSignal(Button.SignalName.Pressed);
