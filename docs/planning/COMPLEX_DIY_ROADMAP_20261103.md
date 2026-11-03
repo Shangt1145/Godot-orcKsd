@@ -64,7 +64,7 @@ effects-v4/x.component.json    ← 产物：csx 由 DSL **现场生成**，附 H
 
 ## 3 四段里程碑
 
-### M1 打通最小闭环（不含 UI 改动）
+### M1 打通最小闭环（不含 UI 改动）——**已完成（2026-11-03）**
 
 **做什么**：在 `NativeWorkshop` 里加两个方法——
 `CommitHandlerDsl(name, json)` 与 `CommitModingDraft(draftJson)`，再接 `FlattenAndWrite`。
@@ -72,6 +72,17 @@ effects-v4/x.component.json    ← 产物：csx 由 DSL **现场生成**，附 H
 
 **验收**：一个测试，断言①产物里 `members[].generated.dslHash` 存在；②开局后打出这张牌，
 场上发生 DSL 里写的事（例如 `draw` 2 张）；③`ModingFlattener.Check` 报 up-to-date。
+
+**实际落地**（与计划的差异都在这儿，别照计划去找 `NativeWorkshop` 上的方法）：
+
+- 没加进 `NativeWorkshop`，另起 `HandlerDsl/HandlerDslAuthoring.cs`——那三步是纯文件与引擎 API，
+  塞进工坊类就得把整个 Godot 界面拖进测试。
+- 五条测试，`tests/HandlerDslAuthoringTests.cs`，全绿：
+  ①产物自包含＋双哈希来源标记＋`Mounts` 恰好一条；②装载器接受且 handler 注册进运行期；
+  ③`Check` 干净、改过 DSL 变陈旧；④名字带分隔符直接拒绝；⑤**端到端：开局 → 打出 → 手牌真的 +2**。
+- 端到端那条逮到一个真坑：草案重复声明父效果已有的挂载 ⇒ 产物 `mounts` 出现两条 ⇒
+  `draw 2` 抽 4 张。`BuildDraft` 的缺省值已改成「不声明挂载」，引擎侧建议见
+  [`docs/engine/ISSUE_20261103_MOUNT_DUPLICATE.md`](../engine/ISSUE_20261103_MOUNT_DUPLICATE.md)。
 
 **为什么先做这段**：它证明「引擎三段真能连起来」，且完全不碰 UI。跑不通的话，后面所有 UI 工作都是白搭。
 
@@ -102,6 +113,9 @@ effects-v4/x.component.json    ← 产物：csx 由 DSL **现场生成**，附 H
 
 **M1**。理由只有一条：它是唯一能证明「这条路真的通」的段落，而且不依赖任何 UI 决策。
 M2 之后的每一步都要先看到 M1 绿了才有意义。
+
+> 2026-11-03：M1 已绿。下一步是 M2（画布「保存」接上去），但它要定几件产品决策——
+> 草案的父效果怎么选、挂载信号怎么列、保存后「草案落后」怎么显示——所以先不动手。
 
 ## 5 已知的坑（提前说，别到时候才发现）
 
