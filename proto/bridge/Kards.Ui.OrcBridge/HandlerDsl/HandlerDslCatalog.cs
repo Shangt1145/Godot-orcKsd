@@ -310,6 +310,127 @@ public sealed class HandlerCatalog
             pin.EnumValues.Count > 0 ? pin.EnumValues : null,
             pin.Subtypes.Count > 0 ? pin.Subtypes : null);
 
+    /// <summary>
+    /// 目录**快照 JSON** → 目录（契约包 <c>vectors/**/*.json</c> 的 <c>catalog</c> 段）。
+    /// <para>
+    /// 为什么不是「反序列化成 <see cref="Orc.Game.Effects.HandlerCatalogDto"/> 再走 <see cref="FromEngine"/>」：
+    /// 那份 DTO 是**运行期门面的返回类型**，它带 <c>builtInOps</c>（内建 op 的能力分区），
+    /// 而向量快照里没有这一段——反序列化会给 <c>BuiltInOps</c> 塞 null，一用就炸。
+    /// 更根本的理由：前端拿到的是 JSON，不是 C# 类型；解析快照本来就是前端的活。
+    /// </para>
+    /// <para>
+    /// 内建 op 恒取本地表（前端硬编码，快照里没有它们）：快照若**显式**带了 <c>builtInOps</c>，
+    /// 分区以快照为准——这样将来向量要测「某个内建 op 是预览态」时不用改代码。
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentException">缺少 <c>nodes</c>，或节点缺 <c>name</c>。</exception>
+    public static HandlerCatalog FromSnapshot(System.Text.Json.Nodes.JsonNode? json)
+    {
+        if (json is not System.Text.Json.Nodes.JsonObject root)
+            throw new ArgumentException("目录快照必须是对象。", nameof(json));
+
+        var revision = root["catalogRevision"]?.GetValue<int>() ?? 0;
+
+        // 分区：快照带 builtInOps 就用它，否则内建 op 一律 alpha（＝前端硬编码的默认态）。
+        var stages = new Dictionary<string, (HandlerNodeStage Stage, string? Problem)>(StringComparer.Ordinal);
+        if (root["builtInOps"] is System.Text.Json.Nodes.JsonArray builtInOps)
+        {
+            foreach (var item in builtInOps.OfType<System.Text.Json.Nodes.JsonObject>())
+            {
+                var op = item["op"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(op)) continue;
+                var preview = string.Equals(item["stage"]?.GetValue<string>(), "preview", StringComparison.Ordinal);
+                stages[op] = (preview ? HandlerNodeStage.Preview : HandlerNodeStage.Alpha,
+                    item["problem"]?.GetValue<string>());
+            }
+        }
+
+        var nodes = new List<HandlerNodeSpec>();
+        foreach (var spec in Snapshot.Nodes.Where(node => node.BuiltIn))
+        {
+            var stage = stages.TryGetValue(spec.Name, out var found) ? found : (HandlerNodeStage.Alpha, null);
+            nodes.Add(new HandlerNodeSpec(spec.Name, spec.HasAwait, spec.HasSideEffect,
+                spec.Inputs, spec.Outputs, builtIn: true, bodies: spec.Bodies, stage.Stage, stage.Problem));
+        }
+
+        // 上下文原语（stop／interrupt）**契约隐式提供**：引擎的 DslCatalog 构造时会重新合成它们，
+        // 所以快照里刻意不写（见 HandlerDslContextNodes）。前端若只按快照建目录，
+        // `{"op":"stop"}` 会被判成 node-unknown——向量 025／026／027 正是这么暴露这条差异的。
+        foreach (var spec in Snapshot.Nodes.Where(node => node.Name is "stop" or "interrupt"))
+        {
+            if (nodes.Any(existing => string.Equals(existing.Name, spec.Name, StringComparison.Ordinal))) continue;
+            nodes.Add(spec);
+        }
+
+        if (root["nodes"] is not System.Text.Json.Nodes.JsonArray scanned)
+            throw new ArgumentException("目录快照缺少 nodes。", nameof(json));
+
+        foreach (var node in scanned.OfType<System.Text.Json.Nodes.JsonObject>())
+        {
+            var name = node["name"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(name))
+                throw new ArgumentException("目录快照里有节点缺 name。", nameof(json));
+
+            nodes.Add(new HandlerNodeSpec(
+                name,
+                node["hasAwait"]?.GetValue<bool>() ?? false,
+                node["hasSideEffect"]?.GetValue<bool>() ?? false,
+                SnapshotPins(node["inputs"]),
+                SnapshotPins(node["outputs"]),
+                builtIn: false,
+                bodies: null,
+                string.Equals(node["stage"]?.GetValue<string>(), "preview", StringComparison.Ordinal)
+                    ? HandlerNodeStage.Preview
+                    : HandlerNodeStage.Alpha,
+                node["problem"]?.GetValue<string>()));
+        }
+
+        var readables = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
+        if (root["readables"] is System.Text.Json.Nodes.JsonObject kinds)
+        {
+            foreach (var (kind, table) in kinds)
+            {
+                var entries = new Dictionary<string, string>(StringComparer.Ordinal);
+                if (table is System.Text.Json.Nodes.JsonObject paths)
+                {
+                    foreach (var (path, type) in paths)
+                        entries[path] = type?.GetValue<string>() ?? "";
+                }
+                readables[kind] = entries;
+            }
+        }
+
+        return new HandlerCatalog(revision, nodes, readables);
+    }
+
+    /// <summary>
+    /// 快照里的引脚表。**一律 <see cref="HandlerPinKind.Value"/>**：快照的 <c>enumValues</c> 是取值建议，
+    /// 不是「可以写成裸字符串」的授权（<c>unitsOf.side</c> 在 DSL 里是 <c>{"lit":"enemy"}</c>）。
+    /// </summary>
+    private static HandlerPinSpec[] SnapshotPins(System.Text.Json.Nodes.JsonNode? pins)
+    {
+        if (pins is not System.Text.Json.Nodes.JsonArray array) return [];
+
+        var result = new List<HandlerPinSpec>(array.Count);
+        foreach (var pin in array.OfType<System.Text.Json.Nodes.JsonObject>())
+        {
+            var name = pin["name"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(name)) continue;
+            result.Add(new HandlerPinSpec(
+                name,
+                pin["type"]?.GetValue<string>() ?? "unknown",
+                pin["required"]?.GetValue<bool>() ?? false,
+                Strings(pin["enumValues"]),
+                Strings(pin["subtypes"])));
+        }
+        return result.ToArray();
+    }
+
+    private static IReadOnlyList<string>? Strings(System.Text.Json.Nodes.JsonNode? node) =>
+        node is System.Text.Json.Nodes.JsonArray array && array.Count > 0
+            ? array.Select(item => item?.GetValue<string>() ?? "").ToArray()
+            : null;
+
     private static HandlerCatalog BuildSnapshot()
     {
         // ── 内建 op（契约固定，不由扫描产生）─────────────────────────────

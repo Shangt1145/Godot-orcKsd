@@ -246,6 +246,9 @@ public sealed class HandlerNode
 {
     public HandlerNode(string op) => Op = op;
 
+    /// <summary><c>script</c> 的两个引脚数组字段（契约顺序，导出时按它排）。</summary>
+    private static readonly string[] ScriptPinFields = ["inputs", "outputs"];
+
     public string Op { get; set; }
     public Dictionary<string, HandlerValue> Values { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> Texts { get; } = new(StringComparer.Ordinal);
@@ -265,6 +268,28 @@ public sealed class HandlerNode
 
     /// <summary>只有 <c>choice</c> 用；其余节点为空。</summary>
     public List<HandlerOption> Options { get; } = [];
+
+    /// <summary>
+    /// <c>script</c> 的 <c>inputs</c>／<c>outputs</c> 引脚声明（**原始 JSON**，我们不编辑内容）。
+    /// <para>
+    /// 键存在＝写了这一段；空数组＝写了但为空。两者必须能分开：契约里它们都是**必填数组**，
+    /// 「缺」是 `pin-missing`、「空」是合法（向量 023／024 守这条）。
+    /// 存原始 JSON 而不是建模：重写一遍就会把作者的引脚声明吃掉，那是数据丢失。
+    /// </para>
+    /// </summary>
+    public Dictionary<string, JsonArray> ScriptPins { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 新建一个 <c>script</c> 节点：预置两个空数组。
+    /// <para>
+    /// 为什么工厂里补而不是导出时补：导出时补会把「作者漏写」静默变成「写了空的」，
+    /// 校验器的 pin-missing 再也不会响。新建节点替作者补上是帮忙，读取别人文档时补上是掩盖。
+    /// </para>
+    /// </summary>
+    public static HandlerNode Script(string body) => new HandlerNode("script")
+        .SetText("body", body)
+        .SetScriptPins("inputs", [])
+        .SetScriptPins("outputs", []);
 
     public List<HandlerNode> Body(string field)
     {
@@ -304,6 +329,13 @@ public sealed class HandlerNode
         return this;
     }
 
+    /// <summary>给 <c>script</c> 的 inputs／outputs 赋一份引脚声明（原样保存，不解释内容）。</summary>
+    public HandlerNode SetScriptPins(string field, JsonArray pins)
+    {
+        ScriptPins[field] = pins;
+        return this;
+    }
+
     /// <summary>是否写成了多输出对象形态（决定 <c>bind</c> 该写字符串还是对象）。</summary>
     public bool HasOutputBinds => OutputBinds.Count > 0;
 
@@ -313,6 +345,7 @@ public sealed class HandlerNode
         foreach (var (k, v) in Values) copy.Values[k] = v;
         foreach (var (k, v) in Texts) copy.Texts[k] = v;
         foreach (var (k, v) in OutputBinds) copy.OutputBinds[k] = v;
+        foreach (var (k, v) in ScriptPins) copy.ScriptPins[k] = (JsonArray)v.DeepClone();
         foreach (var (k, v) in Bodies) copy.Bodies[k] = v.Select(n => n.Clone()).ToList();
         foreach (var option in Options) copy.Options.Add(option.Clone());
         return copy;
@@ -324,12 +357,13 @@ public sealed class HandlerNode
         var spec = catalog.Find(Op);
         var json = new JsonObject { ["op"] = Op };
 
-        // script 的 inputs／outputs 在契约（SPEC §3 字段表）里是**必填数组**，即使为空也要写出来。
-        // v1 界面不编辑它们，所以按契约顺序先放空数组占位——漏掉会被后端按 pin-missing 拒绝。
+        // script 的 inputs／outputs 在契约（SPEC §3 字段表）里是**必填数组**，但这里**不补**：
+        // 补了就等于把「作者漏写」静默改成「写了空的」，校验器的 pin-missing 再也不会响
+        // （向量 023／024 守的就是这条）。新建节点由 HandlerNode.Script 预置两个空数组。
         if (Op == "script")
         {
-            json["inputs"] = new JsonArray();
-            json["outputs"] = new JsonArray();
+            foreach (var field in ScriptPinFields)
+                if (ScriptPins.TryGetValue(field, out var pins)) json[field] = pins.DeepClone();
         }
 
         // bind 是节点级字段（不是引脚），而且**两种形态互斥**（SPEC §8.9）：
@@ -446,6 +480,14 @@ public sealed class HandlerNode
                         foreach (var child in acts) choice.Actions.Add(FromJson(child, catalog));
                     result.Options.Add(choice);
                 }
+                continue;
+            }
+
+            // script 的 inputs／outputs 是**引脚声明数组**，不是子动作。必须先于下面的数组分支拦下，
+            // 否则它们会被读成 bodies（`Body("inputs")`），既丢了引脚声明，又让校验器看不到「漏写」。
+            if (op == "script" && key is "inputs" or "outputs")
+            {
+                if (value is JsonArray pins) result.ScriptPins[key] = (JsonArray)pins.DeepClone();
                 continue;
             }
 

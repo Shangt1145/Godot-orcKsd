@@ -256,12 +256,14 @@ public class HandlerDslEditorTests
     }
 
     [Fact]
-    public void 版本不匹配在根路径报告()
+    public void 版本不匹配在字段路径上报告()
     {
+        // 路径指到**字段**（`$.schemaVersion`）而不是根：契约 check 向量 011 要求逐字相等，
+        // 报 `$` 等于让作者去翻整份文档找是哪一行不对。
         var doc = HandlerDocument.Sample();
         doc.SchemaVersion = 2;
         var issue = Assert.Single(HandlerDslValidator.Validate(doc, Catalog), i => i.Code == "schema-version");
-        Assert.Equal("$", issue.NodePath);
+        Assert.Equal("$.schemaVersion", issue.NodePath);
     }
 
     [Fact]
@@ -389,11 +391,13 @@ public class HandlerDslEditorTests
     }
 
     [Fact]
-    public void script导出补上空的输入输出数组()
+    public void 新建的script预置两个空引脚数组()
     {
         // 契约（SPEC §3 字段表）里 script 的 inputs／outputs 是必填数组，空也得写。
+        // 但**补在工厂里、不补在导出里**：导出时补会把「作者漏写」静默改成「写了空的」，
+        // 校验器的 pin-missing 再也不会响（向量 023／024 守的就是这条，见下一条用例）。
         var doc = new HandlerDocument();
-        doc.Actions.Add(new HandlerNode("script").SetText("body", "return;"));
+        doc.Actions.Add(HandlerNode.Script("return;"));
         var json = doc.ToJson(Catalog);
 
         var script = json["actions"]!.AsArray()[0]!.AsObject();
@@ -408,6 +412,30 @@ public class HandlerDslEditorTests
 
         // 导出物自己要通过本地校验
         Assert.Empty(HandlerDslValidator.Validate(doc, Catalog));
+    }
+
+    [Fact]
+    public void script漏写引脚数组是pin_missing而不是被悄悄补上()
+    {
+        // 向量 023／024：`inputs`／`outputs` 缺一即 pin-missing，路径指到缺的那个字段。
+        // 这条同时守住「读进来的文档不会被导出器改写成合法文档」——那会让作者的漏写在保存后消失。
+        var doc = new HandlerDocument();
+        doc.Actions.Add(new HandlerNode("script").SetText("body", "return;"));
+
+        var issues = HandlerDslValidator.Validate(doc, Catalog);
+        Assert.Equal(
+            ["actions[0].inputs", "actions[0].outputs"],
+            issues.Where(i => i.Code == "pin-missing").Select(i => i.NodePath).OrderBy(p => p, StringComparer.Ordinal));
+
+        // 只写了 outputs 时只剩 inputs 一条——「缺」与「空」必须是两件事。
+        doc.Actions[0].SetScriptPins("outputs", []);
+        var only = Assert.Single(HandlerDslValidator.Validate(doc, Catalog), i => i.Code == "pin-missing");
+        Assert.Equal("actions[0].inputs", only.NodePath);
+
+        // 导出不会替它补：读进来什么样，写出去什么样。
+        var exported = doc.ToJson(Catalog)["actions"]!.AsArray()[0]!.AsObject();
+        Assert.False(exported.ContainsKey("inputs"));
+        Assert.True(exported.ContainsKey("outputs"));
     }
 
     // ── 2026-11-01 版契约（check 019~024 ／ gen 009~010）─────────────────────

@@ -1534,6 +1534,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private HandlerNode NewNode(string op) => op switch
     {
         "ask" => new HandlerNode("ask").SetText("kind", "unit").SetText("prompt", "选择目标"),
+        // script 的两个引脚数组是**必填**（没有引脚也要写 []），由工厂预置——导出时不补，
+        // 否则读进来的漏写会被静默改写掉。
+        "script" => HandlerNode.Script(""),
         "choice" => Choice(),
         "branch" => Branch(),
         "loop" => Loop(),

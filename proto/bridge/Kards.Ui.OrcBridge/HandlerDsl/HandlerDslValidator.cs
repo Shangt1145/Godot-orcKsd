@@ -80,7 +80,8 @@ public static class HandlerDslValidator
         view ??= new Dictionary<string, HandlerViewField>(StringComparer.Ordinal);
 
         if (doc.SchemaVersion != HandlerDocument.CurrentSchemaVersion)
-            issues.Add(new HandlerIssue("schema-version", "$",
+            // 路径指到**字段**而不是根：向量 011 要求 `$.schemaVersion`，作者才知道该改哪一行。
+            issues.Add(new HandlerIssue("schema-version", "$.schemaVersion",
                 "这份图是 schemaVersion " + doc.SchemaVersion + " 画的，当前契约是 " + HandlerDocument.CurrentSchemaVersion));
 
         Walk(doc.Actions, "actions", new Scope(), 0, 1);
@@ -136,10 +137,29 @@ public static class HandlerDslValidator
                         issues.Add(new HandlerIssue("loop-unbounded", path + "." + pin, message, node, pin));
                 }
 
+                if (node.Op == "script")
+                {
+                    // inputs／outputs 是**必填数组**（SPEC §3）：没有引脚也要写 []。
+                    // 「缺」与「空」必须分开报——导出侧不再替作者补空数组，所以这里能真的看到漏写。
+                    foreach (var field in new[] { "inputs", "outputs" })
+                    {
+                        if (node.ScriptPins.ContainsKey(field)) continue;
+                        issues.Add(new HandlerIssue("pin-missing", path + "." + field,
+                            "script 的 " + field + " 是必填数组：没有引脚也要写 []", node, field));
+                    }
+                }
+
                 if (node.Op == "branch")
                 {
                     if (!node.Bodies.TryGetValue("then", out var then) || then.Count == 0)
                         issues.Add(new HandlerIssue("graph-shape", path + ".then", "「那么」分支不能为空", node, "then"));
+
+                    // `else` 出现但为空＝graph-shape（SPEC §3：空数组与「没有 else」语义相同，
+                    // 却会产出两种文本）。导出侧整段省略，所以这里只在**读进来的文档**上会碰到。
+                    if (node.Bodies.TryGetValue("else", out var otherwise) && otherwise.Count == 0)
+                        issues.Add(new HandlerIssue("graph-shape", path + ".else",
+                            "「否则」分支写了但是空的：要么填一块积木，要么整段删掉（空数组与没有 else 是两种文本）",
+                            node, "else"));
                 }
 
                 if (node.Op == "choice")
@@ -295,7 +315,9 @@ public static class HandlerDslValidator
                     var value = node.Value(pin.Name);
                     if (value is null)
                     {
-                        if (pin.Required)
+                        // 循环上限缺失由 `loop-unbounded` 统一报（SPEC §9.1 / 向量 004），
+                        // 这里再报一条 pin-missing 就是**同一处两个码**——向量要求「恰好一个」。
+                        if (pin.Required && !IsLoopBoundPin(node.Op, pin.Name))
                             issues.Add(new HandlerIssue("pin-missing", pinPath,
                                 "「" + spec.PinLabel(pin.Name) + "」还没有值", node, pin.Name));
                         continue;
