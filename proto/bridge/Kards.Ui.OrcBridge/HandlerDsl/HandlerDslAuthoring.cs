@@ -721,7 +721,12 @@ public sealed record HandlerDslSaveResult(
     {
         if (!Success) return "没保存成功：" + string.Join("；", Errors);
 
-        var text = "已保存：" + ProductPath + (UpToDate ? "（产物是最新的）" : "（草案已落后于父效果，建议重新摊平）");
+        // 说清落在哪：写的是**编辑会话的临时包**，要回工坊点「应用修改」才进正式包。
+        // 工坊自己的效果面板也是这么说的（「效果已保存。点击“应用修改”后用于新对局」）——
+        // 积木屏少这一句，作者会以为保存完就能打出来了。
+        var text = "已保存到草稿：" + ProductPath
+            + (UpToDate ? "（产物是最新的）" : "（草案已落后于父效果，建议重新摊平）")
+            + "；回工坊点「应用修改」后用于新对局";
         if (Retarget is not { } retarget) return text;
 
         // 覆盖模式最要紧的一句是「卡到底改了没」——产物存在但没人引用，等于没改。

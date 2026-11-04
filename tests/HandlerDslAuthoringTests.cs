@@ -343,6 +343,10 @@ public sealed class HandlerDslAuthoringTests : IDisposable
 
         foreach (var path in new[] { saved.DslPath!, saved.DraftPath!, saved.ProductPath! })
             Assert.True(File.Exists(Path.Combine(SessionRoot, path)), path);
+
+        // 保存写的是**编辑会话的临时包**：不回工坊点「应用修改」就不会用于新对局。
+        // 这句提示必须留着——只说「已保存」会让作者以为打完这局就能看到效果。
+        Assert.Contains("应用修改", saved.Describe(), StringComparison.Ordinal);
     }
 
     [Fact]
