@@ -222,18 +222,43 @@ headless 与带窗口两种模式都通过，截图见 `block-canvas.png`。
 同一版还有一处 DTO 破坏性变更（`MountedTo` 从字符串数组变成 `{ Target, Member, DeclaredBy }`），
 我们没消费它，编译零报错。详见 `docs/engine/ENGINE_UPDATE_20261104_R40.md`。
 
-### M4 把契约钉死
+### M4 把契约钉死——**客户端侧已完成（2026-11-05）**
 
 **做什么**：把 27 个 check 向量做成数据驱动测试；模板库生成出来（引擎侧 `ORC_WRITE_TEMPLATES=1`），
 接一个「从模板新建」。
 
 **验收**：向量全绿；模板列表非空。
 
+**实际落地**：
+
+1. **27 条 check 向量跑起来了**（`tests/HandlerDslVectorTests.cs`，29 个用例）。
+   断言与引擎侧同口径：**恰好一个错误**，码与路径**逐字相等**。
+   首跑 **21 过 / 8 败**——五处分歧全在我们的判定上，详见
+   `docs/design/HANDLER_DSL_VECTORS_20261105.md`：
+   - 快照没补 `stop`／`interrupt`（契约隐式提供，带红 3 条向量）；
+   - 循环上限缺失同时报 `pin-missing` ＋ `loop-unbounded`（SPEC 只要后者）；
+   - `else: []` 没报 `graph-shape`；
+   - `schema-version` 路径报 `$`（应为 `$.schemaVersion`）；
+   - `script` 的 `inputs`／`outputs` 没建模：读进来被当子动作、导出时强行补空数组
+     （把「漏写」静默改成「写了空的」，`pin-missing` 永远不响）。
+2. **`HandlerCatalog.FromSnapshot(JsonNode)`**：前端拿到的是快照 JSON，不是 C# DTO，
+   解析快照本来就是前端的活。内建 op 取本地表、`stop`／`interrupt` 补上。
+3. **模板列表非空**：M3.5 的父下拉就是模板清单（104 条），「从模板新建」＝选中即填。
+
+**仍未做（在引擎侧）**：模板库**落盘**到 `samples/`——见 issue #3 的 A 项。
+我们客户端自带生成（`EnsureTemplateLibrary`），跑得通；但仓库里没有可 `extends` 的样例，
+第三方照着 `samples/card-pack-diy` 写第一份 moding 仍会撞「成员不是空位」。
+
+**新发现（已提 issue #5）**：随包 `catalog.snapshot.json` 没有 `builtInOps`，而 `HandlerCatalogDto`
+要求它非空——schema 合法的快照装不进引擎自己的 DTO，且只读契约包的前端拿不到内建 op 的能力分区。
+
 ## 4 先做哪一段
 
 **M1**。理由只有一条：它是唯一能证明「这条路真的通」的段落，而且不依赖任何 UI 决策。
 M2 之后的每一步都要先看到 M1 绿了才有意义。
 
+> 2026-11-05：M4 客户端侧完成——27 条 check 向量与后端逐字一致（首跑逮到 5 处分歧），
+> 另提 issue #5（目录快照与 DTO 形状不一致）。路线图上客户端侧已无未完成项。
 > 2026-11-04（晚）：R40 修了 issue #4（重复挂载改为拒绝），M3.6 完成——我们零改动，只补回归测试。
 > 2026-11-04：R39 之后「父」只剩模板，M3.5 已完成适配（104 个模板 ＋ 覆盖模式拆成父子两个下拉）。
 > 2026-11-03：M1、M2、M2.5、M3（目录与视图）都已绿。
