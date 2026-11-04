@@ -3,8 +3,17 @@
 - 日期：2026-11-03
 - 引擎检出：`716d7d3`（`5475abbf` R38 + `9b62d965` 文档）
 - 触发者：本仓库 M1 端到端测试（`tests/HandlerDslAuthoringTests.摊平出来的牌在真实对局里真的生效`）
-- 状态：**已提交** → https://github.com/hitman-OLD6/OrC-KSD/issues/4
-  （我们这边已规避；引擎侧未改，本仓库不改引擎源码）
+- 状态：**已修复**（2026-11-04，引擎 `2bc0928`；issue #4 已关闭）
+  https://github.com/hitman-OLD6/OrC-KSD/issues/4
+  （我们这边早已规避；引擎侧现在**拒绝**重复声明，不再静默翻倍）
+
+> **修复说明（2026-11-04 晚）**：R40 把判定点放进 `PrefabCatalog.Build`（摊平／装载／`inline`／`named`
+> 四条路径唯一交汇处），重复即抛 `PrefabLoadException(Structure)`，并点名**两个声明者**。
+> 没有采用本文建议的「静默去重」——理由写在引擎的 DIY 文档里：去重会掩盖作者的冗余声明，
+> 而「重复即拒绝」是唯一能在源头拦住它的做法。我们的回归测试见
+> `tests/HandlerDslAuthoringTests.草案重复声明模板已有的挂载会被点名拒绝而不是效果翻倍`。
+> 详见 `docs/engine/ENGINE_UPDATE_20261104_R40.md`。
+
 
 ## 1. 现象
 
