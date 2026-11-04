@@ -1084,8 +1084,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             box.AddChild(row);
         }
 
-        // bind 是**节点级字段**，不是引脚（SPEC §3）——目录里查不到，得单独画一行。
-        // 只有单输出的动作节点能这样写；多输出的对象形态 v1 界面不做（校验器会如实报 bind-scope）。
+        // bind 是**节点级字段**，不是引脚（SPEC §3）——目录里查不到，得单独画。
+        // 形态由输出数决定，两种形态不能互换（SPEC §8.9）：
+        //   单输出 → 字符串（一行「结果命名」）
+        //   多输出 → 对象，键集**恰好等于**输出名（每个输出一行，全部留空＝不写 bind）
         if (spec.Pin("bind") is null && spec.Outputs.Count == 1)
         {
             var row = new HBoxContainer();
@@ -1095,6 +1097,24 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             row.AddChild(label);
             row.AddChild(TextChip(node.Text("bind"), "命名…", v => SetText(node, "bind", v), "绑定名"));
             box.AddChild(row);
+        }
+        else if (spec.Pin("bind") is null && spec.Outputs.Count > 1)
+        {
+            // 多输出的名字是**按输出名填**的，不是随便起几个：漏一个就是「那一路结果没名字」，
+            // 校验器按 bind-scope 拒绝（想全部忽略就整段不写 bind）。所以这里一个输出一行，不给「加一个名字」的入口。
+            foreach (var pin in spec.Outputs)
+            {
+                var row = new HBoxContainer();
+                row.AddThemeConstantOverride("separation", 8);
+                var label = MenuStyles.Label(pin.Name, 12, new Color(ink.R, ink.G, ink.B, 0.9f));
+                label.CustomMinimumSize = new Vector2(82, 0);
+                label.TooltipText = "输出 " + pin.Name + "（" + pin.Type + "）：给这一路结果起个名字，下游才能引用";
+                row.AddChild(label);
+                row.AddChild(TextChip(
+                    node.OutputBinds.GetValueOrDefault(pin.Name), "命名…",
+                    v => SetOutputBind(node, pin.Name, v), "绑定名"));
+                box.AddChild(row);
+            }
         }
 
         if (spec.Inputs.Count == 0 && !spec.IsContainer && spec.Outputs.Count != 1)
@@ -1433,6 +1453,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     private void SetText(HandlerNode node, string pin, string? text) =>
         Edit(() => node.SetText(pin, text));
+
+    /// <summary>多输出节点按输出名命名（空＝这一路不绑；全空＝整段不写 bind）。</summary>
+    private void SetOutputBind(HandlerNode node, string output, string? name) =>
+        Edit(() => node.SetOutputBind(output, name));
 
     private void Undo()
     {

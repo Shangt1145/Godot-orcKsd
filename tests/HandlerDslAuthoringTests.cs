@@ -200,6 +200,33 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     }
 
     [Fact]
+    public void 多输出的积木图能摊平成csx_两个输出各自落变量()
+    {
+        // 这条证明的不是「界面画得出来」，而是**我们写出的 JSON 真能喂进引擎的读取器与生成器**：
+        // 对象形态的 bind 若序列化错了（写成字符串、或键名不对），这里会以 node/pin 错误失败，
+        // 而不是等作者保存成功、开局打出才发现「取到的牌是空」。
+        var doc = new HandlerDocument();
+        doc.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st")
+            .SetOutputBind("card", "found"));
+
+        var saved = _authoring.Save(new HandlerDslSaveRequest(
+            ParentId, Member, "demo.fetch", doc.ToJsonText(HandlerCatalog.Default)));
+        Assert.True(saved.Success, saved.Describe());
+
+        var product = AssetSchema.Read(File.ReadAllText(Path.Combine(SessionRoot, saved.ProductPath!)), "product");
+        var script = product.Members.Single(m => m.Name == Member).Handler!.Script!;
+
+        // 结果对象只求值一次（多输出不能内联两次调用），两个名字各自从它上面取。
+        Assert.Contains("__res", script, StringComparison.Ordinal);
+        Assert.Contains("var st = ", script, StringComparison.Ordinal);
+        Assert.Contains("var found = ", script, StringComparison.Ordinal);
+        // 枚举输出落成 string：status 是封闭集，下游当 string 用才成立。
+        Assert.Contains("Status.ToString()", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void 草案重复声明模板已有的挂载会被点名拒绝而不是效果翻倍()
     {
         // R40 之前这里是**静默翻倍**：产物 mounts 两条相同、handler 挂两遍、`draw 2` 抽 4 张，

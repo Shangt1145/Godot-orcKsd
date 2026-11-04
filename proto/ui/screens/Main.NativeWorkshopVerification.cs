@@ -140,6 +140,34 @@ public partial class Main
             }
         }
         await Capture("block-canvas.png");
+
+        // 多输出节点的 bind 对象形态（SPEC §8.9）：以前这条是死路——校验器只会说「必须写成对象」，
+        // 而画布根本没有装对象的地方，`fetchFromDeck`／`pickHandCards` 等于不可用。
+        // 现在每个输出一行命名，两行都要在（按输出名填，不是随便起几个名字）。
+        var multi = new HandlerDocument();
+        multi.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st")
+            .SetOutputBind("card", "found"));
+        _blockEditor.Open("探针：多输出", multi);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        Check(_blockEditor.Document.Actions[0].OutputBinds.Count == 2, "Multi-output binds were dropped when opening the canvas");
+        // 已命名的两行显示的是**名字**，不是占位符。
+        var named = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+            .Where(b => b.IsVisibleInTree()).Select(b => b.Text).ToHashSet(StringComparer.Ordinal);
+        Check(named.Contains("st") && named.Contains("found"),
+            "Multi-output bind names did not render: " + string.Join(",", named));
+        await Capture("block-multi-bind.png");
+
+        // 未命名时也要有这两行（空着＝那一路不绑），否则作者根本不知道有输出可命名。
+        var bare = new HandlerDocument();
+        bare.Actions.Add(new HandlerNode("fetchFromDeck").Set("target", HandlerValue.ViewField("Card")));
+        _blockEditor.Open("探针：多输出未命名", bare);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        var placeholders = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+            .Count(b => b.IsVisibleInTree() && b.Text == "命名…");
+        Check(placeholders == 2, $"Unbound multi-output node rendered {placeholders} placeholder chips, expected 2");
+
         Show("editor"); await MenuSettledAsync();
         var shippedFace = _workshop.FindChildren("*", "Control", true, false).OfType<CardControl>().First(c => c.IsVisibleInTree() && c.Definition.CardId.StartsWith("pack/orc.bulwark/", StringComparison.Ordinal));
         Check(shippedFace.Definition.ArtPath.Length > 0, "Shipped artwork missing in native library"); await DeckClickAsync(shippedFace);
@@ -210,6 +238,6 @@ public partial class Main
         native.SettleProjection(); Check(native.View.SelfLine.Any(c => c.Uid == actor.Uid), "Imported card absent from native field");
         var battle = new BattleCard { Size = new(160, 224) }; AddChild(battle); battle.Bind(actor, BattleCardMode.Inspect, _textures);
         Check(battle.UsesGeneratedFace, "Imported illustration did not use shared card face"); battle.QueueFree();
-        GD.Print("NATIVE_WORKSHOP_VERIFY_OK shipped-home-route shipped-art zip-install idempotent portable-art native-form custom-faction three-masters four-pages commit-draft promote-refresh unknown-fields export-reimport real-native-deploy shared-face block-canvas block-replace " + artifacts);
+        GD.Print("NATIVE_WORKSHOP_VERIFY_OK shipped-home-route shipped-art zip-install idempotent portable-art native-form custom-faction three-masters four-pages commit-draft promote-refresh unknown-fields export-reimport real-native-deploy shared-face block-canvas block-replace block-multi-bind " + artifacts);
     }
 }

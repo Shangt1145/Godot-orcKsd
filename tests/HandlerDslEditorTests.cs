@@ -97,6 +97,102 @@ public class HandlerDslEditorTests
     }
 
     [Fact]
+    public void 多输出节点的bind写成对象_导出与读回都稳定()
+    {
+        // `fetchFromDeck` 有两个输出（status／card）：写字符串绑不了，写对象才行（SPEC §8.9）。
+        // 这条以前是死路——校验器只会说「必须写成对象」，而文档模型根本没有装对象的地方。
+        var doc = new HandlerDocument();
+        doc.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st")
+            .SetOutputBind("card", "found"));
+
+        var json = doc.ToJson(Catalog);
+        var bind = Assert.IsType<JsonObject>(json["actions"]![0]!["bind"]);
+        Assert.Equal(["status", "card"], bind.Select(pair => pair.Key));   // 顺序按目录声明，不按插入序
+        Assert.Equal("st", bind["status"]!.GetValue<string>());
+        Assert.Equal("found", bind["card"]!.GetValue<string>());
+
+        // 读回再导出必须逐字相同：不同就是「存一次变一次」，作者的图会在保存后自己漂移。
+        var text = doc.ToJsonText(Catalog);
+        Assert.Equal(text, HandlerDocument.FromJson(text, Catalog).ToJsonText(Catalog));
+    }
+
+    [Fact]
+    public void 多输出对象bind缺键或多键都是绑定作用域错误()
+    {
+        // 缺键＝那一路结果没名字（想忽略就整段不写 bind），多键＝绑了不存在的输出。
+        var missing = new HandlerDocument();
+        missing.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st"));
+        var issue = Assert.Single(HandlerDslValidator.Validate(missing, Catalog), i => i.Code == "bind-scope");
+        Assert.Equal("actions[0].bind.card", issue.NodePath);            // 点名缺的是哪个输出
+
+        var extra = new HandlerDocument();
+        extra.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st")
+            .SetOutputBind("card", "found")
+            .SetOutputBind("nope", "x"));
+        var extraIssue = Assert.Single(HandlerDslValidator.Validate(extra, Catalog), i => i.Code == "bind-scope");
+        Assert.Equal("actions[0].bind.nope", extraIssue.NodePath);
+        Assert.Contains("status／card", extraIssue.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 两种bind形态不能互换()
+    {
+        // 单输出写对象、多输出写字符串都是 bind-scope：同一语义两种文本会破坏确定性（§8.9 第 2 条）。
+        var objectOnSingle = new HandlerDocument();
+        objectOnSingle.Actions.Add(new HandlerNode("draw")
+            .Set("count", HandlerValue.Num(1))
+            .SetOutputBind("result", "n"));
+        Assert.Contains(HandlerDslValidator.Validate(objectOnSingle, Catalog), i => i.Code == "bind-scope");
+
+        var stringOnMulti = new HandlerDocument();
+        stringOnMulti.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetText("bind", "got"));
+        var issue = Assert.Single(HandlerDslValidator.Validate(stringOnMulti, Catalog), i => i.Code == "bind-scope");
+        Assert.Contains("status／card", issue.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 多输出绑定的名字带着各自的输出类型()
+    {
+        // 名字声明错类型比「名字没声明」更难查：下游按错类型校验，一路绿到运行期才炸。
+        var doc = new HandlerDocument();
+        doc.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st")
+            .SetOutputBind("card", "found"));
+        doc.Actions.Add(new HandlerNode("damage")
+            .Set("target", HandlerValue.Var("found"))       // card: entity → 合法
+            .Set("amount", HandlerValue.Num(1)));
+
+        // 视图字段要显式给：缺省视图是空表，`view: Card` 会被判成未知字段，
+        // 那样这条用例会因为「视图没配」而绿/红，跟 bind 无关。
+        var view = new Dictionary<string, HandlerViewField>(StringComparer.Ordinal)
+        {
+            ["Card"] = new("Card", "entity", false),
+        };
+        Assert.Empty(HandlerDslValidator.Validate(doc, Catalog, view));
+
+        // status 是 string，当 entity 用要被拒（同一条名字声明，类型不同就得出不同的结论）。
+        var wrong = new HandlerDocument();
+        wrong.Actions.Add(new HandlerNode("fetchFromDeck")
+            .Set("target", HandlerValue.ViewField("Card"))
+            .SetOutputBind("status", "st")
+            .SetOutputBind("card", "found"));
+        wrong.Actions.Add(new HandlerNode("damage")
+            .Set("target", HandlerValue.Var("st"))
+            .Set("amount", HandlerValue.Num(1)));
+        Assert.Contains(HandlerDslValidator.Validate(wrong, Catalog, view),
+            i => i.Code is "pin-type" or "bind-scope");
+    }
+
+    [Fact]
     public void 引用不可见的名字是绑定作用域错误()
     {
         var doc = new HandlerDocument();

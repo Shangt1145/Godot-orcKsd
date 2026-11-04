@@ -250,6 +250,19 @@ public sealed class HandlerNode
     public Dictionary<string, HandlerValue> Values { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> Texts { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, List<HandlerNode>> Bodies { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// **多输出**节点的 <c>bind</c> 对象形态（SPEC §8.9）：键＝目录声明的输出名，值＝绑定名。
+    /// <para>
+    /// 两种形态**互斥**：单输出写字符串（<see cref="Texts"/> 的 <c>bind</c>），多输出写对象（这里）。
+    /// 同时存在时 <see cref="ToJson"/> 只写对象——写出两个同名键会让后写覆盖前写，静默丢掉一半绑定。
+    /// </para>
+    /// <para>
+    /// 键集必须**恰好等于**输出名集合（不许可子集）：所以这里是「按输出名逐个填」，不是「随便起几个名字」。
+    /// </para>
+    /// </summary>
+    public Dictionary<string, string> OutputBinds { get; } = new(StringComparer.Ordinal);
+
     /// <summary>只有 <c>choice</c> 用；其余节点为空。</summary>
     public List<HandlerOption> Options { get; } = [];
 
@@ -277,11 +290,29 @@ public sealed class HandlerNode
         return this;
     }
 
+    /// <summary>
+    /// 给多输出节点的某个输出命名（<paramref name="name"/> 为空＝这一路不绑）。
+    /// <para>
+    /// 空名是**删掉这个键**而不是写空串：契约要求键集恰好等于输出名集合，
+    /// 写空串会产出 <c>{"status": ""}</c>，那是「有键但名字非法」，与「没这个键」是两种错误，报出来的话作者对不上。
+    /// </para>
+    /// </summary>
+    public HandlerNode SetOutputBind(string output, string? name)
+    {
+        if (string.IsNullOrEmpty(name)) OutputBinds.Remove(output);
+        else OutputBinds[output] = name;
+        return this;
+    }
+
+    /// <summary>是否写成了多输出对象形态（决定 <c>bind</c> 该写字符串还是对象）。</summary>
+    public bool HasOutputBinds => OutputBinds.Count > 0;
+
     public HandlerNode Clone()
     {
         var copy = new HandlerNode(Op);
         foreach (var (k, v) in Values) copy.Values[k] = v;
         foreach (var (k, v) in Texts) copy.Texts[k] = v;
+        foreach (var (k, v) in OutputBinds) copy.OutputBinds[k] = v;
         foreach (var (k, v) in Bodies) copy.Bodies[k] = v.Select(n => n.Clone()).ToList();
         foreach (var option in Options) copy.Options.Add(option.Clone());
         return copy;
@@ -301,6 +332,32 @@ public sealed class HandlerNode
             json["outputs"] = new JsonArray();
         }
 
+        // bind 是节点级字段（不是引脚），而且**两种形态互斥**（SPEC §8.9）：
+        // 单输出＝字符串、多输出＝对象（键集恰好等于输出名）。这里先把对象形态写掉，
+        // 并让下面两轮 Texts 循环跳过 bind——否则会产出两个同名键，JSON 后写覆盖前写，
+        // 一半绑定被静默丢掉，作者看到的是「命名了但没生效」。
+        var multiBind = HasOutputBinds;
+        if (multiBind)
+        {
+            var bindings = new JsonObject();
+            // 顺序按目录声明：同一结构必须产出同一段文本，否则 diff 永远在动。
+            if (spec is not null)
+            {
+                foreach (var pin in spec.Outputs)
+                {
+                    if (OutputBinds.TryGetValue(pin.Name, out var name) && name.Length > 0)
+                        bindings[pin.Name] = name;
+                }
+            }
+            // 目录里没有的输出名也照写（作者手写、或引擎新增了输出而镜像还没跟上）。
+            foreach (var (key, name) in OutputBinds)
+            {
+                if (name.Length == 0 || bindings.ContainsKey(key)) continue;
+                bindings[key] = name;
+            }
+            json["bind"] = bindings;
+        }
+
         if (spec is not null)
         {
             foreach (var pin in spec.Inputs)
@@ -316,12 +373,14 @@ public sealed class HandlerNode
             }
             // 目录里没声明的字段也照写（避免编辑器把作者的额外声明吃掉）
             foreach (var (k, v) in Values) if (spec.Pin(k) is null) json[k] = v.ToJson();
-            foreach (var (k, v) in Texts) if (spec.Pin(k) is null && v.Length > 0) json[k] = v;
+            foreach (var (k, v) in Texts)
+                if (spec.Pin(k) is null && v.Length > 0 && !(multiBind && k == "bind")) json[k] = v;
         }
         else
         {
             foreach (var (k, v) in Values) json[k] = v.ToJson();
-            foreach (var (k, v) in Texts) if (v.Length > 0) json[k] = v;
+            foreach (var (k, v) in Texts)
+                if (v.Length > 0 && !(multiBind && k == "bind")) json[k] = v;
         }
 
         // choice 的 options 是 [{ label, actions }]，不是普通动作数组，单独写（SPEC §3）
@@ -394,6 +453,19 @@ public sealed class HandlerNode
             {
                 var body = result.Body(key);
                 foreach (var child in array) body.Add(FromJson(child, catalog));
+                continue;
+            }
+
+            // bind 的对象形态（SPEC §8.9）：键＝输出名，值＝绑定名。
+            // 必须在这里拦下——交给 HandlerValue.FromJson 会以「表达式缺少判别键」失败，
+            // 那是把「这个形态没支持」报成「作者写错了」，排查方向会被带偏。
+            if (key == "bind" && value is JsonObject bindings)
+            {
+                foreach (var (output, name) in bindings)
+                {
+                    if (name is JsonValue binding && binding.TryGetValue<string>(out var bound))
+                        result.SetOutputBind(output, bound);
+                }
                 continue;
             }
 

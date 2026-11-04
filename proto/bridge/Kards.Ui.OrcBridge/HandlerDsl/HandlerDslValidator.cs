@@ -194,19 +194,65 @@ public static class HandlerDslValidator
                 if (node.Op == "ask" && !string.IsNullOrEmpty(node.Text("bind")))
                     DeclareBinding(node.Text("bind")!, path + ".bind", "bind", AskResultType(node));
 
-                // bind 是**节点级字段**，不是引脚（SPEC §3）。形态按 §8.9 判：
-                // 无输出不能写；单输出必须是字符串；多输出必须是对象（v1 界面不编辑对象形态，这里如实报出来）。
-                if (!spec.BuiltIn && node.Text("bind") is { Length: > 0 } outputBind)
+                // bind 是**节点级字段**，不是引脚（SPEC §3）。形态按 §8.9 判，两种形态互斥：
+                // 无输出＝不能写；单输出＝字符串；多输出＝对象（键集**恰好等于**输出名集合，不许可子集）。
+                // 判错一律 `bind-scope`，不新增错误码（§10 的错误码表是封闭的）。
+                if (!spec.BuiltIn)
                 {
-                    if (spec.Outputs.Count == 0)
-                        issues.Add(new HandlerIssue("bind-scope", path + ".bind",
-                            "节点 " + node.Op + " 没有返回值，不能写 bind（不写 bind ＝忽略返回值）", node, "bind"));
-                    else if (spec.Outputs.Count > 1)
-                        issues.Add(new HandlerIssue("bind-scope", path + ".bind",
-                            "节点 " + node.Op + " 有 " + spec.Outputs.Count + " 个输出，bind 必须写成对象（键集＝输出名）",
-                            node, "bind"));
-                    else
-                        DeclareBinding(outputBind, path + ".bind", "bind", new HandlerType(spec.Outputs[0].Type));
+                    var stringBind = node.Text("bind");
+                    var outputBinds = node.OutputBinds;
+
+                    if (outputBinds.Count > 0)
+                    {
+                        if (spec.Outputs.Count == 0)
+                        {
+                            issues.Add(new HandlerIssue("bind-scope", path + ".bind",
+                                "节点 " + node.Op + " 没有返回值，不能写 bind（不写 bind ＝忽略返回值）", node, "bind"));
+                        }
+                        else if (spec.Outputs.Count == 1)
+                        {
+                            // 同一语义两种文本＝破坏确定性（§8.9 第 2 条），所以不静默接受。
+                            issues.Add(new HandlerIssue("bind-scope", path + ".bind",
+                                "节点 " + node.Op + " 只有 1 个输出（" + spec.Outputs[0].Name + "），bind 要写成字符串，不能写成对象",
+                                node, "bind"));
+                        }
+                        else
+                        {
+                            // 键集恰好相等：缺键＝那一路的结果没名字（想忽略就整段不写 bind），
+                            // 多键＝绑了一个不存在的输出，生成器会去取不存在的字段。
+                            var declared = spec.Outputs.Select(pin => pin.Name).ToHashSet(StringComparer.Ordinal);
+                            foreach (var pin in spec.Outputs)
+                            {
+                                if (!outputBinds.TryGetValue(pin.Name, out var name) || name.Length == 0)
+                                    issues.Add(new HandlerIssue("bind-scope", path + ".bind." + pin.Name,
+                                        "输出「" + pin.Name + "」没命名：多输出节点的 bind 必须给每个输出起名"
+                                        + "（想忽略全部返回值就整段不写 bind）", node, "bind"));
+                                else
+                                    DeclareBinding(name, path + ".bind." + pin.Name, "bind", new HandlerType(pin.Type));
+                            }
+
+                            foreach (var (output, _) in outputBinds)
+                            {
+                                if (declared.Contains(output)) continue;
+                                issues.Add(new HandlerIssue("bind-scope", path + ".bind." + output,
+                                    "「" + output + "」不是节点 " + node.Op + " 的输出（可用：" + string.Join("／", declared) + "）",
+                                    node, "bind"));
+                            }
+                        }
+                    }
+                    else if (stringBind is { Length: > 0 } outputBind)
+                    {
+                        if (spec.Outputs.Count == 0)
+                            issues.Add(new HandlerIssue("bind-scope", path + ".bind",
+                                "节点 " + node.Op + " 没有返回值，不能写 bind（不写 bind ＝忽略返回值）", node, "bind"));
+                        else if (spec.Outputs.Count > 1)
+                            issues.Add(new HandlerIssue("bind-scope", path + ".bind",
+                                "节点 " + node.Op + " 有 " + spec.Outputs.Count + " 个输出（"
+                                + string.Join("／", spec.Outputs.Select(pin => pin.Name))
+                                + "），bind 必须写成对象（键集＝输出名）", node, "bind"));
+                        else
+                            DeclareBinding(outputBind, path + ".bind", "bind", new HandlerType(spec.Outputs[0].Type));
+                    }
                 }
 
                 void DeclareBinding(string name, string bindPath, string pin, HandlerType type)
