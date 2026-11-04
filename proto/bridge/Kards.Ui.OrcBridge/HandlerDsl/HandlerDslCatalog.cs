@@ -208,7 +208,7 @@ public sealed class HandlerCatalog
 
     private static HandlerCatalog? _snapshot;
 
-    /// <summary>内置快照（37 节点 = 27 目录节点〔含 stop／interrupt〕+ 10 内建 op）。</summary>
+    /// <summary>内置快照（40 节点 = 30 目录节点〔含 stop／interrupt〕+ 10 内建 op）。</summary>
     public static HandlerCatalog Snapshot => _snapshot ??= BuildSnapshot();
 
     private static HandlerCatalog? _default;
