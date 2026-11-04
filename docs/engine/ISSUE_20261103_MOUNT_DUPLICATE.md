@@ -3,7 +3,8 @@
 - 日期：2026-11-03
 - 引擎检出：`716d7d3`（`5475abbf` R38 + `9b62d965` 文档）
 - 触发者：本仓库 M1 端到端测试（`tests/HandlerDslAuthoringTests.摊平出来的牌在真实对局里真的生效`）
-- 状态：**已在我们这边规避**；引擎侧未改（本仓库不改引擎源码），建议见 §4
+- 状态：**已提交** → https://github.com/hitman-OLD6/OrC-KSD/issues/4
+  （我们这边已规避；引擎侧未改，本仓库不改引擎源码）
 
 ## 1. 现象
 
@@ -23,7 +24,11 @@
 
 ## 2. 定位
 
-`src/Orc.Packages/Editing/ModingFlattener.cs:302`：
+> **2026-11-04 更新**：R39 把合并搬进了共用核，行号变了，问题原样搬过去：
+> `src/Orc/Core/Model/Prefabs.cs:544-545`（`new List<MountDeclaration>(parent.Mounts)` ＋
+> `mounts.AddRange(definition.Mounts)`）。下面保留当初摊平器里的那一版，便于对照。
+
+`src/Orc.Packages/Editing/ModingFlattener.cs:302`（R39 前）：
 
 ```csharp
 var mounts = parent.Mounts.Concat(draft.Mounts).ToArray();
