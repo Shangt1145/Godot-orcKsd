@@ -16,8 +16,8 @@ public class HandlerDslEditorTests
     [Fact]
     public void 目录快照与契约一致()
     {
-        Assert.Equal(37, Catalog.Nodes.Count);                       // 10 内建 op + 27 目录节点
-        Assert.Equal(27, Catalog.Nodes.Count(n => !n.BuiltIn));      // 25 动作 + stop/interrupt
+        Assert.Equal(40, Catalog.Nodes.Count);                       // 10 内建 op + 30 目录节点
+        Assert.Equal(30, Catalog.Nodes.Count(n => !n.BuiltIn));      // 28 动作 + stop/interrupt
         Assert.Contains("stop", Catalog.Nodes.Select(n => n.Name));
         Assert.Contains("interrupt", Catalog.Nodes.Select(n => n.Name));
 

@@ -17,31 +17,43 @@ using Xunit;
 namespace Kards.Ui.Tests;
 
 /// <summary>
-/// **M1 最小闭环**：DSL 文档 → 草案 → 摊平 → 装载器接受并注册 handler。
+/// **写回链路**：DSL 文档 → 草案 → 摊平 → 装载器接受并注册 handler。
 /// <para>
 /// 这是「复杂 DIY」这条路上唯一能证明路真的通的一段：画布产出的 JSON 只要走完这三步，
 /// 就会变成一份**自包含的组件资产**（csx 由 DSL 现场生成、带双哈希来源标记），装载器认得它。
 /// 不碰任何 UI，所以失败时责任边界很清楚——要么我们的提交路径错，要么引擎的摊平错。
 /// </para>
 /// <para>
+/// **父是模板，不是具体效果**（R39）：引擎把「可覆写」从资产级开关改成「父把成员声明成空位」，
+/// 具体效果组件不声明空位，覆写它会被摊平器拒绝。能填的只有
+/// <see cref="EffectTemplateLibrary"/> 派生的 <c>template.&lt;信号&gt;.&lt;档&gt;</c>。
+/// </para>
+/// <para>
 /// 夹具用引擎自带的 <c>samples/card-pack-diy</c>：包根有 manifest 与 lock、卡目录有 sidecar，
 /// 少一样都可能「装载成功但触发链不认」。手工搭最小包是这类测试最常见的自欺。
 /// </para>
 /// <para>
-/// 只有 <c>摊平出来的牌在真实对局里真的生效</c> 这一条会**重建进程级引擎宿主**（对局只认宿主快照里的包），
+/// 只有两条端到端用例会**重建进程级引擎宿主**（对局只认宿主快照里的包），
 /// 所以本类进 <c>engine-host</c> 非并行集合，并在收尾把宿主还原成未初始化。
 /// </para>
 /// </summary>
 [Collection("engine-host")]
 public sealed class HandlerDslAuthoringTests : IDisposable
 {
-    private const string ParentId = "diy.fire-support.effect";
-    private const string Member = "onPlayed";
+    /// <summary>「打出时」的模板：信号 <c>card.played</c>、守卫档 any。</summary>
+    private const string ParentId = "template.card.played.any";
+
+    /// <summary>内置模板的空位成员名（R34 第 3 条：固定 <c>onHook</c>）。</summary>
+    private const string Member = "onHook";
+
     private const string DrawTwo =
         """{"schemaVersion":1,"actions":[{"op":"draw","count":{"lit":2}}]}""";
 
     /// <summary>示例卡「火力支援」的卡包全名（<c>pack/&lt;包id&gt;/&lt;卡id&gt;</c>）。</summary>
     private const string SampleCard = "pack/diy/diy.fire-support";
+
+    /// <summary>示例卡当前引用的效果（覆盖模式要替换的就是它）。</summary>
+    private const string SampleEffect = "diy.fire-support.effect";
 
     private readonly string _root;
     private readonly string _pack;
@@ -60,7 +72,9 @@ public sealed class HandlerDslAuthoringTests : IDisposable
             new EditableRootPolicy([_root]),
             new AssetEditorOptions { PackageRoots = [Path.Combine(_root, "packs")] });
         _editor.BeginSession(EditorSessionRequest.Edit(_pack));
+        // 模板库根由包根推导：<base>/packs/<包> → <base>/effect-templates。
         _authoring = new HandlerDslAuthoring(_editor, _editor.Session!.TemporaryRoot);
+        _authoring.EnsureTemplateLibrary();
     }
 
     public void Dispose()
@@ -80,6 +94,16 @@ public sealed class HandlerDslAuthoringTests : IDisposable
 
     private string SessionRoot => _editor.Session!.TemporaryRoot;
 
+    /// <summary>模板库根（与 <see cref="HandlerDslAuthoring.DefaultTemplateRootFor"/> 同一推导）。</summary>
+    private string TemplateRoot => HandlerDslAuthoring.DefaultTemplateRootFor(SessionRoot);
+
+    /// <summary>按模板的视图声明造草案：漏掉字段＝把模板给的视图整段删掉。</summary>
+    private string DraftFor(string draftId, string dslPath, string productId, string dslJson)
+        => HandlerDslAuthoring.BuildDraft(
+            draftId, ParentId, Member, dslPath,
+            viewFields: _authoring.ViewFieldsOf(ParentId, Member).Values.ToArray(),
+            dslJson: dslJson, productId: productId);
+
     [Fact]
     public void DSL文档与草案可提交_摊平产物自包含且带生成标记()
     {
@@ -87,8 +111,7 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         Assert.Equal("handler-dsl/on-played.hdsl.json", dslPath);
         Assert.True(File.Exists(Path.Combine(SessionRoot, "handler-dsl", "on-played.hdsl.json")));
 
-        var draftPath = _authoring.CommitDraft("draw2",
-            HandlerDslAuthoring.BuildDraft("demo.draw2.draft", ParentId, Member, dslPath, dslJson: DrawTwo));
+        var draftPath = _authoring.CommitDraft("draw2", DraftFor("demo.draw2.draft", dslPath, "demo.draw2", DrawTwo));
         Assert.Equal("modings/draw2.draft.moding.json", draftPath);
         Assert.True(File.Exists(Path.Combine(SessionRoot, "modings", "draw2.draft.moding.json")));
 
@@ -110,19 +133,29 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         Assert.Equal(HandlerContent.Hash(DrawTwo), generated.DslHash);
         Assert.Equal(HandlerContent.Hash(handler.Script!), generated.TextHash);
 
-        // 父效果的挂载会被继承，草案**不能再声明一遍**：摊平器把两边拼接、不去重，
+        // 模板的挂载会被继承，草案**不能再声明一遍**：摊平器把两边拼接、不去重，
         // 重复一条就是 handler 挂两遍。这个坑的代价是「抽 2 变抽 4」，而产物看上去毫无异常。
         Assert.Single(product.Mounts);
         Assert.Equal("engine#card.played", product.Mounts[0].Target);
         Assert.Equal(Member, product.Mounts[0].Member);
+
+        // 视图字段照抄模板：草案的 view 是**整段替换**，少写一个字段就是把它删掉。
+        Assert.Equal(
+            ["Card", "Player", "Source"],
+            product.Members.Single(m => m.Name == Member).View.Fields
+                .Select(f => f.Name).OrderBy(n => n, StringComparer.Ordinal).OrderBy(n => n switch
+                {
+                    "Card" => 0,
+                    "Player" => 1,
+                    _ => 2,
+                }));
     }
 
     [Fact]
     public void 摊平产物能被装载器接受_且handler注册进运行期()
     {
         var dslPath = _authoring.CommitDsl("on-played", DrawTwo);
-        var draftPath = _authoring.CommitDraft("draw2",
-            HandlerDslAuthoring.BuildDraft("demo.draw2.draft", ParentId, Member, dslPath, dslJson: DrawTwo));
+        var draftPath = _authoring.CommitDraft("draw2", DraftFor("demo.draw2.draft", dslPath, "demo.draw2", DrawTwo));
         Assert.True(_authoring.Flatten(draftPath).Success);
 
         // 装载器只扫**顶层**的 *.component.json（引擎 AssetSchema.FilePattern）——所以传 effects-v4 目录，
@@ -149,12 +182,11 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     public void 摊平之后Check是干净的_改过DSL就变陈旧()
     {
         var dslPath = _authoring.CommitDsl("on-played", DrawTwo);
-        var draftPath = _authoring.CommitDraft("draw2",
-            HandlerDslAuthoring.BuildDraft("demo.draw2.draft", ParentId, Member, dslPath, dslJson: DrawTwo));
+        var draftPath = _authoring.CommitDraft("draw2", DraftFor("demo.draw2.draft", dslPath, "demo.draw2", DrawTwo));
         Assert.True(_authoring.Flatten(draftPath).Success);
         Assert.True(_authoring.Check(draftPath).UpToDate);
 
-        // DSL 改一个字：草案没重摊，Check 必须报出来——这正是 M2 保存后要提示作者的那条。
+        // DSL 改一个字：草案没重摊，Check 必须报出来——这正是保存后要提示作者的那条。
         _authoring.CommitDsl("on-played", DrawTwo.Replace("\"lit\":2", "\"lit\":3"));
         Assert.False(_authoring.Check(draftPath).UpToDate);
     }
@@ -168,42 +200,64 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     }
 
     [Fact]
-    public void 能当父的效果按可挂载成员列出来()
+    public void 父清单来自引擎模板库_不是包里的效果组件()
     {
         var parents = _authoring.DescribeParents();
+        var derived = EffectTemplateLibrary.Derive();
 
-        // 示例包 6 个组件、7 个可挂载成员（`diy.memorial.effect` 有两个：打出时／死亡时）。
-        Assert.Equal(7, parents.Count);
-        Assert.Equal(parents.Count, parents.Select(p => p.ParentId + "#" + p.Member).Distinct().Count());
+        Assert.Equal(derived.Count, parents.Count);
+        Assert.Equal(parents.Count, parents.Select(p => p.ParentId).Distinct(StringComparer.Ordinal).Count());
 
-        var played = parents.Single(p => p.ParentId == "diy.fire-support.effect" && p.Member == "onPlayed");
-        Assert.Equal("engine#card.played", played.MountedTarget);
-        Assert.Contains("engine#card.played", played.Label, StringComparison.Ordinal);
+        // 内置模板的成员名恒为 onHook，挂载点＝信号地址。
+        Assert.All(parents, option => Assert.Equal("onHook", option.Member));
+        Assert.All(parents, option => Assert.Equal("engine#" + option.Signal, option.MountedTarget));
 
-        // 父效果**没有**为这个成员挂信号：产物不会有触发点，界面必须标出来，
-        // 否则作者会得到一份「保存成功但永远不跑」的效果。
-        var orphan = parents.Single(p => p.ParentId == "diy.adjacent-cover.mitigation");
-        Assert.Equal("onDamageApply", orphan.Member);
-        Assert.Null(orphan.MountedTarget);
-        Assert.Contains("没挂信号", orphan.Label, StringComparison.Ordinal);
+        var played = parents.Single(option => option.ParentId == "template.card.played.any");
+        Assert.Equal("card.played", played.Signal);
+        Assert.Equal("Any", played.Guard);
+        Assert.Contains("card.played", played.Label, StringComparison.Ordinal);
+        Assert.Contains("onHook", played.Label, StringComparison.Ordinal);
+
+        // 包里的具体效果组件**不再**是父：它们没有空位，覆写会被摊平器拒绝。
+        Assert.DoesNotContain(parents, option => option.ParentId == SampleEffect);
+        // 加载期信号不出模板（与任何时点都冲突，R33 的派生规则）。
+        Assert.DoesNotContain(parents, option => option.Signal == "card.load");
     }
 
     [Fact]
-    public void 视图字段来自父效果的成员声明()
+    public void 视图字段来自模板的载荷声明()
     {
-        // 画布能读什么由父声明决定。示例包「火力支援」的 onPlayed 声明了七个字段。
+        // 画布能读什么由模板声明决定：card.played 的载荷是 Card／Player／Source。
         var fields = _authoring.ViewFieldsOf(ParentId, Member);
-        Assert.Equal(
-            ["Card", "Effect", "Unit", "Player", "Killer", "Source", "TriggerCard"],
-            fields.Keys.OrderBy(k => k, StringComparer.Ordinal).OrderBy(k => Array.IndexOf(
-                new[] { "Card", "Effect", "Unit", "Player", "Killer", "Source", "TriggerCard" }, k)));
+        Assert.Equal(["Card", "Player", "Source"], fields.Keys.OrderBy(k => k, StringComparer.Ordinal).OrderBy(k => k switch
+        {
+            "Card" => 0,
+            "Player" => 1,
+            _ => 2,
+        }));
         Assert.Equal("entity", fields["Card"].Type);
         Assert.False(fields["Card"].Writable);
 
         // 成员不存在＝空表：界面据此把视图引用标红，而不是假装有。
-        Assert.Empty(_authoring.ViewFieldsOf(ParentId, "onDied"));
-        // 父不存在＝引擎给诊断、不抛（DescribePrefab 的契约），这里只要求它别炸。
+        Assert.Empty(_authoring.ViewFieldsOf(ParentId, "onPlayed"));
+        // 父不存在＝不抛（DescribePrefab 的契约是给诊断），这里只要求它别炸。
         Assert.Empty(_authoring.ViewFieldsOf("no.such.effect", Member));
+    }
+
+    [Fact]
+    public void 模板库缺失时保存会整批生成()
+    {
+        var fresh = Path.Combine(_root, "fresh-templates");
+        Assert.False(Directory.Exists(Path.Combine(fresh, "effects-v4")));
+
+        var authoring = new HandlerDslAuthoring(_editor, SessionRoot, fresh);
+        var saved = authoring.Save(new HandlerDslSaveRequest(ParentId, Member, "demo.fresh", DrawTwo));
+
+        Assert.True(saved.Success, saved.Describe());
+        var files = Directory.EnumerateFiles(Path.Combine(fresh, "effects-v4"), "*.component.json").ToArray();
+        Assert.Equal(EffectTemplateLibrary.Derive().Count, files.Length);
+        // 再调一次不重复写（作者可能正拿其中一份当父）。
+        Assert.Equal(0, authoring.EnsureTemplateLibrary());
     }
 
     [Fact]
@@ -225,17 +279,36 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     [Fact]
     public void 产物id不能和父效果同名()
     {
-        // 同名＝摊平会覆盖父效果，而父效果正是这次摊平的输入。
+        // 同名＝摊平会覆盖父，而父正是这次摊平的输入。
         var error = Assert.Throws<ArgumentException>(() =>
             _authoring.Save(new HandlerDslSaveRequest(ParentId, Member, ParentId, DrawTwo)));
         Assert.Contains("父效果", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void 覆盖已有卡牌效果_卡牌引用改指产物而父效果保留()
+    public void 父必须是模板_具体效果组件不能当父()
+    {
+        // R39 之前这条路是通的（示例效果声明了 authorize-moding）；现在那个开关已废止，
+        // 没有空位的成员不允许被覆写。提前拦住比「三份文件落盘后再说不是空位」好得多。
+        var error = Assert.Throws<ArgumentException>(() =>
+            _authoring.Save(new HandlerDslSaveRequest(SampleEffect, "onPlayed", "demo.nope", DrawTwo)));
+        Assert.Contains("模板", error.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(SessionRoot, "effects-v4", "demo.nope.component.json")));
+    }
+
+    [Fact]
+    public void 覆盖必须说明替换哪个效果()
+    {
+        var error = Assert.Throws<ArgumentException>(() => _authoring.Save(
+            new HandlerDslSaveRequest(ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting)));
+        Assert.Contains("替换哪个效果", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 覆盖已有卡牌效果_卡牌引用改指产物而原效果保留()
     {
         var saved = _authoring.Save(new HandlerDslSaveRequest(
-            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting));
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect));
 
         Assert.True(saved.Success, saved.Describe());
 
@@ -256,7 +329,7 @@ public sealed class HandlerDslAuthoringTests : IDisposable
             .Single(component => component!["component"]!.GetValue<string>() == "effects")!["prefabs"]!.AsArray();
         Assert.Equal(["diy.fire-support.effect.dsl"], prefabs.Select(item => item!.GetValue<string>()));
 
-        // 父效果原样留着：它是摊平输入，也是「还原」的退路（删掉就没法再改第二次）。
+        // 原效果原样留着：它是「还原」的退路（删掉就没法再改第二次）。
         Assert.True(File.Exists(Path.Combine(SessionRoot, "effects-v4", "diy.fire-support.effect.component.json")));
         Assert.True(saved.UpToDate);
     }
@@ -265,12 +338,12 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     public void 覆盖模式二次保存落在同一份产物上_引用不再变化()
     {
         var first = _authoring.Save(new HandlerDslSaveRequest(
-            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting));
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect));
         Assert.True(first.Success, first.Describe());
 
         var secondDsl = DrawTwo.Replace("\"lit\":2", "\"lit\":3", StringComparison.Ordinal);
         var second = _authoring.Save(new HandlerDslSaveRequest(
-            ParentId, Member, "", secondDsl, HandlerDslSaveMode.ReplaceExisting));
+            ParentId, Member, "", secondDsl, HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect));
 
         Assert.True(second.Success, second.Describe());
         Assert.Equal(first.ProductId, second.ProductId);
@@ -296,28 +369,30 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     }
 
     [Fact]
-    public void 覆盖产物不再出现在父效果清单里()
+    public void 覆盖产物不会混进父清单()
     {
+        var before = _authoring.DescribeParents().Count;
         Assert.True(_authoring.Save(new HandlerDslSaveRequest(
-            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting)).Success);
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect)).Success);
 
         var parents = _authoring.DescribeParents();
 
-        // 产物带 generated，是「结果」不是「基线」：列出来就会派生 x.dsl.dsl，而且那份永远改不动。
-        Assert.DoesNotContain(parents, option => option.ParentId == "diy.fire-support.effect.dsl");
-        // 基线仍在，作者还能再改一次。
+        // 父清单是模板库的投影：产物既不是模板、也不该出现在这里。
+        Assert.Equal(before, parents.Count);
+        Assert.DoesNotContain(parents, option => option.ParentId.Contains(".dsl", StringComparison.Ordinal));
+        // 模板仍在，作者还能再改一次。
         Assert.Contains(parents, option => option.ParentId == ParentId && option.Member == Member);
     }
 
     /// <summary>
-    /// **覆盖模式的收尾那一锤**：与 M1 的端到端同构，但**不再手工改卡牌 JSON**——
+    /// **覆盖模式的收尾那一锤**：与写回链路的端到端同构，但**不再手工改卡牌 JSON**——
     /// 引用是工具改的。这条绿了，「改一个已有的脚本效果」才算真的能走。
     /// </summary>
     [Fact]
     public async Task 覆盖之后真实对局里打出走的是积木版本()
     {
         var saved = _authoring.Save(new HandlerDslSaveRequest(
-            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting));
+            ParentId, Member, "", DrawTwo, HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect));
         Assert.True(saved.Success, saved.Describe());
         Assert.Equal(1, saved.Retarget!.References);
 
@@ -337,7 +412,7 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         session.Pump();
 
         Assert.Equal(UiSubmitOutcome.Applied, outcome);
-        // 打出 -1、DSL 的 draw 2 → 净 +1。与 M1 相同的判据：手牌是玩家看得见的事实。
+        // 打出 -1、DSL 的 draw 2 → 净 +1。与下面那条相同的判据：手牌是玩家看得见的事实。
         Assert.True(session.View.SelfHand.Count == handBefore - 1 + 2,
             $"手牌应净 +1：打出前 {handBefore}、打出后 {session.View.SelfHand.Count}；"
             + $"outcome={outcome} reason={session.LastRejectionReason}");
@@ -361,8 +436,7 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     public async Task 摊平出来的牌在真实对局里真的生效()
     {
         var dslPath = _authoring.CommitDsl("on-played", DrawTwo);
-        var draftPath = _authoring.CommitDraft("draw2",
-            HandlerDslAuthoring.BuildDraft("demo.draw2.draft", ParentId, Member, dslPath, dslJson: DrawTwo));
+        var draftPath = _authoring.CommitDraft("draw2", DraftFor("demo.draw2.draft", dslPath, "demo.draw2", DrawTwo));
         var flattened = _authoring.Flatten(draftPath);
         Assert.True(flattened.Success, flattened.Describe());
 
@@ -373,24 +447,18 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         var enginePack = Path.Combine(engineBase, "packs", "demo");
         CopyDirectory(SessionRoot, enginePack);
 
-        // ② 让示例卡改指我们的产物。父效果 `diy.fire-support.effect` 仍留在包里——摊平需要它存在，
-        //    只是这张卡不再引用它。字符串只出现一次（prefabs 数组），替换是安全的。
+        // ② 让示例卡改指我们的产物。原效果仍留在包里，只是这张卡不再引用它。
+        //    字符串只出现一次（prefabs 数组），替换是安全的。
         var cardFile = Path.Combine(enginePack, "cards", "diy.fire-support.card.json");
         var cardJson = File.ReadAllText(cardFile);
-        Assert.Contains("\"diy.fire-support.effect\"", cardJson, StringComparison.Ordinal);
+        Assert.Contains("\"" + SampleEffect + "\"", cardJson, StringComparison.Ordinal);
         File.WriteAllText(cardFile,
-            cardJson.Replace("\"diy.fire-support.effect\"", "\"demo.draw2\"", StringComparison.Ordinal));
+            cardJson.Replace("\"" + SampleEffect + "\"", "\"demo.draw2\"", StringComparison.Ordinal));
 
         // ③ 重建宿主，让它发现的包＝刚改过的那个目录。
         OrcEngineHost.Reset();
         OrcEngineHost.Initialize(engineBase);
         _hostRebuilt = true;
-
-        var nations = Path.Combine(RepoRoot(), "proto", "data", "nations");
-        var catalog = new CardCatalog();
-        catalog.Load(nations, CardCatalog.ResolveArtResource);
-        var cards = new DeckConstructionService(catalog.Cards, nations).Cards;
-        Assert.NotEmpty(cards);
 
         using var session = await OpenSampleMatchAsync("hdsl-draw2");
         var card = session.View.SelfHand.First(c => c.CardId == SampleCard);

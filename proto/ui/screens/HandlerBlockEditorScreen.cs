@@ -521,13 +521,17 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     // ── 保存（复杂 DIY：DSL → 草案 → 摊平）────────────────────────────────
 
     /// <summary>
-    /// 保存对话框。只有两个必填：**父效果**（挂载与视图字段都从它继承）与**产物 id**
-    /// （卡牌的 <c>effects.prefabs</c> 引用它）。
+    /// 保存对话框。三个必填：**模板**（挂载、视图字段与守卫都从它继承）、**产物 id**
+    /// （卡牌的 <c>effects.prefabs</c> 引用它），以及（覆盖模式下）**替换哪个效果**。
     ///
     /// <para>
-    /// 为什么不让作者填挂载：父效果已有的挂载会被摊平器带进产物，再声明一遍就是**挂两遍**
-    /// （`draw 2` 变抽 4 张，产物却完全合法）。这里只提示「父效果挂在哪个信号上」，
+    /// 为什么不让作者填挂载：模板已有的挂载会被摊平器带进产物，再声明一遍就是**挂两遍**
+    /// （`draw 2` 变抽 4 张，产物却完全合法）。这里只提示「模板挂在哪个信号上」，
     /// 不给第二个输入框——少一个能写错的地方。
+    /// </para>
+    /// <para>
+    /// 为什么模板与目标是两个下拉（R39）：模板声明「这里有一个空位」，效果是「卡正在用的那份实现」。
+    /// 两者不再是同一个 id，硬塞进一个下拉会让「用哪套视图」和「改哪张卡的引用」绑死在一起。
     /// </para>
     /// </summary>
     private void OpenSaveDialog()
@@ -541,11 +545,12 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         IReadOnlyList<HandlerParentOption> parents;
         try { parents = authoring.DescribeParents(); }
-        catch (Exception error) { ShowSaveNote("没保存：读不出这个包里的效果——" + error.Message, failed: true); return; }
+        catch (Exception error) { ShowSaveNote("没保存：读不出模板库——" + error.Message, failed: true); return; }
 
         if (parents.Count == 0)
         {
-            ShowSaveNote("没保存：这个包里还没有能当父效果的效果（effects-v4 里没有可挂载的成员）。", failed: true);
+            // 模板库是引擎派生的（信号 × 守卫档），空表只可能是引擎信号表被裁掉了。
+            ShowSaveNote("没保存：引擎没派生出任何模板（信号表为空？）——没有模板就没有可填的空位。", failed: true);
             return;
         }
 
@@ -564,37 +569,52 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         page.AddThemeConstantOverride("separation", 10);
         dialog.AddChild(page);
 
-        var parent = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        // 父是**模板**（R39）：104 个「信号 × 守卫档」的模板，成员恒为 onHook。
+        // 缺省选「打出时」——卡牌效果里最常见的一档，省一次点击。
+        var parent = new OptionButton { Name = "ParentPicker", SizeFlagsHorizontal = SizeFlags.ExpandFill };
         foreach (var option in parents) parent.AddItem(option.Label);
-        parent.Select(0);
-        DiyEditorScreen.Field(page, "父效果（挂载与视图字段从它继承）", parent);
-        ApplyView(authoring, parents[0]);
+        for (var i = 0; i < parents.Count; i++) parent.SetItemMetadata(i, parents[i].ParentId);
+        var defaultIndex = parents.ToList().FindIndex(option => option.ParentId == DefaultParentId);
+        parent.Select(defaultIndex < 0 ? 0 : defaultIndex);
+        DiyEditorScreen.Field(page, "模板（挂载、视图字段与守卫从它继承）", parent);
+        ApplyView(authoring, parents[Math.Max(0, parent.Selected)]);
 
         var replace = new CheckBox
         {
-            Text = "覆盖这个效果（包里引用它的卡都改用它）",
-            TooltipText = "产物落到 <父 id>.dsl，卡牌的 effects.prefabs 自动改指它；父效果保留为基线，可再次编辑",
+            Text = "用这份积木重写一个已有效果",
+            TooltipText = "产物落到 <效果 id>.dsl，包里引用它的卡自动改指产物；原效果保留为基线，可再次编辑",
         };
         page.AddChild(replace);
 
-        var product = new LineEdit { Name = "ProductId", Text = "effect." + Guid.NewGuid().ToString("N")[..8] };
+        // 目标与父是两个不同的 id：父是模板（往哪填），目标是效果（替换谁）。
+        var targets = authoring.DescribeReplaceableEffects();
+        var target = new OptionButton
+        {
+            Name = "ReplaceTargetPicker",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            Disabled = true,
+        };
+        foreach (var item in targets) target.AddItem(item.Label);
+        for (var i = 0; i < targets.Count; i++) target.SetItemMetadata(i, targets[i].EffectId);
+        if (targets.Count == 0) target.AddItem("（包里没有可替换的效果）");
+        DiyEditorScreen.Field(page, "替换哪个效果（只有它会被改引用）", target);
+
+        var product = new LineEdit { Name = "ProductId", Text = NewProductId() };
         DiyEditorScreen.Field(page, "产物 id（卡牌的 effects.prefabs 引用它）", product);
 
-        var hint = MenuStyles.Label(
-            "保存会写三份文件：DSL 文档、草案、摊平产物。产物是自包含的——之后改父效果不会影响它。",
-            12, MenuStyles.Dim);
+        var hint = MenuStyles.Label(NewEffectHint, 12, MenuStyles.Dim);
         hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         page.AddChild(hint);
 
-        // 选了哪个父效果，画布的「视图字段」就跟着换成它的——作者能读什么由父声明决定，
+        // 选了哪个模板，画布的「视图字段」就跟着换成它的——作者能读什么由模板声明决定，
         // 而不是由这份界面猜（猜错的代价是「校验通过、装载期报字段不存在」）。
-        // 覆盖模式下还要顺带换产物 id、并载入这个效果上次的积木图。
         parent.ItemSelected += index =>
         {
             ApplyView(authoring, parents[Math.Clamp((int)index, 0, parents.Count - 1)]);
-            SyncReplaceMode(authoring, parents, parent, replace, product, hint);
+            SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
         };
-        replace.Toggled += _ => SyncReplaceMode(authoring, parents, parent, replace, product, hint);
+        replace.Toggled += _ => SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
+        target.ItemSelected += _ => SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
 
         var result = MenuStyles.Label("", 12, MenuStyles.Dim);
         result.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -603,11 +623,27 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         dialog.Confirmed += () =>
         {
             var option = parents[Math.Max(0, parent.Selected)];
+            var replaceId = replace.ButtonPressed && targets.Count > 0
+                ? targets[Math.Clamp(target.Selected, 0, targets.Count - 1)].EffectId
+                : null;
+
+            if (replace.ButtonPressed && replaceId is null)
+            {
+                // 没目标就没法改引用：产物会是一份没人用的孤儿，作者却以为「覆盖成功」。
+                const string why = "没保存：这个包里没有可替换的效果（卡牌没有引用任何效果组件）。";
+                result.Text = why;
+                result.AddThemeColorOverride("font_color", new Color("e0705f"));
+                // 同时落到检查结果列：对话框不关，作者关掉它之后还得看得见原因。
+                ShowSaveNote(why, failed: true);
+                return;
+            }
+
             try
             {
                 var saved = authoring.Save(new HandlerDslSaveRequest(
                     option.ParentId, option.Member, product.Text.Trim(), _doc.ToJsonText(_catalog),
-                    replace.ButtonPressed ? HandlerDslSaveMode.ReplaceExisting : HandlerDslSaveMode.NewEffect));
+                    replace.ButtonPressed ? HandlerDslSaveMode.ReplaceExisting : HandlerDslSaveMode.NewEffect,
+                    RetargetFromId: replaceId));
                 result.Text = saved.Describe();
                 result.AddThemeColorOverride("font_color", saved.Success ? UiStyles.Green : new Color("e0705f"));
                 ShowSaveNote(saved.Describe(), failed: !saved.Success);
@@ -627,40 +663,63 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         dialog.PopupCentered();
     }
 
+    /// <summary>缺省父模板：打出时。模板库没有它才退回第一个。</summary>
+    private const string DefaultParentId = "template.card.played.any";
+
+    private const string NewEffectHint =
+        "保存会写三份文件：DSL 文档、草案、摊平产物。产物是自包含的——之后改模板不会影响它。";
+
+    private static string NewProductId() => "effect." + Guid.NewGuid().ToString("N")[..8];
+
     /// <summary>
-    /// 覆盖开关的联动：产物 id、提示、以及「载入上次的积木图」。
+    /// 覆盖开关的联动：目标下拉的可用性、产物 id、提示、以及「载入上次的积木图」。
     /// <para>
     /// 载入这一条是覆盖模式能用的**前提**：不载入，作者第二次进来看到的是样例文档，
     /// 一保存就把上次的图换成样例——那不是编辑，是数据丢失。
     /// </para>
+    /// <para>
+    /// 产物 id 跟着**目标**走、不跟模板走：模板是 <c>template.card.played.any</c>，
+    /// 拿它派生 id 会得到一份既看不懂、也无法与卡牌引用对上的产物。
+    /// </para>
     /// </summary>
     private void SyncReplaceMode(
         HandlerDslAuthoring authoring,
-        IReadOnlyList<HandlerParentOption> parents,
         OptionButton parent,
         CheckBox replace,
+        OptionButton target,
+        IReadOnlyList<HandlerReplaceTarget> targets,
         LineEdit product,
         Label hint)
     {
-        var option = parents[Math.Clamp(parent.Selected, 0, parents.Count - 1)];
         product.Editable = !replace.ButtonPressed;
 
         if (!replace.ButtonPressed)
         {
+            target.Disabled = true;
             // 勾选期间 id 被改写成派生值；取消勾选＝回到「新建」，必须换回一个新 id，
             // 否则会以新建模式写出与覆盖模式同名的产物。
-            product.Text = "effect." + Guid.NewGuid().ToString("N")[..8];
-            hint.Text = "保存会写三份文件：DSL 文档、草案、摊平产物。产物是自包含的——之后改父效果不会影响它。";
+            product.Text = NewProductId();
+            hint.Text = NewEffectHint;
             return;
         }
 
-        var productId = HandlerDslAuthoring.ReplaceProductIdOf(option.ParentId);
+        if (targets.Count == 0)
+        {
+            target.Disabled = true;
+            product.Text = "";
+            hint.Text = "这个包里没有可替换的效果：卡牌没有引用任何效果组件，先用积木新建一个。";
+            return;
+        }
+
+        target.Disabled = false;
+        var picked = targets[Math.Clamp(target.Selected, 0, targets.Count - 1)];
+        var productId = HandlerDslAuthoring.ReplaceProductIdOf(picked.EffectId);
         product.Text = productId;
 
-        var existing = authoring.ReadExistingDsl(option.ParentId);
+        var existing = authoring.ReadExistingDsl(picked.EffectId);
         if (existing is null)
         {
-            hint.Text = $"这个效果还没有积木版本：保存后包内引用 {option.ParentId} 的卡会改用它，父效果保留。";
+            hint.Text = $"这个效果还没有积木版本：保存后包内引用 {picked.EffectId} 的卡会改用它，原效果保留。";
             return;
         }
 

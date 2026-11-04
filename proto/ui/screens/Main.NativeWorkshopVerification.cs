@@ -78,8 +78,11 @@ public partial class Main
             .Single(b => b.IsVisibleInTree() && b.Text == "保存到卡包"));
         var saveDialog = _blockEditor.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>()
             .Single(d => d.Visible && d.Title == "保存到卡包");
-        Check(saveDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single().ItemCount > 0,
-            "Save dialog listed no parent effect");
+        var savePickers = saveDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().ToArray();
+        var parentPicker = savePickers.Single(picker => picker.Name == "ParentPicker");
+        Check(parentPicker.ItemCount > 0, "Save dialog listed no parent template");
+        Check(parentPicker.GetItemMetadata(parentPicker.Selected).AsString().StartsWith("template.", StringComparison.Ordinal),
+            "Save dialog parent list did not come from the template library");
         await Capture("block-save-dialog.png");
         var productId = saveDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(l => l.Name == "ProductId").Text;
         // 直接发按下信号而不是模拟鼠标：这个对话框挂在积木屏下，headless 里坐标映射点不中（探针实测）。
@@ -89,35 +92,52 @@ public partial class Main
         Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", productId + ".component.json")),
             "Block canvas did not write the flattened product");
 
-        // 覆盖路径：改一个**已有**效果。产物 id 必须由父 id 派生（作者不填），
-        // 卡牌引用由工具改写，父效果保留。这条以前完全走不通——只能新建。
+        // 覆盖路径：改一个**已有**效果。模板是「往哪填」，目标是「替换谁」——R39 之后它们不是同一个 id。
+        // 产物 id 必须由**目标效果**派生（作者不填），卡牌引用由工具改写，原效果保留。
         _blockEditor.Open("探针：抽两张", canvas);   // 清掉上一轮的「已保存」，否则下面的等待立刻满足
         await DeckClickAsync(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
             .Single(b => b.IsVisibleInTree() && b.Text == "保存到卡包"));
         var replaceDialog = _blockEditor.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>()
             .Single(d => d.Visible && d.Title == "保存到卡包");
-        var parentPicker = replaceDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single();
-        var parentId = parentPicker.GetItemText(parentPicker.Selected).Split(" · ")[0];
         var replaceToggle = replaceDialog.FindChildren("*", "CheckBox", true, false).OfType<CheckBox>().Single();
         replaceToggle.ButtonPressed = true;
+        var targetPicker = replaceDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>()
+            .Single(picker => picker.Name == "ReplaceTargetPicker");
         var replaceId = replaceDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>()
             .Single(l => l.Name == "ProductId");
-        Check(replaceId.Text == parentId + ".dsl", $"Replace mode did not derive the product id: '{replaceId.Text}' vs '{parentId}.dsl'");
-        Check(!replaceId.Editable, "Replace mode left the product id editable");
-        replaceDialog.GetOkButton().EmitSignal(Button.SignalName.Pressed);
-        await WaitFor(() => _blockEditor.SaveNote is not null);
-        var replaceNote = _blockEditor.SaveNote!;
-        Check(replaceNote.Contains("已保存", StringComparison.Ordinal), "Replace mode did not save: " + replaceNote);
-        Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", parentId + ".dsl.component.json")),
-            "Replace mode did not write the derived product");
-        Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", parentId + ".component.json")),
-            "Replace mode destroyed the parent effect");
-        // 只有包里真有卡引用这个效果时才断言改写：报告说改了、卡却没变，是最坏的那种「成功」。
-        if (replaceNote.Contains("张卡已改用它", StringComparison.Ordinal))
+
+        if (targetPicker.Disabled)
         {
-            var cards = System.IO.Directory.EnumerateFiles(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "cards"), "*.card.json");
-            Check(cards.Any(file => System.IO.File.ReadAllText(file).Contains("\"" + parentId + ".dsl\"", StringComparison.Ordinal)),
-                "Replace mode reported retargeted cards but no card points at the product");
+            // 这个包用的是 v3 `inline` 效果（`prefabs` 是空数组）：没有可改指的引用，
+            // 覆盖模式在这里**确实**没有目标。探针要断言「它老实说了」，而不是假装成功。
+            Check(targetPicker.ItemCount == 1, "Replace mode disabled the picker but still listed targets");
+            replaceDialog.GetOkButton().EmitSignal(Button.SignalName.Pressed);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            Check(_blockEditor.SaveNote is not null && _blockEditor.SaveNote.Contains("没有可替换的效果", StringComparison.Ordinal),
+                "Replace mode without a target did not refuse: " + _blockEditor.SaveNote);
+            replaceDialog.QueueFree();
+        }
+        else
+        {
+            var targetId = targetPicker.GetItemMetadata(targetPicker.Selected).AsString();
+            Check(!targetId.StartsWith("template.", StringComparison.Ordinal), "Replace mode targeted a template instead of an effect");
+            Check(replaceId.Text == targetId + ".dsl", $"Replace mode did not derive the product id: '{replaceId.Text}' vs '{targetId}.dsl'");
+            Check(!replaceId.Editable, "Replace mode left the product id editable");
+            replaceDialog.GetOkButton().EmitSignal(Button.SignalName.Pressed);
+            await WaitFor(() => _blockEditor.SaveNote is not null);
+            var replaceNote = _blockEditor.SaveNote!;
+            Check(replaceNote.Contains("已保存", StringComparison.Ordinal), "Replace mode did not save: " + replaceNote);
+            Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", targetId + ".dsl.component.json")),
+                "Replace mode did not write the derived product");
+            Check(System.IO.File.Exists(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "effects-v4", targetId + ".component.json")),
+                "Replace mode destroyed the original effect");
+            // 只有包里真有卡引用这个效果时才断言改写：报告说改了、卡却没变，是最坏的那种「成功」。
+            if (replaceNote.Contains("张卡已改用它", StringComparison.Ordinal))
+            {
+                var cards = System.IO.Directory.EnumerateFiles(System.IO.Path.Combine(_nativeWorkshop.TemporaryRoot!, "cards"), "*.card.json");
+                Check(cards.Any(file => System.IO.File.ReadAllText(file).Contains("\"" + targetId + ".dsl\"", StringComparison.Ordinal)),
+                    "Replace mode reported retargeted cards but no card points at the product");
+            }
         }
         await Capture("block-canvas.png");
         Show("editor"); await MenuSettledAsync();

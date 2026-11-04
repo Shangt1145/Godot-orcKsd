@@ -43,16 +43,21 @@ public sealed class HandlerDslAuthoring
     /// <summary>v4 组件文件后缀（引擎 <c>AssetSchema.FilePattern</c> 同形）。</summary>
     public const string ComponentSuffix = ".component.json";
 
+    /// <summary>共享模板库目录名（**包根的兄弟目录**，刻意不放在 <c>packs/</c> 里）。</summary>
+    public const string TemplateDirectoryName = "effect-templates";
+
     private static readonly Lazy<HandlerDslEnvironment> SharedEnvironment = new(HandlerDslAssembly.Create);
 
     /// <param name="editor">已 <c>BeginSession</c> 的编辑面（提交走它，才能落到会话的临时包）。</param>
     /// <param name="packRoot">会话临时包根（摊平器的 <c>packRoot</c>）。</param>
-    public HandlerDslAuthoring(AssetEditor editor, string packRoot)
+    /// <param name="templateRoot">共享模板库根；null＝按 <see cref="DefaultTemplateRootFor"/> 推导。</param>
+    public HandlerDslAuthoring(AssetEditor editor, string packRoot, string? templateRoot = null)
     {
         ArgumentNullException.ThrowIfNull(editor);
         ArgumentException.ThrowIfNullOrWhiteSpace(packRoot);
         Editor = editor;
         PackRoot = Path.GetFullPath(packRoot);
+        TemplateRoot = Path.GetFullPath(templateRoot ?? DefaultTemplateRootFor(PackRoot));
     }
 
     /// <summary>编辑面（提交入口）。</summary>
@@ -60,6 +65,57 @@ public sealed class HandlerDslAuthoring
 
     /// <summary>会话临时包根。</summary>
     public string PackRoot { get; }
+
+    /// <summary>
+    /// 共享模板库根（R33 的只读依赖层）。
+    /// <para>
+    /// 摊平时它只**并进目录**、不并进「本包声明」——所以草案可以 <c>extends</c> 到模板，
+    /// 但产物不会复制出模板的文本（产物是自包含的，模板只是摊平的输入）。
+    /// </para>
+    /// </summary>
+    public string TemplateRoot { get; }
+
+    /// <summary>
+    /// 包根 → 共享模板库根：<c>&lt;base&gt;/packs/&lt;包&gt;</c> → <c>&lt;base&gt;/effect-templates</c>。
+    /// <para>
+    /// **不放在 <c>packs/</c> 里**：<see cref="Orc.Packages.PackageDiscovery"/> 会把 <c>packs/</c> 下每个
+    /// 带 manifest 的目录当成卡包，同 id 直接抛（本仓库已经因为 <c>demo.tmp</c> 并排 <c>demo</c> 踩过一次）。
+    /// 模板库没有 manifest，但它不该去赌发现逻辑的实现细节。
+    /// </para>
+    /// </summary>
+    public static string DefaultTemplateRootFor(string packRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packRoot);
+        var full = Path.GetFullPath(packRoot);
+        var parent = Path.GetDirectoryName(full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (parent is not null && string.Equals(
+                Path.GetFileName(parent), Orc.Packages.PackageDiscovery.PacksRootName, StringComparison.OrdinalIgnoreCase))
+        {
+            parent = Path.GetDirectoryName(parent);
+        }
+
+        return Path.Combine(parent ?? full, TemplateDirectoryName);
+    }
+
+    /// <summary>
+    /// 确保共享模板库存在（R33／R39）：缺就按 <see cref="EffectTemplateLibrary.Derive"/> **整批生成**。
+    /// <para>
+    /// 模板是**生成物**（引擎原话：不得手改），所以这里不做增量判断，只做「有没有」：
+    /// 有就不动——作者可能正在用其中的一份当父，删了会让他的草案突然展开不了。
+    /// </para>
+    /// </summary>
+    /// <returns>本次写出的模板份数（已存在＝0）。</returns>
+    public int EnsureTemplateLibrary()
+    {
+        if (Directory.Exists(Path.Combine(TemplateRoot, ModingFlattener.ProductDirectory))
+            && Directory.EnumerateFiles(Path.Combine(TemplateRoot, ModingFlattener.ProductDirectory), "*" + ComponentSuffix)
+                .Any())
+        {
+            return 0;
+        }
+
+        return EffectTemplateLibrary.WriteAll(TemplateRoot);
+    }
 
     /// <summary>写 DSL 文档，返回包内相对路径（<c>handler-dsl/&lt;name&gt;.hdsl.json</c>）。</summary>
     /// <exception cref="ArgumentException">名字含路径分隔符或非法字符。</exception>
@@ -85,7 +141,8 @@ public sealed class HandlerDslAuthoring
     /// <param name="draftRelativePath"><see cref="CommitDraft"/> 的返回值。</param>
     /// <param name="environment">DSL 装配（缺省＝进程内共享的那一份，含编译器与目录）。</param>
     public ModingFlattenResult Flatten(string draftRelativePath, HandlerDslEnvironment? environment = null)
-        => ModingFlattener.FlattenAndWrite(PackRoot, draftRelativePath, environment ?? SharedEnvironment.Value);
+        => ModingFlattener.FlattenAndWrite(
+            PackRoot, draftRelativePath, environment ?? SharedEnvironment.Value, TemplateRoot);
 
     /// <summary>`flatten --check`：草案是否落后于父／DSL 改过没重新摊平。</summary>
     public ModingFlattenCheckResult Check(string draftRelativePath)
@@ -111,14 +168,15 @@ public sealed class HandlerDslAuthoring
     }
 
     /// <summary>
-    /// 读回某个父效果**已有的**积木 DSL（覆盖模式下打开画布用）；没有＝null。
+    /// 读回某个效果**已有的**积木 DSL（覆盖模式下打开画布用）；没有＝null。
     /// <para>
     /// 覆盖不等于「从空白重写」：作者点「覆盖」时若包里已经有这份效果，应当看到他上次搭的图。
     /// </para>
     /// </summary>
-    public string? ReadExistingDsl(string parentId)
+    /// <param name="effectId">被替换的**效果** id（不是模板 id）：产物 id 由它派生，DSL 也跟着它命名。</param>
+    public string? ReadExistingDsl(string effectId)
     {
-        var path = Path.Combine(PackRoot, DslDirectory, Slug(ReplaceProductIdOf(parentId)) + DslSuffix);
+        var path = Path.Combine(PackRoot, DslDirectory, Slug(ReplaceProductIdOf(effectId)) + DslSuffix);
         return File.Exists(path) ? File.ReadAllText(path) : null;
     }
 
@@ -206,44 +264,115 @@ public sealed class HandlerDslAuthoring
     }
 
     /// <summary>
-    /// 本包里**能当父效果**的「组件#成员」清单（草案的 <c>extends</c> ＋ 成员名必须成对，所以一起列）。
+    /// **可以「用积木重写」的效果**：包里被卡引用到的效果组件（覆盖模式的下拉）。
     /// <para>
-    /// 只收 <c>mountable</c> 成员：草案的价值就是**重载一个会被信号触发的成员**，<c>hostable</c>／
-    /// <c>callable</c> 单独存在时改写它没有触发点，作者会得到一份「保存成功但永远不跑」的产物。
+    /// 与 <see cref="DescribeParents"/> 是两件事：父是**模板**（往哪填），这里是**目标**（替换谁）。
+    /// R39 之后它们不再是同一个 id——模板不能当目标，效果不能当父。
     /// </para>
     /// <para>
-    /// 坏文件跳过而不是整体失败：一个手改坏的组件不该让整个下拉空掉——作者会以为包是空的。
+    /// 已经改过的效果也列出来（卡现在指 <c>&lt;id&gt;.dsl</c>，这里仍显示原 id）：
+    /// 不列的话，作者第二次想改就找不到入口了——那份图还在，只是没有卡片指向原 id。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<HandlerReplaceTarget> DescribeReplaceableEffects()
+    {
+        var referenced = new Dictionary<string, int>(StringComparer.Ordinal);
+        var directory = Path.Combine(PackRoot, "cards");
+        if (Directory.Exists(directory))
+        {
+            foreach (var file in Directory.EnumerateFiles(directory, "*.card.json", SearchOption.TopDirectoryOnly))
+            {
+                JsonObject? card;
+                try { card = JsonNode.Parse(File.ReadAllText(file)) as JsonObject; }
+                catch (JsonException) { continue; }   // 手改坏的卡不影响下拉
+                if (card?["components"] is not JsonArray components) continue;
+
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var component in components.OfType<JsonObject>())
+                {
+                    if (component["component"]?.GetValue<string>() != "effects") continue;
+                    if (component["prefabs"] is not JsonArray prefabs) continue;
+                    foreach (var item in prefabs)
+                    {
+                        if (item?.GetValue<string>() is not { Length: > 0 } id) continue;
+                        seen.Add(BaseEffectIdOf(id));
+                    }
+                }
+
+                foreach (var id in seen) referenced[id] = referenced.GetValueOrDefault(id) + 1;
+            }
+        }
+
+        // 有积木版本但已经没人指向原 id 的效果：仍要能选，否则第二次编辑没有入口。
+        var products = Path.Combine(PackRoot, ModingFlattener.ProductDirectory);
+        if (Directory.Exists(products))
+        {
+            foreach (var file in Directory.EnumerateFiles(products, "*" + ComponentSuffix, SearchOption.TopDirectoryOnly))
+            {
+                var id = Path.GetFileName(file);
+                id = id[..^ComponentSuffix.Length];
+                if (!id.EndsWith(".dsl", StringComparison.Ordinal)) continue;
+                var baseId = BaseEffectIdOf(id);
+                if (File.Exists(Path.Combine(products, baseId + ComponentSuffix)))
+                    referenced.TryAdd(baseId, 0);
+            }
+        }
+
+        return referenced
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new HandlerReplaceTarget(pair.Key, pair.Value))
+            .ToArray();
+    }
+
+    /// <summary>产物 id → 被替换的原效果 id（去掉派生后缀）；不是派生 id 就原样返回。</summary>
+    private static string BaseEffectIdOf(string id)
+        => id.EndsWith(".dsl", StringComparison.Ordinal) ? id[..^".dsl".Length] : id;
+
+    /// <summary>
+    /// 本包**能当父效果**的「组件#成员」清单（草案的 <c>extends</c> ＋ 成员名必须成对，所以一起列）。
+    /// <para>
+    /// **R39 之后父只剩模板**：引擎把「可覆写」从资产级开关（<c>authorize-moding</c>，已废止）
+    /// 改成「父在链上把该成员声明成 <c>slot: { type: "handler" }</c> 且未 sealed」。
+    /// 具体效果组件不声明空位，所以**再也不能被覆写**——硬要覆写会被摊平器以
+    /// 「成员 'X' 不是空位」拒绝。能填的只有 <see cref="EffectTemplateLibrary"/> 派生出来的模板。
+    /// </para>
+    /// <para>
+    /// 模板库不在包内（它是只读依赖层），所以这里**不扫盘**：直接按引擎的派生规则取清单，
+    /// 与 <see cref="EnsureTemplateLibrary"/> 写出的文件一一对应。
     /// </para>
     /// </summary>
     public IReadOnlyList<HandlerParentOption> DescribeParents()
+        => TemplateSpecs().Values
+            .Select(spec => new HandlerParentOption(
+                spec.Id,
+                EffectTemplateSpec.MemberName,
+                "engine#" + spec.Signal,
+                spec.Label,
+                spec.Signal,
+                spec.Guard.ToString(),
+                spec.RequiresHost.ToString(),
+                spec.ActiveWhen.ToString()))
+            .ToArray();
+
+    /// <summary>引擎派生的模板清单（进程内缓存：派生规则确定，输入是信号表）。</summary>
+    private static IReadOnlyDictionary<string, EffectTemplateSpec> TemplateSpecs() => SharedTemplates.Value;
+
+    private static readonly Lazy<IReadOnlyDictionary<string, EffectTemplateSpec>> SharedTemplates =
+        new(() => EffectTemplateLibrary.Derive().ToDictionary(spec => spec.Id, StringComparer.Ordinal));
+
+    /// <summary>
+    /// 模板的「装配形状」：<c>requires-host</c> 与 <c>active-when</c> 的**引擎原文**。
+    /// <para>
+    /// 不自己拼枚举名（<c>HostKind</c> 是可按位组合的旗标，自己格式化迟早与引擎的写法分叉）；
+    /// 直接读引擎渲染出来的那一份——它与写到磁盘的模板是同一份文本。
+    /// </para>
+    /// </summary>
+    private static (string RequiresHost, string ActiveWhen) TemplateShape(EffectTemplateSpec spec)
     {
-        var directory = Path.Combine(PackRoot, Orc.Packages.PackageScanner.ComponentsDirectoryName);
-        if (!Directory.Exists(directory)) return [];
-
-        var options = new List<HandlerParentOption>();
-        foreach (var file in Directory.EnumerateFiles(directory, "*" + ComponentSuffix, SearchOption.TopDirectoryOnly)
-                     .OrderBy(path => path, StringComparer.Ordinal))
-        {
-            ComponentAsset asset;
-            try { asset = AssetSchema.Read(File.ReadAllText(file), "product"); }
-            catch (Exception error) when (error is InvalidDataException or ArgumentException or System.Text.Json.JsonException)
-            {
-                continue;
-            }
-
-            // 带 generated 的组件是**积木产物**，不是可编辑的基线：把它当父只会派生 x.dsl.dsl，
-            // 而作者真正想改的是它的源 DSL（覆盖模式会自动载入那一份）。
-            if (asset.Members.Any(member => member.Handler?.Generated is not null)) continue;
-
-            foreach (var member in asset.Members)
-            {
-                if (!member.Visibility.HasFlag(MemberVisibility.Mountable)) continue;
-                var target = asset.Mounts
-                    .FirstOrDefault(mount => string.Equals(mount.Member, member.Name, StringComparison.Ordinal))?.Target;
-                options.Add(new HandlerParentOption(asset.Id, member.Name, target));
-            }
-        }
-        return options;
+        var asset = JsonNode.Parse(EffectTemplateLibrary.Render(spec))!["asset"]!;
+        return (asset["requires-host"]?.GetValue<string>() ?? "any",
+                asset["active-when"]?.GetValue<string>() ?? "loaded");
     }
 
     /// <summary>
@@ -267,10 +396,25 @@ public sealed class HandlerDslAuthoring
     /// 这就是画布「视图」的来源：父效果声明了 <c>Card</c>／<c>Defense</c>／<c>Units</c>，
     /// 作者的积木才读得到它们。用一份写死的演示视图会让作者搭出「校验通过、装载期报字段不存在」的图。
     /// </para>
+    /// <para>
+    /// 模板走 <see cref="EffectTemplateLibrary.BuildAsset"/>（与写出到磁盘的是同一份构造），
+    /// 不走 <c>DescribePrefab</c>：模板库在包外，编辑面的展开只认包内资产。
+    /// </para>
     /// <para>父不存在／成员不存在＝空表（界面据此把所有视图引用标红，而不是假装有）。</para>
     /// </summary>
     public IReadOnlyDictionary<string, HandlerViewField> ViewFieldsOf(string parentId, string member)
     {
+        if (TemplateSpecs().TryGetValue(parentId, out var spec))
+        {
+            var built = EffectTemplateLibrary.BuildAsset(spec)
+                .Members.FirstOrDefault(item => string.Equals(item.Name, member, StringComparison.Ordinal));
+            if (built is null) return new Dictionary<string, HandlerViewField>(StringComparer.Ordinal);
+            return built.View.Fields.ToDictionary(
+                field => field.Name,
+                field => new HandlerViewField(field.Name, ViewFieldTypes.Format(field.Type), field.Writable),
+                StringComparer.Ordinal);
+        }
+
         var description = DescribeParent(parentId);
         var found = description.Members.FirstOrDefault(item => string.Equals(item.Name, member, StringComparison.Ordinal));
         if (found is null) return new Dictionary<string, HandlerViewField>(StringComparer.Ordinal);
@@ -293,23 +437,54 @@ public sealed class HandlerDslAuthoring
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // 父必须是模板（R39）：具体效果组件不声明空位，覆写它会被摊平器拒绝。
+        // 在写文件之前就拦住——否则作者会先看到三份文件落盘，再看到一句「不是空位」。
+        if (!TemplateSpecs().TryGetValue(request.ParentId, out var parentSpec))
+        {
+            throw new ArgumentException(
+                $"父效果必须是模板（'{request.ParentId}' 不在模板库里）：R39 起成员只有被父声明成空位才能填，"
+                + "具体效果组件不声明空位，不能当父。可用的父见 DescribeParents()。",
+                nameof(request));
+        }
+
+        if (!string.Equals(request.Member, EffectTemplateSpec.MemberName, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"模板 '{parentSpec.Id}' 的空位成员叫 '{EffectTemplateSpec.MemberName}'，不是 '{request.Member}'"
+                + "（内置模板的成员名是固定的，R34 第 3 条）。",
+                nameof(request));
+        }
+
+        EnsureTemplateLibrary();
+
         var replace = request.Mode == HandlerDslSaveMode.ReplaceExisting;
         // 覆盖模式不让人填产物 id：id 必须是确定性的，否则二次保存就换成另一份资产，
         // 卡牌引用还指着上一份，作者会得到「改了一次，第二次没生效」。
-        var productId = Slug(replace ? ReplaceProductIdOf(request.ParentId) : request.ProductId);
+        // 派生基准是**被替换的那个效果**（不是模板）：产物 id 要跟着效果走，才能让引用改写有落点。
+        var replaceFrom = request.RetargetFromId;
+        if (replace && string.IsNullOrWhiteSpace(replaceFrom))
+        {
+            throw new ArgumentException(
+                "覆盖模式要说明「替换哪个效果」：产物 id 由它派生（'<效果 id>.dsl'），引用也由它改指产物。",
+                nameof(request));
+        }
+
+        var productId = Slug(replace ? ReplaceProductIdOf(replaceFrom!) : request.ProductId);
         if (!replace && string.Equals(productId, request.ParentId, StringComparison.Ordinal))
         {
             // 摊平会往 effects-v4/<productId>.component.json 写：与父同名＝覆盖父，而父是这次摊平的输入。
             throw new ArgumentException(
-                $"产物 id 不能和父效果一样（'{productId}'）：那会把父效果覆盖掉，而父效果正是这次摊平的输入。"
-                + "想改已有的效果，请用覆盖模式（产物落到 '<父 id>.dsl'，引用由工具改写）。",
+                $"产物 id 不能和父效果一样（'{productId}'）：那会把父效果覆盖掉，而父效果正是这次摊平的输入。",
                 nameof(request));
         }
 
         var dslPath = CommitDsl(productId, request.DslJson);
+        var shape = TemplateShape(parentSpec);
         var draftPath = CommitDraft(productId, BuildDraft(
             productId + ".draft", request.ParentId, request.Member, dslPath,
-            dslJson: request.DslJson, productId: productId));
+            viewFields: ViewFieldsOf(request.ParentId, request.Member).Values.ToArray(),
+            dslJson: request.DslJson, productId: productId,
+            requiresHost: shape.RequiresHost, activeWhen: shape.ActiveWhen));
 
         var flatten = Flatten(draftPath);
         if (!flatten.Success)
@@ -320,7 +495,7 @@ public sealed class HandlerDslAuthoring
         }
 
         // 顺序是刻意的：先让产物真的存在，再改引用。反过来会出现「卡指向还不存在的效果」的中间态。
-        var retarget = replace ? RetargetReferences(request.ParentId, productId) : null;
+        var retarget = replace ? RetargetReferences(replaceFrom!, productId) : null;
 
         return new HandlerDslSaveResult(true, dslPath, draftPath, flatten.ProductId, flatten.ProductRelativePath,
             [], Check(draftPath).UpToDate, retarget);
@@ -334,10 +509,15 @@ public sealed class HandlerDslAuthoring
     /// </para>
     /// </summary>
     /// <param name="draftId">草案资产 id，例 <c>my-fire-support.draft</c>。</param>
-    /// <param name="parentId">父效果 id，例 <c>diy.fire-support.effect</c>。</param>
-    /// <param name="memberName">被覆盖的成员名，例 <c>onPlayed</c>。</param>
+    /// <param name="parentId">父**模板** id，例 <c>template.card.played.any</c>。</param>
+    /// <param name="memberName">要填的空位成员名，例 <c>onHook</c>。</param>
     /// <param name="dslPath"><see cref="CommitDsl"/> 的返回值。</param>
-    /// <param name="viewFields">成员视图字段（缺省＝只声明 <c>Card</c>，够跑 draw／damage 一类）。</param>
+    /// <param name="viewFields">成员视图字段（null＝只声明 <c>Card</c>，仅够跑不读视图的图）。
+    /// <para>
+    /// ⚠ 草案的 <c>view</c> 是**整段替换**父的视图声明：不传就等于把模板给的字段全删掉，
+    /// 于是「读 Card／Player／Source」的图会变成装载期报字段不存在。界面一律传
+    /// <see cref="ViewFieldsOf"/> 的结果，别用这个缺省值。
+    /// </para></param>
     /// <param name="mounts">**新增**的挂载点；缺省＝空（沿用父效果已有的挂载）。
     /// <para>
     /// ⚠ 不要把父效果已有的挂载再写一遍：摊平器把「父的挂载」和「草案的挂载」**拼接**，不去重。
@@ -349,6 +529,11 @@ public sealed class HandlerDslAuthoring
     /// 引擎的 <c>flatten --check</c> 把「没记哈希」判成陈旧（<c>DslHash is null</c> 即入差异项），
     /// 不记的草案永远显示「请重新摊平」，作者会被一条永远消不掉的警告追着跑。</param>
     /// <param name="dslHash">手算好的哈希（<paramref name="dslJson"/> 为空时才用）。</param>
+    /// <param name="requiresHost">宿主需求（引擎文本，例 <c>any</c>／<c>unit</c>／<c>unit|order</c>）。
+    /// 缺省 <c>any</c> 只适合「任意宿主都能挂」的图；模板的宿主需求要照抄，否则产物会被挂到
+    /// 一个永远不会触发它的宿主上。</param>
+    /// <param name="activeWhen">装配时点（<c>loaded</c>／<c>placed</c>）。缺省 <c>loaded</c>；
+    /// 模板按信号时机推导过，照抄它——写错时点＝「装载成功、永远不跑」。</param>
     public static string BuildDraft(
         string draftId,
         string parentId,
@@ -358,7 +543,9 @@ public sealed class HandlerDslAuthoring
         IReadOnlyList<HandlerMount>? mounts = null,
         string? productId = null,
         string? dslJson = null,
-        string? dslHash = null)
+        string? dslHash = null,
+        string requiresHost = "any",
+        string activeWhen = "loaded")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(draftId);
         ArgumentException.ThrowIfNullOrWhiteSpace(parentId);
@@ -402,8 +589,8 @@ public sealed class HandlerDslAuthoring
             ["id"] = draftId,
             ["product"] = new JsonObject { ["id"] = productId ?? ProductIdOf(draftId) },
             ["extends"] = parentId,
-            ["requires-host"] = "any",
-            ["active-when"] = "loaded",
+            ["requires-host"] = requiresHost,
+            ["active-when"] = activeWhen,
             ["one-shot"] = false,
             ["private-fields"] = new JsonArray(),
             ["members"] = new JsonArray(member),
@@ -445,19 +632,40 @@ public sealed class HandlerDslAuthoring
 /// <param name="Member">被挂载的成员名。</param>
 public sealed record HandlerMount(string Target, string Member);
 
-/// <summary>
-/// 一个可作父效果的「组件#成员」。草案的 <c>asset.extends</c> 要的是**组件 id**，成员名单独一项，
-/// 两者必须配对，所以这里合成一个选项。
-/// </summary>
-/// <param name="ParentId">父组件 id（草案 <c>extends</c> 的值）。</param>
-/// <param name="Member">被重载的成员名（草案 <c>members[].name</c>）。</param>
-/// <param name="MountedTarget">父效果**已经**为该成员挂的信号（null＝父没挂，产物不会有触发点）。
-/// 界面据此提醒作者：这条挂载会被继承，不要再声明一遍。</param>
-public sealed record HandlerParentOption(string ParentId, string Member, string? MountedTarget)
+/// <summary>一个可以用积木重写的**已有效果**（覆盖模式的目标）。</summary>
+/// <param name="EffectId">效果组件 id（原 id，不是派生出来的 <c>.dsl</c>）。</param>
+/// <param name="Cards">包内引用它的卡牌张数（0＝只剩一份积木版本，已经没人指向原 id）。</param>
+public sealed record HandlerReplaceTarget(string EffectId, int Cards)
 {
     /// <summary>下拉里显示的一行。</summary>
-    public string Label => ParentId + " · " + Member
-        + (MountedTarget is null ? "（父效果没挂信号）" : "  ← " + MountedTarget);
+    public string Label => EffectId + (Cards > 0 ? $"（{Cards} 张卡在用）" : "（暂无卡引用）");
+}
+
+/// <summary>
+/// 一个可作父效果的「模板#成员」。草案的 <c>asset.extends</c> 要的是**模板 id**，成员名单独一项，
+/// 两者必须配对，所以这里合成一个选项。
+/// </summary>
+/// <param name="ParentId">父模板 id（草案 <c>extends</c> 的值），例 <c>template.card.played.any</c>。</param>
+/// <param name="Member">要填的空位成员名（草案 <c>members[].name</c>），内置模板恒为 <c>onHook</c>。</param>
+/// <param name="MountedTarget">模板**已经**为该成员挂的信号（null＝没挂，产物不会有触发点）。
+/// 界面据此提醒作者：这条挂载会被继承，不要再声明一遍。</param>
+/// <param name="DisplayName">信号的中文名（模板的 <c>label</c>），下拉里给人看的就是它。</param>
+/// <param name="Signal">信号名，例 <c>card.played</c>。</param>
+/// <param name="Guard">守卫档（<c>Any</c>／<c>Self</c>／<c>OwnerSame</c>／<c>OwnerDifferent</c>）。</param>
+/// <param name="RequiresHost">宿主需求（<c>Any</c>／<c>Unit</c>／<c>Order</c>…）：挂错宿主的组件不会跑。</param>
+/// <param name="ActiveWhen">装配时点（<c>Loaded</c>／<c>Placed</c>）。</param>
+public sealed record HandlerParentOption(
+    string ParentId,
+    string Member,
+    string? MountedTarget,
+    string DisplayName,
+    string Signal,
+    string Guard,
+    string RequiresHost,
+    string ActiveWhen)
+{
+    /// <summary>下拉里显示的一行：中文名在前（作者认的是「打出时」不是 <c>card.played</c>）。</summary>
+    public string Label => DisplayName + " · " + Guard + "  [" + Signal + " → " + Member + "]";
 }
 
 /// <summary>保存的两种意图。</summary>
@@ -467,25 +675,27 @@ public enum HandlerDslSaveMode
     NewEffect,
 
     /// <summary>
-    /// 改一个**已有**的效果：产物落到确定性的 <c>&lt;父 id&gt;.dsl</c>，
-    /// 包内引用父 id 的卡牌自动改指产物，父效果原样保留（它是摊平输入，也是「还原」的退路）。
+    /// 改一个**已有**的效果：产物落到确定性的 <c>&lt;被替换的效果 id&gt;.dsl</c>，
+    /// 包内引用那个效果的卡牌自动改指产物，原效果原样保留（它是「还原」的退路）。
     /// </summary>
     ReplaceExisting,
 }
 
 /// <summary>一条龙保存的输入。</summary>
-/// <param name="ParentId">父组件 id。</param>
-/// <param name="Member">被重载的成员名。</param>
+/// <param name="ParentId">父**模板** id（R39：只有声明了成员空位的模板能当父）。</param>
+/// <param name="Member">要填的空位成员名（内置模板恒为 <c>onHook</c>）。</param>
 /// <param name="ProductId">产物 id（同时是文件名与资产 id）。新建模式下不能等于 <paramref name="ParentId"/>；
-/// 覆盖模式下**被忽略**（由 <see cref="HandlerDslAuthoring.ReplaceProductIdOf"/> 派生）。</param>
+/// 覆盖模式下**被忽略**（由 <see cref="HandlerDslAuthoring.ReplaceProductIdOf"/> 按被替换的效果派生）。</param>
 /// <param name="DslJson">DSL 文档原文。</param>
 /// <param name="Mode">新建还是覆盖。</param>
+/// <param name="RetargetFromId">覆盖模式：**被替换的效果 id**。产物 id 由它派生，卡牌引用也由它改指产物。</param>
 public sealed record HandlerDslSaveRequest(
     string ParentId,
     string Member,
     string ProductId,
     string DslJson,
-    HandlerDslSaveMode Mode = HandlerDslSaveMode.NewEffect);
+    HandlerDslSaveMode Mode = HandlerDslSaveMode.NewEffect,
+    string? RetargetFromId = null);
 
 /// <summary>一条龙保存的结果。</summary>
 /// <param name="Success">摊平是否成功（提交失败会抛异常，不走这里）。</param>
