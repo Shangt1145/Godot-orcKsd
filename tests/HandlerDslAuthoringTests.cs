@@ -200,6 +200,48 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     }
 
     [Fact]
+    public void 草案重复声明模板已有的挂载会被点名拒绝而不是效果翻倍()
+    {
+        // R40 之前这里是**静默翻倍**：产物 mounts 两条相同、handler 挂两遍、`draw 2` 抽 4 张，
+        // 而产物合法、装载成功、`flatten --check` 报「最新」（我们提的 issue #4）。
+        // 现在引擎在展开期拒绝，且必须点名「谁已经声明过、谁又声明了一次」——只报「重复」等于没说。
+        var dslPath = _authoring.CommitDsl("dup-mount", DrawTwo);
+        var draftPath = _authoring.CommitDraft("dup", HandlerDslAuthoring.BuildDraft(
+            "demo.dup.draft", ParentId, Member, dslPath,
+            viewFields: _authoring.ViewFieldsOf(ParentId, Member).Values.ToArray(),
+            mounts: [new HandlerMount("engine#card.played", Member)],
+            dslJson: DrawTwo, productId: "demo.dup"));
+
+        var result = _authoring.Flatten(draftPath);
+
+        Assert.False(result.Success);
+        var text = string.Join("\n", result.Errors.Select(error => error.Category + " " + error.Target + " " + error.Message));
+        Assert.Contains("重复声明挂载", text, StringComparison.Ordinal);
+        Assert.Contains("engine#card.played", text, StringComparison.Ordinal);
+        // 归属：模板是原声明者，草案是重复者——两个 id 都要出现，作者才知道该删哪一条。
+        Assert.Contains(ParentId, text, StringComparison.Ordinal);
+        Assert.Contains("demo.dup.draft", text, StringComparison.Ordinal);
+
+        // 失败不落产物：留着半份产物会让「重试」变成「改一份已经存在的东西」。
+        Assert.False(File.Exists(Path.Combine(SessionRoot, "effects-v4", "demo.dup.component.json")));
+
+        // 同一成员挂到**不同**信号是合法的（原文比较，不做作用域归一化）：这是「一个成员多个触发点」的正路。
+        // 信号不硬编码：从模板库里挑一个宿主需求相同的，否则会撞「挂错宿主」的另一条校验，测不到这里想测的东西。
+        var parentSpec = EffectTemplateLibrary.Derive().Single(spec => spec.Id == ParentId);
+        var otherSignal = EffectTemplateLibrary.Derive()
+            .First(spec => spec.Signal != parentSpec.Signal && spec.RequiresHost == parentSpec.RequiresHost)
+            .Signal;
+        var other = _authoring.CommitDraft("dup2", HandlerDslAuthoring.BuildDraft(
+            "demo.dup2.draft", ParentId, Member, dslPath,
+            viewFields: _authoring.ViewFieldsOf(ParentId, Member).Values.ToArray(),
+            mounts: [new HandlerMount("engine#" + otherSignal, Member)],
+            dslJson: DrawTwo, productId: "demo.dup2"));
+        var second = _authoring.Flatten(other);
+        Assert.True(second.Success, second.Describe());
+        Assert.Equal(2, AssetSchema.Read(second.ProductJson!, "product").Mounts.Count);
+    }
+
+    [Fact]
     public void 父清单来自引擎模板库_不是包里的效果组件()
     {
         var parents = _authoring.DescribeParents();
