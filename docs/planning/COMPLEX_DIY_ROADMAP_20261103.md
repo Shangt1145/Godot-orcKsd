@@ -174,6 +174,30 @@ headless 与带窗口两种模式都通过，截图见 `block-canvas.png`。
 `fetchFromDeck`／`pickHandCards` 这类两输出的节点只能取第一个输出。这条要同时改
 `HandlerDslDocument` 的序列化、校验器与画布的绑定编辑，单独一段做。
 
+### M3.5 适配 R39：父从「效果」换成「模板」——**已完成（2026-11-04）**
+
+引擎 `4b2aa7f` 把覆写资格改成「父声明了成员空位」，`authorize-moding`／`abstract` 废止。
+后果很直接：**具体效果的成员不允许再被覆写**，示例包六个组件一个空位都没有，
+所以「挑一个效果当父」这条路整段断掉，9 条摊平用例同时红。
+
+改法不是绕过，是换父：
+
+1. **父清单改读 `EffectTemplateLibrary.Derive()`**（104 份「信号 × 守卫档」，成员恒 `onHook`）。
+   模板库不落盘在任何地方，所以客户端自带生成：`EnsureTemplateLibrary()` 在保存前
+   `WriteAll` 到 `<base>/effect-templates`（包根的**兄弟**目录，不进 `packs/`——否则会被当成卡包）。
+2. **`Flatten` 传 `templateRoot`**（R33 的只读依赖层）：跨包继承只开在「不饱和的模板」上。
+3. **草案照抄模板的 `requires-host`／`active-when`**：写错时点＝装载成功、永远不跑。
+   这两个值不自己拼枚举名，直接读引擎渲染出来的那一份。
+4. **覆盖模式拆成「父（模板）」与「目标（效果）」两个下拉**：产物 id 从**目标**派生，
+   引用也由目标改指；`RetargetFromId` 必填，没有目标就拒绝保存（不做「假装改了」）。
+
+顺带把目录镜像补了 3 个节点（`attackByEffect`／`attackCandidates`／`exchange`）——
+对照测试首跑就红，这正是它的用途。
+
+**仍未做**：`inline` 效果（`pack/builtin` 那种 v3 内联快照）无法被覆盖：没有字符串引用可改，
+要做「内联 → 积木产物」的迁移。另见 `docs/engine/ISSUE_20261104_TEMPLATE_GAP.md`
+（示例包零个可扩展资产、`Check` 缺 `templateRoot`）。
+
 ### M4 把契约钉死
 
 **做什么**：把 27 个 check 向量做成数据驱动测试；模板库生成出来（引擎侧 `ORC_WRITE_TEMPLATES=1`），
@@ -186,6 +210,7 @@ headless 与带窗口两种模式都通过，截图见 `block-canvas.png`。
 **M1**。理由只有一条：它是唯一能证明「这条路真的通」的段落，而且不依赖任何 UI 决策。
 M2 之后的每一步都要先看到 M1 绿了才有意义。
 
+> 2026-11-04：R39 之后「父」只剩模板，M3.5 已完成适配（104 个模板 ＋ 覆盖模式拆成父子两个下拉）。
 > 2026-11-03：M1、M2、M2.5、M3（目录与视图）都已绿。
 > M1＝写回链路（`HandlerDslAuthoring` ＋ 5 条测试，含开局打出真的生效）；
 > M2＝画布保存（父效果清单、保存对话框、`block-canvas` 探针段）；
@@ -198,8 +223,9 @@ M2 之后的每一步都要先看到 M1 绿了才有意义。
 1. **v3/v4 双轨**：编辑面只索引 v3 `effects/*.prefab.json`，装载面只认 v4 `effects-v4/*.component.json`，
    中间靠 `MigrateEffectsToV4` 补桥。复杂 DIY 走的是**草案 → 摊平**这条路，产物直接落 v4，
    不要顺手去改 v3 的规则 DSL——那套表达不了 handler。
-2. **草案必须有父**：`asset.extends` 必填，没有它就不是草案而是组件资产。所以「从零做一个效果」
-   得先有一个可 `extends` 的父（自带效果，或一个只声明 `requires-host` 的空壳父）。
+2. **草案的父必须是模板**：`asset.extends` 必填，而且父必须把成员声明成空位（R39）。
+   具体效果组件**不能**当父——覆写会被摊平器以「不是空位」拒绝。可用的父只有
+   `EffectTemplateLibrary` 派生的 104 份模板。
 3. **`ask` 的 prompt 仍是死的**：引擎 Q7 明确把 `ask.prompt` 排除在外，作者填的那句对 `ask` 无效。
    界面上要么如实说，要么等引擎补。
 4. **DSL 不是资产**：不要给它编 id、不要期待版本号——`Commit` 立刻成功、lock 不动，这是设计不是 bug。
