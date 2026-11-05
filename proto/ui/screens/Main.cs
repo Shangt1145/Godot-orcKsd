@@ -406,6 +406,8 @@ public partial class Main : Control
         await StartupStageAsync(1, "准备就绪");
         Show("home");
         await FinishStartupAsync();
+        // 后台查一次更新：自己吞异常、开发环境与探针自动跳过（见 Main.AutoUpdate.cs）。
+        CheckForUpdatesOnStartup();
         var args = OS.GetCmdlineUserArgs();
         if (OS.IsDebugBuild() && Godot.FileAccess.FileExists("user://verify-debug-deployment.flag"))
         { Callable.From(VerifyDebugDeployment).CallDeferred();return; }

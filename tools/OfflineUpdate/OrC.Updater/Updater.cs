@@ -28,6 +28,22 @@ public partial class Updater : Control
             }
             catch(Exception e){GD.PushError(e.ToString());GetTree().Quit(1);}return;
         }
+        // 游戏自己拉起的无人值守更新：`更新游戏.exe --headless -- --apply <游戏目录> <补丁> [--relaunch]`
+        // 启动顺序是「游戏下载完 → 拉起本程序 → 游戏退出」，所以这里要**等游戏进程结束**再动文件
+        // （ApplyAsync 内部会等，别在外面加睡眠）。
+        if(args.Length>=3&&args[0]=="--apply")
+        {
+            try
+            {
+                var root=args[1];var patch=args[2];
+                await Task.Run(()=>Installer.ApplyAsync(root,patch));
+                GD.Print("UPDATER_APPLY_OK "+root);
+                if(Array.IndexOf(args,"--relaunch")>=0)
+                    Process.Start(new ProcessStartInfo(System.IO.Path.Combine(root,"KardsUi.exe")){WorkingDirectory=root,UseShellExecute=true});
+                GetTree().Quit();
+            }
+            catch(Exception e){GD.PushError("UPDATER_APPLY_FAIL "+e);GetTree().Quit(1);}return;
+        }
         Theme=new Theme{DefaultFont=new SystemFont{FontNames=["Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC"]},DefaultFontSize=17};
         var margin=new MarginContainer();AddChild(margin);margin.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         foreach(var edge in new[]{"left","right","top","bottom"})margin.AddThemeConstantOverride("margin_"+edge,30);
