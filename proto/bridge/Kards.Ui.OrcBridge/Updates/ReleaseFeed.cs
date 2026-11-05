@@ -65,8 +65,13 @@ public static class ReleaseFeed
         @"^OrC-KSD-(?<version>.+)-compatible-to-[0-9A-Fa-f]{12}\.orcupdate$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// 完整包。版本段必须**长得像版本号**——这一条不是洁癖：发布页上还有
+    /// <c>OrC-KSD-offline-updater-1.2.0-win-x64.zip</c>，用宽松的 <c>.+</c> 会把**更新器自己**
+    /// 当成游戏包下下来（真数据实测踩到过：跨版本玩家会被引导去下 74 MB 的更新器）。
+    /// </summary>
     private static readonly System.Text.RegularExpressions.Regex FullPattern = new(
-        @"^OrC-KSD-(?<version>.+)-win-x64\.zip$",
+        @"^OrC-KSD-(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.\-]*)?)-win-x64\.zip$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>解析 <c>/releases</c> 的 JSON。坏条目跳过，整体坏掉才抛。</summary>
@@ -155,7 +160,10 @@ public static class ReleaseFeed
         // 空就返回 null（＝不提示更新），绝不拿一个更旧的版本凑数。
         foreach (var asset in newest.Assets)
         {
-            if (!FullPattern.IsMatch(asset.Name)) continue;
+            var match = FullPattern.Match(asset.Name);
+            if (!match.Success) continue;
+            // 名字里的版本必须与这个发布一致：发布页上可能同时挂着别版的包（历史资产迁移时见过）。
+            if (!string.Equals(match.Groups["version"].Value, newest.Version, StringComparison.OrdinalIgnoreCase)) continue;
             return new UpdateCandidate(newest.Version, asset, IsPatch: false, newest.Notes, checksums);
         }
 

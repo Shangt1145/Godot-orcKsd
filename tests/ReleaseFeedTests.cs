@@ -135,6 +135,29 @@ public class ReleaseFeedTests
     }
 
     [Fact]
+    public void 不会把更新器自己当成游戏完整包()
+    {
+        // 发布页上每版都挂着 `OrC-KSD-offline-updater-1.2.0-win-x64.zip`。
+        // 宽松的 `.+` 会把它当成「游戏完整包」——跨版本玩家于是被引导去下 74 MB 的更新器，
+        // 更新器拿到手却不是补丁。这条是真数据实测踩出来的，不是假想。
+        var releases = ReleaseFeed.Parse("""
+        [
+          {
+            "tag_name": "v2.0.0-beta.4",
+            "body": "",
+            "draft": false,
+            "assets": [
+              { "name": "OrC-KSD-offline-updater-1.2.0-win-x64.zip", "size": 74328029, "browser_download_url": "https://example.test/updater.zip" },
+              { "name": "SHA256.txt", "size": 375, "browser_download_url": "https://example.test/s.txt" }
+            ]
+          }
+        ]
+        """);
+
+        Assert.Null(ReleaseFeed.Select(releases, "2.0.0-beta.1", new string('A', 64)));
+    }
+
+    [Fact]
     public void 草稿与不比本机新的版本都不算更新()
     {
         var releases = ReleaseFeed.Parse("""
