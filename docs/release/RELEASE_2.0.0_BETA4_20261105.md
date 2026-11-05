@@ -65,7 +65,10 @@ PC 与 Android 同步功能发行。沿用整代版本 `2.0.0`，预发布序号
 - **Windows 在 beta.1／beta.2**：本版只发 beta.3 → beta.4 一条补丁，请先按 beta.2 → beta.3 的补丁
   链升到 beta.3（自动更新只认「本机构建 → 本版」）。全量包按仓库规则不在线上分发。
 - **Windows 新玩家**：下载完整包解压即用（包内含 `更新游戏.exe`，之后就能自动更新）。
-- **Android**：下载本版 APK 覆盖安装。Android 走完整 APK，不使用 `.orcupdate`。
+- **Android**：下载本版 APK 覆盖安装。`versionCode=15`，版本名 `2.0.0-beta.4`，
+  包含 arm64-v8a 与 x86_64，**调试签名**（与 beta.3 同口径，不是商店签名）。
+  Android 走完整 APK，不使用 `.orcupdate`；启动自动更新在 Android 上**不启用**——
+  手机上没有「更新游戏.exe」，覆盖安装才是正路。
 - 源码对应标签 `v2.0.0-beta.4`。构建所用引擎提交 `ce498aa552bb44300e69f5e9a11605f6ef1f1002`
   （本地 v4 分支，含 R39／R40）。
 
