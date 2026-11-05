@@ -14,6 +14,8 @@
     [switch]$VerifyRoom,
     [switch]$VerifyNavigation,
     [switch]$VerifyPaperMotion,
+    [switch]$VerifyBattle3D,
+    [switch]$VerifyDeskCosmetics,
     [switch]$VerifyOpening,
     [switch]$VerifyViewerReplay,
     [switch]$VerifyRoomRemote,
@@ -109,6 +111,8 @@ try {
     elseif ($NetPlay) { & $Godot --headless --path $BuildRoot '--' --net-play }
     elseif ($VerifyOpening) { & $Godot --path $BuildRoot '--' --verify-opening }
     elseif ($VerifyPaperMotion) { & $Godot --path $BuildRoot '--' --verify-paper-motion }
+    elseif ($VerifyBattle3D) { & $Godot --path $BuildRoot '--' --verify-battle-3d }
+    elseif ($VerifyDeskCosmetics) { & $Godot --path $BuildRoot '--' --verify-desk-cosmetics }
     elseif ($VerifyNavigation) { & $Godot --path $BuildRoot '--' --verify-navigation }
     elseif ($VerifyViewerReplay) { & $Godot --headless --path $BuildRoot '--' --verify-viewer-replay }
     elseif ($VerifyRoom) { & $Godot --headless --path $BuildRoot '--' --verify-room }

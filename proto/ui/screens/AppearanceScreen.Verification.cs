@@ -4,6 +4,33 @@ namespace Kards.Ui;
 
 public partial class AppearanceScreen
 {
+    internal async Task VerifyDeskEditorAsync(Kards.Ui.Core.CosmeticAsset cloth, Kards.Ui.Core.CosmeticAsset model)
+    {
+        async Task Frame() => await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        async Task Click(Vector2 point)
+        {
+            GetViewport().PushInput(new InputEventMouseMotion { Position = point, GlobalPosition = point }, true);
+            GetViewport().PushInput(new InputEventMouseButton { Position = point, GlobalPosition = point, ButtonIndex = MouseButton.Left, Pressed = true }, true); await Frame();
+            GetViewport().PushInput(new InputEventMouseButton { Position = point, GlobalPosition = point, ButtonIndex = MouseButton.Left, Pressed = false }, true); await Frame();
+        }
+        foreach (var pair in new[] { (Tab: 4, Asset: cloth), (Tab: 1, Asset: model) })
+        {
+            SelectCategory(pair.Tab); _search.Text = pair.Asset.Name; RefreshControls(); await Frame(); await Frame();
+            var index = Array.FindIndex(_visibleAssets, a => a.Image == pair.Asset.Image) + 1;
+            if (index == 0) throw new Exception("Imported desk asset missing in editor");
+            var rect = _list.GetItemRect(index); await Click(_list.GetGlobalTransformWithCanvas() * rect.GetCenter());
+            if (pair.Tab == 1)
+            {
+                _propSize.Value = 1.2; _propYaw.Value = 30; _animation.Select(1); ChangePropSettings();
+            }
+            Save();
+        }
+        if (!_propPreview.HasProp || _propPreview.Animations.Length == 0 || !_propPreview.PlayClick()) throw new Exception("Editor animation preview missing");
+        var profile = _library.Resolve(_deckId, _mainNation);
+        if (profile.Tablecloth != cloth.Image || profile.Prop.Model != model.Prop?.Model || profile.Prop.Animation.Length == 0
+            || Math.Abs(profile.Prop.Size - 1.2f) > .001f || profile.Prop.Yaw != 30) throw new Exception("Editor failed to equip tabletop assets");
+        GD.Print("DESK_EDITOR_VERIFY_OK five-tabs real-mouse-select model-preview animations equip");
+    }
     internal async Task VerifyOriginalGalleryAsync()
     {
         _emoteFilter.Select(2);SelectCategory(3);

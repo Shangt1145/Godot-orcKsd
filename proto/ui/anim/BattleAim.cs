@@ -11,11 +11,14 @@ public partial class BattleAim : Control
     public bool Moving { get; set; }
     public bool InvalidTarget { get; set; }
     public UiAttackPreview? Preview { get; set; }
+    public Func<Vector2, Vector2>? ProjectPoint { get; set; }
     public override void _Draw()
     {
-        var distance = From.DistanceTo(To);
+        var from = ProjectPoint?.Invoke(From) ?? From;
+        var to = ProjectPoint?.Invoke(To) ?? To;
+        var distance = from.DistanceTo(to);
         if (!Visible || distance < 20) return;
-        var direction = (To - From).Normalized();
+        var direction = (to - from).Normalized();
         var normal = new Vector2(-direction.Y, direction.X);
         var ink = Moving || InvalidTarget ? new Color("bcbfaf") : new Color("9b2826");
         Vector2[] points;
@@ -26,20 +29,20 @@ public partial class BattleAim : Control
             // ("Invalid polygon data, triangulation failed"). A wedge reads as direction instead.
             // Verified across all lengths >= 20 and every angle; see tools/aim_polygon_probe.py.
             var half = MathF.Min(6f, distance * .28f);
-            points = [From + normal * half, To, From - normal * half];
+            points = [from + normal * half, to, from - normal * half];
         }
         else
         {
-            var end = To - direction * 14;
+            var end = to - direction * 14;
             var shoulder = end - direction * 27;
-            points = new Vector2[] { From + normal * 6, shoulder + normal * 6, shoulder + normal * 15, end, shoulder - normal * 15, shoulder - normal * 6, From - normal * 6 };
+            points = new Vector2[] { from + normal * 6, shoulder + normal * 6, shoulder + normal * 15, end, shoulder - normal * 15, shoulder - normal * 6, from - normal * 6 };
         }
         DrawColoredPolygon(points, ink);
         DrawPolyline(points.Append(points[0]).ToArray(), new Color("efe7cf"), 2.5f, true);
         if (Preview is { } p)
         {
-            Forecast(To + new Vector2(0, -55), p.DamageToDefender, p.DefenderDies);
-            if (p.DamageToAttacker > 0 || p.AttackerDies) Forecast(From + new Vector2(0, -55), p.DamageToAttacker, p.AttackerDies);
+            Forecast(to + new Vector2(0, -55), p.DamageToDefender, p.DefenderDies);
+            if (p.DamageToAttacker > 0 || p.AttackerDies) Forecast(from + new Vector2(0, -55), p.DamageToAttacker, p.AttackerDies);
         }
     }
     private void Forecast(Vector2 at, int? damage, bool fatal)

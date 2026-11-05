@@ -38,7 +38,7 @@ public partial class BattleCombat : Control
         var t = Math.Clamp(progress, 0, 1);
         return t * t * (3 - 2 * t);
     }
-    private static Vector2 CenterOf(BattleCard actor) => actor.Position + actor.Size / 2 + actor.FlightOffset * actor.Scale;
+    private static Vector2 CenterOf(BattleCard actor) => actor.WorldCenter ?? (actor.Position + actor.Size / 2 + actor.FlightOffset * actor.Scale);
     public override void _Process(double delta)
     {
         var step = (float)(delta / _clock.Scale);
@@ -93,7 +93,7 @@ public partial class BattleCombat : Control
     public async Task PlayAsync(UiCombatResolution r, BattleCard attacker, BattleCard defender)
     {
         ResetMotion(); var epoch = _epoch; IsPlaying = true; _actors.Add(attacker); _actors.Add(defender);
-        var from = attacker.RestPosition + attacker.Size / 2; var to = defender.RestPosition + defender.Size / 2;
+        var from = CenterOf(attacker); var to = CenterOf(defender);
         PhaseChanged?.Invoke("ready"); await Delay(.16, epoch);
         await Shoot(r.Attacker, attacker, from, to, epoch);
         Hit(r.Defender, r.DefenderAfter, defender, to, r.DamageToDefender, from);

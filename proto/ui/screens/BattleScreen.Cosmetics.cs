@@ -120,7 +120,10 @@ public partial class BattleScreen
         if(_selfDecoration is null)return;
         _selfDecoration.Texture=AppearanceRuntime.Image(AppearanceRuntime.Profile("self").Decoration,_textures);
         _enemyDecoration.Texture=AppearanceRuntime.Image(AppearanceRuntime.Profile("enemy").Decoration,_textures);
-        _selfDecoration.Visible=!_selfProp.Bind(AppearanceRuntime.Profile("self").Decoration)&&_selfDecoration.Texture is not null; _enemyDecoration.Visible=!_enemyProp.Bind(AppearanceRuntime.Profile("enemy").Decoration)&&_enemyDecoration.Texture is not null;
+        _selfProp.Hide(); _enemyProp.Hide();
+        _world3D.SetTablecloth(AppearanceRuntime.Profile("self").Tablecloth);
+        _selfDecoration.Visible=!_world3D.SetProp("self", AppearanceRuntime.Profile("self").Decoration, AppearanceRuntime.Profile("self").Prop)&&_selfDecoration.Texture is not null;
+        _enemyDecoration.Visible=!_world3D.SetProp("enemy", AppearanceRuntime.Profile("enemy").Decoration, AppearanceRuntime.Profile("enemy").Prop)&&_enemyDecoration.Texture is not null;
         _equippedEmotes=AppearanceRuntime.Profile("self").Emotes;
         RefreshEmoteChoices();
         void Redraw(Node node){if(node is CanvasItem canvas)canvas.QueueRedraw();foreach(var child in node.GetChildren())Redraw(child);}

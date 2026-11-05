@@ -63,6 +63,7 @@ public partial class BattleScreen
         // 卡在按下时会有抬升/倾斜动效（Position 带偏移），锚点语义看 RestPosition。
         var expectedRest = _pressAt - _grabOffset;
         if (_pressed?.Uid != uid || !_dragging || !_aim.Visible || !IsTargetedOrder(uid)
+            || DeploymentPose.From(_pressed) != _heldOrderPose || _pressed.DeploymentElevation != _heldOrderElevation
             || _aim.Preview is not null || _aim.InvalidTarget != (targetUid is null)
             // 抬升/扇面动效会让 RestPosition 有 7~13px 的合法漂移，而 `from` 已精确对齐卡心——
             // 再用 RestPosition 复算一遍是重复断言，只会跟动效参数一起抖。

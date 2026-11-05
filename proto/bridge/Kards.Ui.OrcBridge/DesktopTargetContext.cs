@@ -106,14 +106,40 @@ public sealed class DesktopTargetContext : IDisposable
     internal void PrepareCard(CardBase card) => _ = card;
 
     /// <summary>
-    /// 手牌里"需要玩家指"的卡与其候选（编辑器提示用）。
-    /// **v4 退化**：旧实现靠 <c>AuthoringTargetContext.ResolveCandidates</c> 做**纯查询**；
-    /// 该入口随 <c>EffectRuntime.QueryTargetCandidates</c> 一起删除，而唯一存活的
-    /// <c>EffectRuntime.SelectAsync</c> 在返回名单后会**对每个目标触发"指向"通知**——
-    /// 拿它当查询用会在玩家还没选的时候就触发指向类效果（真实副作用）。
-    /// 宁可这里返回空（界面不显示候选提示），也不制造隐形副作用；等引擎补回纯查询入口再恢复。
+    /// 从已编译的显式选靶声明投影首个打出目标，只读取场面和筛选条件。
+    /// 不调用 SelectAsync，预览不会提交选择或触发“指向”通知；最终资格仍由执行期选择器裁定。
     /// </summary>
-    public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer) => [];
+    public IReadOnlyList<UiOrderTargeting> ReadOrderTargets(Player viewer)
+    {
+        var result = new List<UiOrderTargeting>();
+        var units = new[] { _match.Battlefield.PlayerASupportLine, _match.Battlefield.FrontLine, _match.Battlefield.PlayerBSupportLine }
+            .SelectMany(line => line.Members).OfType<UnitCard>().Where(u => !u.GetData<UnitStateData>().IsDestroyed);
+        var field = units.Cast<Card>().Concat(_match.Players.Select(p => (Card)p.Hq)).Where(OrcRefs.IsAlive).ToArray();
+        foreach (var card in viewer.Hand.OfType<OrderCard>())
+        {
+            if (!_match.CardLibrary.TryGetRegisteredId(card.Definition, out var id) || !_plans.TryGetValue(id, out var plans)) continue;
+            foreach (var plan in plans)
+            {
+                using var doc = JsonDocument.Parse(plan);
+                var graph = doc.RootElement;
+                if (Text(graph, "trigger") is not ("play" or "order")) continue;
+                if (!graph.TryGetProperty("targets", out var targets)) continue;
+                var target = targets.EnumerateArray().FirstOrDefault(t => !t.TryGetProperty("reuse", out var reuse) || !reuse.GetBoolean());
+                if (target.ValueKind != JsonValueKind.Object) continue;
+                ValidateTarget(target);
+                var kind = Text(target, "kind"); var side = Text(target, "side"); var zone = Text(target, "zone");
+                var candidates = field.Where(c => (kind != "unit" || c is UnitCard) && (kind != "hq" || c is Hq))
+                    .Where(c => side is "" or "any" or "both" || ReferenceEquals(DesktopNativeRuntime.Owner(c), viewer) == (side == "friendly"))
+                    .Where(c => zone is "" or "field" || zone == "hq" && c is Hq
+                        || c is UnitCard u && (zone == "frontline" ? ReferenceEquals(u.GetData<UnitStateData>().Line, _match.Battlefield.FrontLine)
+                            : zone == "support" && !ReferenceEquals(u.GetData<UnitStateData>().Line, _match.Battlefield.FrontLine)))
+                    .Where(c => !target.TryGetProperty("filter", out var filter) || Matches(c, filter.GetRawText()));
+                result.Add(new(OrcRefs.KeyOf(card), candidates.Select(OrcRefs.KeyOf).ToArray()));
+                break;
+            }
+        }
+        return result;
+    }
 
     /// <summary>
     /// 这张卡在该时机是否有「需要玩家指」的效果。

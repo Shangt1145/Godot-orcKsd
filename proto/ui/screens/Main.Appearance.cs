@@ -57,7 +57,7 @@ public partial class Main
         if(feed is not RemoteMatchFeed remote)
         {
             if(feed is ReplayMatchFeed){AppearanceRuntime.Observer=true;_battle.RefreshCosmetics();return;}
-            var deck=_battleAppearanceDeck;
+            var deck=_battleAppearanceDeck??_decks.ActiveDeck?.Snapshot();
             AppearanceRuntime.LocalProfile=()=>_cosmetics.Resolve(deck?.Id,deck?.Options.MainNation);
             _battle.RefreshCosmetics();return;
         }

@@ -30,6 +30,7 @@ public partial class BattleScreen : Control
     private UiMatchView _state = null!;
     private UiBattleActions _actions = new();
     private Control _canvas = null!, _cardLayer = null!, _detail = null!;
+    private BattleWorld3D _world3D = null!;
     private KreditsDisplay _selfResource = null!, _enemyResource = null!;
     private Label _hint = null!;
     private Control _history = null!, _result = null!;
@@ -93,10 +94,8 @@ public partial class BattleScreen : Control
         ClipContents = true;
         _canvas = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Stop };
         AddChild(_canvas);
-        var background = new TextureRect { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore,
-            Texture = OriginalCosmetics.Ui("T_nui-board-render-default-2048"),
-            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.Scale };
-        _canvas.AddChild(background);
+        // The baked board image contains perspective and props. It cannot be used
+        // as the surface of the real 3D desk without duplicating both.
         _paper = new BattlePaper { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore };
         _canvas.AddChild(_paper);
         _enemyResource = new KreditsDisplay { Position = new(40, 0), Size = new(250, 108) }; _canvas.AddChild(_enemyResource);
@@ -154,7 +153,11 @@ public partial class BattleScreen : Control
         _hint = Text("", new(430, 594), new(420, 26), 14, "ece5ce");
         _hint.HorizontalAlignment = HorizontalAlignment.Center; _hint.Visible = false; _canvas.AddChild(_hint);
         _cardLayer = new Control { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore }; _canvas.AddChild(_cardLayer);
+        _world3D = new BattleWorld3D(); _canvas.AddChild(_world3D);
+        _canvas.MoveChild(_world3D, 0); _world3D.Initialize(_cardLayer, textures);
+        _world3D.SetTiltedView(_clock.TiltedBattleView);
         _aim = new BattleAim { Size = BoardSize, MouseFilter = MouseFilterEnum.Ignore, Visible = false, ZIndex = 180 }; _canvas.AddChild(_aim);
+        _aim.ProjectPoint = _world3D.ProjectAnchor;
         // Where a drop can land, drawn only while a card is being dragged. A packed row shows no slot
         // positions of its own — the cards sit next to each other — so without this the player is aiming
         // blind: a drop at one end and a drop in the middle look the same before the card is released.
@@ -508,14 +511,19 @@ public partial class BattleScreen : Control
         SelectCard(card.Uid);
         if (_selected != card.Uid) return;
         if (card.Mode == BattleCardMode.Hand) { card.Position = position; card.Rotation = rotation; card.ZIndex = 100; }
-        _pressed = card; _pressAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * viewportPosition;
+        _pressed = card; _pressAt = BoardPointer(viewportPosition);
         card.HoldHoverHitArea = false; FanAroundHover(null);
         _grabOffset = (_pressAt - card.Position - card.PivotOffset).Rotated(-card.Rotation) + card.PivotOffset; _dragging = false;
         _dragPointer = _dragPrevious = _pressAt; _dragLastTick = Time.GetTicksUsec(); _dragTiltTarget = 0;
-        if (card.Mode == BattleCardMode.Hand && IsTargetedOrder(card.Uid)) UpdateOrderAim(card, _pressAt);
+        if (card.Mode == BattleCardMode.Hand && IsTargetedOrder(card.Uid))
+        {
+            _heldOrderPose = DeploymentPose.From(card); _heldOrderElevation = card.DeploymentElevation;
+            UpdateOrderAim(card, _pressAt);
+        }
     }
     private void CardHovered(BattleCard card, bool on)
     {
+        if (card == _pressed && IsTargetedOrder(card.Uid)) return;
         if (!IsFriendlyTurn && _readOnlyMode is null) return;
         if (TargetChoiceVisible) return;
         if (HasPendingHandPlay(card.Uid)) return;
@@ -647,9 +655,8 @@ public partial class BattleScreen : Control
         }
         if (InteractionCard(_selected) is { Zone: "hand", Definition.CardType: "order" or "counter" } order)
         {
-            // 引擎不发布 orderTargets（恒为空，见 McpService.Projection），所以"指向性指令"在拖拽前
-            // 无法判定，箭头也画不出来。落点上正好站着单位＝玩家指了它：把 TargetUid 带上，
-            // 服务端开选靶时就能自动命中；不带的话会落到"候选第一个"甚至直接空放（抑制就是这样白扔的）。
+            // Explicit targeting comes from the bridge's read-only projection. For effects
+            // without a published preview, still pass the pointed actor to the engine's selector.
             var aimed = _cards.Values.FirstOrDefault(c => c.View is { } aimedView && aimedView.Zone != "hand"
                 && new Rect2(c.Position, c.Size).HasPoint(at));
             if (IsTargetedOrder(_selected))
@@ -931,6 +938,13 @@ public partial class BattleScreen : Control
         return lx + (slot - left.View!.SlotIndex) / (float)span * (rx - lx);
     }
 
+    private Vector2 BoardPointer(Vector2 viewportPosition)
+    {
+        var screen = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * viewportPosition;
+        // Convert the ray hit back to the stable layout used by engine candidates.
+        return _world3D.MapPointer(screen);
+    }
+
     public override void _Input(InputEvent e)
     {
         if(GameConsole.Current?.CapturesInput(e)==true)return;
@@ -938,6 +952,10 @@ public partial class BattleScreen : Control
         TrackTouch(e);
         if (!IsVisibleInTree() || _canvas is null) return;
         if (HandleCosmeticInput(e)) return;
+        if (!_clock.ReducedMotion && e is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } propClick
+            && !TargetChoiceVisible && _pressed is null
+            && _world3D.TryInteractProp(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * propClick.Position))
+        { GetViewport().SetInputAsHandled(); return; }
         if (!IsFriendlyTurn) return;
         if (_arrowSlot is not null)
         {
@@ -947,7 +965,7 @@ public partial class BattleScreen : Control
                     CancelTargetChoice(); return;
                 case InputEventKey: GetViewport().SetInputAsHandled(); return;
                 case InputEventMouseMotion aimMotion:
-                    var aimAt = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * aimMotion.Position;
+                    var aimAt = BoardPointer(aimMotion.Position);
                     if(_arrowPressed&&aimAt.DistanceTo(_arrowPressAt)>8)_arrowDragged=true;
                     UpdateArrowAim(aimAt);
                     GetViewport().SetInputAsHandled();
@@ -955,7 +973,7 @@ public partial class BattleScreen : Control
                 case InputEventMouseButton { ButtonIndex: MouseButton.Right, Pressed: true }:
                     CancelTargetChoice(); return;
                 case InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } press:
-                    _arrowPressAt=_canvas.GetGlobalTransformWithCanvas().AffineInverse()*press.Position;
+                    _arrowPressAt=BoardPointer(press.Position);
                     // A fresh source drag or target click confirms on release; the placement
                     // gesture's old release must never answer a newly opened target request.
                     var targetPressed = _arrowSlot.Allowed.Any(a => _cards.TryGetValue(a.Id, out var candidate)
@@ -971,7 +989,7 @@ public partial class BattleScreen : Control
                     _arrowPressed = false;
                     _arrowDragged = false;
                     GetViewport().SetInputAsHandled();
-                    if (commit) CommitArrowChoice(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * drop.Position);
+                    if (commit) CommitArrowChoice(BoardPointer(drop.Position));
                     return;
             }
             return;
@@ -986,7 +1004,7 @@ public partial class BattleScreen : Control
         { CancelGesture(); return; }
         if (e is InputEventMouseMotion motion)
         {
-            var at = _canvas.GetGlobalTransformWithCanvas().AffineInverse() * motion.Position;
+            var at = BoardPointer(motion.Position);
             if (_pressed is not null)
             {
                 if (at.DistanceTo(_pressAt) > 8) _dragging = true;
@@ -1024,9 +1042,9 @@ public partial class BattleScreen : Control
             var wasOrderAim = IsTargetedOrder(_pressed.Uid);
             var releasedPose = wasDragging && _pressed.Mode == BattleCardMode.Hand ? DeploymentPose.From(_pressed) : (DeploymentPose?)null;
             if (!wasDragging && _pressed.Mode == BattleCardMode.Hand) MoveHandPaper(_pressed, false);
-            _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
+            if (!wasOrderAim) _pressed.ZIndex = _pressed.Mode == BattleCardMode.Hand ? 20 + (_pressed.View?.SlotIndex ?? 0) : 0;
             _pressed = null; _dragging = false;
-            if (wasDragging) TryDrop(_canvas.GetGlobalTransformWithCanvas().AffineInverse() * release.Position, releasedPose);
+            if (wasDragging) TryDrop(BoardPointer(release.Position), releasedPose);
             else if (wasOrderAim) CancelGesture();
             else ClearSlotHints();
             ReleaseGestureWaiter();
@@ -1247,7 +1265,7 @@ public partial class BattleScreen : Control
             if (generation == _generation) CancelSelection();
         }
     }
-    private void PreferencesChanged() { if (_clock.ReducedMotion) FinishOpening(); CancelSelection(); }
+    private void PreferencesChanged() { _world3D.SetTiltedView(_clock.TiltedBattleView); if (_clock.ReducedMotion) FinishOpening(); CancelSelection(); }
     public override void _ExitTree() { CancelMulliganMotion(); FinishOpening(); StopDemoPlayback(); if (_clock is not null) _clock.Changed -= PreferencesChanged; ClearPresentation(); _pendingCombat = null; _combat.Interrupt(); ClearRemovalActors(); FinishMotion(); ReleaseGestureWaiter(); }
 
     public async Task VerifyAsync()
@@ -1653,10 +1671,10 @@ public partial class BattlePaper : Control
         var seam = new Color("171b16");
         if (FrontOccupied)
         {
-            var y = FrontOwnedBySelf ? 426 : 248;
+            var y = FrontOwnedBySelf ? 248 : 426;
             DrawLine(new(260, y), new(1020, y), seam, 3);
             for (var x = 274; x < 1014; x += 35)
-                DrawColoredPolygon([new(x - 10, y), new(x + 10, y), new(x, y + (FrontOwnedBySelf ? 10 : -10))], seam);
+                DrawColoredPolygon([new(x - 10, y), new(x + 10, y), new(x, y + (FrontOwnedBySelf ? -10 : 10))], seam);
         }
         if (DeployHint) Highlight(new(260, 442, 760, 150), "在这里部署");
         if (MoveHint) Highlight(new(260, 266, 760, 150), "进入前线");

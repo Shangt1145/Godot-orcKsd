@@ -28,7 +28,7 @@ public partial class AppearanceScreen : VBoxContainer
     private const int PageSize=18;
     private int _slot;
     private bool _refreshing;
-    private string Kind => new[]{"back","decoration","hq","emote"}[_category];
+    private string Kind => new[]{"back","decoration","hq","emote","tablecloth"}[_category];
     public event Action? Equipped;
     public event Action? BackRequested;
     public void Initialize(CosmeticLibrary library,TextureCache textures)
@@ -42,7 +42,7 @@ public partial class AppearanceScreen : VBoxContainer
         _scope=MenuStyles.Label("",14,MenuStyles.Gold);_scope.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_scope);
         var columns=new HBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};columns.AddThemeConstantOverride("separation",16);AddChild(columns);
         var categories=new VBoxContainer{CustomMinimumSize=new(128,0)};categories.AddThemeConstantOverride("separation",3);columns.AddChild(categories);
-        foreach(var name in new[]{"卡背","桌饰","总部","表情"})
+        foreach(var name in new[]{"卡背","桌饰","总部","表情","桌布"})
         {
             var index=_categories.Count;var button=new AppearanceCategoryButton{Caption=name,Category=index,TooltipText=name};
             button.Pressed+=()=>SelectCategory(index);
@@ -50,7 +50,7 @@ public partial class AppearanceScreen : VBoxContainer
             OriginalCosmetics.StyleButton(button);categories.AddChild(button);_categories.Add(button);
         }
         var left=new VBoxContainer{CustomMinimumSize=new(300,0)};columns.AddChild(left);
-        _search=new LineEdit{PlaceholderText="搜索原版装扮…",ClearButtonEnabled=true};left.AddChild(_search);
+        _search=new LineEdit{PlaceholderText="搜索装扮…",ClearButtonEnabled=true};left.AddChild(_search);
         _search.TextChanged+=_=>{_page=0;RefreshControls();};
         _emoteFilter=new OptionButton();foreach(var caption in new[]{"当前国家表情","普通表情","特殊表情","全部国家（DIY）"})_emoteFilter.AddItem(caption);
         _emoteFilter.ItemSelected+=_=>{_page=0;RefreshControls();};left.AddChild(_emoteFilter);
@@ -62,10 +62,13 @@ public partial class AppearanceScreen : VBoxContainer
         _pageStatus=MenuStyles.Label("",12,MenuStyles.Dim);_pageStatus.SizeFlagsHorizontal=SizeFlags.ExpandFill;pages.AddChild(_pageStatus);
         pages.AddChild(MenuStyles.Button("›",()=>{_page++;RefreshControls();}));
         left.AddChild(MenuStyles.Button("导入图片…",ChooseImage));
-        _delete=MenuStyles.Button("删除所选图片",DeleteSelected);left.AddChild(_delete);
+        _importModel=MenuStyles.Button("导入 3D 桌饰（GLB）…",ChooseModel);left.AddChild(_importModel);
+        _delete=MenuStyles.Button("删除所选外观",DeleteSelected);left.AddChild(_delete);
         var right=new VBoxContainer{SizeFlagsHorizontal=SizeFlags.ExpandFill};right.AddThemeConstantOverride("separation",12);columns.AddChild(right);
         _preview=new CosmeticPreview{CustomMinimumSize=new(420,310),SizeFlagsHorizontal=SizeFlags.ExpandFill,SizeFlagsVertical=SizeFlags.ExpandFill};_preview.Initialize(textures);right.AddChild(_preview);
-        right.AddChild(MenuStyles.Label("原版图片与字体 · 装备会同步给对手",13,MenuStyles.Dim));
+        InitializePropEditor(right);
+        var syncHint=MenuStyles.Label("图片桌饰、卡背等沿用房间外观同步；桌布为本机观感，3D 桌饰模型暂仅本机显示，对手显示预览图。",13,MenuStyles.Dim);
+        syncHint.AutowrapMode=TextServer.AutowrapMode.WordSmart;right.AddChild(syncHint);
         _hqName=new LineEdit{PlaceholderText="总部名称（留空沿用原名）",MaxLength=24};right.AddChild(_hqName);
         _hqName.TextChanged+=text=>{if(!_refreshing){_draft=_draft with{HeadquartersName=text};UpdatePreview();}};
         _emoteRow=new HBoxContainer();right.AddChild(_emoteRow);
@@ -95,7 +98,8 @@ public partial class AppearanceScreen : VBoxContainer
     {
         _refreshing=true;
         for(var i=0;i<_categories.Count;i++){_categories[i].SetPressedNoSignal(i==_category);_categories[i].AddThemeColorOverride("font_color",i==_category?MenuStyles.Gold:MenuStyles.Ink);}
-        _scope.Text=_deckId is null?"从“我的卡组 → 自定义外观”进入。":Kind is "back" or "hq"?"装备范围：仅当前卡组":"装备范围：所有以“"+SetupDeckBack.NationLabel(_mainNation??"")+"”为主国的卡组";
+        _scope.Text=_deckId is null?"从“我的卡组 → 自定义外观”进入。":Kind is "back" or "hq" or "tablecloth"?"装备范围：仅当前卡组":"装备范围：所有以“"+SetupDeckBack.NationLabel(_mainNation??"")+"”为主国的卡组";
+        _importModel.Visible=Kind=="decoration";
         var choices=Kind=="emote"
             ?OriginalCosmetics.Emotes.Where(e=>_emoteFilter.Selected==3||e.Nations.Length==0||e.Nations.Contains(_mainNation??"",StringComparer.OrdinalIgnoreCase))
                 .Where(e=>_emoteFilter.Selected switch{1=>e.Style=="paper",2=>e.Style=="special",_=>true}).Select(e=>(Asset:new CosmeticAsset("emote",e.Title,e.Image,true),Preset:(CosmeticEmote?)e.Emote))
@@ -112,7 +116,7 @@ public partial class AppearanceScreen : VBoxContainer
         _hqName.Visible=Kind=="hq";_hqName.Text=_draft.HeadquartersName;
         _emoteFilter.Visible=Kind=="emote";
         _emoteRow.Visible=Kind=="emote";_emoteLabel.Text=_draft.Emotes[_slot].Label;
-        var selected=Kind switch{"back"=>_draft.CardBack,"decoration"=>_draft.Decoration,"hq"=>_draft.Headquarters,_=>_draft.Emotes[_slot].Image};
+        var selected=Kind switch{"back"=>_draft.CardBack,"decoration"=>_draft.Decoration,"hq"=>_draft.Headquarters,"tablecloth"=>_draft.Tablecloth,_=>_draft.Emotes[_slot].Image};
         var index=Kind=="emote"?Array.FindIndex(_visiblePresets,e=>e?.Id==_draft.Emotes[_slot].Id)+1:Array.FindIndex(_visibleAssets,a=>a.Image==selected)+1;
         _list.Select(index);_delete.Disabled=index==0||_visibleAssets[index-1].BuiltIn;
         _refreshing=false;UpdatePreview();
@@ -128,18 +132,18 @@ public partial class AppearanceScreen : VBoxContainer
             if(duplicate>=0&&duplicate!=_slot)emotes[duplicate]=previous;
             emotes[_slot]=chosen;_draft=_draft with{Emotes=emotes};_refreshing=true;_emoteLabel.Text=chosen.Label.Replace('\n',' ');_refreshing=false;
         }
-        else _draft=Kind switch{"back"=>_draft with{CardBack=image},"decoration"=>_draft with{Decoration=image},_=>_draft with{Headquarters=image}};
+        else _draft=Kind switch{"back"=>_draft with{CardBack=image},"decoration"=>_draft with{Decoration=image,Prop=index==0?new():_visibleAssets[index-1].Prop??new()},"tablecloth"=>_draft with{Tablecloth=image},_=>_draft with{Headquarters=image}};
         _delete.Disabled=index==0||_visibleAssets[index-1].BuiltIn;UpdatePreview();
     }
-    private void UpdatePreview(){_preview.MainNation=_mainNation??"";_preview.Profile=_draft;_preview.EmoteSlot=_slot;_preview.QueueRedraw();}
+    private void UpdatePreview(){_preview.MainNation=_mainNation??"";_preview.Profile=_draft;_preview.EmoteSlot=_slot;_preview.QueueRedraw();RefreshPropEditor();}
     private void ResetCategory()
     {
-        _draft=Kind switch{"back"=>_draft with{CardBack=""},"decoration"=>_draft with{Decoration=""},"hq"=>_draft with{Headquarters="",HeadquartersName=""},_=>_draft with{Emotes=OriginalCosmetics.Defaults(_mainNation??"")}};
+        _draft=Kind switch{"back"=>_draft with{CardBack=""},"decoration"=>_draft with{Decoration="",Prop=new()},"tablecloth"=>_draft with{Tablecloth=""},"hq"=>_draft with{Headquarters="",HeadquartersName=""},_=>_draft with{Emotes=OriginalCosmetics.Defaults(_mainNation??"")}};
         _slot=0;RefreshControls();
     }
     private void Save()
     {
-        try{if(_deckId is null)throw new InvalidOperationException("请先选择要装扮的卡组。");_library.SaveFor(_deckId,_mainNation,_draft);_status.Text=Kind is "back" or "hq"?"已为当前卡组装备。":"已为该主国家的所有卡组装备。";Equipped?.Invoke();}
+        try{if(_deckId is null)throw new InvalidOperationException("请先选择要装扮的卡组。");_library.SaveFor(_deckId,_mainNation,_draft);_status.Text=Kind is "back" or "hq" or "tablecloth"?"已为当前卡组装备。":"已为该主国家的所有卡组装备。";Equipped?.Invoke();}
         catch(Exception e){_status.Text=e.Message;}
     }
     private void ChooseImage()
@@ -166,7 +170,7 @@ public partial class AppearanceCategoryButton : Button
     public int Category {get;set;}
     public override void _Draw()
     {
-        var names=new[]{"T_nui-icon-Cardback-gritty-256","T_nui-icon-boarditem-gritty-256","T_nui-icon-HQ-gritty-256","T_nui-icon-emote-gritty-256"};
+        var names=new[]{"T_nui-icon-Cardback-gritty-256","T_nui-icon-boarditem-gritty-256","T_nui-icon-HQ-gritty-256","T_nui-icon-emote-gritty-256","T_nui-icon-boarditem-gritty-256"};
         var ink=ButtonPressed?new Color("dba343"):new Color("d3d0bd");
         if(OriginalCosmetics.Ui(names[Category]) is {} texture)
             DrawTextureRect(texture,CosmeticPaper.Fit(texture,new(Size.X/2-25,9,50,49)),false,ink);
@@ -185,7 +189,7 @@ public partial class CosmeticPreview : Control
     {
         if(_textures is null)return;
         var board=new Rect2(Vector2.Zero,Size);
-        var wood=OriginalCosmetics.Ui("T_nui-board-render-default-2048");
+        var wood=AppearanceRuntime.Image(Profile.Tablecloth,_textures)??OriginalCosmetics.Ui("T_nui-board-render-default-2048");
         DrawRect(board,new("392f23"));if(wood is not null)DrawTextureRect(wood,board,false,new Color(.72f,.70f,.64f));
         DrawRect(board,new("746b4a"),false,1);
         var back=AppearanceRuntime.Image(Profile.CardBack,_textures)??AppearanceRuntime.Image(OriginalCosmetics.DefaultBack(MainNation),_textures);

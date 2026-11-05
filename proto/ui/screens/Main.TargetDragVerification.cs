@@ -126,6 +126,25 @@ public partial class Main
             var health = session.View.SelfLine.Single(c => c.Uid == victim.Uid).EffectiveDefense;
             var promptsBeforeOrder = promptCount;
             submitted = null;
+            var originalView = _clock.TiltedBattleView;
+            try
+            {
+                foreach (var tilted in new[] { false, true })
+                {
+                    _clock.SetTiltedBattleView(tilted);
+                    await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                    await _battle.DragAsync(orderCard.Uid, _battle.CardPoint(victim.Uid), async () =>
+                    {
+                        _battle.VerifyOrderArrow(orderCard.Uid, victim.Uid);
+                        await ToSignal(GetTree().CreateTimer(.25), SceneTreeTimer.SignalName.Timeout);
+                        _battle.VerifyOrderArrow(orderCard.Uid, victim.Uid);
+                        if (submitted is not null || promptCount != promptsBeforeOrder)
+                            throw new Exception("Held order submitted before release");
+                        _battle.CancelOrderDragForVerification();
+                    });
+                }
+            }
+            finally { _clock.SetTiltedBattleView(originalView); }
             await _battle.ClickAsync(_battle.GrabPoint(orderCard.Uid));
             if (submitted is not null || promptCount != promptsBeforeOrder)
                 throw new Exception("Clicking an order played it without dragging.");

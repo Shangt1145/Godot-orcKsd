@@ -23,6 +23,7 @@ public partial class AnimClock : Node
         get; private set;
     }
     public float Volume { get; private set; } = .45f;
+    public bool TiltedBattleView { get; private set; }
     public bool Muted
     {
         get; private set;
@@ -36,6 +37,7 @@ public partial class AnimClock : Node
             return;
         Current = (Speed)Math.Clamp(config.GetValue("fx", "speed", 0).AsInt32(), 0, 2);
         ReducedMotion = config.GetValue("fx", "reduced_motion", false).AsBool();
+        TiltedBattleView = config.GetValue("battle", "tilted_view", false).AsBool();
         Volume = Math.Clamp(config.GetValue("audio", "volume", .45).AsSingle(), 0, 1);
         Muted = config.GetValue("audio", "muted", false).AsBool();
     }
@@ -54,6 +56,11 @@ public partial class AnimClock : Node
         Volume = Math.Clamp(volume, 0, 1);
         Save();
     }
+    public void SetTiltedBattleView(bool tilted)
+    {
+        TiltedBattleView = tilted;
+        Save();
+    }
     public void SetMuted(bool muted)
     {
         Muted = muted;
@@ -64,6 +71,7 @@ public partial class AnimClock : Node
         var config = new ConfigFile();
         config.SetValue("fx", "speed", (int)Current);
         config.SetValue("fx", "reduced_motion", ReducedMotion);
+        config.SetValue("battle", "tilted_view", TiltedBattleView);
         config.SetValue("audio", "volume", Volume);
         config.SetValue("audio", "muted", Muted);
         var err = config.Save("user://fx_speed.cfg");

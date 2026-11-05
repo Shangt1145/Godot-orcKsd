@@ -7,6 +7,7 @@ public partial class BattleScreen
     // One owner per hand card: a new target starts at its current displayed pose.
     private void MoveHandPaper(BattleCard card, bool raised, double seconds = .18, float horizontal = 0)
     {
+        if (!GodotObject.IsInstanceValid(card) || card.IsQueuedForDeletion() || !card.IsInsideTree()) return;
         StopHandMotion(card.Uid);
         card.HoldHoverHitArea = raised;
         var destination = card.RestPosition + (raised ? new Vector2(0, -90) : new Vector2(horizontal, 0));
@@ -19,7 +20,13 @@ public partial class BattleScreen
         var motion = CreateTween().SetParallel().SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
         motion.TweenProperty(card, "position", destination, seconds * _clock.Scale);
         motion.TweenProperty(card, "rotation", rotation, seconds * _clock.Scale);
-        motion.TweenMethod(Callable.From<float>(e => { card.DeploymentElevation = e; card.QueueRedraw(); }), card.DeploymentElevation, raised ? .45f : 0, seconds * _clock.Scale);
+        motion.TweenMethod(Callable.From<float>(e =>
+        {
+            // MouseExited can enqueue a hover tween while Render replaces the old
+            // actors. The callable outlives its target even when property tweens stop.
+            if (!GodotObject.IsInstanceValid(card) || card.IsQueuedForDeletion()) return;
+            card.DeploymentElevation = e; card.QueueRedraw();
+        }), card.DeploymentElevation, raised ? .45f : 0, seconds * _clock.Scale);
         _handMotion[card.Uid] = motion; _tweens.Add(motion);
         motion.Finished += () => { if (_handMotion.GetValueOrDefault(card.Uid) == motion) _handMotion.Remove(card.Uid); _tweens.Remove(motion); };
     }

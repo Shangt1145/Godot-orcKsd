@@ -91,4 +91,26 @@ public sealed class CosmeticLibraryTests : IDisposable
         Assert.Throws<InvalidDataException>(()=>(loaded with{Emotes=[emote with{EnemyImage="../invalid"}]}).Checked());
     }
     public void Dispose(){if(Directory.Exists(_root))Directory.Delete(_root,true);}
+    [Fact] public void TableclothAndModelSettingsPersistAtTheirCorrectScopesAndDeleteCleanly()
+    {
+        var library = new CosmeticLibrary(_root);
+        var cloth = library.Import("tablecloth", "桌布", Png());
+        var json = System.Text.Encoding.UTF8.GetBytes("{\"asset\":{\"version\":\"2.0\"}} ");
+        using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);
+        writer.Write(0x46546C67); writer.Write(2); writer.Write(20 + json.Length); writer.Write(json.Length); writer.Write(0x4E4F534A); writer.Write(json);
+        var prop = library.ImportModel("模型", stream.ToArray(), Png());
+        var settings = prop.Prop! with { Click = "lift", Size = 1.5f, Yaw = 45 };
+        library.SaveFor("a", "britain", new() { Tablecloth = cloth.Image, Decoration = prop.Image, Prop = settings });
+        var loaded = new CosmeticLibrary(_root);
+        Assert.Equal(cloth.Image, loaded.Resolve("a", "britain").Tablecloth);
+        Assert.Empty(loaded.Resolve("b", "britain").Tablecloth);
+        Assert.Equal(settings, loaded.Resolve("b", "britain").Prop);
+        Assert.True(loaded.HasModel(settings.Model)); Assert.Empty(loaded.Resolve("c", "japan").Prop.Model);
+        loaded.Remove(prop);
+        Assert.Empty(loaded.Resolve("a", "britain").Decoration); Assert.Empty(loaded.Resolve("b", "britain").Prop.Model);
+        Assert.Equal(cloth.Image, loaded.Resolve("a", "britain").Tablecloth);
+        Assert.Throws<InvalidDataException>(() => loaded.ModelPath("../escape"));
+        Assert.Throws<InvalidDataException>(() => CosmeticModel.Inspect(Png()));
+        Assert.Throws<InvalidDataException>(() => (settings with { Size = float.NaN }).Checked());
+    }
 }

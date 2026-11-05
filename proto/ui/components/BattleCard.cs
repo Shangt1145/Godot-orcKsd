@@ -19,12 +19,20 @@ public partial class BattleCard : Control
     public Vector2 FlightOffset { get; private set; }
     public float PaperShear { get; set; }
     public float DeploymentElevation { get; set; }
+    internal bool WorldRendered { get; set; }
+    internal bool WorldPresentation { get; set; }
+    internal bool SurfaceOnly { get; set; }
+    internal Func<Vector2, bool>? WorldHitTest { get; set; }
+    internal Vector2? WorldCenter { get; set; }
     public string? ChoiceCaption { get; set; }
     public bool DrawFaceDown { get; set; }
     public string BackOwnerSide { get; set; } = "enemy";
     private TextureCache? _appearanceTextures;
     public bool HoldHoverHitArea { get; set; }
-    public override bool _HasPoint(Vector2 point) => new Rect2(Vector2.Zero, Size).HasPoint(point)
+    public override bool _HasPoint(Vector2 point) => WorldHitTest is { } hit
+        ? hit(GetGlobalTransformWithCanvas() * point)
+            || HoldHoverHitArea && Mode == BattleCardMode.Hand && new Rect2(RestPosition - Position, Size).HasPoint(point)
+        : new Rect2(Vector2.Zero, Size).HasPoint(point)
         || HoldHoverHitArea && Mode == BattleCardMode.Hand && new Rect2(RestPosition - Position, Size).HasPoint(point);
     private float _flightTilt;
     public void SetFlightPose(Vector2 offset, float tilt) { FlightOffset = offset; _flightTilt = tilt; QueueRedraw(); }
@@ -49,6 +57,7 @@ public partial class BattleCard : Control
     public event Action<BattleCard, Vector2>? Pressed;
     public event Action<BattleCard, bool>? Hovered;
     private bool _hover;
+    internal bool SurfaceHovered => _hover;
     private bool _inputBound;
     public void Bind(UiCardView? view, BattleCardMode mode, TextureCache cache)
     {
@@ -98,6 +107,7 @@ public partial class BattleCard : Control
     };
     public override void _Draw()
     {
+        if (WorldRendered) { if (_faceRoot is not null) _faceRoot.Hide(); return; }
         var xAxis = Vector2.FromAngle(_flightTilt);
         var yAxis = Vector2.FromAngle(_flightTilt + MathF.PI / 2 + PaperShear);
         var faceTransform = new Transform2D(xAxis, yAxis, PivotOffset + FlightOffset - xAxis * PivotOffset.X - yAxis * PivotOffset.Y);
@@ -112,7 +122,7 @@ public partial class BattleCard : Control
         }
         var bounds = new Rect2(Vector2.Zero, Size);
         var elevation = Math.Clamp(DeploymentElevation, 0, 1);
-        DrawStyleBox(UiStyles.Box(new Color(0, 0, 0, .36f + elevation * .12f), Colors.Transparent, 4, 0),
+        if (!SurfaceOnly) DrawStyleBox(UiStyles.Box(new Color(0, 0, 0, .36f + elevation * .12f), Colors.Transparent, 4, 0),
             new Rect2(new Vector2(5 + elevation * 4, 7 + elevation * 16), Size));
         var edge = Selected || Targeted ? new Color("d9c281") : _hover ? new Color("e0dcc5") : new Color("a9a186");
         var paper = UiStyles.Box(new Color("c6bea3"), edge, 3, 0);
@@ -245,6 +255,14 @@ public partial class BattleCard : Control
         var baseValue = shield ? View?.Definition.BaseDefense : View?.Definition.BaseAttack;
         var tint = value < baseValue ? new Color("d66142") : value > baseValue ? new Color("89ae66") : new Color("ece7d2");
         Text(value?.ToString() ?? "—", new Rect2(x - r, y - r - 2, r * 2, r * 2 + 4), (int)r + 5, tint);
+    }
+    internal void CopySurface(BattleCard source)
+    {
+        if (View != source.View || Mode != source.Mode) Bind(source.View, source.Mode, source._appearanceTextures!);
+        Selected = source.Selected; Available = source.Available; Targeted = source.Targeted;
+        DrawFaceDown = source.DrawFaceDown; ChoiceCaption = source.ChoiceCaption;
+        _hover = source._hover;
+        QueueRedraw();
     }
     private void Text(string text, Rect2 box, int size, Color color)
         => TextOn(this, text, box, size, color);

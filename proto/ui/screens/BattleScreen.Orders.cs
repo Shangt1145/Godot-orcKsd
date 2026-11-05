@@ -6,6 +6,8 @@ namespace Kards.Ui;
 public partial class BattleScreen
 {
     private readonly Dictionary<string, DeploymentPose> _orderOrigins = new();
+    private DeploymentPose? _heldOrderPose;
+    private float _heldOrderElevation;
 
     private UiOrderTargeting? OrderTargeting(string uid) => InteractionActions.OrderTargets.FirstOrDefault(t => t.Uid == uid);
     private bool IsTargetedOrder(string uid) => OrderTargeting(uid) is not null;

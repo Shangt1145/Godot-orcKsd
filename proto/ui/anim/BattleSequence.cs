@@ -233,6 +233,9 @@ public partial class BattleSequence : Control
         field.Visible = false;
         var paper = Paper(card, from.Position, from.Size, from.Rotation,
             enemy ? BattleCardMode.Hidden : BattleCardMode.Inspect);
+        // Deployment stays in the shared world even while displaying the large face.
+        // Inspect panels elsewhere remain screen UI.
+        paper.WorldPresentation = true;
         paper.Scale = from.Scale;
         var completed = false;
         try

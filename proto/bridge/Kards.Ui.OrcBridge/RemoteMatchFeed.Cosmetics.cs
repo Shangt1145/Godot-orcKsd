@@ -42,14 +42,17 @@ public sealed partial class RemoteMatchFeed
         await _cosmeticPublish.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var profile=LocalCosmetics.Checked();
+            // The current server accepts only its original PNG profile schema. Keep local
+            // tabletop/model settings out of this wire object, preserving older room hosts.
+            var profile=LocalCosmetics.Checked() with { Tablecloth="", Prop=new() };
             foreach(var hash in profile.Images())
             {
                 var bytes=_cosmetics.ReadImage(hash); CosmeticImage.Inspect(bytes);
                 var result=await CosmeticCallAsync("cosmetics.asset",new JsonObject { ["png"]=Convert.ToBase64String(bytes) },ct).ConfigureAwait(false);
                 if(result["hash"]?.GetValue<string>()!=hash) throw new InvalidDataException("外观上传校验失败。");
             }
-            await CosmeticCallAsync("cosmetics.set",new JsonObject { ["profile"]=JsonSerializer.SerializeToNode(profile) },ct).ConfigureAwait(false);
+            var wire=JsonSerializer.SerializeToNode(profile)!.AsObject(); wire.Remove("Tablecloth"); wire.Remove("Prop");
+            await CosmeticCallAsync("cosmetics.set",new JsonObject { ["profile"]=wire },ct).ConfigureAwait(false);
             CosmeticStatus?.Invoke("外观已同步到房间。");
         }
         finally { _cosmeticPublish.Release(); }

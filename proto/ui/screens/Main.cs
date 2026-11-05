@@ -416,6 +416,8 @@ public partial class Main : Control
         else if (args.Contains("--verify-setup-selection")) Callable.From(VerifySetupSelection).CallDeferred();
         else if (args.Contains("--verify-navigation")) Callable.From(VerifyNavigation).CallDeferred();
         else if (args.Contains("--verify-opening")) Callable.From(VerifyOpening).CallDeferred();
+        else if (args.Contains("--verify-battle-3d")) Callable.From(VerifyBattleWorld3D).CallDeferred();
+        else if (args.Contains("--verify-desk-cosmetics")) Callable.From(VerifyDeskCosmetics).CallDeferred();
         else if (args.Contains("--capture-opening-polish")) Callable.From(CaptureOpeningPolish).CallDeferred();
         else if (args.Contains("--capture-table-motion")) Callable.From(CaptureTableMotion).CallDeferred();
         else if (args.Contains("--verify-paper-motion")) Callable.From(VerifyPaperMotion).CallDeferred();
@@ -976,6 +978,10 @@ public partial class Main : Control
         motion.Toggled += on => { _clock.SetReducedMotion(on); _fx.InterruptAll(); }; motionSection.AddChild(motion);
         var description = MenuStyles.Label("减少菜单位移、卡牌展开与鼠标跟随，保留卡面揭示和必要的操作反馈。", 14, MenuStyles.Dim);
         description.AutowrapMode = TextServer.AutowrapMode.WordSmart; motionSection.AddChild(description);
+        var tiltedView = new CheckButton { Name = "TiltedBattleView", Text = "倾斜战场视角", ButtonPressed = _clock.TiltedBattleView };
+        tiltedView.Toggled += _clock.SetTiltedBattleView; motionSection.AddChild(tiltedView);
+        var viewHint = MenuStyles.Label("关闭：平直俯视（默认）；开启：倾斜透视。两种视角均保留单位起飞和桌饰。", 14, MenuStyles.Dim);
+        viewHint.AutowrapMode = TextServer.AutowrapMode.WordSmart; motionSection.AddChild(viewHint);
         var audio = Section("声音");
         var mute = new CheckButton { Text = "静音", ButtonPressed = _clock.Muted }; mute.Toggled += on => _clock.SetMuted(on); audio.AddChild(mute);
         audio.AddChild(MenuStyles.Label("音效音量", 14, MenuStyles.Gold));

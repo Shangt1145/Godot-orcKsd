@@ -5,19 +5,32 @@ using System.Text.Json;
 namespace Kards.Ui.Core;
 
 public sealed record CosmeticEmote(string Id, string Label, string Image = "", string Style="diy", string Tint="433a29", string EnemyImage="");
+public sealed record DeskPropSettings(string Model = "", string Click = "auto", string Animation = "", float Size = 1, float Yaw = 0)
+{
+    public DeskPropSettings Checked()
+    {
+        if (Model.Length > 0 && !CosmeticImage.IsId(Model) || Click is not ("auto" or "none" or "rock" or "spin" or "lift")
+            || Animation.Length > 256 || Animation.Any(char.IsControl) || !float.IsFinite(Size) || Size is < .25f or > 3
+            || !float.IsFinite(Yaw) || Yaw is < -180 or > 180) throw new InvalidDataException("桌饰配置无效。");
+        return this;
+    }
+}
 public sealed record CosmeticProfile
 {
     // Product capacity, not a claim about every original-client version.
     public const int MaximumEmotes = 8;
     public string CardBack { get; init; } = "";
     public string Decoration { get; init; } = "";
+    public string Tablecloth { get; init; } = "";
+    public DeskPropSettings Prop { get; init; } = new();
     public string Headquarters { get; init; } = "";
     public string HeadquartersName { get; init; } = "";
     public CosmeticEmote[] Emotes { get; init; } = DefaultEmotes();
     public static CosmeticEmote[] DefaultEmotes() => [new("hello", "你好！"), new("well-played", "打得漂亮"), new("thanks", "谢谢"), new("thinking", "让我想想"), new("deck", "漂亮的卡组"), new("mistake", "那是个错误"), new("surprised", "你在开玩笑吗？"), new("good-game", "一场光荣的战斗")];
-    public IEnumerable<string> Images() => new[] { CardBack, Decoration, Headquarters }.Concat(Emotes.SelectMany(e => new[]{e.Image,e.EnemyImage})).Where(s => s.Length > 0).Distinct();
+    public IEnumerable<string> Images() => new[] { CardBack, Decoration, Headquarters, Tablecloth }.Concat(Emotes.SelectMany(e => new[]{e.Image,e.EnemyImage})).Where(s => s.Length > 0).Distinct();
     public CosmeticProfile Checked()
     {
+        Prop.Checked();
         if (HeadquartersName.Length > 24 || HeadquartersName.Any(char.IsControl) || Emotes.Length is < 1 or > MaximumEmotes
             || Emotes.Any(e => e.Id.Length is < 1 or > 48 || e.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')
                 || string.IsNullOrWhiteSpace(e.Label) || e.Label.Length > 160 || e.Label.Any(c=>char.IsControl(c)&&c!='\n')
@@ -41,8 +54,8 @@ public static class CosmeticImage
         return (Convert.ToHexString(SHA256.HashData(png)), width, height);
     }
 }
-public sealed record CosmeticAsset(string Kind, string Name, string Image, bool BuiltIn=false, string Nation="");
-public sealed class CosmeticLibrary
+public sealed record CosmeticAsset(string Kind, string Name, string Image, bool BuiltIn=false, string Nation="", DeskPropSettings? Prop=null);
+public sealed partial class CosmeticLibrary
 {
     private sealed record Saved(CosmeticProfile Profile, CosmeticAsset[] Assets,
         Dictionary<string,CosmeticProfile>? Decks = null, Dictionary<string,CosmeticProfile>? Nations = null, int Schema = 1);
@@ -72,7 +85,8 @@ public sealed class CosmeticLibrary
             var legacy = saved.Profile.Checked();
             var decks = saved.Decks ?? new(); var nations = saved.Nations ?? new();
             foreach(var p in decks.Values.Concat(nations.Values)) p.Checked();
-            var assets = saved.Assets.Where(a => a.Kind is "back" or "decoration" or "hq" or "emote" && CosmeticImage.IsId(a.Image)).ToArray();
+            var assets = saved.Assets.Where(a => a.Kind is "back" or "decoration" or "hq" or "emote" or "tablecloth" && CosmeticImage.IsId(a.Image)).ToArray();
+            foreach (var asset in assets) asset.Prop?.Checked();
             _legacy = legacy; _legacyPending = saved.Schema == 1;
             _decks = decks; _nations = nations; _assets.AddRange(assets);
         }
@@ -97,11 +111,11 @@ public sealed class CosmeticLibrary
             if(string.IsNullOrWhiteSpace(deckId) || string.IsNullOrWhiteSpace(mainNation)) return _legacy;
             var defaults=_defaults.GetValueOrDefault(mainNation)??_defaults.GetValueOrDefault("")??new();
             var deck=_decks.GetValueOrDefault(deckId)??new(); var nation=_nations.GetValueOrDefault(mainNation)??defaults;
-            return deck with { CardBack=deck.CardBack.Length>0?deck.CardBack:defaults.CardBack, Decoration=nation.Decoration, Emotes=nation.Emotes.ToArray() };
+            return deck with { CardBack=deck.CardBack.Length>0?deck.CardBack:defaults.CardBack, Decoration=nation.Decoration, Prop=nation.Prop, Emotes=nation.Emotes.ToArray() };
         }
     }
-    private static CosmeticProfile DeckPart(CosmeticProfile p) => new(){CardBack=p.CardBack,Headquarters=p.Headquarters,HeadquartersName=p.HeadquartersName};
-    private static CosmeticProfile NationPart(CosmeticProfile p) => new(){Decoration=p.Decoration,Emotes=p.Emotes.ToArray()};
+    private static CosmeticProfile DeckPart(CosmeticProfile p) => new(){CardBack=p.CardBack,Headquarters=p.Headquarters,HeadquartersName=p.HeadquartersName,Tablecloth=p.Tablecloth};
+    private static CosmeticProfile NationPart(CosmeticProfile p) => new(){Decoration=p.Decoration,Prop=p.Prop,Emotes=p.Emotes.ToArray()};
     public string ImagePath(string id)
     {
         if (!CosmeticImage.IsId(id)) throw new InvalidDataException("无效的外观图片编号。");
@@ -123,7 +137,7 @@ public sealed class CosmeticLibrary
     }
     public CosmeticAsset Import(string kind, string name, byte[] png)
     {
-        if (kind is not ("back" or "decoration" or "hq" or "emote")) throw new InvalidDataException("未知外观分类。");
+        if (kind is not ("back" or "decoration" or "hq" or "emote" or "tablecloth")) throw new InvalidDataException("未知外观分类。");
         var asset = new CosmeticAsset(kind, string.IsNullOrWhiteSpace(name) ? "自定义图片" : name.Trim()[..Math.Min(name.Trim().Length,48)], CacheImage(png));
         if (_assets.All(a => a.Kind != kind || a.Image != asset.Image)) _assets.Add(asset);
         Save(Profile); return asset;
@@ -138,6 +152,7 @@ public sealed class CosmeticLibrary
         {
         profile.Checked();
         if (profile.Images().Any(id => !HasImage(id))) throw new InvalidDataException("装备的图片已缺失，请重新导入。");
+        if (profile.Prop.Model.Length > 0 && !HasModel(profile.Prop.Model)) throw new InvalidDataException("桌饰模型已缺失，请重新导入。");
         var decks=new Dictionary<string,CosmeticProfile>(_decks,StringComparer.Ordinal);
         var nations=new Dictionary<string,CosmeticProfile>(_nations,StringComparer.Ordinal);
         var legacy=_legacy;
@@ -156,7 +171,8 @@ public sealed class CosmeticLibrary
         CosmeticProfile Reset(CosmeticProfile p) => asset.Kind switch
         {
             "back" when p.CardBack == asset.Image => p with { CardBack="" },
-            "decoration" when p.Decoration == asset.Image => p with { Decoration="" },
+            "decoration" when p.Decoration == asset.Image => p with { Decoration="",Prop=new() },
+            "tablecloth" when p.Tablecloth == asset.Image => p with { Tablecloth="" },
             "hq" when p.Headquarters == asset.Image => p with { Headquarters="" },
             "emote" => p with { Emotes=p.Emotes.Select(e => e.Image == asset.Image ? e with { Image="" } : e).ToArray() }, _ => p
         };
