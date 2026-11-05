@@ -79,12 +79,12 @@ PC 与 Android 同步功能发行。沿用整代版本 `2.0.0`，预发布序号
 
 ## 验证记录
 
-- 构建标识 `853EB081FB56CEF81AB7DC53B7240C092DB9A802E6CC79BD377DEF6055D96F92`；
-  全量包 1,224,053,317 字节，补丁 9,352,332 字节（相对全量省 **99.24%**，本版改动 52 个文件），
+- 构建标识 `AF7693332651A0BE2918E06F7A85F2C3B4BBE48239A8C697AB1E8474DC2F458C`；
+  全量包 1,224,060,080 字节，补丁 11,129,711 字节（相对全量省 **99.09%**，本版改动 52 个文件），
   更新器 74,328,029 字节。
 - 发版门禁（全部通过后才导出）：源码同步 → 编译 → headless 原生 UI 验证 → 导出 →
   **真更新器**在 beta.3 副本上应用本版补丁 → 结果与完整包逐文件一致
-  （`PATCH_EXACT_FILES_OK 853EB081FB56…`）→ 升级后的 EXE 再跑一次 `--verify-export`
+  （`PATCH_EXACT_FILES_OK AF7693332651…`）→ 升级后的 EXE 再跑一次 `--verify-export`
   （`EXPORTED_PLAYER_VERIFY_OK`）。
 - 离线升级验证日志里同时覆盖了「选择补丁／更新按钮／启动游戏／可回退」四个界面态
   （`GODOT_UPDATER_VERIFY_OK … choose-patch update-button start-ready rollback-ready`）。
