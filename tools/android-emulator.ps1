@@ -36,6 +36,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 
+# adb 的「daemon not running / started successfully」是启动横幅，写在 stderr 上。
+# PowerShell 5.1 会把原生命令的 stderr 变成 error record，配合上面的 Stop 就直接终止脚本——
+# 表现为「模拟器还没起，脚本已经退出」（`2>$null` 挡不住这条路径，重定向发生在转换之后）。
+# 所以只在调用 adb 时把偏好放宽，其余保持 Stop。
+function Invoke-Adb {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $Adb @args } finally { $ErrorActionPreference = $previous }
+}
+
 function Test-Admin {
     ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -83,15 +93,15 @@ function Install-Driver {
 }
 
 function Stop-Emulator {
-    $devices = & $Adb devices | Select-Object -Skip 1 | Where-Object { $_ -match '^emulator-\d+\s+' }
+    $devices = Invoke-Adb devices | Select-Object -Skip 1 | Where-Object { $_ -match '^emulator-\d+\s+' }
     if (!$devices) { Write-Host '没有正在运行的模拟器。'; return }
-    & $Adb emu kill | Out-Null
+    Invoke-Adb emu kill | Out-Null
     Start-Sleep -Seconds 3
     Write-Host '模拟器已关闭。'
 }
 
 function Start-Emulator {
-    $running = & $Adb devices | Select-Object -Skip 1 | Where-Object { $_ -match '^emulator-\d+\s+device' }
+    $running = Invoke-Adb devices | Select-Object -Skip 1 | Where-Object { $_ -match '^emulator-\d+\s+device' }
     if ($running) { Write-Host '模拟器已在运行，直接复用。'; return }
     $env:ANDROID_SDK_ROOT = $Sdk
     $env:ANDROID_HOME = $Sdk
@@ -108,8 +118,8 @@ function Wait-Boot([int]$TimeoutSeconds = 240) {
     Write-Host "等待 Android 启动（最多 $TimeoutSeconds 秒）..." -NoNewline
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $booted = (& $Adb shell getprop sys.boot_completed 2>$null | Out-String).Trim()
-        if ($booted -eq '1') { Write-Host ' 已就绪。'; & $Adb shell input keyevent 82 | Out-Null; return $true }
+        $booted = (Invoke-Adb shell getprop sys.boot_completed | Out-String).Trim()
+        if ($booted -eq '1') { Write-Host ' 已就绪。'; Invoke-Adb shell input keyevent 82 | Out-Null; return $true }
         Write-Host '.' -NoNewline
         Start-Sleep -Seconds 3
     }
@@ -129,16 +139,16 @@ function Install-Apk([string]$Path) {
     }
     $mb = [math]::Round((Get-Item -LiteralPath $Path).Length / 1MB, 1)
     Write-Host "安装 $([IO.Path]::GetFileName($Path))（$mb MB）..."
-    & $Adb install -r -d $Path | Out-Host
+    Invoke-Adb install -r -d $Path | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "adb install 失败（退出码 $LASTEXITCODE）。签名不一致时先：adb uninstall $Package" }
-    & $Adb shell monkey -p $Package -c android.intent.category.LAUNCHER 1 | Out-Null
+    Invoke-Adb shell monkey -p $Package -c android.intent.category.LAUNCHER 1 | Out-Null
     Write-Host "已启动 $Package。"
 }
 
 function Show-Log {
-    & $Adb logcat -c
+    Invoke-Adb logcat -c
     Write-Host '--- logcat（Ctrl+C 退出；Godot 日志在 godot / GodotEngine 标签下）---'
-    & $Adb logcat godot:V GodotEngine:V AndroidRuntime:E ActivityManager:I *:S
+    Invoke-Adb logcat godot:V GodotEngine:V AndroidRuntime:E ActivityManager:I *:S
 }
 
 Assert-Sdk
