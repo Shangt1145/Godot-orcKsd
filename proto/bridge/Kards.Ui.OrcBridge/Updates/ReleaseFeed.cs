@@ -348,6 +348,19 @@ public sealed class UpdateDownloader
         var part = destination + ".part";
         var expected = asset.Size;
 
+        // 已经下完、而且校验对得上的那份直接复用。玩家下完却没退出（更新是退出时才应用的），
+        // 或者退出时更新器没来得及动手，下次启动不该把 40 MB 再下一遍。
+        if (File.Exists(destination) && (expected <= 0 || new FileInfo(destination).Length == expected))
+        {
+            if (string.IsNullOrWhiteSpace(expectedSha256)
+                || string.Equals(Hash(destination), expectedSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                progress?.Report(1d);
+                return;
+            }
+            TryDelete(destination);   // 已经坏了，重下
+        }
+
         // 上次下到一半的部分要**留着续**。以前在 finally 里无条件删掉，于是断一次就从零开始：
         // 补丁 40 MB、网络 30 KB/s 的时候，玩家只要提前退出一次就永远更不完。
         // 文件名里带版本与资产名，所以这份 .part 一定属于同一个文件，不会串到别的版本上。

@@ -295,6 +295,25 @@ public class ReleaseFeedTests
     }
 
     [Fact]
+    public async Task 已经下完且校验过的那份不再重下()
+    {
+        // 更新是退出时才应用的。玩家下完却没退出、或者退出时更新器没来得及动手，
+        // 下次启动不该把 40 MB 再下一遍——那条路径上每次都重下，慢网玩家永远等不到。
+        var payload = Payload(1000);
+        var handler = new ResumeHandler(payload);
+        var downloader = new UpdateDownloader(new HttpClient(handler));
+        var root = TempRoot();
+        var target = Path.Combine(root, "patch.orcupdate");
+        var expected = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload));
+        File.WriteAllBytes(target, payload);
+
+        await downloader.DownloadAsync(new ReleaseAsset("patch.orcupdate", payload.Length, "https://example.test/patch"), target, expected);
+
+        Assert.Empty(handler.Ranges);          // 一次请求都没发
+        Assert.Equal(payload, File.ReadAllBytes(target));
+    }
+
+    [Fact]
     public async Task 断线之后能接着下而不是从零开始()
     {
         // 补丁 40 MB、网络 30 KB/s 的时候，玩家提前退出一次就永远更不完——
