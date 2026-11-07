@@ -25,6 +25,7 @@ public partial class DiyWorkshopScreen : VBoxContainer
     internal OptionButton BaseChoice=null!,ModifyPick=null!;
     internal LineEdit PackName=null!,KeywordName=null!;
     internal Button SaveKeyword=null!;
+    internal Button OpenInspectorButton=null!;
     internal DiyPackDraft? CurrentPack=>_pack;
 
     /// <summary>
@@ -38,12 +39,17 @@ public partial class DiyWorkshopScreen : VBoxContainer
         _store=store;_cards=cards;_editor=editor;_service=service;_textures=textures;_changed=changed;_reduced=reduced;
         SizeFlagsVertical=SizeFlags.ExpandFill;AddThemeConstantOverride("separation",12);
         var top=new HBoxContainer();AddChild(top);_nativeToolbar=top;top.AddChild(MenuStyles.Label("DIY 工坊",32,MenuStyles.Ink));top.AddChild(new Control{SizeFlagsHorizontal=SizeFlags.ExpandFill});
+        OpenInspectorButton = MenuStyles.Button("新版 Inspector · 积木编辑", RequestBlockAuthoring);
+        OpenInspectorButton.TooltipText = "打开新版效果搭建界面；进入卡包后可将效果保存到当前卡包。";
+        MenuStyles.Primary(OpenInspectorButton); top.AddChild(OpenInspectorButton);
         top.AddChild(MenuStyles.Button("工坊首页",()=>_editor.GuardNavigation(ShowHome)));
         _notice=MenuStyles.Label("",13,MenuStyles.Dim);_notice.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_notice);
         _navigation=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_navigation);
         _workspace=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_workspace);AddChild(_editor);ShowHome();
         VisibilityChanged+=()=>{if(!Visible&&_animating)ShowHome();};
     }
+    private void RequestBlockAuthoring() => _editor.GuardNavigation(() => GuardNative(() => BlockAuthoringRequested?.Invoke()));
+
     internal void OpenPack(DiyPackDraft pack)
     {
         if (IsNativePackage(pack.Id)

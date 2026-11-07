@@ -358,20 +358,23 @@ public partial class Main : Control
         _diyEffects.Applied += (orc, legacy) => _diyEditor.ApplyEffects(orc, legacy);
         _diyEffects.Finished += () => Show("editor");
         AddScreen(content, "diyfx", _diyEffects);
-        // 积木式 handler 编辑（Handler DSL v1）：从效果编辑器进入，先独立成屏，暂不写回卡牌草稿。
+        // 新版 Inspector（Handler DSL v1）：独立成屏，保存出口为当前原生卡包。
         _blockEditor = new HandlerBlockEditorScreen();
         _blockEditor.Initialize();
         // 复杂 DIY 的写回出口：保存目标永远是**当前打开的卡包**（没有会话＝null，画布会给出明确提示）。
         _blockEditor.ConfigureSave(() => _nativeWorkshop.HandlerAuthoring);
-        _blockEditor.Finished += () => Show("diyfx");
+        var inspectorReturnScreen = "editor";
+        _blockEditor.Finished += () => Show(inspectorReturnScreen);
         AddScreen(content, "hdsl", _blockEditor);
         _diyEffects.BlockEditorRequested += () =>
         {
+            inspectorReturnScreen = "diyfx";
             _blockEditor.Open("样例：打出时");
             Show("hdsl");
         };
         _workshop.BlockAuthoringRequested += () =>
         {
+            inspectorReturnScreen = "editor";
             _blockEditor.Open("新效果：从积木开始");
             Show("hdsl");
         };
@@ -418,6 +421,7 @@ public partial class Main : Control
         else if (args.Contains("--verify-setup-selection")) Callable.From(VerifySetupSelection).CallDeferred();
         else if (args.Contains("--verify-navigation")) Callable.From(VerifyNavigation).CallDeferred();
         else if (args.Contains("--verify-opening")) Callable.From(VerifyOpening).CallDeferred();
+        else if (args.Contains("--verify-move-motion")) Callable.From(VerifyMoveMotion).CallDeferred();
         else if (args.Contains("--verify-battle-3d")) Callable.From(VerifyBattleWorld3D).CallDeferred();
         else if (args.Contains("--verify-desk-cosmetics")) Callable.From(VerifyDeskCosmetics).CallDeferred();
         else if (args.Contains("--capture-opening-polish")) Callable.From(CaptureOpeningPolish).CallDeferred();
@@ -451,6 +455,8 @@ public partial class Main : Control
             Callable.From(VerifyNativeWorkshop).CallDeferred();
         else if (args.Contains("--verify-workshop-routes"))
             Callable.From(VerifyWorkshopRoutes).CallDeferred();
+        else if (args.Contains("--verify-inspector-entry"))
+            Callable.From(VerifyInspectorEntry).CallDeferred();
         else if (args.Contains("--verify-inspector-composition") || args.Contains("--capture-inspector-composition"))
             Callable.From(VerifyInspectorComposition).CallDeferred();
         else if (args.Contains("--verify-desktop-authoring") || args.Contains("--capture-desktop-authoring"))
