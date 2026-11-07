@@ -66,8 +66,7 @@ public partial class Main
             if (version is null || buildId is null) return;
 
             using var http = NewHttpClient();
-            var json = await http.GetStringAsync(ReleaseFeed.ListUrl).ConfigureAwait(true);
-            var candidate = ReleaseFeed.Select(ReleaseFeed.Parse(json), version, buildId);
+            var candidate = ReleaseFeed.Select(await LoadReleasesAsync(http).ConfigureAwait(true), version, buildId);
             if (candidate is null) return;
             if (!candidate.IsPatch)
             {
@@ -83,6 +82,29 @@ public partial class Main
         {
             // 这里绝不能抛到启动流程：更新是锦上添花，不是开游戏的必要条件。
             GD.PushWarning("自动更新检查失败：" + error.Message);
+        }
+    }
+
+    /// <summary>
+    /// 先读静态清单，失败才退回 API。
+    /// <para>
+    /// 顺序不能反：API 按出口 IP 限 60 次/小时，被限流时是**静默失败**——玩家只会觉得
+    /// 「怎么一直没更新」。清单走发布页 CDN，不受这个配额约束。
+    /// </para>
+    /// </summary>
+    private static async Task<IReadOnlyList<ReleaseInfo>> LoadReleasesAsync(NetHttpClient http)
+    {
+        try
+        {
+            var manifest = await http.GetStringAsync(ReleaseFeed.ManifestUrl).ConfigureAwait(true);
+            return ReleaseFeed.ParseManifest(manifest);
+        }
+        catch (Exception error)
+        {
+            // 清单还没挂上（首次发版前）或网络挡了：退回 API，至少还有一次机会。
+            GD.PushWarning("静态清单不可用，退回发布接口：" + error.Message);
+            var json = await http.GetStringAsync(ReleaseFeed.ListUrl).ConfigureAwait(true);
+            return ReleaseFeed.Parse(json);
         }
     }
 

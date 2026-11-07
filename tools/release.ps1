@@ -326,6 +326,25 @@ $checksumLines=$deliveredFiles|ForEach-Object{
 [IO.File]::WriteAllLines((Join-Path $delivery 'SHA256.txt'),[string[]]$checksumLines,[Text.UTF8Encoding]::new($false))
 $fullBytes=(Get-Item -LiteralPath $zip).Length;$bootstrapBytes=(Get-Item -LiteralPath $bootstrap).Length;$patchBytes=if($patch){(Get-Item -LiteralPath $patch).Length}else{0}
 @{version=$version;buildId=$buildInfo.BuildId;fullPackageBytes=$fullBytes;bootstrapBytes=$bootstrapBytes;patchBytes=$patchBytes;firstUpdateDownloadBytes=($bootstrapBytes+$patchBytes);reductionPercent=if($patch){[Math]::Round(100*(1-$patchBytes/[double]$fullBytes),2)}else{$null};baselineSha256=if($BaselineZip){$baseHash}else{$null};patch=if($patch){'patches/'+[IO.Path]::GetFileName($patch)}else{$null}}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $notesDelivery 'offline-update-report.json') -Encoding utf8
+# 静态清单：客户端**首选**它。发布页 CDN 不受 api.github.com 的 60 次/小时匿名配额约束，
+# 而配额被打空时更新检查是静默失败的（玩家只看到「一直没更新」）。
+# 发版后把它挂到固定 tag `channel`：gh release upload channel dist/releases/latest.json --clobber
+$tag="v$version"
+$assetBase="https://github.com/Shangt1145/Godot-orcKsd/releases/download/$tag"
+$manifestAssets=@()
+if($patch){
+    $patchName=[IO.Path]::GetFileName($patch)
+    $manifestAssets+=[ordered]@{name=$patchName;size=$patchBytes;url="$assetBase/$patchName"}
+}
+$updaterName=[IO.Path]::GetFileName($bootstrap)
+$manifestAssets+=[ordered]@{name=$updaterName;size=$bootstrapBytes;url="$assetBase/$updaterName"}
+$shaPath=Join-Path $delivery 'SHA256.txt'
+if(Test-Path -LiteralPath $shaPath){
+    $manifestAssets+=[ordered]@{name='SHA256.txt';size=(Get-Item -LiteralPath $shaPath).Length;url="$assetBase/SHA256.txt"}
+}
+$manifestJson=[ordered]@{tag=$tag;notes='';assets=$manifestAssets}|ConvertTo-Json -Depth 6
+[IO.File]::WriteAllText((Join-Path $distRoot 'releases/latest.json'),$manifestJson,[Text.UTF8Encoding]::new($false))
+Write-Host "MANIFEST_OK $tag assets=$($manifestAssets.Count)"
 & (Join-Path $PSScriptRoot 'write-dist-index.ps1') -DistRoot $distRoot -CurrentRelease "$version$packageSuffix"
 Write-Host "EXPORTED_PLAYER_VERIFY_OK $smokeLog"
 Write-Host "$(if($TestPackage){'TEST_PACKAGE_OK'}else{'RELEASE_OK'}) $deliveredZip"

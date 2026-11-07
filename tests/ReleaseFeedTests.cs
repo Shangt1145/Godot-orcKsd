@@ -158,6 +158,44 @@ public class ReleaseFeedTests
     }
 
     [Fact]
+    public void 静态清单能直接喂给挑选规则()
+    {
+        // 清单是客户端的**首选**来源：API 按出口 IP 限 60 次/小时，被限流时更新检查静默失败，
+        // 玩家只会觉得「怎么一直没更新」。清单走发布页 CDN，不吃这个配额。
+        // 形状刻意做成「只有一个发布」，挑选规则一行都不用改。
+        var releases = ReleaseFeed.ParseManifest("""
+        {
+          "tag": "v2.0.0-beta.5",
+          "notes": "",
+          "assets": [
+            { "name": "OrC-KSD-2.0.0-beta.5-compatible-to-D6217E2FBB2D.orcupdate", "size": 13020457, "url": "https://example.test/patch.orcupdate" },
+            { "name": "OrC-KSD-offline-updater-1.2.0-win-x64.zip", "size": 74328029, "url": "https://example.test/updater.zip" },
+            { "name": "SHA256.txt", "size": 368, "url": "https://example.test/s.txt" }
+          ]
+        }
+        """);
+
+        var only = Assert.Single(releases);
+        Assert.Equal("v2.0.0-beta.5", only.Tag);
+        Assert.Equal("2.0.0-beta.5", only.Version);   // tag 的 v 前缀要去掉
+        Assert.False(only.Draft);
+
+        var candidate = ReleaseFeed.Select(releases, "2.0.0-beta.4", MyBuild);
+        Assert.NotNull(candidate);
+        Assert.True(candidate!.IsPatch);
+        Assert.Equal("https://example.test/patch.orcupdate", candidate.Asset.Url);
+        Assert.Equal(13020457, candidate.Asset.Size);
+    }
+
+    [Fact]
+    public void 静态清单坏掉时抛而不是当成没有更新()
+    {
+        // 抛出去才能退回 API。静默当成「没有更新」会让这条路永远没人知道坏了。
+        Assert.ThrowsAny<Exception>(() => ReleaseFeed.ParseManifest("[]"));
+        Assert.ThrowsAny<Exception>(() => ReleaseFeed.ParseManifest("""{ "assets": [] }"""));
+    }
+
+    [Fact]
     public void 草稿与不比本机新的版本都不算更新()
     {
         var releases = ReleaseFeed.Parse("""

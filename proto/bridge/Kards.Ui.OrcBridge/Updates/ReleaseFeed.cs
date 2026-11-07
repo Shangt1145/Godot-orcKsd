@@ -52,6 +52,18 @@ public static class ReleaseFeed
     /// </summary>
     public static string ListUrl => "https://api.github.com/repos/" + Repository + "/releases?per_page=30";
 
+    /// <summary>
+    /// 静态清单：挂在固定 tag <c>channel</c> 的发布上，每次发版用 <c>--clobber</c> 覆盖。
+    /// <para>
+    /// 为什么要它：<see cref="ListUrl"/> 走 <c>api.github.com</c>，未登录按**出口 IP** 限
+    /// 60 次/小时。被限流时更新检查会静默跳过（只写日志），玩家完全不知道为什么没提示——
+    /// 而运营商 NAT 后面的玩家是一整个小区共用这一个额度。这条 URL 走发布页 CDN，
+    /// 不受 API 配额约束，所以它是首选，API 只当退路。
+    /// </para>
+    /// </summary>
+    public static string ManifestUrl =>
+        "https://github.com/" + Repository + "/releases/download/channel/latest.json";
+
     private static readonly System.Text.RegularExpressions.Regex PatchPattern = new(
         @"^OrC-KSD-(?<version>.+?)-from-(?<from>[0-9A-Fa-f]{12})-to-[0-9A-Fa-f]{12}\.orcupdate$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
@@ -74,10 +86,40 @@ public static class ReleaseFeed
         @"^OrC-KSD-(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.\-]*)?)-win-x64\.zip$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// 解析静态清单（<see cref="ManifestUrl"/>）。形状刻意做成「只有一个发布」，
+    /// 其余与 <see cref="Parse"/> 一致，挑选规则一行都不用改。
+    /// </summary>
+    /// <exception cref="JsonException">不是对象，或缺 tag。</exception>
+    public static IReadOnlyList<ReleaseInfo> ParseManifest(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) throw new JsonException("清单不是对象。");
+        if (!root.TryGetProperty("tag", out var tagNode) || tagNode.GetString() is not { Length: > 0 } tag)
+            throw new JsonException("清单缺 tag。");
+
+        var notes = root.TryGetProperty("notes", out var notesNode) ? notesNode.GetString() ?? "" : "";
+        var assets = new List<ReleaseAsset>();
+        if (root.TryGetProperty("assets", out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in array.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                if (!item.TryGetProperty("name", out var nameNode) || nameNode.GetString() is not { Length: > 0 } name) continue;
+                if (!item.TryGetProperty("url", out var urlNode) || urlNode.GetString() is not { Length: > 0 } url) continue;
+                var size = item.TryGetProperty("size", out var sizeNode) && sizeNode.TryGetInt64(out var parsed) ? parsed : 0;
+                assets.Add(new ReleaseAsset(name, size, url));
+            }
+        }
+
+        var version = tag.StartsWith('v') ? tag[1..] : tag;
+        return [new ReleaseInfo(tag, version, Draft: false, notes, assets)];
+    }
+
     /// <summary>解析 <c>/releases</c> 的 JSON。坏条目跳过，整体坏掉才抛。</summary>
     /// <exception cref="JsonException">不是 JSON 数组。</exception>
-    public static IReadOnlyList<ReleaseInfo> Parse(string json)
-    {
+    public static IReadOnlyList<ReleaseInfo> Parse(string json)    {
         using var document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind != JsonValueKind.Array)
             throw new JsonException("发布列表不是数组。");
