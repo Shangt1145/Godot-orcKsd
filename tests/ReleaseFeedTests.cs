@@ -294,6 +294,30 @@ public class ReleaseFeedTests
         Assert.DoesNotContain("--relaunch", UpdateLauncher.Arguments("r", "p", relaunch: false));
     }
 
+    [Fact]
+    public async Task 下载中途没有新字节会超时失败而不是永远挂着()
+    {
+        // `HttpClient.Timeout` 在 ResponseHeadersRead 模式下只管到**响应头**，正文阶段没有超时。
+        // 实测卡在 6.5 MB 整整七分钟一个新字节都没来：游戏既不算失败也不往下走，
+        // 玩家看到的就是「更新永远没动静」。这条钉住「停下来要报错」。
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new StallingStream(200)),
+        });
+        var downloader = new UpdateDownloader(new HttpClient(handler))
+        {
+            StallTimeout = TimeSpan.FromMilliseconds(150),
+        };
+
+        var root = TempRoot();
+        var target = Path.Combine(root, "patch.orcupdate");
+        var started = DateTime.UtcNow;
+        await Assert.ThrowsAnyAsync<Exception>(() => downloader.DownloadAsync(
+            new ReleaseAsset("patch.orcupdate", 1000, "https://example.test/patch"), target, null));
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(10), "停滞没有在超时后结束。");
+        Assert.False(File.Exists(target), "失败的下载不该留下正式名字的文件。");
+    }
+
     private static HttpClient Stub(byte[] payload)
     {
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -301,6 +325,28 @@ public class ReleaseFeedTests
             Content = new ByteArrayContent(payload),
         });
         return new HttpClient(handler);
+    }
+
+    /// <summary>先给一点字节，然后永远不再产出——模拟连接半死。</summary>
+    private sealed class StallingStream(int firstChunk) : Stream
+    {
+        private int _sent;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _sent; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_sent == 0) { _sent = Math.Min(firstChunk, buffer.Length); buffer[.._sent].Span.Fill(7); return _sent; }
+            await Task.Delay(Timeout.Infinite, cancellationToken);   // 卡住，只认取消
+            return 0;
+        }
     }
 
     private sealed class StubHandler : HttpMessageHandler

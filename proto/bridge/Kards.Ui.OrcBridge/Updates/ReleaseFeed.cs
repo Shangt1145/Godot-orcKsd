@@ -308,6 +308,12 @@ public static class ReleaseFeed
 /// </summary>
 public sealed class UpdateDownloader
 {
+    /// <summary>多久没有新字节就判定这条连接死了。</summary>
+    public static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromSeconds(45);
+
+    /// <summary>可覆盖，测试把它压到毫秒级。</summary>
+    public TimeSpan StallTimeout { get; set; } = DefaultStallTimeout;
+
     private readonly HttpClient _http;
 
     /// <param name="http">注入点：测试给假的 handler，生产用默认客户端。</param>
@@ -351,8 +357,17 @@ public sealed class UpdateDownloader
                 var buffer = new byte[81920];
                 long received = 0;
                 int read;
-                while ((read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                // 每次读取单独设一个「多久没有新字节就算死」的闸门。
+                // 为什么必须有：`HttpClient.Timeout` 在 ResponseHeadersRead 模式下只管到**响应头**，
+                // 正文阶段没有超时——网络一停，ReadAsync 会一直挂着。实测卡在 6.5 MB 整整七分钟
+                // 一个新字节都没来，游戏既不算失败也不往下走，玩家看到的就是「更新永远没动静」。
+                using var stall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                while (true)
                 {
+                    stall.CancelAfter(StallTimeout);
+                    read = await source.ReadAsync(buffer, stall.Token).ConfigureAwait(false);
+                    stall.CancelAfter(Timeout.InfiniteTimeSpan);
+                    if (read <= 0) break;
                     await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                     received += read;
                     if (total > 0) progress?.Report(Math.Min(1d, received / (double)total));
