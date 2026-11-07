@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -344,47 +346,32 @@ public sealed class UpdateDownloader
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
         var part = destination + ".part";
+        var expected = asset.Size;
+
+        // 上次下到一半的部分要**留着续**。以前在 finally 里无条件删掉，于是断一次就从零开始：
+        // 补丁 40 MB、网络 30 KB/s 的时候，玩家只要提前退出一次就永远更不完。
+        // 文件名里带版本与资产名，所以这份 .part 一定属于同一个文件，不会串到别的版本上。
+        var resumeFrom = File.Exists(part) ? new FileInfo(part).Length : 0;
+        if (expected > 0 && resumeFrom > expected) { TryDelete(part); resumeFrom = 0; }
+
+        var corrupt = false;
         try
         {
-            using (var response = await _http.GetAsync(asset.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                       .ConfigureAwait(false))
-            {
-                response.EnsureSuccessStatusCode();
-                var total = response.Content.Headers.ContentLength ?? asset.Size;
-                await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                await using var target = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+            if (expected <= 0 || resumeFrom < expected)
+                resumeFrom = await FetchAsync(asset, part, resumeFrom, expected, progress, cancellationToken).ConfigureAwait(false);
 
-                var buffer = new byte[81920];
-                long received = 0;
-                int read;
-                // 每次读取单独设一个「多久没有新字节就算死」的闸门。
-                // 为什么必须有：`HttpClient.Timeout` 在 ResponseHeadersRead 模式下只管到**响应头**，
-                // 正文阶段没有超时——网络一停，ReadAsync 会一直挂着。实测卡在 6.5 MB 整整七分钟
-                // 一个新字节都没来，游戏既不算失败也不往下走，玩家看到的就是「更新永远没动静」。
-                using var stall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                while (true)
-                {
-                    stall.CancelAfter(StallTimeout);
-                    read = await source.ReadAsync(buffer, stall.Token).ConfigureAwait(false);
-                    stall.CancelAfter(Timeout.InfiniteTimeSpan);
-                    if (read <= 0) break;
-                    await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                    received += read;
-                    if (total > 0) progress?.Report(Math.Min(1d, received / (double)total));
-                }
-                await target.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            // 校验在**改名之前**：半截文件留在 .part 上，下次重下即可；写进正式名字就等于
-            // 把一个坏包摆在那里，下次启动会当成「已下载」直接拿去更新。
-            if (asset.Size > 0 && new FileInfo(part).Length != asset.Size)
-                throw new InvalidDataException($"下载长度不符：期望 {asset.Size} 字节，实际 {new FileInfo(part).Length} 字节。");
+            // 校验在**改名之前**：写进正式名字就等于把一个坏包摆在那里，下次启动会当成「已下载」。
+            if (expected > 0 && new FileInfo(part).Length != expected)
+                throw new InvalidDataException($"下载长度不符：期望 {expected} 字节，实际 {new FileInfo(part).Length} 字节。");
 
             if (!string.IsNullOrWhiteSpace(expectedSha256))
             {
                 var actual = Hash(part);
                 if (!string.Equals(actual, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    corrupt = true;
                     throw new InvalidDataException($"下载校验失败：期望 {expectedSha256}，实际 {actual}。");
+                }
             }
 
             File.Move(part, destination, overwrite: true);
@@ -392,11 +379,66 @@ public sealed class UpdateDownloader
         }
         finally
         {
-            if (File.Exists(part))
-            {
-                try { File.Delete(part); } catch (IOException) { /* 下次覆盖即可 */ }
-            }
+            // 只有「内容坏了」才删。网络断了必须留着——删了等于下次又从零开始。
+            if (corrupt) TryDelete(part);
         }
+    }
+
+    /// <summary>
+    /// 拉一次正文（必要时从 <paramref name="resumeFrom"/> 续），返回本地现在的字节数。
+    /// </summary>
+    private async Task<long> FetchAsync(
+        ReleaseAsset asset, string part, long resumeFrom, long expected,
+        IProgress<double>? progress, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, asset.Url);
+        if (resumeFrom > 0) request.Headers.Range = new RangeHeaderValue(resumeFrom, null);
+
+        using var response = await _http
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && resumeFrom > 0)
+        {
+            // 服务端说这个范围不成立：本地这份已经不少于远端了，交给长度与哈希去判。
+            return resumeFrom;
+        }
+        response.EnsureSuccessStatusCode();
+
+        // 只有服务端**真的**回了 206 才能追加。忽略 Range 回了 200 时，正文是整份，
+        // 往上追加会把前半段拼两遍——那种包长度对得上、哈希对不上，最难查。
+        var append = response.StatusCode == HttpStatusCode.PartialContent && resumeFrom > 0;
+        if (!append) resumeFrom = 0;
+        var total = expected > 0 ? expected : resumeFrom + (response.Content.Headers.ContentLength ?? 0);
+
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using var target = new FileStream(part, append ? FileMode.Append : FileMode.Create,
+            FileAccess.Write, FileShare.None, 81920, useAsync: true);
+
+        var buffer = new byte[81920];
+        var received = resumeFrom;
+        // 每次读取单独设一个「多久没有新字节就算死」的闸门。
+        // 为什么必须有：`HttpClient.Timeout` 在 ResponseHeadersRead 模式下只管到**响应头**，
+        // 正文阶段没有超时——网络一停，ReadAsync 会一直挂着。实测卡在 6.5 MB 整整七分钟
+        // 一个新字节都没来，游戏既不算失败也不往下走，玩家看到的就是「更新永远没动静」。
+        using var stall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        while (true)
+        {
+            stall.CancelAfter(StallTimeout);
+            var read = await source.ReadAsync(buffer, stall.Token).ConfigureAwait(false);
+            stall.CancelAfter(Timeout.InfiniteTimeSpan);
+            if (read <= 0) break;
+            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            received += read;
+            if (total > 0) progress?.Report(Math.Min(1d, received / (double)total));
+        }
+        await target.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return received;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); } catch (IOException) { /* 下次覆盖即可 */ }
     }
 
     /// <summary>文件的 SHA256（大写十六进制，与发布页 <c>SHA256.txt</c> 同形）。</summary>

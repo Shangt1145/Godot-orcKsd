@@ -295,6 +295,67 @@ public class ReleaseFeedTests
     }
 
     [Fact]
+    public async Task 断线之后能接着下而不是从零开始()
+    {
+        // 补丁 40 MB、网络 30 KB/s 的时候，玩家提前退出一次就永远更不完——
+        // 所以断线必须留 .part、下次带 Range 续。这条钉住这两件事都真的发生了。
+        var payload = Payload(1000);
+        var handler = new ResumeHandler(payload);
+        var downloader = new UpdateDownloader(new HttpClient(handler)) { StallTimeout = TimeSpan.FromMilliseconds(120) };
+        var root = TempRoot();
+        var target = Path.Combine(root, "patch.orcupdate");
+        var asset = new ReleaseAsset("patch.orcupdate", payload.Length, "https://example.test/patch");
+
+        // 第一次：下到 400 字节就卡住。
+        await Assert.ThrowsAnyAsync<Exception>(() => downloader.DownloadAsync(asset, target, null));
+        var part = target + ".part";
+        Assert.True(File.Exists(part), "断线后 .part 被删掉了——下次只能从零开始。");
+        Assert.Equal(400, new FileInfo(part).Length);
+        Assert.False(File.Exists(target));
+
+        // 第二次：必须带 Range 从 400 续，而不是重新要整份。
+        await downloader.DownloadAsync(asset, target, null);
+        Assert.Equal("400", handler.Ranges[1]);
+        Assert.Equal(payload, File.ReadAllBytes(target));
+        Assert.False(File.Exists(part));
+    }
+
+    [Fact]
+    public async Task 服务端忽略Range时从头重下而不是把两段拼起来()
+    {
+        // 有些镜像/代理会忽略 Range 直接回 200 整份。此时往上追加会把前半段拼两遍，
+        // 长度还恰好对得上、只有哈希不对——最难查的一种坏包。
+        var payload = Payload(1000);
+        var handler = new ResumeHandler(payload) { HonourRange = false };
+        var downloader = new UpdateDownloader(new HttpClient(handler));
+        var root = TempRoot();
+        var target = Path.Combine(root, "patch.orcupdate");
+        File.WriteAllBytes(target + ".part", Payload(400));   // 上次留下的半截
+
+        await downloader.DownloadAsync(new ReleaseAsset("patch.orcupdate", payload.Length, "https://example.test/patch"), target, null);
+
+        Assert.Equal(payload, File.ReadAllBytes(target));
+    }
+
+    [Fact]
+    public async Task 哈希对不上时把半截文件删掉()
+    {
+        // 内容坏了留 .part 是害人：下次还会接着往坏数据后面续，永远过不了校验。
+        var payload = Payload(1000);
+        var wrong = Payload(1000);
+        wrong[0] ^= 0xFF;
+        var downloader = new UpdateDownloader(Stub(wrong));
+        var root = TempRoot();
+        var target = Path.Combine(root, "patch.orcupdate");
+        var expected = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => downloader.DownloadAsync(
+            new ReleaseAsset("patch.orcupdate", payload.Length, "https://example.test/patch"), target, expected));
+        Assert.False(File.Exists(target + ".part"), "校验失败后留下了坏 .part，下次会接着往坏数据后面续。");
+        Assert.False(File.Exists(target));
+    }
+
+    [Fact]
     public async Task 下载中途没有新字节会超时失败而不是永远挂着()
     {
         // `HttpClient.Timeout` 在 ResponseHeadersRead 模式下只管到**响应头**，正文阶段没有超时。
@@ -325,6 +386,68 @@ public class ReleaseFeedTests
             Content = new ByteArrayContent(payload),
         });
         return new HttpClient(handler);
+    }
+
+    private static byte[] Payload(int length)
+    {
+        var data = new byte[length];
+        for (var i = 0; i < length; i++) data[i] = (byte)(i % 251);
+        return data;
+    }
+
+    /// <summary>第一次卡住只给 <c>firstChunk</c> 字节，之后按 Range 续；<c>HonourRange=false</c> 模拟忽略 Range 的代理。</summary>
+    private sealed class ResumeHandler(byte[] payload) : HttpMessageHandler
+    {
+        public bool HonourRange { get; init; } = true;
+        public readonly List<string> Ranges = new();
+        private int _calls;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _calls++;
+            var range = request.Headers.Range?.Ranges.FirstOrDefault();
+            Ranges.Add(range?.From?.ToString() ?? "");
+            if (_calls == 1 && HonourRange)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    // 第一段必须是**真的前 400 字节**：用填充值的话，续传拼出来的文件内容对不上，
+                    // 测试会因为「测试自己写错了」而红，而不是因为续传错了。
+                    Content = new StreamContent(new PrefixStallStream(payload[..400])),
+                });
+
+            var from = HonourRange && range?.From is { } start ? (int)start : 0;
+            var body = payload[from..];
+            var status = from > 0 ? HttpStatusCode.PartialContent : HttpStatusCode.OK;
+            return Task.FromResult(new HttpResponseMessage(status) { Content = new ByteArrayContent(body) });
+        }
+    }
+
+    /// <summary>先把给定的一段吐完，然后卡住——模拟「下到一半断线」，且前半段是真实数据。</summary>
+    private sealed class PrefixStallStream(byte[] prefix) : Stream
+    {
+        private bool _sent;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_sent)
+            {
+                _sent = true;
+                var count = Math.Min(prefix.Length, buffer.Length);
+                prefix.AsSpan(0, count).CopyTo(buffer.Span);
+                return count;
+            }
+            await Task.Delay(Timeout.Infinite, cancellationToken);   // 卡住，只认取消
+            return 0;
+        }
     }
 
     /// <summary>先给一点字节，然后永远不再产出——模拟连接半死。</summary>
