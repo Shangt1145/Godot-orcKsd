@@ -32,6 +32,17 @@ public partial class BattleScreen
         UpdateHeldPaper();
     }
 
+    /// <summary>
+    /// 这张牌**此刻画在哪**，与它**该在哪**。换线的回归只能靠这两个值判断：
+    /// 投影对不对（<c>MatchesProjection</c>）和画面对不对是两件事，前者绿了后者照样可以是错的。
+    /// </summary>
+    public (Vector2 Position, Vector2 RestAt, float Elevation, string Zone, bool Tweening) FieldPose(string uid)
+    {
+        if (!_cards.TryGetValue(uid, out var card)) return (new(-1, -1), new(-1, -1), 0, "", false);
+        var running = _tweens.Any(t => GodotObject.IsInstanceValid(t) && t.IsRunning());
+        return (card.Position, card.RestPosition, card.DeploymentElevation, card.View?.Zone ?? "", running);
+    }
+
     private void MoveFieldPaper(BattleCard card, Vector2 from, float rotation, bool changingLine)
     {
         var to = card.RestPosition; var finalRotation = card.RestRotation;
