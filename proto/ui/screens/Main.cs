@@ -731,6 +731,8 @@ public partial class Main : Control
 
     public override void _ExitTree()
     {
+        // 退出时才应用已经下好的更新：玩家这一局不受影响，下次打开就是新版。
+        ApplyPendingUpdateOnExit();
         StopRealMatch();
         // Android tears down its Java wrapper during engine shutdown; the OS also releases the lock.
         try { MobilePlatform.SetDiscovery(false); }
