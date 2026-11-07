@@ -116,6 +116,14 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         // 上一份文档的「已保存」不能留给下一份：作者会以为这份也存过了。
         _saveNote = null;
         _saveFailed = false;
+        // 没有打开的卡包＝没有保存目标。这件事必须**一进来就说**，不能等作者搭完点保存才告知——
+        // 那时候他搭的那一堆只能丢。画布本身仍然可用（可以搭、可以检查），所以只是提示，不拦。
+        if (_authoring?.Invoke() is null)
+        {
+            _saveNote = "当前没有打开的卡包：可以搭、可以检查，但保存不可用。"
+                + "去 DIY 工坊 → 我的卡包 → 打开一个卡包，再从顶部「新版 Inspector · 积木编辑」进来。";
+            _saveFailed = true;
+        }
         _history.Clear();
         _historyAt = 0;
         _history.Add(_doc.Clone());
