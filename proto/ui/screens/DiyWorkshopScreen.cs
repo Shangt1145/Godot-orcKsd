@@ -27,6 +27,10 @@ public partial class DiyWorkshopScreen : VBoxContainer
     internal Button SaveKeyword=null!;
     internal Button OpenInspectorButton=null!;
     internal DiyPackDraft? CurrentPack=>_pack;
+    /// <summary>探针用：当前提示行文字（入口被挡时要说清原因）。</summary>
+    internal string NoticeText => _notice.Text;
+    /// <summary>探针用：当前是否真有可保存的卡包会话（决定新版 Inspector 能不能存）。</summary>
+    internal bool HasNativeSession => _native?.HasSession == true;
 
     /// <summary>
     /// 「用积木搭一个效果」被点了。宿主负责切屏并给画布接上保存出口——
@@ -48,7 +52,25 @@ public partial class DiyWorkshopScreen : VBoxContainer
         _workspace=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_workspace);AddChild(_editor);ShowHome();
         VisibilityChanged+=()=>{if(!Visible&&_animating)ShowHome();};
     }
-    private void RequestBlockAuthoring() => _editor.GuardNavigation(() => GuardNative(() => BlockAuthoringRequested?.Invoke()));
+    /// <summary>
+    /// 新版 Inspector 的保存目标是**当前打开的卡包**（没有会话时画布只会说「没有打开的卡包」）。
+    /// 从首页直接进去只能搭、不能存，作者搭完才发现白干一场——所以没会话时先把人带到卡包列表，
+    /// 而不是把他丢进一个存不出去的画布。
+    /// </summary>
+    private void RequestBlockAuthoring()
+    {
+        if (_native?.HasSession != true)
+        {
+            // 提示必须在导航**之后**写：卡包列表会把提示行重置掉，先写等于白写。
+            _editor.GuardNavigation(() =>
+            {
+                ShowNativePackages();
+                _notice.Text = "先打开一个卡包，再进新版 Inspector——搭出来的效果要存到那个包里。";
+            });
+            return;
+        }
+        _editor.GuardNavigation(() => GuardNative(() => BlockAuthoringRequested?.Invoke()));
+    }
 
     internal void OpenPack(DiyPackDraft pack)
     {
