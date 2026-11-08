@@ -207,6 +207,7 @@ public partial class DiyEditorScreen : VBoxContainer
         _artDialog.Filters = ["*.png ; PNG 图片", "*.jpg ; JPEG 图片", "*.jpeg ; JPEG 图片", "*.webp ; WebP 图片"];
         _artDialog.FileSelected += OnArtImported; AddChild(_artDialog);
         BuildArtAdaptation(artSection);
+        artForm.AddChild(MenuStyles.Button("异画与数值位置…", OpenAlternateArt));
 
         var textSec = Section(rulesForm, "卡牌规则文本");
         var hintText = MenuStyles.Label("写一句效果（例：部署：随机对 1 个敌方单位造成 2 点伤害。），解析后落到下方效果结构；文本同时作为卡面规则文字。解析失败时不改动现有结构。", 12, MenuStyles.Dim);
@@ -482,7 +483,7 @@ public partial class DiyEditorScreen : VBoxContainer
     private void RefreshPreview()
     {
         var draft = Read(); var isUnit = draft.CardType == "unit";
-        _previewTitle.Text = "卡面预览 · " + CardFace.MasterName(CardFace.MasterFor(draft.CardType));
+        _previewTitle.Text = "卡面预览 · " + (draft.AlternateArt is not null ? "完整异画" : CardFace.MasterName(CardFace.MasterFor(draft.CardType)));
         UnitType.Disabled = !isUnit; OpCost.Editable = isUnit; Attack.Editable = isUnit; Defense.Editable = isUnit;
         if(_workshopFocus&&_focusedProperties is not null)
         {
@@ -508,13 +509,22 @@ public partial class DiyEditorScreen : VBoxContainer
         // 卡面用真实模板（AstralKards）渲染：卡框/卡图都是素材层，文字按 PSD 坐标叠加，不再用代码画牌。
         // 外面套一个定高容器：直接放进 VBox 会被拉成面板宽，(比例失衡后) 下半截就滚出可视区了。
         var faceHolder = new CenterContainer { CustomMinimumSize = new(0, _workshopFocus ? 428 : 158) };
-        var face = new CardFace();
-        face.FitTo(_workshopFocus ? 420 : 150);
-        faceHolder.AddChild(face);
-        _preview.AddChild(faceHolder);
-        face.SetDefinition(card);
-        face.SetIllustration(_textures.Get(card.ArtPath), card.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)
-            ? DiyArtStore.ZoomOf(card.CardId) : 100);
+        if (draft.AlternateArt is { } skin)
+        {
+            var face = new AlternateCardFace { Skin = skin with { Art = "packfull://" + Path.Combine(_library.ArtDirectory, skin.Art) }, Definition = card, Textures = _textures,
+                CustomMinimumSize = new((_workshopFocus ? 420 : 150) / 1.402f, _workshopFocus ? 420 : 150) };
+            faceHolder.AddChild(face); _preview.AddChild(faceHolder);
+        }
+        else
+        {
+            var face = new CardFace();
+            face.FitTo(_workshopFocus ? 420 : 150);
+            faceHolder.AddChild(face);
+            _preview.AddChild(faceHolder);
+            face.SetDefinition(card);
+            face.SetIllustration(_textures.Get(card.ArtPath), card.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)
+                ? DiyArtStore.ZoomOf(card.CardId) : 100);
+        }
         if (!_workshopFocus) {
         var name = MenuStyles.Label(card.Name, 16); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; _preview.AddChild(name);
         var text = MenuStyles.Label(card.Text.Length == 0 ? "无附加效果" : card.Text, 13);

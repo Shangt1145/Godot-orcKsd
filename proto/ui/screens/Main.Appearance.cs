@@ -52,7 +52,7 @@ public partial class Main
     }
     private void BindAppearance(IMatchFeed feed)
     {
-        AppearanceRuntime.ResetRemote();
+        AppearanceRuntime.ResetRemote(); AppearanceRuntime.ResetCardSkins();
         _battle.ClearCosmeticEmotes();
         if(feed is not RemoteMatchFeed remote)
         {

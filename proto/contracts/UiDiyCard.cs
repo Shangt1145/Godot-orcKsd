@@ -41,6 +41,7 @@ public sealed record DiyCardDraft
     /// 非空时优先于 <see cref="ArtCardId"/>（互斥口径：导入图覆盖素材引用）。
     /// </summary>
     public string ArtFile { get; init; } = "";
+    public CardSkin? AlternateArt { get; init; }
     public string ArtSourceFile { get; init; } = "";
     public string ArtImportMode { get; init; } = "illustration";
     public DiyArtRegion ArtRegion { get; init; } = new(0,0,1,1);

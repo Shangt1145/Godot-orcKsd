@@ -65,6 +65,7 @@ public sealed class DiyCardLibrary
                 || e.Ops is null || e.Ops.Length > 128
                 || e.Ops.Any(o => o is null || o.Op is null || o.CondUnitTypes is {Length:>16} || o.CondUnitTypes?.Any(t=>string.IsNullOrWhiteSpace(t))==true)))
             throw new InvalidDataException("DIY 卡牌字段无效，编号必须使用 diy/ 前缀");
+        card.AlternateArt?.Checked();
         foreach(var effect in card.OrcEffects.Where(e=>e.DesktopJson is not null))
         {
             if(effect.DesktopJson!.Length>250_000)throw new InvalidDataException("单条效果声明过大");
@@ -109,6 +110,18 @@ public sealed class DiyCardLibrary
         var temporary = Path.Combine(directory, name + ".tmp");
         File.WriteAllBytes(temporary, png);
         File.Move(temporary, Path.Combine(directory, name), overwrite: true);
+        return name;
+    }
+    /// <summary>原样保存完整卡面（任意格式、尺寸、比例、体积），按内容哈希去重；不缩放、不重编码。</summary>
+    public string SaveAlternateArt(byte[] bytes, string? extension = null)
+    {
+        if (bytes is null || bytes.Length == 0) throw new InvalidDataException("完整卡面文件为空。");
+        var ext = CardSkinFile.NormalizeExtension(extension);
+        if (ext.Length == 0) ext = ".png";
+        var name = "alt-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)) + ext;
+        Directory.CreateDirectory(ArtDirectory);
+        var file = Path.Combine(ArtDirectory, name);
+        if (!File.Exists(file)) File.WriteAllBytes(file, bytes);
         return name;
     }
     public string SaveArtSource(string cardId,byte[] png)

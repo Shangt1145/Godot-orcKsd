@@ -7,6 +7,7 @@ public partial class Main
     private NativeWorkshop _nativeWorkshop = null!;
     private void RefreshDiy()
     {
+        AppearanceRuntime.ResetCardSkins();
         WorkshopAuthoring.Configure(_workshopLibrary,_diy.Cards);WorkshopVisuals.Reset();
         _diyEditor?.RefreshWorkshopOptions();
         _deckService.UpdateCustom(_diy.Cards);
@@ -70,6 +71,7 @@ public partial class Main
     }
     private void ReloadPacks()
     {
+        AppearanceRuntime.ResetCardSkins();
         try
         {
             var baseDirectory = RuntimeGameData.Directory("kards");

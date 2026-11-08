@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using Kards.Ui.Contracts;
 
 namespace Kards.Ui;
@@ -45,7 +45,9 @@ public partial class BattleCard : Control
     private CardFace? _generatedFace;
     private Control? _faceOverlay;
     internal CardFace? GeneratedFace => _generatedFace;
-    public bool UsesGeneratedFace => Mode is BattleCardMode.Hand or BattleCardMode.Inspect
+    private Kards.Ui.Contracts.CardSkin? ActiveSkin => View is { Visibility: Visibility.Full, IsHq: false } v ? AppearanceRuntime.Skin(v.CardId) : null;
+    public bool UsesGeneratedFace => ActiveSkin is null && CanGenerateFace;
+    private bool CanGenerateFace => Mode is BattleCardMode.Hand or BattleCardMode.Inspect
         && View is { Visibility: Visibility.Full } view && (_texture is null
             || view.CardId.StartsWith("diy/", StringComparison.Ordinal)
             || view.Definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal)
@@ -80,7 +82,7 @@ public partial class BattleCard : Control
                 if (view.CardId.StartsWith("diy/", StringComparison.Ordinal)) { _unitIcon = null; _nationIcon = null; }
             }
         }
-        if (UsesGeneratedFace && view is not null)
+        if (CanGenerateFace && view is not null)
         {
             if (_faceRoot is null)
             {
@@ -140,6 +142,13 @@ public partial class BattleCard : Control
             DrawLine(c + new Vector2(-7, 0), c + new Vector2(7, 0), new Color("303b37"), 3);
             return;
         }
+        if (ActiveSkin is { } skin && View is { } alternateView && Mode != BattleCardMode.Hq && _appearanceTextures is { } textures)
+        {
+            AlternateCardFace.Paint(this, skin, alternateView.Definition, alternateView, textures, Mode == BattleCardMode.Field);
+            DrawRect(bounds.Grow(-1), edge, false, Selected || Targeted ? 3 : 1);
+            if (Mode is BattleCardMode.Hand or BattleCardMode.Inspect) DrawHandOverlays(this);
+            return;
+        }
         if (Mode is BattleCardMode.Hand or BattleCardMode.Inspect)
         {
             if (UsesGeneratedFace) return;
@@ -158,7 +167,7 @@ public partial class BattleCard : Control
             canvas.DrawRect(new Rect2(Vector2.Zero, Size), edge, false, Selected || Targeted ? 3 : 1);
         }
         if (Available) canvas.DrawRect(new Rect2(5, 5, 31, 31), new Color("9c873a"), false, 2);
-        if (View is { } face && ((face.IsCounterArmed && face.OwnerSide == "self") || face.EffectiveCost != face.Definition.Cost))
+        if (ActiveSkin is null && View is { } face && ((face.IsCounterArmed && face.OwnerSide == "self") || face.EffectiveCost != face.Definition.Cost))
         {
             var cost = new Rect2(5, 5, Size.X * .17f, Size.Y * .13f);
             var armed = face.IsCounterArmed && face.OwnerSide == "self";

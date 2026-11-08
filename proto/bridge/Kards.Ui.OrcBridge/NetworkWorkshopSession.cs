@@ -139,6 +139,16 @@ public sealed class NetworkWorkshopSession
                     System.IO.Directory.CreateDirectory(Path.Combine(root, "art")); File.Copy(source, PackPaths.Child(root, art), true);
                     entry["art"] = art; entry["artKind"] = draft.ArtImportMode == "full" ? "full" : "illustration";
                 }
+                if (draft.AlternateArt is { } skin)
+                {
+                    skin.Checked();
+                    if (artDirectory is null) throw new InvalidDataException("缺少完整异画：" + draft.Name);
+                    var source = PackPaths.Child(artDirectory, skin.Art);
+                    if (!File.Exists(source)) throw new InvalidDataException("缺少完整异画：" + draft.Name);
+                    var relativeSkin = "art/alt-" + PackPaths.Hash(File.ReadAllBytes(source)) + CardSkinFile.ExtensionOf(skin.Art);
+                    System.IO.Directory.CreateDirectory(Path.Combine(root, "art")); File.Copy(source, PackPaths.Child(root, relativeSkin), true);
+                    entry["alternateArt"] = JsonSerializer.SerializeToNode(skin with { Art = relativeSkin });
+                }
                 presentation["cards"]![localId] = entry;
             }
             Save(root, "manifest.json", packageManifest); Save(root, "display-texts.json", texts);

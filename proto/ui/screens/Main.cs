@@ -174,6 +174,16 @@ public partial class Main : Control
             if (System.IO.File.Exists(source)) { System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_diyPath)!); System.IO.File.Copy(source, _diyPath); }
         }
         _diy = new DiyCardLibrary(_diyPath);
+        AppearanceRuntime.CardSkinSource = id =>
+        {
+            var local = _diy.Cards.FirstOrDefault(c => c.RuntimeId == id)?.AlternateArt;
+            if (local is not null)
+            {
+                var file = Path.Combine(_diy.ArtDirectory, local.Art);
+                return File.Exists(file) ? local with { Art = "packfull://" + file } : null;
+            }
+            return _nativeWorkshop.SkinFor(id);
+        };
         var workshopPath = ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/diy/packs-{Guid.NewGuid():N}.json":"user://diy-packs.json");
         if (OS.GetCmdlineUserArgs().Contains("--verify-workshop-routes"))
         {
@@ -455,6 +465,8 @@ public partial class Main : Control
             Callable.From(VerifyNativeWorkshop).CallDeferred();
         else if (args.Contains("--verify-workshop-routes"))
             Callable.From(VerifyWorkshopRoutes).CallDeferred();
+        else if (args.Contains("--verify-card-skins"))
+            Callable.From(VerifyCardSkins).CallDeferred();
         else if (args.Contains("--verify-inspector-entry"))
             Callable.From(VerifyInspectorEntry).CallDeferred();
         else if (args.Contains("--verify-inspector-composition") || args.Contains("--capture-inspector-composition"))

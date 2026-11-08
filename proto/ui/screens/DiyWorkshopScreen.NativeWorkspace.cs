@@ -8,6 +8,7 @@ namespace Kards.Ui;
 public partial class DiyWorkshopScreen
 {
     private Func<bool>? _saveNativeCard;
+    internal Button NativeSkinButton = null!;
     private NativeCardDocument? _cardDocument;
     internal OptionButton NativeNationPicker = null!;
     private void BuildNativeSessionHeader(string id)
@@ -93,13 +94,20 @@ public partial class DiyWorkshopScreen
         var preview = new VBoxContainer { CustomMinimumSize = new(300, 0) }; body.AddChild(preview);
         preview.AddChild(MenuStyles.Label("卡面预览", 18, MenuStyles.Gold));
         var face = new CardFace(); face.FitToWidth(300); preview.AddChild(face);
+        var alternateFace = new AlternateCardFace { CustomMinimumSize = new(300, 421), Textures = _textures, Visible = false }; preview.AddChild(alternateFace);
         var status = MenuStyles.Label("", 13, MenuStyles.Dim); status.AutowrapMode = TextServer.AutowrapMode.WordSmart; preview.AddChild(status);
         void Preview()
         {
             var artPath = _native.PreviewArtFor(asset.AppId);
             if (artPath.Length == 0) artPath = _service.Cards.FirstOrDefault(c => c.CardId == asset.AppId)?.ArtPath ?? "";
             var result = _cardDocument.Preview(asset.AppId, artPath, text, flavor);
-            if (result.Card is { } card) { face.SetDefinition(card); face.SetIllustration(_textures.Get(card.ArtPath)); }
+            if (result.Card is { } card)
+            {
+                var skin = _native.ResolvePreviewSkin(asset.Id);
+                face.Visible = skin is null; alternateFace.Visible = skin is not null;
+                alternateFace.Definition = card; alternateFace.Skin = skin; alternateFace.QueueRedraw();
+                face.SetDefinition(card); face.SetIllustration(_textures.Get(card.ArtPath));
+            }
             status.Text = result.Diagnostics.Count > 0 ? string.Join("\n", result.Diagnostics) : "实时预览 · 尚未转正";
         }
         void Changed() { NativeTouched(); Preview(); }
@@ -175,6 +183,15 @@ public partial class DiyWorkshopScreen
             }); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
         }));
         var displayText = new TextEdit { Text = text, CustomMinimumSize = new(0, 150), WrapMode = TextEdit.LineWrappingMode.Boundary }; DiyEditorScreen.Field(rulePage, "卡面说明（独立于规则执行）", displayText); displayText.TextChanged += () => { text = displayText.Text; Changed(); };
+        NativeSkinButton = MenuStyles.Button("异画与数值位置…", () => GuardNative(() =>
+        {
+            var card = _cardDocument.Preview(asset.AppId, _native.PreviewArtFor(asset.AppId), text, flavor).Card;
+            if (card is null) { _notice.Text = "请先修正卡牌属性，再设置异画。"; return; }
+            var resolved = _native.ResolvePreviewSkin(asset.Id);
+            WorkshopSkinDialog.Open(this, card, _native.PreviewSkin(asset.Id), _textures, resolved is null ? null : _textures.Get(resolved.Art),
+                (skin, bytes) => { _native.SaveSkin(asset.Id, skin, bytes); _textures.Clear(); Preview(); _notice.Text = "异画已写入卡包草稿；应用修改后生效。"; },
+                () => { _native.SaveSkin(asset.Id, null); Preview(); });
+        })); art.AddChild(NativeSkinButton);
         art.AddChild(MenuStyles.Label("卡牌母版随单位、指令、反制自动切换。", 16));
         void ImportArt(bool full)
         {

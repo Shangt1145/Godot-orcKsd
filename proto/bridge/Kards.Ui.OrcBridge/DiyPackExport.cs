@@ -42,6 +42,8 @@ public static class DiyPackExport
             }
             var validation = DiyCardCompiler.Validate(card, catalog);
             if (!validation.Success) problems.Add($"「{card.Name}」：{string.Join("；", validation.Errors)}");
+            if (card.AlternateArt is { } skin && (artDirectory is null || !File.Exists(Path.Combine(artDirectory, skin.Art))))
+                problems.Add($"「{card.Name}」：完整异画文件缺失。");
             if (card.ArtFile.Length > 0 && (artDirectory is null || !File.Exists(Path.Combine(artDirectory, card.ArtFile))))
                 problems.Add($"「{card.Name}」：自建卡图 {card.ArtFile} 找不到，对方看到的会是空白卡面。");
         }

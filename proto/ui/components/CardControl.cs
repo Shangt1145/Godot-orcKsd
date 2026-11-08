@@ -50,7 +50,14 @@ public partial class CardControl : Control
         var tex = full ? _cache.Get(Definition.ArtPath) : null;
         var custom = full && (tex is null || WorkshopVisuals.NativeCardIds.Contains(Definition.CardId) || Definition.ArtPath.StartsWith("packart://", StringComparison.Ordinal) || Definition.CardId.StartsWith("diy/", StringComparison.Ordinal)
             || (View is null && (UseEditableFace || Kards.Ui.OrcBridge.WorkshopAuthoring.EditedCardIds.Contains(Definition.CardId))));
-        if (custom)
+        var skin = full ? AppearanceRuntime.Skin(Definition.CardId) : null;
+        if (skin is not null)
+        {
+            var alternate = new AlternateCardFace { Skin = skin, Definition = Definition, View = View, Textures = _cache };
+            Visual.AddChild(alternate); alternate.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            custom = true;
+        }
+        else if (custom)
         {
             var raw = Definition.ArtPath.StartsWith("diyart://", StringComparison.Ordinal);
             // DIY 卡没有现成的完整卡面，用模板合成；官方卡的卡图本身就是完整卡面，直接贴图（不走这里）。
