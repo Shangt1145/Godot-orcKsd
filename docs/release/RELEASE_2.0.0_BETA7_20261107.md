@@ -59,4 +59,17 @@ beta.7 此前只有提交与说明、未出包、未打 tag；本次补发，并
 
 ## 验证记录
 
-<!-- 构建后回填 -->
+- 构建标识 `C0700F6FCB43DA23776B87665988C0B21D10B6FADCB9B6AFCAF574D09FA67E08`；
+  全量包 1,224,086,739 字节，从 beta.6（`4460F1C0951A`）升到本版的单基线补丁 23,959,034 字节
+  （相对全量省 **98.04%**），更新器 74,328,029 字节，首次更新下载合计 98,287,063 字节。
+- 发版门禁：源码同步 → 编译 → 过滤集单元测试 **274/274 通过** → headless 原生 UI 验证
+  （`UI_VERIFY_OK screens=13`、219 张原版卡图、1619 张纹理）→ 导出 → postflight 确认
+  `Orc.Game.dll` 与运行时依赖齐全 → 解压到独立目录启动真实 EXE（`EXPORT_VERIFY_OK`）→
+  工坊验证（`WORKSHOP_VERIFY_OK`）→ 对 beta.6 基线跑真更新器（`GODOT_UPDATER_VERIFY_OK`）→
+  升级后的 EXE 再跑 `EXPORT_VERIFY_OK`；`RELEASE_OK`。
+- 交付四件套：`full/`（完整包）、`patches/`（单基线补丁）、`notes/`（本目录报告）、
+  `verification/`（导出／工坊／离线更新／升级后 EXE 四份日志）与 `SHA256.txt`。
+- 静态清单 `dist/releases/latest.json` 已指向 `v2.0.0-beta.7`（`MANIFEST_OK assets=3`）。
+- 全量单元测试另有 2 条既有失败（`CrossEffectTargetTests`、`MatchDebugTests`，均为对局逻辑断言，
+  与本次发行内容无关，与 beta.6 同因），不在发版过滤门禁内。
+- 本地 tag `v2.0.0-beta.7` 已打；按本次发版范围，**分支、tag 与 GitHub Release 资产均未推送／上传**。
