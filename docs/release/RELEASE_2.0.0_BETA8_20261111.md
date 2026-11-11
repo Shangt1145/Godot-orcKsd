@@ -49,26 +49,29 @@ PC 功能发行。沿用整代版本 `2.0.0`，预发布序号从 `beta.7` 递�
 
 ## 安装
 
-- **Windows**：本版补丁从 **beta.7 完整包**升级（单基线）。
-  - 已在 **beta.7**：启动游戏会自动下载（断了会续），退出后生效；也可下载本页补丁，
+- **Windows**：本版补丁是**兼容合集**，同时覆盖 **beta.6**（`4460F1C0951A`）与 **beta.7**（`54467400CA5E`）两个来源。
+  - 已在 **beta.6 或 beta.7**：启动游戏会自动下载（断了会续），退出后生效；也可下载本页补丁，
     用游戏目录里的 `更新游戏.exe` 手动应用。
-  - 还在 **beta.3～beta.6**：先用 beta.7 的兼容合集补丁升到 beta.7，再升本版。
+  - 还在 **beta.3～beta.5**：先用 beta.6 的兼容合集补丁升到 beta.6，再升本版。
   - 全新安装：需要完整包（约 1.2 GB），按仓库规则不挂在本页。
 - **Android**：本版不发，仍是 `2.0.0-beta.3`。
 
 ## 验证记录
 
-- 构建标识 `51399EAF80E94BE99F650AA0DC00AF0235D65F71CC2215ACC2981C5B80A256B2`；
-  全量包 **1,224,143,521 字节**（SHA256 `47FAF75D17701CE65F6B0A0EE834D6EFB4B4C269A6EE3D6FF8B3DA2746C188A8`）。
-- 从 beta.7（`54467400CA5E`）升到本版的单基线补丁 **8,939,782 字节**（改动 47 个文件，相对全量省 **99.27%**），
-  更新器 74,328,029 字节，首次更新下载合计 **83,267,811 字节**。
-- 发版门禁：源码同步 → 编译 → headless 原生 UI 验证（`UI_VERIFY_OK screens=13 cards=534 texture_cache=64/64`）
-  → 导出 → postflight 确认 `Orc.Game.dll` 与运行时依赖齐全 → 解压到独立目录启动真实 EXE
+- 构建标识 `F8D9F40D09D0A4034BBD2BEF51D192B86F9588F7B5C124E97D4DD1DD34D496B8`；
+  全量包 **1,224,146,337 字节**（SHA256 `92D6275DACC4C2998DF730564803924FF089A7AF40D84CAD79184EBF1BFBB60E`）。
+- 兼容合集补丁 **60,170,570 字节**（相对全量省 **95.08%**），内含两条来源：
+  beta.7 → 本版 47 个文件、beta.6 → 本版 51 个文件；更新器 74,328,029 字节，
+  首次更新下载合计 **134,498,599 字节**。
+- 发版门禁：源码同步 → 编译 → 过滤集单元测试 → headless 原生 UI 验证
+  （`UI_VERIFY_OK screens=13 cards=534 texture_cache=64/64`）→ 导出 → postflight 确认
+  `Orc.Game.dll` 与运行时依赖齐全 → 解压到独立目录启动真实 EXE
   （`EXPORT_VERIFY_OK playable=243 pack-cards=219 rejected=0 artwork=219`）→ 工坊验证
-  （`WORKSHOP_VERIFY_OK`、`ALL_WORKSHOP_ROUTES_VERIFY_OK packs=17`）→ 对 beta.7 基线跑真更新器
-  （`GODOT_UPDATER_VERIFY_OK`）→ 升级后的 EXE 再跑 `EXPORT_VERIFY_OK` → `OFFLINE_UPGRADE_EXE_VERIFY_OK`
-  → `MANIFEST_OK v2.0.0-beta.8 assets=3` → `RELEASE_OK`。
-- 交付四件套：`full/`（完整包）、`patches/`（单基线补丁）、`notes/`（离线更新报告）、`verification/`（四份验证日志）。
+  （`WORKSHOP_VERIFY_OK`、`ALL_WORKSHOP_ROUTES_VERIFY_OK packs=17`）→ 对两条基线分别跑真更新器
+  （`GODOT_UPDATER_VERIFY_OK`，两次 `OFFLINE_UPGRADE_EXE_VERIFY_OK`：beta.7 与 beta.6）→
+  升级后的 EXE 再跑 `EXPORT_VERIFY_OK` → `MANIFEST_OK v2.0.0-beta.8 assets=3` → `RELEASE_OK`。
+- 交付四件套：`full/`（完整包）、`patches/`（兼容合集补丁）、`notes/`（离线更新报告）、`verification/`（四份验证日志）。
 - 客户端侧另有一次独立验证：对合并后引擎（`c950b2a`）构建 `Kards.Ui` 0 错误，
   `tools\run.ps1 -Verify` 通过 `UI_VERIFY_OK screens=13 cards=534 texture_cache=64/64`。
+
 
