@@ -20,7 +20,7 @@ beta.1 的引擎版本及累计配套补丁见 [接入基线](docs/engine/ENGINE
 另需 .NET 8/9 SDK 与 Godot 4.7 **.NET(mono)** 版；编辑器一键入口 `tools\open-editor.bat`，
 构建/验证/运行 `tools\run.ps1`。原版美术不进 Git，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 
-**当前发行：2.0.0-beta.7（2026-11-08 补发）**。本版两件事：**工坊异画**做成卡牌级展示设置（DIY 工坊 → 打开卡包 → 打开卡牌 → 卡图 →「异画与数值位置…」），只导入包含卡框、卡名、插画与规则文字的完整卡面，格式、尺寸、比例、体积均不限制且原图原样保存，再拖动或输入坐标定位四个实时数值；数值按卡面百分比对齐的口径不变，设置随卡牌与卡包保存、导出，不改 CardId 与规则定义。以及**把自动更新的下载做结实**：断线保留 `.part` 下次带 `Range` 续传，只有内容损坏才删；已下完且哈希正确的文件直接复用、一次请求都不发。Windows 增量从已交付的 beta.6 完整包升级，使用更新器 1.2.0；Android 本版不发 APK。详见 [发行说明](docs/release/RELEASE_2.0.0_BETA7_20261107.md)。
+**当前发行：2.0.0-beta.8（2026-11-11）**。本版是**引擎接入版**：把引擎 `origin/main`（`192c04b` → `6d45628`）合进 `v4`（合并提交 `c950b2a`），核心结果只有一件——**工坊产出的 v4 组件效果第一次真正进入联机对局的开局装配**（服务端 `match.start` → `McpService.CreateMatchAsync` 在声明／内联／旧目录手动段之后调用新增量入口 `AttachComponents`，只装 `effects-v4/`；可选包组件失败＝整包跳过留痕、必需包失败＝不开局）。客户端零代码改动：本机单机／本地对局仍走 `OrcMatchSession` 的 `Attach`，与前者共用同一 `LoadComponents`。同批带入资产同步子系统 `Orc.AssetSync` 与 MCP 创作工具（`pool.inspect`、`editor.named_instantiate` 等），玩家侧界面、卡池与规则不变。Windows 增量从已交付的 beta.7 完整包升级，使用更新器 1.2.0；Android 本版不发 APK。详见 [发行说明](docs/release/RELEASE_2.0.0_BETA8_20261111.md)。
 
 **多人能力边界**：已接通启用的原生工坊卡包、扩展包及可编译 DIY 卡的会话打包、规则/卡图同步与开局校验；无法编译的机制保留为草稿，不进入对战。双方客户端及服务端需一同更新，详见 [工坊联机说明](docs/acceptance/NETWORK_WORKSHOP_20261025.md)。原版美术不进入 Git，发行包已携带；源码运行须另行准备这些素材，见 [资源重建说明](tools/OriginalAssetExtractor/README.md)。
 

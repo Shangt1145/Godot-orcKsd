@@ -1,5 +1,23 @@
 # OrC-KSD 接入基线
 
+## MCP 创作工作流接入（2026-11-11）
+
+远端 `origin/main` 从 `192c04b` 前进到 `6d45628`（2 个提交，hitman-OLD6）：`7e6d9de` 资产同步子系统（`Orc.AssetSync` / `Orc.AssetSync.Cli` / `tests/Orc.AssetSync.Tests`）加 MCP 资产工具与服务端同步端点；`6d45628` 新增引擎仓库 `docs/MCP创作工作流/README.md`（MCP 侧创作与资产同步的完整工作流）。本地 `v4` 已合并为 `c950b2a`（`git merge-tree` 预演与实合并均无冲突），`src/Orc.Game` 一行未改，客户端 C# 无需修改。
+
+公共面均为**增量**，不改既有签名：
+
+- `CardPackAssembler.AttachComponents(LogicEngine, IReadOnlyList<CardPackContent>)`：只装 `effects-v4/*.component.json` 的增量入口，让 v4 组件效果真正进入联机开局装配；`McpService.CreateMatchAsync` 在声明／内联／旧目录手动段之后调用，与 `Attach` 二选一。
+- `ServerOptions.EffectTemplatesRoot`（init）加 `DeriveEffectTemplatesRoot()`（`AppContext.BaseDirectory` 上溯 6 级找 `packs/effect-templates`），CLI 新增 `--effect-templates <dir>`；推导失败只告警不阻断，`template.*` 回 `template-root-missing`。
+- 工具面：`pool.inspect`、`editor.named_instantiate` / `editor.named_save` / `editor.template_list` / `editor.template_get`；`effect.write` 改为拒绝旧格式（结构化错误＋替代路径，不写盘）。
+
+创作与生效口径：`editor.session_begin` → `editor.asset_commit` → `editor.promote` →（新包）`pool.register` → `match.start`，**下一局生效**，无对局内热替换；`editor.reload` 只算计划不落地；`assets.pull` 前端自 2026-10-28 v4 迁移后停用（`RemoteMatchFeed.SupportsPackTransfer => false`），联机只能用双方都装好的包。
+
+本机注意：引擎仓库内没有 `packs/effect-templates`（`origin/main` 也没有，且不在 `.gitignore` 里——就是没提交），模板便捷通路在任何干净 checkout 上不可用，权威通路（手写 v4 资产）不受影响。实证：`tests/Orc.Server.Tests --filter AuthoringReloadFlowTests` 6 例中 4 过 2 挂，两挂均因缺该目录（`named_instantiate` 回 `validation-failed: 模板不在包内`；分段用例 `File.Copy` 直接 `DirectoryNotFoundException`）；工具链包 `scripts/run_e2e.py` 同样卡在这一步（前 6 项断言全过，含 `asset_commit`／`promote`／手写 csx 组件当场编译）。该脚本还写死 `REPO = D:\OrC-KSD`，本机跑要改成 `H:\Working Folder\OrC-KSD-github`。需要模板通路时，向引擎侧要 `packs/effect-templates` 并入库。
+
+验证：`dotnet build src/Orc.Server -c Debug` 0 错误（7 个既有可空性／重复 using 警告）；客户端 `Kards.Ui` 对合并后引擎构建 0 错误（15 个既有警告）；`tools\run.ps1 -Verify` 通过，末行 `UI_VERIFY_OK screens=13 cards=534 texture_cache=64/64`，退出码 0。
+
+客户端装配口径未变，也不需要变：本机单机／本地对局走 `OrcMatchSession` 的 `CardPackAssembler.Attach`（一次性注册全部面的装配方，`Attach` 内部与 `AttachComponents` 共用同一 `LoadComponents`，v4 组件照常装载）；联机开局由服务端 `match.start` → `McpService.CreateMatchAsync` → `AttachComponents`。两者分属不同引擎实例，不存在「同一引擎调两次」的装载门重复记账。
+
 ## alpha.5 可重建源码（2026-10-25）
 
 公开引擎基线 `a0b3511cc19230237d2e7dbd2fc60f7569199ff5` 加 [alpha.5 累计补丁](../engine-patches/alpha5-engine-20261025.patch)，已含 4e7b2a2、2806e04、97e4011、025d44e 的配套改动及本轮修复。该补丁与下方增量/历史补丁不能重复叠加；当前本机工作区已经包含。原生引擎 1360 项测试通过。
