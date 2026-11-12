@@ -16,9 +16,7 @@ public partial class RoomScreen : VBoxContainer
     internal Func<IReadOnlyList<UiCardDefinition>>? WorkshopCatalogSource { get; set; }
     internal string? WorkshopArtDirectory { get; set; }
     private NetworkWorkshopSession? _workshopSession;
-    private CheckBox _receivePacks = null!;
     private Label _packStatus = null!;
-    private Label _receiveHelp = null!;
     private ServerLauncher? _server;
     private RemoteMatchFeed? _feed;
     private LobbyDeck.Result? _deck;
@@ -201,12 +199,11 @@ public partial class RoomScreen : VBoxContainer
         column.AddChild(_settingsPanel);
         var help = UiStyles.Label("邀请好友加入，批准入场后即可开始。也可以在对手位置添加电脑对手。", 14, UiStyles.MenuDim);
         help.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(help);
-        _receivePacks = new CheckBox { Text = "接收好友卡包", TooltipText = "开启后将载入好友提供的效果脚本。收到的包仅用于本房间，不自动存入工坊。" };
-        _receivePacks.Toggled += enabled => _ = SetReceivePacksAsync(enabled);
-        column.AddChild(_receivePacks);
-        _receiveHelp = UiStyles.Label("开启接收后将载入好友提供的效果脚本；卡包仅用于本房间。", 12, UiStyles.MenuDim);
-        _receiveHelp.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_receiveHelp);
-        _packStatus = UiStyles.Label("等待卡包同步", 13, UiStyles.Gold); _packStatus.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_packStatus);
+        // 卡包不再随对局传输（v4 没有 pool.* RPC），也就没有"接收"可开：
+        // 留着开关只会让玩家点出一个必然失败的请求，不如把规则和"本机缺哪个包"直接摆出来。
+        var packHelp = UiStyles.Label("联机不传输卡包：请双方各自安装同一批卡包后再开局。", 12, UiStyles.MenuDim);
+        packHelp.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(packHelp);
+        _packStatus = UiStyles.Label("正在核对本机卡包…", 13, UiStyles.Gold); _packStatus.AutowrapMode = TextServer.AutowrapMode.WordSmart; column.AddChild(_packStatus);
         column.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
         var details = new VBoxContainer { Visible = false }; column.AddChild(UiStyles.Button("连接详情", () => details.Visible = !details.Visible)); column.AddChild(details);
         _endpoint = UiStyles.Label("—", 14, UiStyles.MenuInk); _endpoint.AutowrapMode = TextServer.AutowrapMode.WordSmart; details.AddChild(_endpoint);
@@ -409,8 +406,9 @@ public partial class RoomScreen : VBoxContainer
             if (lifecycle != _lifecycle) { await server.DisposeAsync(); return; }
             _server = server;
             MobilePlatform.SetHosting(true);
-            var policy = await server.AdminAsync("pool.transfer.policy", new System.Text.Json.Nodes.JsonObject { ["allowGuestPacks"] = false, ["requireAlignment"] = true });
-            if (!policy.Ok) throw new InvalidOperationException(policy.Message ?? "服务端不支持工坊卡包，请更新服务端。");
+            // v4 起服务端**没有** `pool.transfer.policy`（整条卡包传输线随引擎消失），调它只会拿到
+            // "未知管理操作"；而这里原本把它当硬性前置——房间其实已经起来了，玩家却只看到一句报错。
+            // 联机现在只认"双方各自装好的包"，这一步没有任何可做的事，直接跳过。
             Ui(() => Say($"● 就绪 · 端口 {_server.Port}"));
 
             var feed = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
@@ -466,7 +464,6 @@ public partial class RoomScreen : VBoxContainer
         _aiSeat = null; _guest = false; _guestPort = 0;
         _deck = null; _deckPresentation = null; _deckNote = null; _lastError = null; _starting = false;
         _workshopSession = null;
-        Ui(() => _receivePacks.SetPressedNoSignal(false));
         Array.Clear(_occupied);
         _reconnectToken = null; _reconnectObserver = false;
         _closing = false;
@@ -635,9 +632,7 @@ public partial class RoomScreen : VBoxContainer
         var ready1 = snapshot.Seats.Any(s => s.Seat == 1 && s.Connected);
         // 服务端没报卡池状态＝未知，不因此拦住开局（旧行为）；报告了才按 loaded 判定。
         var poolOk = (!snapshot.PolicyKnown || snapshot.Policy == "loaded") && (_workshopSession is null || _feed?.PacksAligned == true);
-        _packStatus.Text = _feed?.PackSyncStatus ?? "等待卡包同步";
-        _receivePacks.Visible = !_guest;
-        _receiveHelp.Visible = !_guest;
+        _packStatus.Text = _feed?.PackSyncStatus ?? "正在核对本机卡包…";
 
         SetCheck(_checkSeat0, ready0, "房主就绪");
         SetCheck(_checkSeat1, ready1, "对手就绪");
@@ -987,14 +982,6 @@ public partial class RoomScreen : VBoxContainer
         _workshopSession = NetworkWorkshopSession.Prepare(Path.Combine(_sandbox, "net-assets", "local"), roots,
             WorkshopCardsSource?.Invoke() ?? [], WorkshopCatalogSource?.Invoke() ?? [], _deck?.CardIds ?? [], WorkshopArtDirectory);
         if (_deck is not null) _deck = _deck with { CardIds = _workshopSession.MapDeck(_deck.CardIds) };
-    }
-
-    private async Task SetReceivePacksAsync(bool enabled)
-    {
-        if (_server is not { } server || _guest) return;
-        var reply = await server.AdminAsync("pool.transfer.policy", new System.Text.Json.Nodes.JsonObject { ["allowGuestPacks"] = enabled, ["requireAlignment"] = true });
-        if (!reply.Ok) Ui(() => { _receivePacks.SetPressedNoSignal(!enabled); _hint.Text = reply.Message ?? "卡包接收设置未保存。"; });
-        else Ui(() => _hint.Text = enabled ? "已允许载入好友提供的效果脚本；卡包仅保存在本房间会话。" : "已关闭接收好友卡包。");
     }
 
     /// <summary>最后一条服务端错误（验证探针用来报告占座/开局失败的真实原因）。</summary>

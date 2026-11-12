@@ -24,7 +24,6 @@ public sealed class NetworkWorkshopTests : IDisposable
     }
     private NetworkWorkshopSession Prepare(IReadOnlyList<DiyCardDraft> cards, IReadOnlyList<string> deck, string name)
         => NetworkWorkshopSession.Prepare(Path.Combine(_root, name), [], cards, [], deck);
-    private static JsonObject Policy(bool allow) => new() { ["allowGuestPacks"] = allow, ["requireAlignment"] = true };
     private static async Task Until(Func<bool> predicate)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -255,7 +254,6 @@ public sealed class NetworkWorkshopTests : IDisposable
         // 传输停用后，客人得自己装同一个包——这里用"已安装"形态模拟（与房主同一批 roots）。
         var guestInstalled = NetworkWorkshopSession.Prepare(Path.Combine(_root, "guest"), authored.Roots, [], [], deck);
         await using var server = await ServerLauncher.StartAsync(installed.Roots, Path.Combine(_root, "server"));
-        await server.AdminAsync("pool.transfer.policy", Policy(false));
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
         await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
         host.ConfigurePackTransfer(installed, deck); guest.ConfigurePackTransfer(guestInstalled, deck); server.Configure(host);

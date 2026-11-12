@@ -33,3 +33,5 @@
 - 日志与截图：`artifacts/desk-cosmetics/`。
 
 完整 `--verify-appearance` 的编辑器部分通过，进入房间时被当前服务端缺失的 `pool.transfer.policy` 管理操作阻挡。该问题位于既有房间初始化流程；本轮另用直接连接服务端的外观通道测试验证协议兼容。
+
+**后续（2026-11-12）**：该阻挡已修。`RoomScreen.OpenAsync` 不再把 `pool.transfer.policy` 当硬性前置（v4 服务端没有这个管理操作，调用只会拿到「未知管理操作」并把整个进房流程中断）；同一原因的「接收好友卡包」开关一并移除，改为静态说明「联机不传输卡包：请双方各自安装同一批卡包后再开局」，`_packStatus` 只报本机缺哪个包。`tools/run.ps1 -VerifyRoom` 现可完整跑通（`ROOM_VERIFY_OK server claim ai start local-art ui-mulligan battle play ai-turn-return`）。

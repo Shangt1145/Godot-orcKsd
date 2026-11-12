@@ -56,7 +56,7 @@ public partial class Main
             await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
             await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
             host.ConfigurePackTransfer(session, deck); guest.ConfigurePackTransfer(session, deck); server.Configure(host);
-            await server.AdminAsync("pool.transfer.policy", new JsonObject { ["requireAlignment"] = true });
+            // v4 服务端没有 `pool.transfer.policy`（卡包传输线随引擎消失），探针也不该再发这条请求。
             foreach (var (feed, seat) in new[] { (host, 0), (guest, 1) })
             {
                 var connection = await feed.ClaimSeatAsync(seat, "remote", "安卓验证", deck);
