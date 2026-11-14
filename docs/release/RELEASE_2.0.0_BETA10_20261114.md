@@ -16,7 +16,7 @@ Windows DIY 工坊更新。2026-11-14 已补发 Android APK，修复移动端内
 - 手动：下载本版 .orcupdate，退出游戏，运行游戏目录里的“更新游戏.exe”，选择游戏目录和补丁后更新。
 - 第一次使用更新器：解压 OrC-KSD-offline-updater-1.2.0-win-x64.zip，再运行“更新游戏.exe”。
 - beta.8 或更早：本版补丁仅适配 beta.9 构建。先按已有版本的补丁链升到 beta.9，或使用本版完整包安装到新目录。
-- 新玩家使用完整 ZIP，完整解压后运行 KardsUi.exe。完整包超过 1 GB，按仓库规则本地交付，不上传 GitHub Release。
+- 新玩家从 GitHub Release 下载 OrC-KSD-2.0.0-beta.10-win-x64.zip，完整解压后运行 KardsUi.exe。完整包已按用户要求补传到本版 Release。
 - 卡组、DIY、卡图和设置保留在同一 user:// 数据目录。更新失败重新运行更新器；需要撤回时使用“回退上一版”。
 
 ## 已知边界
