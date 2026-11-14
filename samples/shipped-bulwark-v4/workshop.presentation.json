@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "effectAuthoring": {
+    "keyword.entrench": {
+      "name": "固守",
+      "description": "不可移动"
+    },
+    "keyword.mobility": {
+      "name": "机动",
+      "description": "免费行动"
+    },
+    "keyword.repair": {
+      "name": "抢修",
+      "description": "回合修复"
+    }
+  }
+}

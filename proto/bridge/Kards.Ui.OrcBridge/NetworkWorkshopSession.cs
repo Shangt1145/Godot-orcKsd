@@ -33,7 +33,7 @@ public sealed class NetworkWorkshopSession
                 && manifest["metadata"]!.AsArray().All(m => !m!.ToString().Replace('\\', '/').StartsWith("effects/", StringComparison.Ordinal)))
             {
                 System.IO.Directory.CreateDirectory(target);
-                foreach (var file in WorkshopPackageArchive.Files(source).Where(f => !f.Replace('\\', '/').StartsWith("effects/", StringComparison.Ordinal)))
+                foreach (var file in WorkshopPackageArchive.Files(source).Select(f => Path.GetRelativePath(source, f)).Where(f => !f.Replace('\\', '/').StartsWith("effects/", StringComparison.Ordinal)))
                 {
                     var destination = WorkshopPackageArchive.Child(target, file);
                     System.IO.Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
