@@ -66,6 +66,18 @@ public static class ReleaseFeed
     public static string ManifestUrl =>
         "https://github.com/" + Repository + "/releases/download/channel/latest.json";
 
+    /// <summary>安卓仅提示有对应 APK 的新版，不选择桌面补丁，也不下载或安装。</summary>
+    public static ReleaseInfo? SelectAndroidNotice(IReadOnlyList<ReleaseInfo> releases, string currentVersion)
+    {
+        if (string.IsNullOrWhiteSpace(currentVersion)) return null;
+        return releases.Where(release => !release.Draft
+                && Compare(release.Version, currentVersion) > 0
+                && release.Assets.Any(asset => string.Equals(asset.Name,
+                    $"OrC-KSD-{release.Version}-android.apk", StringComparison.Ordinal)))
+            .OrderByDescending(release => release.Version, Comparer<string>.Create(Compare))
+            .FirstOrDefault();
+    }
+
     private static readonly System.Text.RegularExpressions.Regex PatchPattern = new(
         @"^OrC-KSD-(?<version>.+?)-from-(?<from>[0-9A-Fa-f]{12})-to-[0-9A-Fa-f]{12}\.orcupdate$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);

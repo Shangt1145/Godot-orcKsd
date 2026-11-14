@@ -47,8 +47,6 @@ public partial class Main
         try
         {
             if (OS.HasFeature("editor")) return;
-            // Android 走整包 APK（系统安装器覆盖安装），没有「更新游戏.exe」也没有 .orcupdate 的意义。
-            if (OS.HasFeature("android")) return;
             foreach (var arg in OS.GetCmdlineUserArgs())
             {
                 // 探针与截图要的是确定性：网络一抖，同一份脚本两种结论。
@@ -57,6 +55,12 @@ public partial class Main
                 if (arg == "--no-update") return;
             }
             if (!AutoUpdateEnabled()) return;
+
+            if (OS.HasFeature("android"))
+            {
+                await CheckAndroidUpdateNoticeAsync();
+                return;
+            }
 
             var root = OS.GetExecutablePath().GetBaseDir();
             var manifest = Path.Combine(root, BuildManifestName);
