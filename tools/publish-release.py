@@ -11,6 +11,19 @@ import sys
 import requests
 
 
+def published_manifest(release, names):
+    if release["draft"]:
+        raise RuntimeError("A draft release cannot become the public update channel")
+    by_name = {asset["name"]: asset for asset in release["assets"]}
+    assets = []
+    for name in names:
+        asset = by_name[name]
+        if "/releases/download/" + release["tag_name"] + "/" not in asset["browser_download_url"]:
+            raise RuntimeError("Release still exposes a temporary draft URL: " + name)
+        assets.append({"name": name, "size": asset["size"], "url": asset["browser_download_url"]})
+    return {"tag": release["tag_name"], "notes": release["body"], "assets": assets}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version")
@@ -64,11 +77,11 @@ def main():
         print("REMOTE_VERIFIED", path.name, flush=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, encoding="utf-8").strip()
     release = request("PATCH", "/releases/" + str(release["id"]), json={"draft": False, "body": notes.read_text(encoding="utf-8"), "prerelease": "-" in args.version, "target_commitish": commit})
-    manifest = {"tag": tag, "notes": release["body"], "assets": assets}
+    manifest = published_manifest(release, [path.name for path in files])
     channel = root / "dist/releases/latest.json"
     channel.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     subprocess.run([sys.executable, str(root / "tools/upload-release.py"), "--tag", "channel", "--force", str(channel)], cwd=root, check=True)
-    (delivery / "verification/publish-report.json").write_text(json.dumps({"url": release["html_url"], "assets": assets, "sha256": hashes}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (delivery / "verification/publish-report.json").write_text(json.dumps({"url": release["html_url"], "assets": manifest["assets"], "sha256": hashes}, ensure_ascii=False, indent=2), encoding="utf-8")
     print("PUBLISHED_AND_CHANNEL_UPDATED", release["html_url"], flush=True)
 
 

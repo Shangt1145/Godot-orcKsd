@@ -16,7 +16,7 @@
    python tools/publish-release.py 2.0.0-beta.12 --notes docs/release/RELEASE_2.0.0_BETA12_20261115.md
    ```
 
-   脚本创建草稿发行，上传完整 ZIP、APK、全部补丁、离线更新器、发行说明和 SHA256.txt。逐项核对 GitHub 返回的资产大小与 SHA256 digest，全部通过才公开发行，最后更新固定 `channel` 发行中的 `latest.json`。上传失败不会提前推进客户端清单。
+   脚本创建草稿发行，上传完整 ZIP、APK、全部补丁、离线更新器、发行说明和 SHA256.txt。逐项核对 GitHub 返回的资产大小与 SHA256 digest，全部通过才公开发行。公开后使用正式版本下载地址生成固定 `channel` 发行中的 `latest.json`；草稿中的 `untagged-*` 临时地址会被拒绝，不能进入客户端清单。上传失败不会提前推进客户端清单。发布地址回归使用 `python -m unittest discover -s tests -p test_release_manifest.py`。
 8. 匿名重新获取公开清单与发行资产，核对版本、补丁来源、APK、大小和校验文件；保留发布报告。Release 已存在但资产内容不同应停止检查，不能静默覆盖同版本二进制。
 
 ### 出口连接无法上传大文件时

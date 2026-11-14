@@ -31,4 +31,5 @@ jobs:
           bash "$RUNNER_TEMP/dotnet-install.sh" --channel 9.0 --install-dir "$RUNNER_TEMP/dotnet"
           export PATH="$RUNNER_TEMP/dotnet:$PATH"
           python3 -m pip install --disable-pip-version-check requests
+          python3 -m unittest discover -s tests -p test_release_manifest.py
           python3 tools/finalize-staged-release.py "$MANIFEST_ASSET"
