@@ -13,9 +13,12 @@
 """
 import argparse
 import json
+import ipaddress
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 
@@ -28,6 +31,8 @@ TIMEOUT = (180, 3600)
 
 
 def token() -> str:
+    if value := os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return value
     out = subprocess.run(
         ["git", "credential", "fill"],
         input="protocol=https\nhost=github.com\n\n",
@@ -46,6 +51,34 @@ def find_release(session, repo: str, tag: str):
         listing = session.get(f"https://api.github.com/repos/{repo}/releases", params={"per_page": 100, "_": time.time_ns()}, timeout=TIMEOUT)
         listing.raise_for_status()
         return next((release for release in listing.json() if release["tag_name"] == tag), None)
+    response.raise_for_status()
+    return response.json()
+
+
+def upload_asset(session, url: str, path: str, size: int):
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if curl:
+        descriptor, response_path = tempfile.mkstemp(prefix="orcksd-upload-", suffix=".json")
+        os.close(descriptor)
+        try:
+            # Pass credentials on stdin, never in process arguments or progress output.
+            config = "header = " + json.dumps("Authorization: " + session.headers["Authorization"]) + "\n"
+            command = [curl, "--config", "-", "--http1.1", "--connect-timeout", "30", "--max-time", "3600",
+                "--speed-time", "180", "--speed-limit", "1024", "--fail-with-body", "--request", "POST",
+                "--header", "Content-Type: application/octet-stream", "--data-binary", "@" + os.path.abspath(path), "--output", response_path, url]
+            if address := os.environ.get("ORC_GITHUB_UPLOAD_IP"):
+                ipaddress.ip_address(address)
+                command[1:1] = ["--resolve", "uploads.github.com:443:" + address]
+            if os.name == "nt": command.insert(1, "--ssl-revoke-best-effort")
+            result = subprocess.run(command, input=config, text=True)
+            with open(response_path, encoding="utf-8") as stream: body = stream.read()
+            if result.returncode:
+                raise requests.RequestException(f"curl exited {result.returncode}: {body[:200]}")
+            return json.loads(body)
+        finally:
+            os.unlink(response_path)
+    with open(path, "rb") as stream:
+        response = session.post(url, data=stream, headers={"Content-Type": "application/octet-stream", "Content-Length": str(size)}, timeout=TIMEOUT)
     response.raise_for_status()
     return response.json()
 
@@ -91,18 +124,9 @@ def main() -> int:
 
         for attempt in range(1, 4):
             try:
-                with open(path, "rb") as fh:
-                    resp = session.post(
-                        url, data=fh,
-                        headers={"Content-Type": "application/octet-stream",
-                                 "Content-Length": str(size)},
-                        timeout=TIMEOUT,
-                    )
-                if resp.status_code < 400:
-                    info = resp.json()
-                    print(f"ASSET_OK {info['name']}  {info['size']/1048576:.1f} MB")
-                    break
-                print(f"  第 {attempt} 次失败：{resp.status_code} {resp.text[:200]}")
+                info = upload_asset(session, url, path, size)
+                print(f"ASSET_OK {info['name']}  {info['size']/1048576:.1f} MB")
+                break
             except requests.RequestException as error:
                 print(f"  第 {attempt} 次异常：{error}")
             if attempt == 3:

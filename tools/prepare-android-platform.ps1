@@ -26,12 +26,32 @@ $manifest.Save($manifestPath)
 # Feed each identical JAR to D8 once, retaining all ABI-specific native libraries.
 $gradlePath = Join-Path $ProjectRoot 'android/build/build.gradle'
 $gradle = [IO.File]::ReadAllText($gradlePath)
-if (!$gradle.Contains('// ORC_ANDROID_JAR_DEDUP')) {
+if ($gradle.Contains('// ORC_ANDROID_JAR_DEDUP') -and !$gradle.Contains('// ORC_ANDROID_JAR_DEDUP_V2')) {
+    $start = $gradle.IndexOf('// ORC_ANDROID_JAR_DEDUP')
+    $end = $gradle.IndexOf('dependencies {', $start)
+    $gradle = $gradle.Substring(0, $start) + $gradle.Substring($end)
+    foreach ($variant in @('debug','release')) {
+        $gradle = $gradle.Replace("$($variant)Implementation files(orcUniqueJars('libs/$variant'))", "$($variant)Implementation fileTree(dir: 'libs/$variant', include: ['**/*.jar', '*.aar'])")
+        $gradle = $gradle.Replace("$($variant)Implementation fileTree(dir: 'libs/$variant', include: ['*.aar'])", '')
+    }
+}
+if (!$gradle.Contains('// ORC_ANDROID_JAR_DEDUP_V2')) {
     $helper = @'
-// ORC_ANDROID_JAR_DEDUP
+// ORC_ANDROID_JAR_DEDUP_V2
+def orcJarContent = { jar ->
+    def archive = new java.util.zip.ZipFile(jar)
+    try {
+        archive.entries().toList().findAll { entry ->
+            !entry.directory && !(entry.name ==~ /(?i)META-INF\/.*\.(RSA|DSA|EC|SF)/)
+        }.sort { it.name }.collect { entry ->
+            entry.name + ':' + java.security.MessageDigest.getInstance('SHA-256').digest(archive.getInputStream(entry).bytes).encodeHex().toString()
+        }.join('\n')
+    } finally { archive.close() }
+}
 def orcUniqueJars = { directory ->
     fileTree(dir: directory, include: ['**/*.jar']).files.groupBy { it.name }.collect { name, copies ->
-        def hashes = copies.collect { java.security.MessageDigest.getInstance('SHA-256').digest(it.bytes).encodeHex().toString() }.unique()
+        // SDK signatures differ by RID; all class/resource payloads must still match.
+        def hashes = copies.collect { orcJarContent(it) }.unique()
         if (hashes.size() != 1) throw new GradleException("Different Android JARs share a filename: " + name)
         copies.sort { it.path }.first()
     }

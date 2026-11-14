@@ -1,0 +1,34 @@
+name: Finalize verified release
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_asset:
+        description: Asset ID of the verified staging manifest
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out dispatched source
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/$REPOSITORY.git"
+          git fetch --depth=1 origin "$SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Reassemble, verify, publish and advance update channel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MANIFEST_ASSET: ${{ inputs.manifest_asset }}
+        run: |
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$RUNNER_TEMP/dotnet-install.sh"
+          bash "$RUNNER_TEMP/dotnet-install.sh" --channel 9.0 --install-dir "$RUNNER_TEMP/dotnet"
+          export PATH="$RUNNER_TEMP/dotnet:$PATH"
+          python3 -m pip install --disable-pip-version-check requests
+          python3 tools/finalize-staged-release.py "$MANIFEST_ASSET"
