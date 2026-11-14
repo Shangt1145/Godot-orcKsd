@@ -20,9 +20,19 @@ public sealed class NetworkWorkshopTests : IDisposable
         var roots = Directory.GetDirectories(Path.Combine(directory!.FullName, "proto", "data", "kards", "packs"))
             .Where(p => File.Exists(Path.Combine(p, "manifest.json"))).ToArray();
         Assert.Contains(roots, p => Path.GetFileName(p) == "bulwark");
-        Assert.All(roots, root => Assert.False(Directory.Exists(Path.Combine(root, "effects")), root));
+        var sample = roots.Single(p => Path.GetFileName(p) == "bulwark");
+        var legacyCopy = Path.Combine(_root, "stale-generated-bulwark");
+        foreach (var file in Directory.GetFiles(sample, "*", SearchOption.AllDirectories))
+        {
+            var output = Path.Combine(legacyCopy, Path.GetRelativePath(sample, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!); File.Copy(file, output);
+        }
+        Directory.CreateDirectory(Path.Combine(legacyCopy, "effects"));
+        File.WriteAllText(Path.Combine(legacyCopy, "effects", "stale.prefab.json"), "{}");
+        roots = roots.Select(p => p == sample ? legacyCopy : p).ToArray();
         var (_, _, unit, _) = Content();
         var session = NetworkWorkshopSession.Prepare(Path.Combine(_root, "default-packs"), roots, [unit], [], [unit.Id]);
+        Assert.All(session.Roots, root => Assert.False(Directory.Exists(Path.Combine(root, "effects")), root));
         var deck = session.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
         await using var server = await ServerLauncher.StartAsync(session.Roots, Path.Combine(_root, "default-server"), fixedDeckForVerification: true, inProcess: inProcess);
         await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);

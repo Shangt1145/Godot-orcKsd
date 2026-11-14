@@ -29,7 +29,7 @@ public sealed class NetworkWorkshopSession
             var target = Path.Combine(directory, PackPaths.Key(id));
             // The shipped first-party sample has canonical v4 metadata. Do not transport
             // obsolete v3 files left by an older generated asset directory.
-            if (id == "orc.bulwark" && Directory.Exists(Path.Combine(source, "effects-v4"))
+            if (id == "orc.bulwark" && System.IO.Directory.Exists(Path.Combine(source, "effects-v4"))
                 && manifest["metadata"]!.AsArray().All(m => !m!.ToString().Replace('\\', '/').StartsWith("effects/", StringComparison.Ordinal)))
             {
                 System.IO.Directory.CreateDirectory(target);
