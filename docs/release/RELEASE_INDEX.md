@@ -4,7 +4,7 @@
 
 | 版本 | tag | 全量 | 补丁 | 说明/验证/校验和 | 状态 |
 |---|---|---|---|---|---|
-| 2.0.0-beta.9 | 无 | 1167 MB | 1 个 / 25 MB | notes/verify/sha256 | 无tag |
+| 2.0.0-beta.9 | 有 | 1167 MB | 1 个 / 25 MB | notes/verify/sha256 | ok |
 | 2.0.0-beta.8 | 有 | 1167 MB | 1 个 / 57 MB | notes/verify/sha256 | ok |
 | 2.0.0-beta.7 | 有 | 1167 MB | 2 个 / 89 MB | notes/verify/sha256 | ok |
 | 2.0.0-beta.6 | 无 | 1167 MB | 1 个 / 39 MB | notes/verify/sha256 | 无tag |
@@ -12,6 +12,7 @@
 | 2.0.0-beta.4 | 无 | 1167 MB | 1 个 / 11 MB | notes/verify/sha256 | 无tag |
 | 2.0.0-beta.3 | 有 | 1167 MB | 1 个 / 6 MB | notes/verify/sha256 | ok |
 | 2.0.0-beta.2 | 有 | 1167 MB | 1 个 / 22 MB | notes/verify/sha256 | ok |
+| 2.0.0-beta.10 | 有 | 1175 MB | 1 个 / 18 MB | notes/verify/sha256 | ok |
 | 2.0.0-beta.1 | 有 | 1167 MB | 1 个 / 35 MB | notes/verify/sha256 | ok |
 | 2.0.0-alpha.6 | 无 | 1167 MB | 1 个 / 7 MB | notes/verify/sha256 | 无tag |
 | 2.0.0-alpha.5 | 有 | 1174 MB | 1 个 / 49 MB | notes/verify/sha256 | ok |
