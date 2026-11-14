@@ -32,3 +32,5 @@ tests/TestResults/
 
 # User-provided chat attachments stay local.
 .codex-remote-attachments/
+
+.codex-attachments/
