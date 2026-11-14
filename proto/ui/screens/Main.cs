@@ -369,8 +369,12 @@ public partial class Main : Control
         // All authoring routes share one block Inspector and an explicit workshop context.
         _blockEditor = new HandlerBlockEditorScreen(); _blockEditor.Initialize();
         _blockEditor.ConfigureSave(() => _nativeWorkshop.HandlerAuthoring);
-        _blockEditor.Saved += _workshop.AcceptBlockSave;
+        _blockEditor.ConfigureEffectNames(() => _nativeWorkshop.HasSession
+            ? _nativeWorkshop.Effects().ToDictionary(e => e.Asset.Id, e => e.Name)
+            : new Dictionary<string, string>());
+        _blockEditor.Saved += result => _workshop.AcceptBlockSave(result, _blockEditor.EffectTitle);
         _blockEditor.Finished += () => { Show("editor"); _workshop.ReturnFromBlocks(); };
+        _blockEditor.TextAuthoringRequested += () => { Show("editor"); _workshop.ReturnToTextAuthoring(); };
         AddScreen(content, "hdsl", _blockEditor);
         _diyEditor.EffectsEditorRequested += _workshop.OpenCompatibleBlocks;
         _workshop.BlockAuthoringRequested += () =>
@@ -458,6 +462,8 @@ public partial class Main : Control
             Callable.From(VerifyWorkshopRoutes).CallDeferred();
         else if (args.Contains("--verify-card-skins"))
             Callable.From(VerifyCardSkins).CallDeferred();
+        else if (args.Contains("--verify-diy-capabilities"))
+            Callable.From(VerifyDiyCapabilities).CallDeferred();
         else if (args.Contains("--verify-diy-tutorial") || args.Contains("--capture-diy-tutorial"))
             Callable.From(VerifyDiyTutorial).CallDeferred();
         else if (args.Contains("--verify-inspector-entry"))

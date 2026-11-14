@@ -128,8 +128,8 @@ public sealed class HandlerValue
         {
             case HandlerValueKind.Literal:
                 if (Text is not null) return "\"" + Text + "\"";
-                return Flag ? "true" : Number.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
-            case HandlerValueKind.Binding: return "‹" + Name + "›";
+                return LiteralType == "boolean" ? Flag ? "是" : "否" : Number.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            case HandlerValueKind.Binding: return "‹" + HandlerVocabulary.BindingLabel(Name ?? "") + "›";
             case HandlerValueKind.View: return HandlerVocabulary.ViewFieldLabel(Name ?? "");
             case HandlerValueKind.Read:
                 // 界面文字：属性名翻中文（attack → 攻击力），否则作者读到的是一串驼峰英文。
@@ -138,7 +138,7 @@ public sealed class HandlerValue
                     ? (ReadOf == "self" ? "自己的" : "我方的") + what
                     : ReadTarget.Describe() + "的" + what;
             case HandlerValueKind.Operator:
-                return Name + "(" + string.Join(", ", Args.Select(a => a.Describe())) + ")";
+                return HandlerVocabulary.OperatorLabel(Name ?? "") + "(" + string.Join(", ", Args.Select(a => a.Describe())) + ")";
             default: return "?";
         }
     }
@@ -149,7 +149,7 @@ public sealed class HandlerValue
         {
             case HandlerValueKind.Literal:
                 if (Text is not null) return new JsonObject { ["lit"] = Text };
-                if (Flag) return new JsonObject { ["lit"] = true };
+                if (LiteralType == "boolean") return new JsonObject { ["lit"] = Flag };
                 return new JsonObject { ["lit"] = Number };
             case HandlerValueKind.Binding:
                 return new JsonObject { ["var"] = Name };

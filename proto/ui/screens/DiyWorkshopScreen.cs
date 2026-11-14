@@ -19,10 +19,8 @@ public partial class DiyWorkshopScreen : VBoxContainer
     private Label _notice=null!;
     private VBoxContainer _keywordPane=null!;
     private DiyPackDraft? _pack;
-    private bool _animating;
-    private int _navigationVersion;
-    internal Button PackChoice=null!,ExpansionChoice=null!,CreateChoice=null!,ModifyChoice=null!,ConfirmPack=null!;
-    internal OptionButton BaseChoice=null!,ModifyPick=null!;
+    internal Button PackChoice=null!,ExpansionChoice=null!,ConfirmPack=null!;
+    internal OptionButton BaseChoice=null!;
     internal LineEdit PackName=null!,KeywordName=null!;
     internal Button SaveKeyword=null!;
     internal Button OpenInspectorButton=null!;
@@ -43,15 +41,13 @@ public partial class DiyWorkshopScreen : VBoxContainer
         _store=store;_cards=cards;_editor=editor;_service=service;_textures=textures;_changed=changed;_reduced=reduced;
         SizeFlagsVertical=SizeFlags.ExpandFill;AddThemeConstantOverride("separation",12);
         var top=new HBoxContainer();AddChild(top);_nativeToolbar=top;top.AddChild(MenuStyles.Label("DIY 工坊",32,MenuStyles.Ink));top.AddChild(new Control{SizeFlagsHorizontal=SizeFlags.ExpandFill});
-        OpenInspectorButton = MenuStyles.Button("积木 Inspector", RequestBlockAuthoring);
+        OpenInspectorButton = MenuStyles.Button("效果工作台", RequestBlockAuthoring);
         OpenInspectorButton.TooltipText = "打开新版效果搭建界面；进入卡包后可将效果保存到当前卡包。";
-        MenuStyles.Primary(OpenInspectorButton); top.AddChild(OpenInspectorButton);
-        top.AddChild(MenuStyles.Button("工坊首页",()=>_editor.GuardNavigation(ShowHome)));
+        top.AddChild(OpenInspectorButton);
         InitializeTutorial(top);
         _notice=MenuStyles.Label("",13,MenuStyles.Dim);_notice.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_notice);
         _navigation=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_navigation);
         _workspace=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_workspace);AddChild(_editor);ShowHome();
-        VisibilityChanged+=()=>{if(!Visible&&_animating)ShowHome();};
     }
     /// <summary>
     /// 新版 Inspector 的保存目标是**当前打开的卡包**（没有会话时画布只会说「没有打开的卡包」）。

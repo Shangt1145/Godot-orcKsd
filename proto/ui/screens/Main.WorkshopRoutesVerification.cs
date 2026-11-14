@@ -58,7 +58,9 @@ public partial class Main
             }
             var id = face.Definition.CardId; await DeckClickAsync(face);
             var previews = _workshop.FindChildren("*", "Control", true, false).OfType<CardFace>().Where(c => c.IsVisibleInTree()).ToArray();
-            Check(previews.Any(c => c.Size.Y >= 390), "Pack used compact legacy preview: " + pack.Name);
+            Check(previews.Any(c => c.Size.Y >= 330), "Pack preview is too small to read: " + pack.Name);
+            Check(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Count(b => b.IsVisibleInTree() && b.Text.Length > 3 && b.Text[0] == '0' && char.IsDigit(b.Text[1])) >= 4,
+                "Card editor is missing its section navigation: " + pack.Name);
             Check(!_diyEditor.Cards.IsVisibleInTree(), "Pack exposed the legacy sidebar: " + pack.Name); checkedCards++;
             if (!pack.IsBuiltIn && _diy.Cards.FirstOrDefault(c => c.RuntimeId == id) is { } before)
             {

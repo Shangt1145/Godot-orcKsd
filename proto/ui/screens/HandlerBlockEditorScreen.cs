@@ -43,6 +43,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private PanelContainer _toolbox = null!;
     private VBoxContainer _toolboxList = null!;
     private LineEdit _toolboxSearch = null!;
+    private OptionButton _toolboxGroup = null!;
+    private readonly HashSet<HandlerNode> _expandedOptions = [];
     private Label _toolboxTarget = null!;
     private Button _toolboxToggle = null!;
     private string _pendingLabel = "整段的最后";
@@ -60,11 +62,14 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     /// <summary>保存出口（复杂 DIY）：返回 null＝当前没有打开的卡包编辑会话。</summary>
     private Func<HandlerDslAuthoring?>? _authoring;
+    private Func<IReadOnlyDictionary<string, string>>? _effectNames;
+    public string EffectTitle => _cardLabel.Text;
     /// <summary>上一次保存的结果（跨 Rebuild 保留：重画会清空检查结果列，作者的反馈不能被顺手抹掉）。</summary>
     private string? _saveNote;
     private bool _saveFailed;
 
     public event Action? Finished;
+    public event Action? TextAuthoringRequested;
     public event Action<string>? Changed;
     public event Action<HandlerDslSaveResult>? Saved;
     private string? _targetEffect, _targetParent;
@@ -79,7 +84,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var authoring = _authoring?.Invoke();
         if (authoring is null) return;
         var parents = authoring.DescribeParents();
-        foreach (var item in parents) { _timing.AddItem(item.Label); _timing.SetItemMetadata(_timing.ItemCount - 1, item.ParentId); }
+        foreach (var item in parents) { _timing.AddItem(item.DisplayLabel); _timing.SetItemMetadata(_timing.ItemCount - 1, item.ParentId); }
         var index = parents.ToList().FindIndex(p => p.ParentId == (parent ?? DefaultParentId));
         _timing.Select(Math.Max(0, index));
         _targetParent = parents[Math.Max(0, index)].ParentId;
@@ -126,6 +131,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// 缓存下来的作者面会往上一个包里写。
     /// </summary>
     public void ConfigureSave(Func<HandlerDslAuthoring?> authoring) => _authoring = authoring;
+    public void ConfigureEffectNames(Func<IReadOnlyDictionary<string, string>> names) => _effectNames = names;
 
     private static IReadOnlyDictionary<string, HandlerViewField> DemoView() =>
         new Dictionary<string, HandlerViewField>(StringComparer.Ordinal)
@@ -151,6 +157,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     public void Open(string title, HandlerDocument? doc = null)
     {
+        _expandedOptions.Clear();
+        _expandedTargetSteps.Clear();
+        _toolboxGroup.Select(0); _toolboxSearch.Text = "";
         _targetEffect = _targetParent = null;
         _savedParent = null;
         _afterSave = null;
@@ -180,11 +189,13 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     private Control BuildHeader()
     {
+        var header = new VBoxContainer(); header.AddThemeConstantOverride("separation", 12);
         var head = new HBoxContainer();
+        header.AddChild(head);
         head.AddThemeConstantOverride("separation", 10);
 
         var title = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        title.AddChild(MenuStyles.Label("效果搭建", 26, MenuStyles.Ink));
+        title.AddChild(MenuStyles.Label("积木效果工作台", 26, MenuStyles.Ink));
         _cardLabel = MenuStyles.Label("样例：打出时", 13, MenuStyles.Dim);
         title.AddChild(_cardLabel);
         head.AddChild(title);
@@ -194,10 +205,11 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _toolboxToggle = MenuStyles.Button("工具箱 ▾", () => SetToolboxOpen(!_toolboxOpen));
         _toolboxToggle.TooltipText = "所有能用的积木都在左栏，点一块就插进去";
         head.AddChild(_toolboxToggle);
+        head.AddChild(MenuStyles.Button("自动解析器", () => GuardLeaving(() => TextAuthoringRequested?.Invoke())));
         head.AddChild(_undo);
         head.AddChild(_redo);
         var save = MenuStyles.Button("保存到卡包", OpenSaveDialog);
-        save.TooltipText = "把这段积木写成包内的一个效果（DSL 文档 ＋ 草案 ＋ 摊平产物）";
+        save.TooltipText = "保存当前积木，更新正在编辑的卡牌效果或包内效果。";
         MenuStyles.Primary(save);
         head.AddChild(save);
         _timing = new OptionButton { CustomMinimumSize = new(200, 0), FitToLongestItem = false, ClipText = true };
@@ -208,9 +220,11 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             var authoring = _authoring?.Invoke();
             if (authoring is not null) ApplyView(authoring, authoring.DescribeParents().Single(p => p.ParentId == _targetParent));
         };
-        head.AddChild(_timing);
+        var timingRow = new HBoxContainer(); timingRow.AddThemeConstantOverride("separation", 14); header.AddChild(timingRow);
+        timingRow.AddChild(MenuStyles.Label("当什么发生时", 15, MenuStyles.Gold)); timingRow.AddChild(_timing);
+        var hint = MenuStyles.Label("选择触发时机，再把要执行的动作放到下方。", 13, MenuStyles.Dim); timingRow.AddChild(hint);
         head.AddChild(MenuStyles.Button("完成", () => GuardLeaving(() => Finished?.Invoke())));
-        return head;
+        return header;
     }
 
     private Control BuildBody()
@@ -230,35 +244,41 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _blocks = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         _blocks.AddThemeConstantOverride("separation", 4);
         scroll.AddChild(_blocks);
-        body.AddChild(scroll);
+        var canvasPanel = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        canvasPanel.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("151f1b"), new("405448"), 1, 18));
+        var canvasContent = new VBoxContainer(); canvasContent.AddThemeConstantOverride("separation", 12); canvasPanel.AddChild(canvasContent);
+        canvasContent.AddChild(MenuStyles.Label("执行顺序", 18, MenuStyles.Ink));
+        canvasContent.AddChild(MenuStyles.Label("从左侧添加动作，按从上到下的顺序执行。", 13, MenuStyles.Dim));
+        canvasContent.AddChild(scroll); body.AddChild(canvasPanel);
         body.AddChild(BuildSide());
         return body;
     }
 
     private Control BuildSide()
     {
-        var panel = new PanelContainer { CustomMinimumSize = new Vector2(370, 0) };
-        panel.AddThemeStyleboxOverride("panel", UiStyles.Box(UiStyles.Panel, UiStyles.Line, 10, 10));
+        var panel = new PanelContainer { CustomMinimumSize = new Vector2(252, 0) };
+        panel.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("1c2822"), new("405448"), 1, 14));
         var box = new VBoxContainer();
         box.AddThemeConstantOverride("separation", 6);
         panel.AddChild(box);
 
         var head = new HBoxContainer();
-        head.AddChild(MenuStyles.Label("生成的内容", 12, MenuStyles.Dim));
+        head.AddChild(MenuStyles.Label("效果检查", 18, MenuStyles.Ink));
         _summary = MenuStyles.Label("", 12, MenuStyles.Dim);
         _summary.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _summary.HorizontalAlignment = HorizontalAlignment.Right;
         head.AddChild(_summary);
         box.AddChild(head);
 
+        var source = new AcceptDialog { Title = "积木源文档", MinSize = new(800, 540) }; panel.AddChild(source);
         _json = new TextEdit
         {
             Editable = false,
-            CustomMinimumSize = new Vector2(0, 300),
+            CustomMinimumSize = new Vector2(760, 480),
             SizeFlagsVertical = SizeFlags.ExpandFill,
         };
         _json.AddThemeFontSizeOverride("font_size", 12);
-        box.AddChild(_json);
+        source.AddChild(_json);
 
         var check = new HBoxContainer();
         check.AddChild(MenuStyles.Label("检查结果", 12, MenuStyles.Dim));
@@ -278,6 +298,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _issues.AddThemeConstantOverride("separation", 4);
         issueScroll.AddChild(_issues);
         box.AddChild(issueScroll);
+        var guidance = MenuStyles.Label("完成后保存到卡包。\n返回卡牌预览，再试打确认实际效果。", 13, MenuStyles.Dim);
+        guidance.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(guidance);
+        box.AddChild(MenuStyles.Button("查看积木源文档…", () => source.PopupCentered()));
         return panel;
     }
 
@@ -298,8 +321,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// </summary>
     private Control BuildToolbox()
     {
-        _toolbox = new PanelContainer { CustomMinimumSize = new Vector2(286, 0) };
-        _toolbox.AddThemeStyleboxOverride("panel", UiStyles.Box(UiStyles.Panel, UiStyles.Line, 10, 10));
+        _toolbox = new PanelContainer { CustomMinimumSize = new Vector2(244, 0) };
+        _toolbox.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("1c2822"), new("405448"), 1, 14));
 
         var box = new VBoxContainer();
         box.AddThemeConstantOverride("separation", 6);
@@ -329,9 +352,13 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             ClearButtonEnabled = true,
             CustomMinimumSize = new Vector2(0, 30),
         };
-        _toolboxSearch.AddThemeFontSizeOverride("font_size", 12);
+        _toolboxSearch.AddThemeFontSizeOverride("font_size", 14);
         _toolboxSearch.TextChanged += _ => RefreshToolbox();
         box.AddChild(_toolboxSearch);
+        _toolboxGroup = new OptionButton { FitToLongestItem = false, ClipText = true };
+        _toolboxGroup.AddItem("全部分类");
+        foreach (var group in _catalog.Nodes.Select(n => n.Group).Distinct()) _toolboxGroup.AddItem(group);
+        _toolboxGroup.ItemSelected += _ => RefreshToolbox(); box.AddChild(_toolboxGroup);
 
         var targetRow = new HBoxContainer();
         targetRow.AddThemeConstantOverride("separation", 4);
@@ -375,6 +402,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var query = _toolboxSearch.Text.Trim();
         var groups = _catalog.Nodes
             .Where(spec => Matches(spec, query))
+            .Where(spec => _toolboxGroup.Selected == 0 || spec.Group == _toolboxGroup.GetItemText(_toolboxGroup.Selected))
             .GroupBy(spec => spec.Group)
             .OrderBy(group => GroupRank(group.Key))
             .ToList();
@@ -447,6 +475,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var row = new PanelContainer
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new(0, 38),
             MouseDefaultCursorShape = CursorShape.PointingHand,
             TooltipText = preview
                 ? spec.Name + "　还不能用：" + (spec.Problem ?? "")
@@ -463,7 +492,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         var line = new HBoxContainer();
         line.AddThemeConstantOverride("separation", 6);
-        line.AddChild(MenuStyles.Label(spec.Title, 12,
+        line.AddChild(MenuStyles.Label(spec.Title, 14,
             preview ? new Color(BlockTheme.InkFor(color), 0.55f) : BlockTheme.InkFor(color)));
         // 右侧优先标「还不能用」——它比「带子块」重要得多：一个影响能不能跑，一个只影响点几下。
         var tail = MenuStyles.Label(
@@ -622,28 +651,32 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             CancelButtonText = "取消",
             DialogHideOnOk = false,   // 失败要留在原地让作者改，不能一关就丢
             // 高度不能给 0：窗口会按 0 高布局，确认按钮落到可见区外，鼠标点不到（探针实测）。
-            MinSize = new Vector2I(640, 260),
+            MinSize = new Vector2I(680, 500),
         };
         AddChild(dialog);
 
-        var page = new VBoxContainer();
+        var page = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         page.AddThemeConstantOverride("separation", 10);
-        dialog.AddChild(page);
+        var formScroll = new ScrollContainer { CustomMinimumSize = new(640, 400), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        dialog.AddChild(formScroll); formScroll.AddChild(page);
+
+        var effectName = new LineEdit { Text = _cardLabel.Text, PlaceholderText = "给效果起个名字", MaxLength = 80 };
+        DiyEditorScreen.Field(page, "效果名称", effectName);
 
         // 父是**模板**（R39）：104 个「信号 × 守卫档」的模板，成员恒为 onHook。
         // 缺省选「打出时」——卡牌效果里最常见的一档，省一次点击。
         var parent = new OptionButton { Name = "ParentPicker", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        foreach (var option in parents) parent.AddItem(option.Label);
+        foreach (var option in parents) parent.AddItem(option.DisplayLabel);
         for (var i = 0; i < parents.Count; i++) parent.SetItemMetadata(i, parents[i].ParentId);
         var defaultIndex = parents.ToList().FindIndex(option => option.ParentId == (_targetParent ?? DefaultParentId));
         parent.Select(defaultIndex < 0 ? 0 : defaultIndex);
-        DiyEditorScreen.Field(page, "模板（挂载、视图字段与守卫从它继承）", parent);
+        DiyEditorScreen.Field(page, "触发时机", parent);
         ApplyView(authoring, parents[Math.Max(0, parent.Selected)]);
 
         var replace = new CheckBox
         {
             Text = "用这份积木重写一个已有效果",
-            TooltipText = "产物落到 <效果 id>.dsl，包里引用它的卡自动改指产物；原效果保留为基线，可再次编辑",
+            TooltipText = "更新选中的效果，使用它的卡牌也会更新；原始版本保留。",
         };
         page.AddChild(replace);
 
@@ -657,14 +690,19 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             Disabled = true,
         };
-        foreach (var item in targets) target.AddItem(item.Label);
+        var names = _effectNames?.Invoke();
+        foreach (var item in targets)
+            target.AddItem((names?.GetValueOrDefault(item.EffectId) is { } name && name != item.EffectId ? name : $"效果 {target.ItemCount + 1}")
+                + (item.Cards > 0 ? $"（{item.Cards} 张卡在用）" : "（暂无卡引用）"));
         for (var i = 0; i < targets.Count; i++) target.SetItemMetadata(i, targets[i].EffectId);
         if (_targetEffect is not null) target.Select(Math.Max(0, targets.FindIndex(t => t.EffectId == _targetEffect)));
         if (targets.Count == 0) target.AddItem("（包里没有可替换的效果）");
         DiyEditorScreen.Field(page, "替换哪个效果（只有它会被改引用）", target);
 
         var product = new LineEdit { Name = "ProductId", Text = NewProductId() };
-        DiyEditorScreen.Field(page, "产物 id（卡牌的 effects.prefabs 引用它）", product);
+        var advanced = new VBoxContainer { Visible = false }; page.AddChild(advanced);
+        DiyEditorScreen.Field(advanced, "效果标识（自动生成）", product);
+        page.AddChild(MenuStyles.Button("高级保存设置…", () => advanced.Visible = !advanced.Visible));
 
         var hint = MenuStyles.Label(NewEffectHint, 12, MenuStyles.Dim);
         hint.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -687,6 +725,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         dialog.Confirmed += () =>
         {
+            if (string.IsNullOrWhiteSpace(effectName.Text)) { result.Text = "请填写效果名称。"; return; }
             var option = parents[Math.Max(0, parent.Selected)];
             var replaceId = replace.ButtonPressed && targets.Count > 0
                 ? targets[Math.Clamp(target.Selected, 0, targets.Count - 1)].EffectId
@@ -709,11 +748,13 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                     option.ParentId, option.Member, product.Text.Trim(), _doc.ToJsonText(_catalog),
                     replace.ButtonPressed ? HandlerDslSaveMode.ReplaceExisting : HandlerDslSaveMode.NewEffect,
                     RetargetFromId: replaceId));
-                result.Text = saved.Describe();
+                var message = saved.Success ? "已保存到草稿。返回卡牌后点击“应用修改”，用于构筑和新对局。" : saved.Describe();
+                result.Text = message; result.TooltipText = saved.Describe();
                 result.AddThemeColorOverride("font_color", saved.Success ? UiStyles.Green : new Color("e0705f"));
-                ShowSaveNote(saved.Describe(), failed: !saved.Success);
+                ShowSaveNote(message, failed: !saved.Success);
                 if (saved.Success)
                 {
+                    _cardLabel.Text = effectName.Text.Trim();
                     Saved?.Invoke(saved);
                     _targetEffect = saved.ProductId; _targetParent = option.ParentId;
                     var timingIndex = Enumerable.Range(0, _timing.ItemCount).FirstOrDefault(i => _timing.GetItemMetadata(i).AsString() == option.ParentId, -1);
@@ -742,7 +783,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private const string DefaultParentId = "template.card.played.any";
 
     private const string NewEffectHint =
-        "保存会写三份文件：DSL 文档、草案、摊平产物。产物是自包含的——之后改模板不会影响它。";
+        "保存到当前卡包草稿。返回卡牌后可继续预览与试打，应用修改后用于新对局。";
 
     private static string NewProductId() => "effect." + Guid.NewGuid().ToString("N")[..8];
 
@@ -795,13 +836,13 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var existing = authoring.ReadExistingDsl(picked.EffectId);
         if (existing is null)
         {
-            hint.Text = $"这个效果还没有积木版本：保存后包内引用 {picked.EffectId} 的卡会改用它，原效果保留。";
+            hint.Text = "这个效果还没有积木版本。保存后，使用原效果的卡牌会改用这份积木；原始版本保留。";
             return;
         }
 
         try
         {
-            hint.Text = $"保存当前画布到 {productId}；上次的图可从效果列表重新打开。";
+            hint.Text = "保存当前积木并更新选中的效果，使用它的卡牌也会更新。之后可从效果列表重新打开。";
         }
         catch (FormatException error)
         {
@@ -897,9 +938,35 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         for (var i = 0; i < list.Count; i++)
         {
             var node = list[i];
+            if (TargetSequenceAt(list, i) is { } compound && !_expandedTargetSteps.Contains(list[i + 1]))
+            {
+                var loop = list[i + 1];
+                DeclareBindings(node, local);
+                var innerScope = new List<ScopeVar>(local) { new(loop.Text("as")!, "entity") };
+                var group = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ShrinkBegin };
+                var rendered = RenderNode(compound.Action, basePath + "[" + (i + 1) + "].actions[0]", innerScope);
+                _nodeControls[node] = _nodeControls[loop] = rendered;
+                group.AddChild(rendered);
+                if (_errorNodes.Contains(node) || _errorNodes.Contains(loop))
+                    group.AddChild(MenuStyles.Label("目标条件需要修正，请展开选目标步骤查看。", 13, BlockTheme.Error));
+                group.AddChild(SoftButton("展开选目标步骤…", BlockTheme.Interaction, "编辑完整的选择、筛选和遍历积木", () => { _expandedTargetSteps.Add(loop); Rebuild(); }));
+                box.AddChild(group); i++; continue;
+            }
             box.AddChild(RenderNode(node, basePath + "[" + i + "]", local));
+            if (TargetSequenceAt(list, i) is not null)
+            {
+                var loop = list[i + 1];
+                box.AddChild(SoftButton("收起选目标步骤", BlockTheme.Interaction, "用单张动作积木显示常用效果", () => { _expandedTargetSteps.Remove(loop); Rebuild(); }));
+            }
+            DeclareBindings(node, local);
+        }
 
-            // 声明在「本节点之后」才对兄弟可见（SPEC §8.2）。三处来源：let{name}、ask.bind、动作节点的 bind。
+        box.AddChild(WithTopMargin(AddBlockButton(list, depth, where), 6));
+        return box;
+    }
+
+    private void DeclareBindings(HandlerNode node, List<ScopeVar> local)
+    {
             var spec = _catalog.Find(node.Op);
             if (node.Op == "let" && !string.IsNullOrEmpty(node.Text("name")))
                 local.Add(new ScopeVar(node.Text("name")!, GuessType(node.Value("value"), local)));
@@ -907,10 +974,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 local.Add(new ScopeVar(node.Text("bind")!, "list<entity>"));
             else if (spec is { Outputs.Count: 1 } && node.Text("bind") is { Length: > 0 } bound)
                 local.Add(new ScopeVar(bound, spec.Outputs[0].Type));
-        }
-
-        box.AddChild(WithTopMargin(AddBlockButton(list, depth, where), 6));
-        return box;
+            else if (spec is { Outputs.Count: > 1 })
+                foreach (var output in spec.Outputs)
+                    if (node.OutputBinds.GetValueOrDefault(output.Name) is { Length: > 0 } name) local.Add(new ScopeVar(name, output.Type));
     }
 
     private static Control WithTopMargin(Control child, int top)
@@ -966,6 +1032,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         var shell = new BlockShape
         {
+            CustomMinimumSize = new(340, 0),
             Fill = fill,
             ShowTab = spec is null || !spec.IsContainer,
             // 容器块的头要和左侧竖脊接成一体，底角必须是方的，否则接缝处会掐出一道收腰。
@@ -1113,12 +1180,12 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         margin.AddThemeConstantOverride("margin_bottom", 10);
 
         var box = new VBoxContainer();
-        box.AddThemeConstantOverride("separation", 4);
+        box.AddThemeConstantOverride("separation", 10);
         margin.AddChild(box);
 
         var head = new HBoxContainer();
         head.AddThemeConstantOverride("separation", 8);
-        head.AddChild(MenuStyles.Label(spec?.Title ?? node.Op, 15, ink));
+        head.AddChild(MenuStyles.Label(spec?.Title ?? node.Op, 18, ink));
         // 画布上也标一次预览态：作者是在这块积木上做决定，不能只在右栏提一句。
         if (spec is { IsPreview: true })
         {
@@ -1138,17 +1205,19 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             return margin;
         }
 
+        var optional = new VBoxContainer(); optional.AddThemeConstantOverride("separation", 10);
         foreach (var pin in spec.Inputs)
         {
             var row = new HBoxContainer();
             row.AddThemeConstantOverride("separation", 8);
-            var label = MenuStyles.Label(spec.PinLabel(pin.Name) + (pin.Required ? "" : "（可选）"), 12,
+            var label = MenuStyles.Label(spec.PinLabel(pin.Name) + (pin.Required ? "" : "（可选）"), 14,
                 new Color(ink.R, ink.G, ink.B, 0.9f));
             label.CustomMinimumSize = new Vector2(82, 0);
             row.AddChild(label);
-            row.AddChild(pin.Kind switch
+            row.AddChild(pin.Type == "entity" ? EntityTargetChip(node, pin.Name, scope) : pin.Kind switch
             {
                 HandlerPinKind.Bind => TextChip(node.Text(pin.Name), "命名…", v => SetText(node, pin.Name, v), "绑定名"),
+                HandlerPinKind.Text when node.Op == "script" && pin.Name == "body" => ScriptChip(node),
                 HandlerPinKind.Text => TextChip(node.Text(pin.Name), "填写…", v => SetText(node, pin.Name, v), "文案"),
                 HandlerPinKind.Field => TextChip(node.Text(pin.Name), "选字段…", v => SetText(node, pin.Name, v),
                     "视图字段", WritableFields(), HandlerVocabulary.ViewFieldLabel),
@@ -1156,7 +1225,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 _ => ValueChip(node.Value(pin.Name), v => SetValue(node, pin.Name, v), scope, !pin.Required,
                     pin.EnumValues),
             });
-            box.AddChild(row);
+            var filled = node.Value(pin.Name) is not null || !string.IsNullOrWhiteSpace(node.Text(pin.Name));
+            if (pin.Required || filled) box.AddChild(row); else optional.AddChild(row);
         }
 
         // bind 是**节点级字段**，不是引脚（SPEC §3）——目录里查不到，得单独画。
@@ -1171,7 +1241,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             label.CustomMinimumSize = new Vector2(82, 0);
             row.AddChild(label);
             row.AddChild(TextChip(node.Text("bind"), "命名…", v => SetText(node, "bind", v), "绑定名"));
-            box.AddChild(row);
+            if (string.IsNullOrWhiteSpace(node.Text("bind"))) optional.AddChild(row); else box.AddChild(row);
         }
         else if (spec.Pin("bind") is null && spec.Outputs.Count > 1)
         {
@@ -1181,17 +1251,30 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             {
                 var row = new HBoxContainer();
                 row.AddThemeConstantOverride("separation", 8);
-                var label = MenuStyles.Label(pin.Name, 12, new Color(ink.R, ink.G, ink.B, 0.9f));
+                var label = MenuStyles.Label(spec.PinLabel(pin.Name), 12, new Color(ink.R, ink.G, ink.B, 0.9f));
                 label.CustomMinimumSize = new Vector2(82, 0);
                 label.TooltipText = "输出 " + pin.Name + "（" + pin.Type + "）：给这一路结果起个名字，下游才能引用";
                 row.AddChild(label);
                 row.AddChild(TextChip(
                     node.OutputBinds.GetValueOrDefault(pin.Name), "命名…",
                     v => SetOutputBind(node, pin.Name, v), "绑定名"));
-                box.AddChild(row);
+                if (node.OutputBinds.Count > 0) box.AddChild(row); else optional.AddChild(row);
             }
         }
 
+        if (optional.GetChildCount() > 0)
+        {
+            optional.Visible = _expandedOptions.Contains(node);
+            Button? toggle = null;
+            toggle = SoftButton(optional.Visible ? "收起附加设置 ▾" : "附加设置 ▸", fill, "可选参数与结果命名", () =>
+            {
+                optional.Visible = !optional.Visible;
+                if (optional.Visible) _expandedOptions.Add(node); else _expandedOptions.Remove(node);
+                toggle!.Text = optional.Visible ? "收起附加设置 ▾" : "附加设置 ▸";
+            });
+            box.AddChild(toggle); box.AddChild(optional);
+        }
+        else optional.QueueFree();
         if (spec.Inputs.Count == 0 && !spec.IsContainer && spec.Outputs.Count != 1)
             box.AddChild(MenuStyles.Label("没有输入引脚", 11, new Color(ink.R, ink.G, ink.B, 0.7f)));
 
@@ -1234,7 +1317,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private static Button BlockButton(string text, string tip, Color ink, Action action)
     {
         var button = new Button { Text = text, TooltipText = tip, CustomMinimumSize = new Vector2(24, 22) };
-        button.AddThemeFontSizeOverride("font_size", 12);
+        button.AddThemeFontSizeOverride("font_size", 14);
         button.AddThemeColorOverride("font_color", new Color(ink.R, ink.G, ink.B, 0.75f));
         button.AddThemeColorOverride("font_hover_color", ink);
         button.AddThemeStyleboxOverride("normal", UiStyles.Box(new Color(0, 0, 0, 0), new Color(0, 0, 0, 0), 4, 2));
@@ -1251,9 +1334,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var button = new Button
         {
             Text = dropdown ? text + "  ▾" : text,
+            CustomMinimumSize = new(36, 36),
             SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
         };
-        button.AddThemeFontSizeOverride("font_size", 12);
+        button.AddThemeFontSizeOverride("font_size", 14);
         button.AddThemeColorOverride("font_color", empty ? BlockTheme.ChipMuted : BlockTheme.ChipInk);
         button.AddThemeColorOverride("font_hover_color", BlockTheme.ChipInk);
         button.AddThemeStyleboxOverride("normal", UiStyles.Box(BlockTheme.ChipFill, BlockTheme.ChipLine, 11, 8));
@@ -1281,19 +1365,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     }
 
     /// <summary>取值集里的裸值 → 中文。只用于**枚举型**引脚，别拿它翻 read.of。</summary>
-    private static string LiteralLabel(string value) => value switch
-    {
-        "self" => "己方",
-        "enemy" => "敌方",
-        "friendly" => "我方",
-        "any" => "任意",
-        "empty" => "选不到就跳过",
-        "first" => "取第一个",
-        "Permanent" => "永久",
-        "TurnEnd" => "到回合结束",
-        "NextOwnerTurnStart" => "到其下回合开始",
-        _ => value,
-    };
+    private static string LiteralLabel(string value) => HandlerVocabulary.LiteralLabel(value);
 
     private static string EnumLabel(string pin, string value) => (pin, value) switch
     {
@@ -1306,7 +1378,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         ("duration", "Permanent") => "永久",
         ("duration", "TurnEnd") => "到回合结束",
         ("duration", "NextOwnerTurnStart") => "到其下回合开始",
-        _ => value,
+        _ => LiteralLabel(value),
     };
 
     /// <summary>
@@ -1316,7 +1388,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private Control TextChip(string? value, string placeholder, Action<string?> commit, string title,
         IReadOnlyList<string>? choices = null, Func<string, string>? label = null)
     {
-        var shown = string.IsNullOrEmpty(value) ? placeholder : label?.Invoke(value!) ?? value!;
+        var shown = string.IsNullOrEmpty(value) ? placeholder : label?.Invoke(value!) ?? (title == "绑定名" ? HandlerVocabulary.BindingLabel(value!) : value!);
         var chip = InputChip(shown, string.IsNullOrEmpty(value), choices is { Count: > 0 });
         chip.Pressed += () =>
         {
@@ -1332,7 +1404,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 menu.Popup();
                 return;
             }
-            Prompt(title, value ?? "", text => commit(string.IsNullOrWhiteSpace(text) ? null : text));
+            Prompt(title, title == "绑定名" ? HandlerVocabulary.BindingLabel(value ?? "") : value ?? "", text =>
+                commit(string.IsNullOrWhiteSpace(text) ? null : title == "绑定名"
+                    ? text == HandlerVocabulary.BindingLabel(value ?? "") ? value : HandlerVocabulary.BindingId(text) : text));
         };
         return chip;
     }
@@ -1389,6 +1463,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         }
         _valueMenu.AddItem("数字…", 1);
         _valueMenu.AddItem("文本…", 2);
+        _valueMenu.AddItem("是", 3); _valueMenu.AddItem("否", 4);
         _valueMenu.AddSeparator();
 
         if (scope.Count == 0)
@@ -1403,7 +1478,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 var hint = scope[i].IsEntity || scope[i].IsEntityList
                     ? "（" + HandlerVocabulary.TypeLabel(scope[i].Type) + "）"
                     : "";
-                _valueMenu.AddItem("引用 ‹" + scope[i].Name + "›" + hint, 100 + i);
+                _valueMenu.AddItem("引用 ‹" + HandlerVocabulary.BindingLabel(scope[i].Name) + "›" + hint, 100 + i);
             }
         }
         _valueMenu.AddSeparator();
@@ -1465,6 +1540,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         if (commit is null) return;
 
         if (id == 999) { commit(null); return; }
+        if (id is 3 or 4) { commit(HandlerValue.Bool(id == 3)); return; }
         if (id == 1)
         {
             var current = _valueCurrent is { Kind: HandlerValueKind.Literal } ? _valueCurrent.Number : 0;
@@ -1581,16 +1657,20 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     private void MoveNode(HandlerNode node, int direction)
     {
-        var list = FindParentList(node);
+        var selection = SelectionFor(node);
+        var list = selection?.Parent ?? FindParentList(node);
         if (list is null) return;
-        var index = list.IndexOf(node);
-        var target = index + direction;
-        if (target < 0 || target >= list.Count) return;
-        Edit(() => (list[index], list[target]) = (list[target], list[index]));
+        var index = selection?.SelectorIndex ?? list.IndexOf(node);
+        var width = TargetSequenceAt(list, index) is not null ? 2 : 1;
+        if (direction < 0 && index == 0 || direction > 0 && index + width >= list.Count) return;
+        var next = direction < 0 ? index - (TargetSequenceAt(list, index - 2) is not null ? 2 : 1)
+            : index + (TargetSequenceAt(list, index + width) is not null ? 2 : 1);
+        Edit(() => { var moved = list.GetRange(index, width); list.RemoveRange(index, width); list.InsertRange(next, moved); });
     }
 
     private void RemoveNode(HandlerNode node)
     {
+        if (SelectionFor(node) is { } selection) { Edit(() => selection.Parent.RemoveRange(selection.SelectorIndex, 2)); return; }
         var list = FindParentList(node);
         if (list is null) return;
         Edit(() => list.Remove(node));

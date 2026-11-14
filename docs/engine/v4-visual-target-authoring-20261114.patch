@@ -1,0 +1,70 @@
+diff --git a/src/Orc.Game/Cards/KeywordEffectActionFace.cs b/src/Orc.Game/Cards/KeywordEffectActionFace.cs
+index d502217..788b9e5 100644
+--- a/src/Orc.Game/Cards/KeywordEffectActionFace.cs
++++ b/src/Orc.Game/Cards/KeywordEffectActionFace.cs
+@@ -21,7 +21,7 @@ namespace Orc.Game.Cards;
+ /// </para>
+ /// </summary>
+ [HandlerDslActionFace]
+-public static class KeywordEffectActionFace
++public static partial class KeywordEffectActionFace
+ {
+     /// <summary>
+     /// 以死亡动作消灭目标（完整两端；<paramref name="host"/> 只用于解析对局服务）。
+diff --git a/src/Orc.Game/Cards/KeywordEffectActionFace.TargetSelection.cs b/src/Orc.Game/Cards/KeywordEffectActionFace.TargetSelection.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Orc.Game/Cards/KeywordEffectActionFace.TargetSelection.cs
+@@ -0,0 +1,52 @@
++using Orc.Cards;
++using Orc.Game.Effects;
++using Orc.Game.Effects.HandlerDsl;
++
++namespace Orc.Game.Cards;
++
++public static partial class KeywordEffectActionFace
++{
++    /// <summary>Expose the existing selector runtime to visual authoring, including filters and quantities.</summary>
++    [HandlerDslNode("selectTargets")]
++    public static async Task<IReadOnlyList<Card>> SelectTargetsAsync(Card host,
++        [HandlerDslEnumValues("one", "all", "random", "self")] string mode,
++        [HandlerDslEnumValues("friendly", "enemy", "both")] string side = "enemy",
++        [HandlerDslEnumValues("frontline", "support")] string? zone = null,
++        int count = 1, string? unitType = null, string? keyword = null,
++        [HandlerDslEnumValues("attack", "defense", "opCost", "deployCost")] string? thresholdField = null,
++        [HandlerDslEnumValues("gte", "lte", "gt", "lt", "eq")] string thresholdOp = "lte",
++        int thresholdValue = 0, bool includeCovert = false, CancellationToken ct = default)
++    {
++        ArgumentNullException.ThrowIfNull(host);
++        if (mode is not ("one" or "all" or "random" or "self")) throw new ArgumentException("选取方式无效。", nameof(mode));
++        if (side is not ("friendly" or "enemy" or "both")) throw new ArgumentException("目标阵营无效。", nameof(side));
++        if (count <= 0) throw new ArgumentOutOfRangeException(nameof(count), "目标数量必须大于零。");
++        if (thresholdField is not null && thresholdField is not ("attack" or "defense" or "opCost" or "deployCost")) throw new ArgumentException("筛选属性无效。", nameof(thresholdField));
++        if (thresholdOp is not ("gte" or "lte" or "gt" or "lt" or "eq")) throw new ArgumentException("比较方式无效。", nameof(thresholdOp));
++        var runtime = EffectRuntime.ResolveFor(host) ?? throw new InvalidOperationException("当前没有对局，无法选择目标。");
++        return await runtime.SelectAsync(host, new EffectSelector(mode,
++            mode == "self" || side == "both" ? null : side,
++            zone, unitType, keyword, count,
++            thresholdField is null ? null : new EffectThreshold(thresholdField, thresholdOp, thresholdValue), includeCovert), ct).ConfigureAwait(false);
++    }
++
++    /// <summary>Query the actual headquarters entities; damage still goes through the existing damage action.</summary>
++    [HandlerDslNode("headquartersOf")]
++    [HandlerDslPure]
++    public static Task<IReadOnlyList<Card>> HeadquartersOfAsync(Card host,
++        [HandlerDslEnumValues("friendly", "enemy", "both")] string side = "enemy")
++    {
++        ArgumentNullException.ThrowIfNull(host);
++        if (side is not ("friendly" or "enemy" or "both")) throw new ArgumentException("总部阵营无效。", nameof(side));
++        var owner = OwnerOf(host) ?? throw new InvalidOperationException("当前卡牌没有归属玩家。");
++        var runtime = EffectRuntime.ResolveFor(host) ?? throw new InvalidOperationException("当前没有对局，无法查询总部。");
++        var targets = new List<Card>();
++        if (side is "friendly" or "both") targets.Add(owner.Hq);
++        if (side is "enemy" or "both")
++        {
++            var enemy = runtime.OpponentOf(host) ?? throw new InvalidOperationException("没有唯一的对方玩家。");
++            targets.Add(enemy.Hq);
++        }
++        return Task.FromResult<IReadOnlyList<Card>>(targets);
++    }
++}

@@ -40,6 +40,63 @@ namespace Kards.Ui.Tests;
 [Collection("engine-host")]
 public sealed class HandlerDslAuthoringTests : IDisposable
 {
+    [Fact]
+    public async Task VisualManualTargetDealsDamageToTheUnitChosenByThePlayer()
+    {
+        var doc = new HandlerDocument();
+        doc.Actions.AddRange(HandlerTargetAuthoring.SelectForAction(new HandlerNode("damage").Set("amount", HandlerValue.Num(1)),
+            "target", "friendly", "one", false, 1));
+        var saved = _authoring.Save(new HandlerDslSaveRequest(ParentId, Member, "", doc.ToJsonText(HandlerCatalog.Default),
+            HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect));
+        Assert.True(saved.Success, saved.Describe());
+        var engineBase = Path.Combine(_root, "manual-target-engine"); CopyDirectory(SessionRoot, Path.Combine(engineBase, "packs", "demo"));
+        OrcEngineHost.Reset(); OrcEngineHost.Initialize(engineBase); _hostRebuilt = true;
+        var nations = Path.Combine(RepoRoot(), "proto", "data", "nations");
+        var source = new CardCatalog(); source.Load(nations, CardCatalog.ResolveArtResource);
+        var unitId = new DeckConstructionService(source.Cards, nations).PlayableCards.First(c => c.CardType == "unit" && c.BaseDefense >= 2).CardId;
+        using var session = await OpenSampleMatchAsync("visual-manual-damage", unitId);
+        var player = session.Host.Viewer;
+        await session.Host.Match.ResourceManager.GainSlotsAsync(player, 11);
+        await session.Host.Match.ResourceManager.GainPointsAsync(player, 12);
+        var unit = player.Hand.OfType<Orc.Game.Cards.UnitCard>().First();
+        var uid = OrcRefs.KeyOf(unit);
+        Assert.Equal(UiSubmitOutcome.Applied, await session.SubmitAsync(new PlayCard(uid)));
+        session.SettleProjection();
+        var before = session.View.SelfLine.Single(c => c.Uid == uid).Health!.Value;
+        var requests = System.Threading.Channels.Channel.CreateUnbounded<(UiTargetRequest, IUiTargetResponder)>();
+        session.TargetRequested += (request, responder) => requests.Writer.TryWrite((request, responder));
+        var actor = session.View.SelfHand.First(c => c.CardId == SampleCard);
+        var pending = session.SubmitAsync(new PlayCard(actor.Uid));
+        var (request, responder) = await requests.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        var slot = Assert.Single(request.Slots);
+        var chosen = slot.Allowed.Single(c => c.Card?.Uid == uid || c.Id == uid);
+        Assert.True(responder.Complete(request.RequestId, new Dictionary<string, IReadOnlyList<string>> { [slot.Name] = [chosen.Id] }));
+        Assert.Equal(UiSubmitOutcome.Applied, await pending.WaitAsync(TimeSpan.FromSeconds(10)));
+        session.SettleProjection();
+        if (before == 1) Assert.DoesNotContain(session.View.SelfLine, c => c.Uid == uid);
+        else Assert.Equal(before - 1, session.View.SelfLine.Single(c => c.Uid == uid).Health);
+    }
+
+    [Fact]
+    public async Task VisualHeadquartersTargetActuallyTakesDamageInNativeMatch()
+    {
+        var doc = new HandlerDocument();
+        doc.Actions.AddRange(HandlerTargetAuthoring.SelectForAction(new HandlerNode("damage").Set("amount", HandlerValue.Num(3)),
+            "target", "enemy", "all", true, 1));
+        var saved = _authoring.Save(new HandlerDslSaveRequest(ParentId, Member, "", doc.ToJsonText(HandlerCatalog.Default),
+            HandlerDslSaveMode.ReplaceExisting, RetargetFromId: SampleEffect));
+        Assert.True(saved.Success, saved.Describe());
+        var engineBase = Path.Combine(_root, "target-engine"); CopyDirectory(SessionRoot, Path.Combine(engineBase, "packs", "demo"));
+        OrcEngineHost.Reset(); OrcEngineHost.Initialize(engineBase); _hostRebuilt = true;
+        using var session = await OpenSampleMatchAsync("visual-target-damage");
+        var before = session.Host.Match.Players[1].HqHealth;
+        var ownBefore = session.Host.Match.Players[0].HqHealth;
+        var actor = session.View.SelfHand.First(c => c.CardId == SampleCard);
+        Assert.Equal(UiSubmitOutcome.Applied, await session.SubmitAsync(new PlayCard(actor.Uid)));
+        session.SettleProjection();
+        Assert.Equal(before - 3, session.Host.Match.Players[1].HqHealth);
+        Assert.Equal(ownBefore, session.Host.Match.Players[0].HqHealth);
+    }
     [Theory]
     [InlineData("effect.test", "effect.test.dsl")]
     [InlineData("effect.test.dsl", "effect.test.dsl")]
@@ -562,7 +619,7 @@ public sealed class HandlerDslAuthoringTests : IDisposable
     /// 「费用不足」被拒，看起来像效果没生效。
     /// </para>
     /// </summary>
-    private static async Task<OrcMatchSession> OpenSampleMatchAsync(string tag)
+    private static async Task<OrcMatchSession> OpenSampleMatchAsync(string tag, string? extraCard = null)
     {
         var nations = Path.Combine(RepoRoot(), "proto", "data", "nations");
         var catalog = new CardCatalog();
@@ -571,7 +628,7 @@ public sealed class HandlerDslAuthoringTests : IDisposable
         Assert.NotEmpty(cards);
 
         var session = await OrcMatchSession.CreateFromCatalogAsync(cards, 31, tag, SampleCard,
-            openingHand: [SampleCard], sourceDirectory: nations, firstPlayerIndex: 0);
+            openingHand: extraCard is null ? [SampleCard] : [SampleCard, extraCard], sourceDirectory: nations, firstPlayerIndex: 0);
         session.DriveOpponent = false;
         await session.SettleMulliganAsync(interactive: false);
         session.Pump();

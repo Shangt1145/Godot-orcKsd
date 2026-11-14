@@ -32,11 +32,11 @@ public partial class Main
         }
         // Exercise the ordinary home route, not the native manager shortcut.
         Show("editor"); await MenuSettledAsync(); _workshop.ShowHome();
-        await WaitFor(() => _workshop.ChoicePhase == "ready"); await DeckClickAsync(_workshop.PackChoice);
-        await WaitFor(() => GodotObject.IsInstanceValid(_workshop.ModifyChoice) && _workshop.ModifyChoice.IsVisibleInTree() && _workshop.ChoicePhase == "ready");
-        await DeckClickAsync(_workshop.ModifyChoice); await WaitFor(() => GodotObject.IsInstanceValid(_workshop.ModifyPick) && _workshop.ConfirmPack.IsVisibleInTree());
-        DiyEditorScreen.Select(_workshop.ModifyPick, "pack/orc.bulwark"); _workshop.ModifyPick.EmitSignal(OptionButton.SignalName.ItemSelected, (long)_workshop.ModifyPick.Selected);
-        await DeckClickAsync(_workshop.ConfirmPack);
+        var projectSearch = _workshop.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(e => e.PlaceholderText == "搜索卡包名称…");
+        projectSearch.Text = "铜墙铁壁";
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await DeckClickAsync(_workshop.ProjectOpenButtons["pack/orc.bulwark"]);
         Check(_nativeWorkshop.SessionPackage == "orc.bulwark", "Shipped package used the legacy workspace");
         await Capture("shipped-library.png");
         await DeckClickAsync(_workshop.EffectLibraryButton);
@@ -154,6 +154,7 @@ public partial class Main
         bare.Actions.Add(new HandlerNode("fetchFromDeck").Set("target", HandlerValue.ViewField("Card")));
         _blockEditor.Open("探针：多输出未命名", bare);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await DeckClickAsync(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.IsVisibleInTree() && b.Text == "附加设置 ▸"));
         var placeholders = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
             .Count(b => b.IsVisibleInTree() && b.Text == "命名…");
         Check(placeholders == 2, $"Unbound multi-output node rendered {placeholders} placeholder chips, expected 2");

@@ -208,7 +208,7 @@ public sealed class HandlerCatalog
 
     private static HandlerCatalog? _snapshot;
 
-    /// <summary>内置快照（40 节点 = 30 目录节点〔含 stop／interrupt〕+ 10 内建 op）。</summary>
+    /// <summary>内置快照（42 节点 = 32 目录节点〔含 stop／interrupt〕+ 10 内建 op）。</summary>
     public static HandlerCatalog Snapshot => _snapshot ??= BuildSnapshot();
 
     private static HandlerCatalog? _default;
@@ -471,6 +471,18 @@ public sealed class HandlerCatalog
         // ── 目录动作（扫描结果快照；顺序与 catalog.snapshot.json 一致）─────
         var actions = new HandlerNodeSpec[]
         {
+            new("headquartersOf", true, false,
+                [new("side", "string", false, ["friendly", "enemy", "both"])],
+                [new("result", "list<entity>", true)]),
+            new("selectTargets", true, true,
+                [new("mode", "string", true, ["one", "all", "random", "self"]),
+                 new("side", "string", false, ["friendly", "enemy", "both"]),
+                 new("zone", "string", false, ["frontline", "support"]), new("count", "number", false),
+                 new("unitType", "string", false), new("keyword", "string", false),
+                 new("thresholdField", "string", false, ["attack", "defense", "opCost", "deployCost"]),
+                 new("thresholdOp", "string", false, ["gte", "lte", "gt", "lt", "eq"]),
+                 new("thresholdValue", "number", false), new("includeCovert", "boolean", false)],
+                [new("result", "list<entity>", true)]),
             new("death", true, true,
                 [new("target", "entity", true), new("killer", "entity", false), new("triggerCard", "entity", false)],
                 [new("result", "boolean", true)]),

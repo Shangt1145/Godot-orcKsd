@@ -12,23 +12,24 @@ public partial class DiyWorkshopScreen
     internal Button NativeSkinButton = null!;
     private NativeCardDocument? _cardDocument;
     internal OptionButton NativeNationPicker = null!;
-    private void BuildNativeSessionHeader(string id)
+    private void BuildNativeSessionHeader(string id, bool editingCard = false)
     {
         var row = new HBoxContainer(); row.AddThemeConstantOverride("separation", 14); _workspace.AddChild(row);
         row.AddChild(MenuStyles.Button("‹ 我的卡包", () => GuardNative(ShowNativePackages)));
         var title = MenuStyles.Label(_native!.WorkingPackage?.Name ?? id, 23, MenuStyles.Gold);
         title.SizeFlagsHorizontal = SizeFlags.ExpandFill; row.AddChild(title);
-        row.AddChild(MenuStyles.Button("导出草稿…", () => GuardNative(() => NativeFile(true, path => NativeTry(() =>
+        var export = MenuStyles.Button("导出草稿…", () => GuardNative(() => NativeFile(true, path => NativeTry(() =>
         {
             var orphans = _native!.CountOrphanPresentationReferences(id, draft: true);
             _native.Export(id, path, true);
             if (orphans > 0)
                 _notice.Text = $"草稿已导出到 {path}，但有 {orphans} 条失效的展示引用会一起带出去。";
-        })))));
+        })))); row.AddChild(export); export.Visible = !editingCard;
         if (_native.SessionWarnings.Count > 0) row.AddChild(MenuStyles.Button("编辑会话提示", () => NativeText("引擎返回的会话提示", string.Join("\n", _native.SessionWarnings))));
         NativePromoteButton = MenuStyles.Button("应用修改", () => GuardNative(() => NativeTry(() =>
-        { _native.Promote(); _nativeChanged!(); TutorialApplied(id); ShowNativePackages(); _notice.Text = "卡包已转正，构筑和新对局使用此版本。"; })));
+        { _native.Promote(); _nativeChanged!(); TutorialApplied(id); ShowNativePackages(); _notice.Text = "已应用到游戏，构筑和新对局使用此版本。"; })));
         row.AddChild(NativePromoteButton); MenuStyles.Primary(NativePromoteButton);
+        NativePromoteButton.Visible = !editingCard;
     }
     private void BuildNativeLibrary(string id)
     {
@@ -71,7 +72,7 @@ public partial class DiyWorkshopScreen
     }
     private void OpenNativeCard(string packId, NativeWorkshopAsset asset) => GuardNative(() => NativeTry(() =>
     {
-        NativeWorkspace(); BuildNativeSessionHeader(packId); _nativeAsset = asset;
+        NativeWorkspace(); BuildNativeSessionHeader(packId, editingCard: true); _nativeAsset = asset;
         _cardDocument = new NativeCardDocument(_native!.Read(asset.Path)); _nativeDirty = false;
         var presentation = _native.CardPresentation(asset.Id); var text = presentation.Text; var flavor = presentation.Flavor;
         var controls = new HBoxContainer(); _workspace.AddChild(controls);
@@ -85,19 +86,31 @@ public partial class DiyWorkshopScreen
             var dialog = new ConfirmationDialog { Title = "删除草稿卡牌", DialogText = "将删除以下资产，转正后生效：\n" + string.Join("\n", affected.Select(a => KindLabel(a.Kind) + " · " + a.Id)), OkButtonText = "从草稿删除" }; AddChild(dialog);
             dialog.Confirmed += () => NativeTry(() => { _native.DeleteAsset(asset); _nativeDirty = false; OpenNativePack(packId); dialog.QueueFree(); }); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
         }))));
-        var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddThemeConstantOverride("separation", 32); _workspace.AddChild(body);
-        var tabs = new TabContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddChild(tabs);
+        var body = new HBoxContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddThemeConstantOverride("separation", 18); _workspace.AddChild(body);
+        var navigation = new VBoxContainer { CustomMinimumSize = new(150, 0) }; navigation.AddThemeConstantOverride("separation", 12); body.AddChild(navigation);
+        navigation.AddChild(MenuStyles.Label("制作卡牌", 18, MenuStyles.Gold));
+        var tabs = new TabContainer { TabsVisible = false, SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill }; body.AddChild(tabs);
+        var pageButtons = new List<Button>();
         VBoxContainer Page(string name)
         {
             var scroll = new ScrollContainer { Name = name, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; tabs.AddChild(scroll);
+            var index = tabs.GetTabCount() - 1;
+            var step = MenuStyles.Button(name, () => tabs.CurrentTab = index); step.ToggleMode = true; step.Alignment = HorizontalAlignment.Left; step.CustomMinimumSize = new(0, 48); navigation.AddChild(step); pageButtons.Add(step);
             var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; form.AddThemeConstantOverride("separation", 16); scroll.AddChild(form); return form;
         }
-        var properties = Page("属性"); var rulePage = Page("规则"); var art = Page("卡图"); var story = Page("描述");
-        var preview = new VBoxContainer { CustomMinimumSize = new(300, 0) }; body.AddChild(preview);
+        var properties = Page("01  基础属性"); var rulePage = Page("02  词条与效果"); var art = Page("03  卡图与外观"); var story = Page("04  卡牌描述");
+        void SelectPage() { for (var i = 0; i < pageButtons.Count; i++) pageButtons[i].SetPressedNoSignal(i == tabs.CurrentTab); }
+        tabs.TabChanged += _ => SelectPage(); SelectPage();
+        var workflow = MenuStyles.Label("保存草稿\n保留当前制作进度\n\n应用修改\n让新对局使用这张卡", 13, MenuStyles.Dim); workflow.AutowrapMode = TextServer.AutowrapMode.WordSmart; navigation.AddChild(workflow);
+        var previewPanel = new PanelContainer { CustomMinimumSize = new(264, 0) }; previewPanel.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("18231e"), new("405448"), 1, 12)); body.AddChild(previewPanel);
+        var previewScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; previewPanel.AddChild(previewScroll);
+        var preview = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; preview.AddThemeConstantOverride("separation", 12); previewScroll.AddChild(preview);
         preview.AddChild(MenuStyles.Label("卡面预览", 18, MenuStyles.Gold));
-        var face = new CardFace(); face.FitToWidth(300); preview.AddChild(face);
-        var alternateFace = new AlternateCardFace { CustomMinimumSize = new(300, 421), Textures = _textures, Visible = false }; preview.AddChild(alternateFace);
+        var face = new CardFace(); face.FitToWidth(240); preview.AddChild(face);
+        var alternateFace = new AlternateCardFace { CustomMinimumSize = new(240, 337), Textures = _textures, Visible = false }; preview.AddChild(alternateFace);
         var status = MenuStyles.Label("", 13, MenuStyles.Dim); status.AutowrapMode = TextServer.AutowrapMode.WordSmart; preview.AddChild(status);
+        NativePromoteButton.GetParent().RemoveChild(NativePromoteButton); preview.AddChild(NativePromoteButton); NativePromoteButton.Show();
+        NativePromoteButton.TooltipText = "将已保存的草稿应用到卡包，构筑和新对局使用此版本。";
         void Preview()
         {
             var artPath = _native.PreviewArtFor(asset.AppId);
@@ -110,7 +123,7 @@ public partial class DiyWorkshopScreen
                 alternateFace.Definition = card; alternateFace.Skin = skin; alternateFace.QueueRedraw();
                 face.SetDefinition(card); face.SetIllustration(_textures.Get(card.ArtPath));
             }
-            status.Text = result.Diagnostics.Count > 0 ? string.Join("\n", result.Diagnostics) : "实时预览 · 尚未转正";
+            status.Text = result.Diagnostics.Count > 0 ? string.Join("\n", result.Diagnostics) : "实时预览 · 草稿";
         }
         void Changed() { NativeTouched(); Preview(); }
         var name = new LineEdit { Text = _cardDocument.Name }; NativeField(properties, "名称", name); name.TextChanged += value => { _cardDocument.Rename(value); Changed(); };
@@ -169,8 +182,17 @@ public partial class DiyWorkshopScreen
             }
         }
         var ruleHint = MenuStyles.Label("原有效果完整保留。使用积木 Inspector 添加或重写效果，保存后自动关联当前卡牌。", 14, MenuStyles.Dim); ruleHint.AutowrapMode = TextServer.AutowrapMode.WordSmart; rulePage.AddChild(ruleHint);
-        rulePage.AddChild(MenuStyles.Button("编辑效果 · 积木 Inspector…", () => GuardNative(() => OpenCardBlocks(packId, asset))));
-        var displayText = new TextEdit { Text = text, CustomMinimumSize = new(0, 150), WrapMode = TextEdit.LineWrappingMode.Boundary }; DiyEditorScreen.Field(rulePage, "卡面说明（独立于规则执行）", displayText); displayText.TextChanged += () => { text = displayText.Text; Changed(); };
+        var editBlocks = MenuStyles.Button("编辑效果 · 积木 Inspector…", () => GuardNative(() => OpenCardBlocks(packId, asset)));
+        MenuStyles.Primary(editBlocks); rulePage.AddChild(editBlocks); rulePage.MoveChild(editBlocks, 1); rulePage.MoveChild(ruleHint, 2);
+        var parser = new VBoxContainer(); parser.AddThemeConstantOverride("separation", 10); rulePage.AddChild(parser); rulePage.MoveChild(parser, 1);
+        parser.AddChild(MenuStyles.Label("自动解析器", 18, MenuStyles.Gold));
+        var displayText = new TextEdit { Text = text, CustomMinimumSize = new(0, 110), PlaceholderText = "例如：部署：对一个敌方单位造成 2 点伤害。", WrapMode = TextEdit.LineWrappingMode.Boundary };
+        DiyEditorScreen.Field(parser, "卡牌效果文字", displayText); displayText.TextChanged += () => { text = displayText.Text; Changed(); };
+        BuildNativeTextAuthoring(parser, displayText, packId, asset, () => flavor, () =>
+        {
+            if (!GodotObject.IsInstanceValid(displayText)) return;
+            tabs.CurrentTab = 1; displayText.GrabFocus(); ((ScrollContainer)rulePage.GetParent()).EnsureControlVisible(displayText);
+        });
         NativeSkinButton = MenuStyles.Button("异画与数值位置…", () => GuardNative(() =>
         {
             var card = _cardDocument.Preview(asset.AppId, _native.PreviewArtFor(asset.AppId), text, flavor).Card;
@@ -198,7 +220,7 @@ public partial class DiyWorkshopScreen
                 _native.SaveCardDocument(asset, _cardDocument.Json, text, flavor);
                 _nativeDirty = false; NativeSaveButton.Text = "保存草稿";
                 _notice.Text = _native.PreviewCards().Any(c => c.CardId == asset.AppId)
-                    ? "已保存到临时包；转正后才更新构筑与新对局。"
+                    ? "草稿已保存。点击“应用修改”后，构筑和新对局会使用这版卡牌。"
                     : "草稿已保存，但尚未通过引擎卡牌准入，请检查规则和属性。仍可继续编辑。";
                 return true;
             }

@@ -20,9 +20,9 @@ public partial class DiyWorkshopScreen
     public void ConfigureNative(NativeWorkshop native, Action changed)
     {
         _native = native; _nativeChanged = changed;
-        NativeImportButton = MenuStyles.Button("导入卡包 ZIP…", ImportNative);
         NativeManageButton = MenuStyles.Button("我的卡包", () => _editor.GuardNavigation(() => GuardNative(ShowNativePackages)));
-        _nativeToolbar.AddChild(NativeImportButton); _nativeToolbar.AddChild(NativeManageButton);
+        _nativeToolbar.AddChild(NativeManageButton);
+        ShowHome();
         foreach (var error in native.StartupDiagnostics) GD.PushWarning(error);
     }
 
@@ -91,9 +91,10 @@ public partial class DiyWorkshopScreen
 
     private void NativeWorkspace()
     {
+        _focusNativeParser = null;
         _compatiblePack = null;
         _saveNativeCard = null;
-        StopChoiceMotion(); _navigationVersion++; _navigation.Hide(); _editor.Hide(); _workspace.Show(); _pack = null;
+        _navigation.Hide(); _editor.Hide(); _workspace.Show(); _pack = null;
         if (_editor.GetParent() != this) { _editor.GetParent()?.RemoveChild(_editor); AddChild(_editor); _editor.Hide(); }
         MenuStyles.Clear(_workspace);
     }
@@ -101,7 +102,7 @@ public partial class DiyWorkshopScreen
     internal void ShowNativePackages()
     {
         _native?.Suspend();
-        OpenSelection(false, true, showAll: true);
+        ShowHome();
     }
 
     internal void OpenNativePack(string id) => GuardNative(() => NativeTry(() =>

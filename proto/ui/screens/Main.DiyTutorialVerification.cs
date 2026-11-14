@@ -26,6 +26,23 @@ public partial class Main
                 var directory = ProjectSettings.GlobalizePath("res://artifacts/diy-tutorial"); Directory.CreateDirectory(directory);
                 GetViewport().GetTexture().GetImage().SavePng(Path.Combine(directory, file + ".png"));
             }
+            await Capture("00-dashboard");
+            Click(_workshop.PackChoice);
+            Require(_workshop.ConfirmPack.Disabled, "空名称不应允许创建卡包");
+            _workshop.PackName.Text = "工作台创建验证";
+            await Capture("00-create");
+            Click(_workshop.ConfirmPack);
+            Require(_nativeWorkshop.HasSession && _nativeWorkshop.WorkingPackage.Name == "工作台创建验证", "创建卡包未进入工作台");
+            _nativeWorkshop.Discard(); _workshop.ShowHome();
+            Click(_workshop.ExpansionChoice);
+            DiyEditorScreen.Select(_workshop.BaseChoice, "pack/builtin");
+            _workshop.BaseChoice.EmitSignal(OptionButton.SignalName.ItemSelected, (long)_workshop.BaseChoice.Selected);
+            _workshop.PackName.Text = "工作台扩展验证"; Click(_workshop.ConfirmPack);
+            Require(_nativeWorkshop.HasSession && _nativeWorkshop.WorkingPackage.Name == "工作台扩展验证", "扩展包未进入工作台");
+            using (var metadata = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(_nativeWorkshop.TemporaryRoot!, "workshop.presentation.json"))))
+                Require(metadata.RootElement.GetProperty("basePackId").GetString() == "builtin", "扩展包未保留基础卡包");
+            _nativeWorkshop.Discard(); _workshop.ShowHome();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             Click(_workshop.OpenInspectorButton);
             Require(_active == "editor" && _workshop.NoticeText.Contains("先打开一个卡包"), "无卡包会话时积木入口没有引导到保存目标");
             Click(_workshop.TutorialButton); Step(0); await Capture("01-intro");
@@ -47,12 +64,18 @@ public partial class Main
             var selection = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Title == "卡牌效果 · 积木 Inspector");
             Click(selection.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "＋ 添加积木效果"));
             Require(_active == "hdsl", "卡牌没有打开积木 Inspector");
-            var timing = _blockEditor.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single(b => b.IsVisibleInTree());
+            var timing = _blockEditor.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single(b => b.TooltipText.StartsWith("选择效果触发时机"));
             var deployed = _nativeWorkshop.HandlerAuthoring!.DescribeParents().Single(p => p.Signal == "unit.deployed" && p.Guard == "Self");
             DiyEditorScreen.Select(timing, deployed.ParentId); timing.EmitSignal(OptionButton.SignalName.ItemSelected, (long)timing.Selected);
             var drawLabel = _blockEditor.FindChildren("*", "Label", true, false).OfType<Label>().Single(l => l.Text == "抽牌");
             drawLabel.GetParent().GetParent().EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             Require(_blockEditor.Document.Actions is [{ Op: "draw" }], "工具箱没有插入抽牌积木");
+            var beforeOptions = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
+            var options = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "附加设置 ▸");
+            Click(options);
+            Require(options.Text == "收起附加设置 ▾", "附加设置未展开");
+            Click(options);
+            Require(_blockEditor.Document.ToJsonText(_blockEditor.Catalog) == beforeOptions, "展开附加设置不应改写效果");
             await Capture("03-effect");
             Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "保存到卡包"));
             var save = _blockEditor.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Title == "保存到卡包");
@@ -79,8 +102,8 @@ public partial class Main
                 Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "完成"));
             }
             Click(_workshop.TutorialNext); Step(4);
-            Field<TextEdit>("卡面说明（独立于规则执行）").Text = DiyTutorialLesson.DisplayText;
-            Field<TextEdit>("卡面说明（独立于规则执行）").EmitSignal(TextEdit.SignalName.TextChanged);
+            Field<TextEdit>("卡牌效果文字").Text = DiyTutorialLesson.DisplayText;
+            Field<TextEdit>("卡牌效果文字").EmitSignal(TextEdit.SignalName.TextChanged);
             Click(_workshop.TutorialNext); Step(5);
             await Capture("04-save"); Click(_workshop.TutorialNext); Step(6);
             // Leave and resume through the player-facing controls; the saved card must reopen intact.

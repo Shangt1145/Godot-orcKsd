@@ -666,6 +666,11 @@ public sealed record HandlerParentOption(
 {
     /// <summary>下拉里显示的一行：中文名在前（作者认的是「打出时」不是 <c>card.played</c>）。</summary>
     public string Label => DisplayName + " · " + Guard + "  [" + Signal + " → " + Member + "]";
+    public string DisplayLabel => DisplayName + " · " + (Guard switch
+    {
+        "Self" => "本单位", "Any" => "不限对象", "OwnerSame" => "友方", "OwnerDifferent" => "敌方",
+        "OwnerSameByPlayer" => "我方回合", "OwnerDifferentByPlayer" => "敌方回合", _ => "按模板条件",
+    });
 }
 
 /// <summary>保存的两种意图。</summary>

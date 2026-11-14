@@ -10,6 +10,30 @@ namespace Kards.Ui.Tests;
 [Collection("Workshop")]
 public sealed class NativeWorkshopTests : IDisposable
 {
+    [Fact]
+    public void NativeTextParserAppendsReplacesAndRejectsWithoutLosingOriginalData()
+    {
+        var store = Store; store.Import(Archive()); store.Begin("demo");
+        var asset = store.CreateCard("parsed.card");
+        var document = new NativeCardDocument(store.Read(asset.Path));
+        document.Root["futureField"] = new JsonObject { ["retain"] = true };
+        store.SaveCardDocument(asset, document.Json, "", "保留背景");
+        var result = NativeTextAuthoring.Apply(store, asset, store.Read(asset.Path), "闪击。部署：抽1张牌。", "保留背景", false, []);
+        Assert.True(result.Success, string.Join("；", result.Problems));
+        Assert.Single(store.CardPresentation(asset.Id).EditableRules);
+        Assert.Contains("blitz", store.Read(asset.Path)); Assert.Contains("futureField", store.Read(asset.Path));
+        result = NativeTextAuthoring.Apply(store, asset, store.Read(asset.Path), "部署：对一个敌方单位造成2点伤害。", "保留背景", true, []);
+        Assert.True(result.Success, string.Join("；", result.Problems));
+        Assert.Equal(2, store.CardPresentation(asset.Id).EditableRules.Length);
+        result = NativeTextAuthoring.Apply(store, asset, store.Read(asset.Path), "部署：抽2张牌。", "保留背景", false, []);
+        Assert.True(result.Success, string.Join("；", result.Problems)); Assert.Single(store.CardPresentation(asset.Id).EditableRules);
+        var before = Directory.GetFiles(store.TemporaryRoot!, "*", SearchOption.AllDirectories).ToDictionary(p => p, File.ReadAllBytes);
+        result = NativeTextAuthoring.Apply(store, asset, store.Read(asset.Path), "部署：抽1张牌。完全不支持的乱句子。", "修改背景", false, []);
+        Assert.False(result.Success);
+        Assert.Equal(before.Keys.Order(), Directory.GetFiles(store.TemporaryRoot!, "*", SearchOption.AllDirectories).Order());
+        foreach (var entry in before) Assert.Equal(entry.Value, File.ReadAllBytes(entry.Key));
+        Assert.Equal("保留背景", store.CardPresentation(asset.Id).Flavor);
+    }
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ksd-workshop-" + Guid.NewGuid().ToString("N"));
     private string Sample => @"H:\Working Folder\OrC-KSD-github\samples\card-pack-demo";
     private NativeWorkshop Store => new(Path.Combine(_root, "user"), Path.Combine(_root, "shipped"));

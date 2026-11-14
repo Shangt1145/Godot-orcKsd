@@ -28,6 +28,8 @@ public static class HandlerVocabulary
         ["ask"] = ("让玩家挑目标", "交互"),
         // 查询（只读，不改世界）
         ["unitsOf"] = ("找出单位", "查询"),
+        ["selectTargets"] = ("选择作用目标", "交互"),
+        ["headquartersOf"] = ("找出总部", "查询"),
         // 变量
         ["let"] = ("记下这个值", "变量"),
         ["write"] = ("改卡片上的属性", "变量"),
@@ -55,6 +57,9 @@ public static class HandlerVocabulary
         // 战场位置
         ["move"] = ("换个位置", "战场位置"),
         ["battle"] = ("发起交战", "战场位置"),
+        ["attackByEffect"] = ("通过效果发起攻击", "战场位置"),
+        ["attackCandidates"] = ("找出可攻击的目标", "查询"),
+        ["exchange"] = ("交换两个对象", "战场位置"),
         ["upgrade"] = ("升级", "战场位置"),
         // 资源
         ["gainPoints"] = ("加点数", "资源"),
@@ -101,6 +106,10 @@ public static class HandlerVocabulary
         ["side"] = "哪一方", ["prompt"] = "问玩家什么", ["bind"] = "存成名字", ["body"] = "脚本内容",
         ["actions"] = "动作", ["then"] = "那么", ["else"] = "不然", ["options"] = "选项",
         ["filter"] = "只看", ["fallback"] = "选不到时",
+        ["attacker"] = "攻击者",
+        ["mode"] = "选取方式", ["unitType"] = "限定兵种",
+        ["thresholdField"] = "筛选哪项属性", ["thresholdOp"] = "比较方式", ["thresholdValue"] = "比较数值",
+        ["includeCovert"] = "包含隐藏目标",
     };
 
     /// <summary>个别节点里同名引脚含义不同，按 (op, pin) 覆盖。</summary>
@@ -123,6 +132,7 @@ public static class HandlerVocabulary
         ["ask.fallback"] = "选不到时",
         ["ask.kind"] = "挑什么",
         ["ask.prompt"] = "问玩家什么",
+        ["selectTargets.count"] = "目标数量",
     };
 
     /// <summary>可读项（<c>read.path</c>）的中文名。目录里是 <c>attack</c>／<c>kredits</c> 这种驼峰。</summary>
@@ -210,6 +220,18 @@ public static class HandlerVocabulary
     public static string OperatorLabel(string op) =>
         Operators.TryGetValue(op, out var label) ? label : op;
 
+    public static string LiteralLabel(string value) => value switch
+    {
+        "one" => "由玩家选择", "all" => "全部", "random" => "随机选择", "self" => "己方",
+        "both" => "双方", "enemy" => "敌方", "friendly" => "我方", "any" => "任意",
+        "unit" => "单位", "hq" => "总部", "card" => "卡牌",
+        "frontline" => "前线", "support" => "支援阵线", "hand" => "手牌", "deck" => "牌库",
+        "attack" => "攻击力", "defense" => "防御力", "opCost" => "行动费用", "deployCost" => "部署费用",
+        "gte" => "大于或等于", "lte" => "小于或等于", "gt" => "大于", "lt" => "小于", "eq" => "等于",
+        "empty" => "选不到就跳过", "first" => "取第一个", "Permanent" => "永久",
+        "TurnEnd" => "到回合结束", "NextOwnerTurnStart" => "到其下回合开始", _ => value,
+    };
+
     /// <summary>
     /// 静态类型名 → 作者看得懂的说法。类型本身是契约概念（SPEC §7），
     /// 但「list&lt;entity&gt;」摆在下拉里没人知道是什么——这里只翻译，判定仍在校验器里。
@@ -231,6 +253,25 @@ public static class HandlerVocabulary
 
     /// <summary>没有中文名时如实显示英文并标一下，不要假装有。</summary>
     public static bool HasTitle(string op) => Nodes.ContainsKey(op);
+
+    public static string BindingLabel(string name)
+    {
+        if (name.StartsWith("label_", StringComparison.Ordinal))
+        {
+            try { return System.Text.Encoding.UTF8.GetString(Convert.FromHexString(name[6..])); }
+            catch (FormatException) { return name; }
+        }
+        if (name.StartsWith("selectedTargets_", StringComparison.Ordinal)) return "选中的目标" + name[16..];
+        if (name.StartsWith("currentTarget_", StringComparison.Ordinal)) return "当前目标" + name[14..];
+        return name switch { "picked" => "选中的目标", "t" => "当前对象", "x" => "记录的值", _ => name };
+    }
+
+    public static string BindingId(string label)
+    {
+        label = label.Trim();
+        return label.Length == 0 || System.Text.RegularExpressions.Regex.IsMatch(label, "^[A-Za-z_][A-Za-z0-9_]*$")
+            ? label : "label_" + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(label));
+    }
 
     /// <summary>
     /// 把契约的节点路径（<c>actions[0].value.read.path</c>）翻成作者能读的位置

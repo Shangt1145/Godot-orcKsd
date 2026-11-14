@@ -57,6 +57,8 @@ public partial class DiyEditorScreen : VBoxContainer
     internal AcceptDialog? ActiveExport;
     internal ScrollContainer EditorScroll = null!;
     private TabContainer _sections = null!;
+    private VBoxContainer _sectionNavigation = null!;
+    private readonly List<Button> _sectionButtons = [];
     private readonly List<ScrollContainer> _sectionScrolls = [];
     internal PanelContainer PreviewPanel = null!;
     internal string LastExportCode = "";
@@ -139,6 +141,8 @@ public partial class DiyEditorScreen : VBoxContainer
                 : $"有 {uses} 副卡组引用这张卡。删除后这些卡组需要重新编辑。仍然删除？";
             DeleteDialog.PopupCentered();
         }); list.AddChild(DeleteButton);
+        _sectionNavigation = new VBoxContainer { CustomMinimumSize = new(150, 0), Visible = false }; _sectionNavigation.AddThemeConstantOverride("separation", 12); body.AddChild(_sectionNavigation);
+        _sectionNavigation.AddChild(MenuStyles.Label("制作卡牌", 18, MenuStyles.Gold));
         var editPanel = Panel(450); editPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill; body.AddChild(editPanel);
         _sections = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill }; editPanel.AddChild(_sections);
         _sections.AddThemeStyleboxOverride("panel",MenuStyles.Box(MenuStyles.Panel,MenuStyles.Line,2,6));
@@ -146,11 +150,14 @@ public partial class DiyEditorScreen : VBoxContainer
         {
             var page = new ScrollContainer { Name = name, SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
             _sections.AddChild(page); _sectionScrolls.Add(page);
+            var index = _sectionButtons.Count;
+            var button = MenuStyles.Button($"{index + 1:00}  {name}", () => _sections.CurrentTab = index); button.ToggleMode = true;
+            button.Alignment = HorizontalAlignment.Left; button.CustomMinimumSize = new(0, 48); _sectionNavigation.AddChild(button); _sectionButtons.Add(button);
             var content = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; content.AddThemeConstantOverride("separation", 16); page.AddChild(content); return content;
         }
         var form = EditorPage("属性"); var rulesForm = EditorPage("规则");
         var artForm = EditorPage("卡图"); var flavorForm = EditorPage("描述");
-        EditorScroll = _sectionScrolls[0]; _sections.TabChanged += i => EditorScroll = _sectionScrolls[(int)i];
+        EditorScroll = _sectionScrolls[0]; _sections.TabChanged += i => { EditorScroll = _sectionScrolls[(int)i]; for (var n = 0; n < _sectionButtons.Count; n++) _sectionButtons[n].SetPressedNoSignal(n == i); }; _sectionButtons[0].SetPressedNoSignal(true);
         var basic = Section(form, "基础信息");
         _basicFields=basic;
         _identity = MenuStyles.Label("", 11, MenuStyles.Dim); _identity.Visible = false; basic.AddChild(_identity);
@@ -299,13 +306,14 @@ public partial class DiyEditorScreen : VBoxContainer
     internal void SetWorkshopFocus(bool focused)
     {
         _workshopFocus = focused; _focusTitle.Visible = _focusLibrary.Visible = !focused; _focusActions.Visible = focused;
+        _sectionNavigation.Visible = focused; _sections.TabsVisible = !focused;
         if(focused) BuildFocusedProperties();
         else if(_focusedProperties is not null)
         {
             foreach(var pair in _propertyParents){pair.Key.GetParent().RemoveChild(pair.Key);pair.Value.AddChild(pair.Key);}
             _propertyParents.Clear();_focusedProperties.GetParent().RemoveChild(_focusedProperties);_focusedProperties.QueueFree();_focusedProperties=null!;_basicFields.GetParent().GetParent<Control>().Show();
         }
-        PreviewPanel.CustomMinimumSize = new(focused ? 300 : 245, 0);
+        PreviewPanel.CustomMinimumSize = new(245, 0);
         // 聚焦模式会隐藏左侧库列表，删除/恢复原版按钮原来跟着一起消失——
         // 于是"从工坊点进单卡"时能复制、能保存，却删不掉刚复制出来的副本。
         // 删除是这张卡的操作，不是列表的操作，跟着动作栏走。

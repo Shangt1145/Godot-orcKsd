@@ -78,7 +78,7 @@ public partial class DiyWorkshopScreen
         dialog.Confirmed += dialog.QueueFree; dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
     }
 
-    internal void AcceptBlockSave(HandlerDslSaveResult result)
+    internal void AcceptBlockSave(HandlerDslSaveResult result, string? displayName = null)
     {
         if (!result.Success || result.ProductId is null) return;
         if (_blockCard is { } card)
@@ -90,6 +90,7 @@ public partial class DiyWorkshopScreen
             document.Set("effects", "prefabs", new JsonArray(references.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()));
             _native.Commit(card.Path, document.Json);
         }
+        if (!string.IsNullOrWhiteSpace(displayName)) BlockTitle = displayName;
         _native!.SaveEffectInfo(result.ProductId, BlockTitle, "使用积木 Inspector 制作的效果");
         // SaveEffectInfo checkpoints the entire recovery package, including generated files.
         BlockEffectId = result.ProductId;
