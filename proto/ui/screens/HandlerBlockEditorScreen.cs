@@ -144,6 +144,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _pendingInsert = _doc.Actions;
         SetToolboxOpen(_toolboxOpen);
         _history.Add(_doc.Clone());
+        _savedJson = _doc.ToJsonText(_catalog);
+        _savedParent = _targetParent;
         Rebuild();
     }
 
