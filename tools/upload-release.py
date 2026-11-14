@@ -22,7 +22,9 @@ import urllib.parse
 import requests
 
 REPO_DEFAULT = "Shangt1145/Godot-orcKsd"
-TIMEOUT = (30, 3600)
+# requests also uses the connection timeout while writing a streamed request body.
+# Large release assets can encounter long proxy backpressure pauses.
+TIMEOUT = (180, 3600)
 
 
 def token() -> str:
@@ -35,6 +37,17 @@ def token() -> str:
         if line.startswith("password="):
             return line[len("password="):]
     raise SystemExit("取不到 GitHub 凭据（git credential fill 为空）；先确认能 git push。")
+
+
+def find_release(session, repo: str, tag: str):
+    """Draft tags need not exist in Git yet; resolve drafts through the authenticated list."""
+    response = session.get(f"https://api.github.com/repos/{repo}/releases/tags/{tag}", timeout=TIMEOUT)
+    if response.status_code == 404:
+        listing = session.get(f"https://api.github.com/repos/{repo}/releases", params={"per_page": 100, "_": time.time_ns()}, timeout=TIMEOUT)
+        listing.raise_for_status()
+        return next((release for release in listing.json() if release["tag_name"] == tag), None)
+    response.raise_for_status()
+    return response.json()
 
 
 def main() -> int:
@@ -52,12 +65,9 @@ def main() -> int:
         "User-Agent": "orcksd-release",
     })
 
-    release = session.get(
-        f"https://api.github.com/repos/{args.repo}/releases/tags/{args.tag}", timeout=TIMEOUT
-    )
-    if release.status_code >= 400:
-        raise SystemExit(f"找不到 release {args.tag}：{release.status_code} {release.text[:300]}")
-    release = release.json()
+    release = find_release(session, args.repo, args.tag)
+    if release is None:
+        raise SystemExit(f"找不到 release {args.tag}（包括当前凭据可访问的草稿）")
     print(f"Release {args.tag}  id={release['id']}  已有资产 {len(release['assets'])} 个")
 
     for path in args.files:

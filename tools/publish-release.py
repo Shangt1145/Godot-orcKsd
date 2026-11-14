@@ -45,14 +45,11 @@ def main():
         result.raise_for_status()
         return result.json()
 
-    response = session.get(api + "/releases/tags/" + tag, timeout=60)
-    if response.status_code == 404:
+    release = upload.find_release(session, upload.REPO_DEFAULT, tag)
+    if release is None:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, encoding="utf-8").strip()
         release = request("POST", "/releases", json={"tag_name": tag, "target_commitish": commit, "name": "OrC-KSD " + args.version,
             "body": notes.read_text(encoding="utf-8"), "draft": True, "prerelease": "-" in args.version})
-    else:
-        response.raise_for_status()
-        release = response.json()
     subprocess.run([sys.executable, str(root / "tools/upload-release.py"), "--tag", tag, *map(str, files)], cwd=root, check=True)
     release = request("GET", "/releases/" + str(release["id"]))
     assets = []
@@ -65,7 +62,8 @@ def main():
             raise RuntimeError("Remote asset verification failed: " + path.name)
         assets.append({"name": path.name, "size": asset["size"], "url": asset["browser_download_url"]})
         print("REMOTE_VERIFIED", path.name, flush=True)
-    release = request("PATCH", "/releases/" + str(release["id"]), json={"draft": False, "body": notes.read_text(encoding="utf-8"), "prerelease": "-" in args.version})
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, encoding="utf-8").strip()
+    release = request("PATCH", "/releases/" + str(release["id"]), json={"draft": False, "body": notes.read_text(encoding="utf-8"), "prerelease": "-" in args.version, "target_commitish": commit})
     manifest = {"tag": tag, "notes": release["body"], "assets": assets}
     channel = root / "dist/releases/latest.json"
     channel.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
