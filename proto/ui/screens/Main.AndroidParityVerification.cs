@@ -34,11 +34,12 @@ public partial class Main
             if (InspectorVocabulary.Operations.Length != 161) throw new Exception("工坊动作目录缺失。"); Record("catalog");
             var pack = new DiyPackDraft { Name = "安卓对齐验证卡包" };
             var library = new DiyWorkshopLibrary(System.IO.Path.Combine(directory, "packs.json")); library.Save(pack);
+            var baseCatalog = _catalog.Cards.Where(c => !c.CardId.StartsWith("diy/", StringComparison.Ordinal)).ToArray();
             var card = new DiyCardDraft { Name = "安卓验证步兵", PackId = pack.Id, Cost = 0, OpCost = 0, EffectText = "部署：抽1张牌。" };
             WorkshopAuthoring.Configure(library, [card]);
             var validation = DiyCardCompiler.Validate(card, _catalog.Cards);
             if (!validation.Success) throw new Exception(string.Join("；", validation.Errors)); Record("compile");
-            using (var training = await OrcMatchSession.CreateFromCatalogAsync(_catalog.Cards, 71, "android-training", "unused",
+            using (var training = await OrcMatchSession.CreateFromCatalogAsync(baseCatalog, 71, "android-training", "unused",
                 sourceDirectory: RuntimeGameData.Directory("nations"), customCards: [card], openingHand: [card.Id], firstPlayerIndex: 0))
             {
                 training.DriveOpponent = false; await training.SettleMulliganAsync(false);
@@ -49,7 +50,7 @@ public partial class Main
                 if (training.View.SelfLine.Count != 1 || training.View.SelfHand.Count != before) throw new Exception("训练部署/抽牌没有执行。");
             }
             Record("training");
-            var session = NetworkWorkshopSession.Prepare(directory, [], [card], _catalog.Cards, [card.Id]);
+            var session = NetworkWorkshopSession.Prepare(directory, _nativeWorkshop.EnabledRoots(), [card], baseCatalog, [card.Id]);
             var deck = session.MapDeck(Enumerable.Repeat(card.Id, 39).ToArray());
             await using var server = await ServerLauncher.StartAsync(session.Roots, System.IO.Path.Combine(directory, "server"), fixedDeckForVerification: true, inProcess: true);
             MobilePlatform.SetHosting(true);

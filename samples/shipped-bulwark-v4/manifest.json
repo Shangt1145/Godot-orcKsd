@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "id": "orc.bulwark",
+  "guid": "0c7a0000-0000-4000-8000-000000000001",
+  "kind": "cardpack",
+  "name": "铜墙铁壁系列",
+  "version": "c622daaf7c12f9fc80c89b8ba31d3ca3",
+  "metadata": [
+    "cards/bulwark.entrench-infantry.card.json.meta.json",
+    "cards/bulwark.field-repair.card.json.meta.json",
+    "cards/bulwark.mobile-infantry.card.json.meta.json",
+    "effects-v4/keyword.entrench.component.json.meta.json",
+    "effects-v4/keyword.mobility.component.json.meta.json",
+    "effects-v4/keyword.repair.component.json.meta.json"
+  ]
+}

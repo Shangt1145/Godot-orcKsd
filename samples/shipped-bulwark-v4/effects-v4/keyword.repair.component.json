@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 4,
+  "asset": {
+    "kind": "component",
+    "id": "keyword.repair",
+    "requires-host": "any",
+    "active-when": "loaded",
+    "one-shot": false,
+    "private-fields": [],
+    "members": [
+      {
+        "name": "onTurnStart",
+        "visibility": [
+          "callable",
+          "mountable"
+        ],
+        "view": {
+          "fields": [
+            {
+              "name": "Card",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Effect",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Unit",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Player",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Killer",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Source",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "TriggerCard",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            }
+          ]
+        },
+        "handler": {
+          "id": "keyword.repair#onTurnStart",
+          "entry": "HandleAsync",
+          "script": "Func<dynamic, Context, CancellationToken, Task> HandleAsync = async (view, ctx, ct) =>\n{\n    if (view.Host is not Orc.Game.Cards.UnitCard host) { return; }\n    if (view.Player is not Orc.Game.Players.Player current || !object.ReferenceEquals(host.Owner, current)) { return; }\n    if (!host.TryGetData<Orc.Game.Cards.ActionRecordData>(out var record)) { return; }\n    if (record.TurnMoves != 0 || record.TurnAttacks != 0) { return; }\n    if (host.GetData<Orc.Game.Cards.UnitStateData>().IsDestroyed) { return; }\n\n    await host.RepairDefenseAsync(ct); // 抢修：回满\n};\n"
+        }
+      },
+      {
+        "name": "onMoved",
+        "visibility": [
+          "callable",
+          "mountable"
+        ],
+        "view": {
+          "fields": [
+            {
+              "name": "Card",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Effect",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Unit",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Player",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Killer",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Source",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "TriggerCard",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            }
+          ]
+        },
+        "handler": {
+          "id": "keyword.repair#onMoved",
+          "entry": "HandleMovedAsync",
+          "script": "Func<dynamic, Context, CancellationToken, Task> HandleMovedAsync = async (view, ctx, ct) =>\n{\n    if (view.Host is not Orc.Game.Cards.UnitCard host) { return; }\n    if (view.Unit is not Orc.Game.Cards.UnitCard unit || !object.ReferenceEquals(unit, host)) { return; }\n\n    var position = unit.GetData<Orc.Game.Cards.UnitStateData>().Position;\n    if (position is not null && position.Name.StartsWith(\"前线\", StringComparison.Ordinal))\n    {\n        await unit.Keywords.RevokeAsync(\"抢修\"); // 位于前线即失去\n    }\n};\n"
+        }
+      },
+      {
+        "name": "onDeployed",
+        "visibility": [
+          "callable",
+          "mountable"
+        ],
+        "view": {
+          "fields": [
+            {
+              "name": "Card",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Effect",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Unit",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Player",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Killer",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "Source",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "TriggerCard",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            }
+          ]
+        },
+        "handler": {
+          "id": "keyword.repair#onDeployed",
+          "entry": "HandleDeployedAsync",
+          "script": "Func<dynamic, Context, CancellationToken, Task> HandleDeployedAsync = async (view, ctx, ct) =>\n{\n    if (view.Host is not Orc.Game.Cards.UnitCard host) { return; }\n    if (view.Unit is not Orc.Game.Cards.UnitCard unit || !object.ReferenceEquals(unit, host)) { return; }\n\n    var position = unit.GetData<Orc.Game.Cards.UnitStateData>().Position;\n    if (position is not null && position.Name.StartsWith(\"前线\", StringComparison.Ordinal))\n    {\n        await unit.Keywords.RevokeAsync(\"抢修\"); // 部署在前线即失去\n    }\n};\n"
+        }
+      }
+    ],
+    "mounts": [
+      {
+        "target": "engine#turn.start",
+        "member": "onTurnStart"
+      },
+      {
+        "target": "engine#unit.position.changed",
+        "member": "onTurnStart"
+      },
+      {
+        "target": "engine#unit.deployed",
+        "member": "onTurnStart"
+      },
+      {
+        "target": "engine#turn.start",
+        "member": "onMoved"
+      },
+      {
+        "target": "engine#unit.position.changed",
+        "member": "onMoved"
+      },
+      {
+        "target": "engine#unit.deployed",
+        "member": "onMoved"
+      },
+      {
+        "target": "engine#turn.start",
+        "member": "onDeployed"
+      },
+      {
+        "target": "engine#unit.position.changed",
+        "member": "onDeployed"
+      },
+      {
+        "target": "engine#unit.deployed",
+        "member": "onDeployed"
+      }
+    ],
+    "wraps": []
+  }
+}

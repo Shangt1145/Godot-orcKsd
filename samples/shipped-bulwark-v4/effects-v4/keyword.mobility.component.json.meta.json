@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "packageId": "orc.bulwark",
+  "source": "effects-v4/keyword.mobility.component.json",
+  "assets": [
+    {
+      "guid": "331eb0c0-c9e3-82d2-3f3f-ff17bfc07552",
+      "kind": "effect",
+      "id": "keyword.mobility",
+      "version": "1.0.0",
+      "dependsOn": [],
+      "conflictsWith": []
+    }
+  ]
+}

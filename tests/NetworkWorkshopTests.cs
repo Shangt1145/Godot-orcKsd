@@ -9,6 +9,30 @@ namespace Kards.Ui.Tests;
 [Collection("Workshop")]
 public sealed class NetworkWorkshopTests : IDisposable
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DefaultEnabledShippedPackagesCanStartRoom(bool inProcess)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !Directory.Exists(Path.Combine(directory.FullName, "proto", "data", "kards", "packs"))) directory = directory.Parent;
+        Assert.NotNull(directory);
+        var roots = Directory.GetDirectories(Path.Combine(directory!.FullName, "proto", "data", "kards", "packs"))
+            .Where(p => File.Exists(Path.Combine(p, "manifest.json"))).ToArray();
+        Assert.Contains(roots, p => Path.GetFileName(p) == "bulwark");
+        Assert.All(roots, root => Assert.False(Directory.Exists(Path.Combine(root, "effects")), root));
+        var (_, _, unit, _) = Content();
+        var session = NetworkWorkshopSession.Prepare(Path.Combine(_root, "default-packs"), roots, [unit], [], [unit.Id]);
+        var deck = session.MapDeck(Enumerable.Repeat(unit.Id, 39).ToArray());
+        await using var server = await ServerLauncher.StartAsync(session.Roots, Path.Combine(_root, "default-server"), fixedDeckForVerification: true, inProcess: inProcess);
+        await using var host = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port);
+        await using var guest = await RemoteMatchFeed.ConnectAsync("127.0.0.1", server.Port, seat: 1);
+        host.ConfigurePackTransfer(session, deck); guest.ConfigurePackTransfer(session, deck); server.Configure(host);
+        await Admit(server, host, 0, deck); await Admit(server, guest, 1, deck);
+        await Align(host, guest);
+        Assert.True(await host.StartMatchAsync());
+        Assert.True(await host.MulliganDoneAsync(0)); Assert.True(await guest.MulliganDoneAsync(1));
+    }
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ksd-network-workshop-" + Guid.NewGuid().ToString("N"));
     private readonly string _unusedKeyword = "unselected-" + Guid.NewGuid().ToString("N");
     public NetworkWorkshopTests() { Directory.CreateDirectory(_root); OrcEngineHost.WarmUp(); }

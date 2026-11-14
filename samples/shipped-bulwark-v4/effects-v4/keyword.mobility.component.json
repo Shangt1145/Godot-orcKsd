@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 4,
+  "asset": {
+    "kind": "component",
+    "id": "keyword.mobility",
+    "requires-host": "any",
+    "active-when": "loaded",
+    "one-shot": false,
+    "private-fields": [],
+    "members": [
+      {
+        "name": "onQuota",
+        "visibility": [
+          "callable",
+          "mountable"
+        ],
+        "view": {
+          "fields": [
+            {
+              "name": "Unit",
+              "type": "entity",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "IsMove",
+              "type": "boolean",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "IsTank",
+              "type": "boolean",
+              "writable": false,
+              "required": false
+            },
+            {
+              "name": "MoveDelta",
+              "type": "number",
+              "writable": true,
+              "required": false
+            },
+            {
+              "name": "AttackDelta",
+              "type": "number",
+              "writable": true,
+              "required": false
+            }
+          ]
+        },
+        "handler": {
+          "id": "keyword.mobility#onQuota",
+          "entry": "HandleAsync",
+          "script": "Func<dynamic, Context, CancellationToken, Task> HandleAsync = async (view, ctx, ct) =>\n{\n    if (view.Host is not Orc.Game.Cards.UnitCard host) { return; }\n    if (view.Unit is not Orc.Game.Cards.UnitCard unit || !object.ReferenceEquals(unit, host)) { return; }\n\n    // 机动：本次行动的额度消耗减一（对本单位攻击额度 +1），随后失去「机动」。\n    var command = host.GetData<Orc.Game.Cards.CommandData>();\n    command.SetAttackQuota(command.AttackQuota + 1);\n    await host.Keywords.RevokeAsync(\"机动\");\n};\n"
+        }
+      }
+    ],
+    "mounts": [
+      {
+        "target": "engine#action-budget",
+        "member": "onQuota"
+      }
+    ],
+    "wraps": []
+  }
+}

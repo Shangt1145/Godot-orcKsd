@@ -27,7 +27,20 @@ public sealed class NetworkWorkshopSession
             var manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(source, "manifest.json")))!;
             var id = manifest["id"]!.ToString();
             var target = Path.Combine(directory, PackPaths.Key(id));
-            WorkshopPackageArchive.Copy(source, target);
+            // The shipped first-party sample has canonical v4 metadata. Do not transport
+            // obsolete v3 files left by an older generated asset directory.
+            if (id == "orc.bulwark" && Directory.Exists(Path.Combine(source, "effects-v4"))
+                && manifest["metadata"]!.AsArray().All(m => !m!.ToString().Replace('\\', '/').StartsWith("effects/", StringComparison.Ordinal)))
+            {
+                System.IO.Directory.CreateDirectory(target);
+                foreach (var file in WorkshopPackageArchive.Files(source).Where(f => !f.Replace('\\', '/').StartsWith("effects/", StringComparison.Ordinal)))
+                {
+                    var destination = WorkshopPackageArchive.Child(target, file);
+                    System.IO.Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.Copy(WorkshopPackageArchive.Child(source, file), destination, true);
+                }
+            }
+            else WorkshopPackageArchive.Copy(source, target);
             if (!roots.TryAdd(id, target)) throw new InvalidDataException("重复卡包：" + id);
         }
         // IDs depend on the authored identity, never on machine paths or connection order.

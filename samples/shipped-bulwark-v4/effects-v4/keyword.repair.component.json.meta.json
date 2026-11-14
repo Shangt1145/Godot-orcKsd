@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "packageId": "orc.bulwark",
+  "source": "effects-v4/keyword.repair.component.json",
+  "assets": [
+    {
+      "guid": "e1c5787b-5eb8-e708-448f-ea6a9f688188",
+      "kind": "effect",
+      "id": "keyword.repair",
+      "version": "1.0.0",
+      "dependsOn": [],
+      "conflictsWith": []
+    }
+  ]
+}

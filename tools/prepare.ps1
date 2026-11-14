@@ -43,6 +43,12 @@ if (!$SkipAssets) {
 # Non-destructive synchronization. Generated output never copies back into source.
 # dist 是发布产物目录（现已是指向 G:\orc-dist 的目录联接）：生成物不该进运行副本，
 # 而 robocopy /E 会跟进联接，把几十 GB 的发行包重抄一遍——同步会卡死在这。
+# First-party shipped sample: overlay canonical v4 assets before packaging.
+$sampleSource = Join-Path $sourceRoot 'samples/shipped-bulwark-v4'
+$sampleTarget = Join-Path $sourceRoot 'proto/data/kards/packs/bulwark'
+if (Test-Path -LiteralPath $sampleTarget) {
+    Copy-Item -Path (Join-Path $sampleSource '*') -Destination $sampleTarget -Recurse -Force
+}
 & robocopy $sourceRoot $targetRoot /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD .git .godot .gradle bin obj artifacts dist (Join-Path $sourceRoot 'android') /XF '*.user' '.kards-ui-workspace'
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
 # 代码目录强制覆盖（/IS）：robocopy 默认跳过"目标时间更新"的文件，工作副本一旦被旧版占住，

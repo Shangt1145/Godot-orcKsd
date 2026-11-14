@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 4,
+  "asset": {
+    "kind": "component",
+    "id": "keyword.entrench",
+    "requires-host": "any",
+    "active-when": "loaded",
+    "one-shot": false,
+    "private-fields": [],
+    "members": [],
+    "mounts": [],
+    "wraps": [],
+    "judge-wraps": [
+      {
+        "judge": "move.leg.eligibility",
+        "phase": "after",
+        "entry": "Handle",
+        "script": "Func<object[], object[], object[]> Handle = (args, result) =>\n{\n    if (args is null || result is null || args.Length < 2) { return result; }\n\n    var unit = args[0] as Orc.Game.Cards.UnitCard;\n    var host = args[args.Length - 1] as Orc.Game.Cards.UnitCard;\n    if (!object.ReferenceEquals(unit, host)) { return result; }\n\n    // 固守：不能执行指挥移动（含撤退）。\n    return new object[] { Orc.Game.Judicators.LegEligibilityFailure.FlagFalse };\n};\n"
+      },
+      {
+        "judge": "inhibit.leg.eligibility",
+        "phase": "after",
+        "entry": "Handle",
+        "script": "Func<object[], object[], object[]> Handle = (args, result) =>\n{\n    if (args is null || result is null || args.Length < 1) { return result; }\n\n    var target = args[0] as Orc.Game.Cards.UnitCard;\n    var host = args[args.Length - 1] as Orc.Game.Cards.UnitCard;\n    if (!object.ReferenceEquals(target, host)) { return result; }\n\n    // 固守：不可被抑制。\n    return new object[] { Orc.Game.Judicators.InhibitEligibilityFailure.Immune };\n};\n"
+      }
+    ]
+  }
+}
