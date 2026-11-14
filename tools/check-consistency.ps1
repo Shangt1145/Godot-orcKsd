@@ -28,7 +28,7 @@ Write-Host ''
 
 # ── R1 发行目录清单 ────────────────────────────────────────────────
 if (!(Test-Path -LiteralPath $distPath)) { throw "找不到发行目录：$distPath" }
-$dirs = @(Get-ChildItem -LiteralPath $distPath -Directory | Sort-Object Name)
+$dirs = @(Get-ChildItem -LiteralPath $distPath -Directory | Sort-Object { [regex]::Replace($_.Name, "\d+", { param($m) $m.Value.PadLeft(12, "0") }) })
 if ($dirs.Count -eq 0) { throw "发行目录为空：$distPath" }
 $latest = $dirs[-1].Name
 

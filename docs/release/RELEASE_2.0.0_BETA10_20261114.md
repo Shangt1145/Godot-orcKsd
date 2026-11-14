@@ -26,3 +26,12 @@ Android 本版不发布；联机不传输卡包，双方须自行安装对应卡
 ## 验证
 
 积木与教程相关测试 70 项通过；原生工坊、菜单导航、教程及真实试打通过。发行门禁与补丁实际升级结果见交付目录 verification 日志及 notes/offline-update-report.json。
+
+## 交付实测结果
+
+- 构建：`C2EB6F448E023C5E703EBEE1B9942D1B88A6C3EDC485D90CC7810B93CA463616`。
+- 完整包：1,232,224,965 字节；增量补丁：18,935,171 字节，减少 98.46%。
+- 更新器：76,673,699 字节；首次手动更新下载合计 95,608,870 字节。
+- 发布过滤测试 344 项通过；UI_VERIFY_OK screens=12；完整包 EXPORT_VERIFY_OK、WORKSHOP_VERIFY_OK、真实更新器 GODOT_UPDATER_VERIFY_OK、升级后 EXE EXPORT_VERIFY_OK 通过。
+- 额外从发行 EXE 跑 DIY_TUTORIAL_VERIFY_OK，含积木重开、保存、实际试打和旧卡副本。
+- 首次打包在 J: 临时盘因空间不足停止；改用 H:\g\release-temp-beta10 后完成。源码门禁已经通过，重做打包使用 SkipGate，完整包及真实升级验证仍全部执行。
