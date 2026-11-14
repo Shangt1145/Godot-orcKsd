@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--seed-from")
     parser.add_argument("--baselines")
     parser.add_argument("--apk-delta")
+    parser.add_argument("--patch-delta", nargs=2, action="append", default=[])
     args = parser.parse_args()
     if not 1 <= args.chunk_mb <= 16 or not 1 <= args.workers <= 8:
         raise RuntimeError("Use 1-16 MiB chunks and 1-8 workers")
@@ -73,6 +74,14 @@ def main():
             "baselines": [public_asset(root / f"dist/releases/{v}/full/OrC-KSD-{v}-win-x64.zip", v) for v in (args.baselines or args.seed_from).split(',')],
             "updater": {"url": updater["browser_download_url"], "size": updater["size"], "sha256": updater["digest"][7:], "version": "1.2.0"}})
         files = [seed, apk_delta]
+        if args.patch_delta:
+            manifest["patchTransports"] = []
+            for delta_path, output_path in args.patch_delta:
+                delta = pathlib.Path(os.path.abspath(delta_path)); output = pathlib.Path(os.path.abspath(output_path))
+                with output.open("rb") as stream: digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                with zipfile.ZipFile(output) as archive: patch_plan = json.loads(archive.read("patch.json"))
+                manifest["patchTransports"].append({"delta": delta.relative_to(root).as_posix(), "output": output.relative_to(root).as_posix(), "sha256": digest, "sourceBuild": patch_plan["Source"]["BuildId"]})
+                files.append(delta)
     tasks = []; block = args.chunk_mb * 1024 * 1024
     for index, path in enumerate(files):
         with path.open("rb") as stream: digest = hashlib.file_digest(stream, "sha256").hexdigest()

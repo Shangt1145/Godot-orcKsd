@@ -60,6 +60,9 @@ def main():
         paths = {asset["path"] for asset in manifest["assets"]}
         if manifest["seedPatch"] not in paths or manifest["apkDelta"] not in paths:
             raise RuntimeError("Seed files were not in the verified transport")
+        for patch in manifest.get("patchTransports", []):
+            if patch["delta"] not in paths or not patch["output"].startswith("dist/releases/" + version + "/patches/") or ".." in pathlib.PurePosixPath(patch["output"]).parts or "\\" in patch["output"]:
+                raise RuntimeError("Unsafe patch transport")
         plan_file = root / "dist/releases" / version / "verification/cloud-plan.json"
         plan_file.write_text(json.dumps(manifest), encoding="utf-8")
         subprocess.run([sys.executable, str(root / "tools/materialize-seeded-release.py"), str(plan_file)], check=True)

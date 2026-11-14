@@ -13,6 +13,10 @@ import zipfile
 import requests
 
 
+def digest_file(path):
+    with path.open("rb") as stream: return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
 def main():
     plan = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
     root = pathlib.Path(__file__).resolve().parents[1]
@@ -50,7 +54,15 @@ def main():
     shutil.copyfile(updater, updater_out)
     with zipfile.ZipFile(updater) as archive: archive.extractall(game)
     updater.unlink()
-    for baseline in plan["baselines"]:
+    for transport in plan.get("patchTransports", []):
+        output = root / transport["output"]; output.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([sys.executable, str(root / "tools/zip-transport.py"), "apply", str(root / plan["seedPatch"]), str(root / transport["delta"]), str(output)], check=True)
+        if digest_file(output) != transport["sha256"]: raise RuntimeError("Recovered patch differs from locally tested bytes")
+        inspected = subprocess.check_output(["dotnet", str(cli), "inspect", str(output)], text=True)
+        metadata = json.loads(inspected)
+        if metadata["Source"]["BuildId"] != transport["sourceBuild"] or metadata["Target"]["BuildId"] != plan["targetBuild"]: raise RuntimeError("Recovered patch has wrong source or target")
+        print("CLOUD_TESTED_PATCH_EXACT_BYTES_OK", output.name, flush=True)
+    for baseline in ([] if plan.get("patchTransports") else plan["baselines"]):
         if baseline["version"] == plan["seedVersion"]: continue
         source_zip = fetch(baseline, "baseline.zip")
         source = work / "baseline"; source.mkdir()
