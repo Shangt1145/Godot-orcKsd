@@ -48,18 +48,8 @@ public partial class Main
         await DeckClickAsync(effectDialog.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "＋ 新建效果"));
         var effectNameDialog = _workshop.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "新建效果");
         effectNameDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single().Text = "补给训练"; await DeckClickAsync(effectNameDialog.GetOkButton());
-        await DeckClickAsync(effectDialog.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.IsVisibleInTree() && b.Text == "编辑规则…"));
-        var effectComposer = _workshop.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "编排效果");
-        var effectInspector = effectComposer.FindChildren("*", "Control", true, false).OfType<NativeEffectInspector>().Single();
-        Check(!effectInspector.NewNativeEffectButton.IsVisibleInTree(), "Low-level native editor was exposed");
-        var timing = (OptionButton)effectInspector.FriendlyControls["/effects/0/trigger"]; DiyEditorScreen.Select(timing, "deploy"); timing.EmitSignal(OptionButton.SignalName.ItemSelected, (long)timing.Selected);
-        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-        effectInspector.EnsureFriendlyVisible(effectInspector.FriendlyControls["/effects/0/actions#add"]); await DeckClickAsync(effectInspector.FriendlyControls["/effects/0/actions#add"]);
-        await Capture("effect-action-picker.png");
-        effectInspector.PickFriendlyAction("drawOne"); await DeckClickAsync(effectInspector.PickerAddButton);
-        await Capture("effect-composer.png"); await DeckClickAsync(effectComposer.GetOkButton());
-        Check(_nativeWorkshop.Effects().Any(e => e.Name == "补给训练" && e.Rules is { Length: 1 }), "Human effect composer did not save native source");
-        await DeckClickAsync(effectDialog.GetOkButton());
+        Check(_active == "hdsl", "新建效果没有打开积木 Inspector");
+        await DeckClickAsync(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "完成"));
         // 复杂 DIY：工坊 → 积木画布 → 保存。这条路以前只到「画得出、存不下」为止。
         _workshop.EffectLibraryButton.EmitSignal(Button.SignalName.Pressed);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
@@ -168,7 +158,7 @@ public partial class Main
             .Count(b => b.IsVisibleInTree() && b.Text == "命名…");
         Check(placeholders == 2, $"Unbound multi-output node rendered {placeholders} placeholder chips, expected 2");
 
-        Show("editor"); await MenuSettledAsync();
+        Show("editor"); _workshop.ReturnFromBlocks(); await MenuSettledAsync();
         var shippedFace = _workshop.FindChildren("*", "Control", true, false).OfType<CardControl>().First(c => c.IsVisibleInTree() && c.Definition.CardId.StartsWith("pack/orc.bulwark/", StringComparison.Ordinal));
         Check(shippedFace.Definition.ArtPath.Length > 0, "Shipped artwork missing in native library"); await DeckClickAsync(shippedFace);
         Check(_workshop.NativeSaveButton.IsVisibleInTree(), "Shipped card did not open native authoring"); await Capture("shipped-editor.png");

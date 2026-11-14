@@ -76,27 +76,11 @@ public partial class Main
             await Capture("03-workshop-library");
             _workshop.OpenSelection(false, true); await MenuFrameAsync();
             Require(Enumerable.Range(1, _workshop.ModifyPick.ItemCount - 1).All(i => all.Contains(_workshop.ModifyPick.GetItemMetadata(i).AsString())), "抉择入口与我的卡包不是同一份列表");
-            var keyword = new DiyKeywordDraft { Name = "补给训练" };
-            var custom = new DiyPackDraft { Name = "导航验证卡包", Keywords = [keyword] }; _workshopLibrary.Save(custom); RefreshDiy();
-            _workshop.OpenPack(custom); await MenuFrameAsync();
-            await DeckClickAsync(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.IsVisibleInTree() && b.Text == "词条与效果"));
-            var library = _workshop.FindChildren("*", "AcceptDialog", true, false).OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "词条与效果");
-            await Capture("04a-keyword-library");
-            await DeckClickAsync(library.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.IsVisibleInTree() && b.Text == "编辑规则…"));
-            var composer = library.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "编排效果");
-            var inspector = composer.FindChildren("*", "Control", true, false).OfType<NativeEffectInspector>().Single();
-            await Capture("04-keyword-composer");
-            await DeckClickAsync(inspector.NewEffectButton); await MenuFrameAsync();
-            Require(inspector.Document.Root["effects"]!.AsArray().Count == 1, "点击添加效果没有创建规则");
-            var timing = (OptionButton)inspector.FriendlyControls["/effects/0/trigger"];
-            DiyEditorScreen.Select(timing, "deploy"); timing.EmitSignal(OptionButton.SignalName.ItemSelected, (long)timing.Selected); await MenuFrameAsync();
-            inspector.EnsureFriendlyVisible(inspector.FriendlyControls["/effects/0/actions#add"]);
-            await DeckClickAsync(inspector.FriendlyControls["/effects/0/actions#add"]);
-            inspector.PickFriendlyAction("drawOne"); await DeckClickAsync(inspector.PickerAddButton);
-            await DeckClickAsync(composer.GetOkButton()); await DeckClickAsync(_workshop.SaveKeyword);
-            var authored = _workshopLibrary.Packs.Single(p => p.Id == custom.Id).Keywords.Single();
-            Require(authored.Effects.Length == 1 && WorkshopAuthoring.ValidateKeyword(authored) is null, "统一图形编辑器没有保存可执行词条");
-            await DeckClickAsync(library.GetOkButton());
+            _workshop.OpenNativePack("orc.bulwark");
+            await DeckClickAsync(_workshop.OpenInspectorButton);
+            Require(_active == "hdsl", "工坊入口没有统一到积木 Inspector");
+            await Capture("04-block-inspector");
+            await DeckClickAsync(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "完成"));
             _workshop.ShowHome(); _workshop.OpenSelection(false, false); await MenuFrameAsync();
             _workshop.PackName.Text = "新卡包创建验证"; await DeckClickAsync(_workshop.ConfirmPack);
             Require(_nativeWorkshop.HasSession && _workshop.NativePromoteButton.IsVisibleInTree(), "统一创建入口丢失原生卡包制作功能");
@@ -124,7 +108,7 @@ public partial class Main
             Require(reapply.IsVisibleInTree(), "观战被拒后没有重新申请入口"); await DeckClickAsync(reapply);
             Require(await WaitUntil(() => observerScreen.Feed is { IsObserver: true, AdmissionState: "pending" } fresh && fresh != previousObserver, 10), "观战重新申请没有建立新的只读连接");
             await observerScreen.CloseAsync(); observerScreen.QueueFree(); await _room.CloseAsync(); Show("home");
-            GD.Print("NAVIGATION_VERIFY_OK prepare-only-start mode-preserved pending-join deck-return dirty-cancel training-resume replay-resume unified-gallery keyword-graph-save native-create expansion-parent no-room-resurrection observer-reapply " + folder);
+            GD.Print("NAVIGATION_VERIFY_OK prepare-only-start mode-preserved pending-join deck-return dirty-cancel training-resume replay-resume unified-gallery unified-block-route native-create expansion-parent no-room-resurrection observer-reapply " + folder);
             GetTree().Quit();
         }
         catch (Exception error) { GD.PushError(error.ToString()); StopRealMatch(); await _room.CloseAsync(); GetTree().Quit(1); }

@@ -6,37 +6,11 @@ namespace Kards.Ui;
 
 public partial class DiyWorkshopScreen
 {
-    private void OpenKeywordRules(DiyKeywordDraft keyword, string name, Action<OrcEffectDraft[], string> saved, Window owner)
-    {
-        NativeTry(() =>
-        {
-            var effects = keyword.Effects;
-            if (effects.Length == 0 && keyword.EffectText.Length > 0 && keyword.ProgramJson is null)
-            {
-                var parsed = OrcInspector.CompileText(keyword.Id, keyword.EffectText, "unit");
-                if (!parsed.ParseComplete || !parsed.AllCompiled) throw new InvalidDataException("原有效果尚不能完整转换，请先保留它：" + string.Join("；", parsed.Problems));
-                effects = parsed.Parse.Effects.Select(OrcEffectEditing.ToDraft).ToArray();
-            }
-            var seed = new DiyCardDraft { Name = name, OrcEffects = effects, EffectText = keyword.EffectText, UseStructuredEffects = true };
-            var dialog = new ConfirmationDialog { Title = "编排效果", OkButtonText = "应用规则", CancelButtonText = "取消", DialogHideOnOk = false, MinSize = new(1100, 700) }; owner.AddChild(dialog);
-            var scroll = new ScrollContainer { CustomMinimumSize = new(1060, 580), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
-            var inspector = new NativeEffectInspector { CustomMinimumSize = new(1020, 560), SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill, Catalog = () => _service.Cards }; scroll.AddChild(inspector);
-            inspector.Initialize(); inspector.UsePlayerAuthoring(); inspector.Open(InspectorCardRecord.FromDraft(seed));
-            inspector.NewNativeEffectButton.Hide(); inspector.CardKeywordsButton.Hide();
-            dialog.Confirmed += () => NativeTry(() =>
-            {
-                if (!inspector.CommitPendingRaw()) return;
-                var updated = InspectorCardRecord.ApplyRecord(seed, inspector.Document.Element());
-                if (updated.Effects.Length > 0) throw new InvalidDataException("请先将兼容效果转换为可编辑规则。");
-                saved(updated.OrcEffects, updated.EffectText); dialog.QueueFree();
-            });
-            dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
-        });
-    }
-
     internal Button EffectLibraryButton = null!;
     private void OpenEffectLibrary()
     {
+        foreach (var previous in GetChildren().OfType<AcceptDialog>().Where(d => d.Title == "词条与效果"))
+        { previous.Hide(); previous.QueueFree(); }
         var dialog = new AcceptDialog { Title = "词条与效果", OkButtonText = "完成", MinSize = new(980, 640) }; AddChild(dialog);
         var split = new HBoxContainer { CustomMinimumSize = new(950, 550) }; split.AddThemeConstantOverride("separation", 28); dialog.AddChild(split);
         var left = new VBoxContainer { CustomMinimumSize = new(220, 0) }; split.AddChild(left);
@@ -60,12 +34,14 @@ public partial class DiyWorkshopScreen
             Note(detail, effect.Occasions.Length == 0 ? "尚未设置" : string.Join("、", effect.Occasions));
             detail.AddChild(MenuStyles.Label("编辑效果", 18, MenuStyles.Ink));
             Note(detail, effect.Rules is null
-                ? "这个已有效果使用脚本编写，目前不能完整还原成图形规则。现有行为会保留，你不需要填写底层字段。"
+                ? "此效果没有旧版规则记录。若有积木源文件会自动载入；脚本效果需要重新搭建，保存前原行为保留。"
                 : "按“发生时机 → 条件与目标 → 动作”编排。一条规则中可以组合多个条件和动作。");
-            var button = MenuStyles.Button(effect.Rules is null ? "重新编排这个效果…" : "编辑规则…", () =>
+            var authoring = _native!.HandlerAuthoring!;
+            var hasBlocks = System.IO.File.Exists(System.IO.Path.Combine(authoring.PackRoot, "handler-dsl", effect.Asset.Id + ".hdsl.json")) || authoring.ReadExistingDsl(effect.Asset.Id) is not null;
+            var button = MenuStyles.Button(hasBlocks ? "继续编辑积木…" : "用积木重写…", () =>
             {
-                void Edit() => OpenEffectComposer(effect, () => { RefreshList(); Select(_native!.Effects().Single(e => e.Asset.Id == effect.Asset.Id)); }, dialog);
-                if (effect.Rules is not null) { Edit(); return; }
+                void Edit() => OpenEffectComposer(effect, dialog);
+                if (hasBlocks) { Edit(); return; }
                 var confirmation = new ConfirmationDialog { Title = "重新编排效果", DialogText = "这会替换原有效果的行为，并影响使用它的卡牌。保存时会备份原始卡包；取消编辑不会改变原有效果。", OkButtonText = "开始编排", CancelButtonText = "保留原有效果" }; dialog.AddChild(confirmation);
                 confirmation.Confirmed += () => { confirmation.QueueFree(); Edit(); }; confirmation.Canceled += () => confirmation.QueueFree(); confirmation.PopupCentered();
             }); detail.AddChild(button); MenuStyles.Primary(button);
@@ -74,7 +50,7 @@ public partial class DiyWorkshopScreen
         {
             MenuStyles.Clear(list); foreach (var effect in _native!.Effects()) list.AddChild(MenuStyles.Button(effect.Name, () => Select(effect)));
         }
-        left.AddChild(MenuStyles.Button("＋ 新建效果", () => NativeNameDialog("新建效果", "效果名称", name => NativeTry(() => { var effect = _native!.CreateEffect(name); RefreshList(); Select(effect); }), dialog)));
+        left.AddChild(MenuStyles.Button("＋ 新建效果", () => NativeNameDialog("新建效果", "效果名称", name => NativeTry(() => { var packId = _native!.SessionPackage!; dialog.QueueFree(); LaunchBlocks(name, null, null, () => { OpenNativePack(packId); OpenEffectLibrary(); }); }), dialog)));
         // 复杂 DIY 的入口：积木搭出来的效果只能走 DSL → 草案 → 摊平这条路写回包，
         // 而这条路要求一个打开的编辑会话——所以入口放在工坊里，不放在卡牌草稿那边。
         left.AddChild(MenuStyles.Button("用积木搭…", () => { dialog.QueueFree(); RequestBlockAuthoring(); }));
@@ -82,26 +58,10 @@ public partial class DiyWorkshopScreen
         dialog.Confirmed += () => dialog.QueueFree(); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
     }
 
-    private void OpenEffectComposer(WorkshopEffect effect, Action saved, Window owner)
+    private void OpenEffectComposer(WorkshopEffect effect, Window owner)
     {
-        var dialog = new ConfirmationDialog { Title = "编排效果", OkButtonText = "保存效果", CancelButtonText = "取消", DialogHideOnOk = false, MinSize = new(1100, 720) }; owner.AddChild(dialog);
-        var scroll = new ScrollContainer { CustomMinimumSize = new(1060, 600), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
-        var page = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; scroll.AddChild(page);
-        var name = new LineEdit { Text = effect.Name }; DiyEditorScreen.Field(page, "效果名称", name);
-        var description = new LineEdit { Text = effect.Description, PlaceholderText = "给玩家看的效果说明" }; DiyEditorScreen.Field(page, "效果说明", description);
-        var inspector = new NativeEffectInspector { CustomMinimumSize = new(1020, 560), SizeFlagsVertical = SizeFlags.ExpandFill, Catalog = () => _service.Cards }; page.AddChild(inspector); inspector.Initialize(); inspector.UsePlayerAuthoring(); inspector.UseSingleRuleAuthoring();
-        var seed = new DiyCardDraft { Name = effect.Name, OrcEffects = effect.Rules ?? [], UseStructuredEffects = true }; inspector.Open(InspectorCardRecord.FromDraft(seed));
-        if (seed.OrcEffects.Length == 0) inspector.NewEffectButton.EmitSignal(Button.SignalName.Pressed);
-        void SingleRule() => inspector.NewEffectButton.Visible = inspector.Document.Root["effects"]!.AsArray().Count == 0;
-        inspector.Edited += SingleRule; SingleRule();
-        inspector.NewNativeEffectButton.Hide(); inspector.CardKeywordsButton.Hide();
-        dialog.Confirmed += () => NativeTry(() =>
-        {
-            if (!inspector.CommitPendingRaw()) return;
-            var updated = InspectorCardRecord.ApplyRecord(seed, inspector.Document.Element());
-            if (updated.Effects.Length > 0) throw new InvalidDataException("请使用图形规则编排此效果。");
-            _native!.SaveEffect(effect, name.Text, description.Text, updated.OrcEffects); _notice.Text = "效果已保存。点击“应用修改”后用于新对局，原始卡包已备份。";
-            saved(); dialog.QueueFree();
-        }); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
+        if (owner != GetWindow()) owner.QueueFree();
+        var packId = _native!.SessionPackage!;
+        LaunchBlocks(effect.Name, effect.Asset.Id, null, () => { OpenNativePack(packId); OpenEffectLibrary(); });
     }
 }

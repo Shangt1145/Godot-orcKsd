@@ -17,7 +17,7 @@ public partial class Main
         var rail = MenuStyles.Box(new("161e19"), new("3e493b"), 0, 12); rail.BorderWidthLeft = rail.BorderWidthTop = rail.BorderWidthBottom = 0;
         _shellBar.AddThemeStyleboxOverride("panel", rail);
         var bar = new VBoxContainer(); bar.AddThemeConstantOverride("separation", 6); _shellBar.AddChild(bar);
-        var brand = MenuStyles.Button("OrC-KSD", () => Show("home")); brand.ToggleMode = true;
+        var brand = MenuStyles.Button("OrC-KSD", () => NavigateMenu("home")); brand.ToggleMode = true;
         brand.TooltipText = "返回指挥部"; brand.AddThemeColorOverride("font_color", MenuStyles.Gold); brand.AddThemeFontSizeOverride("font_size", 25);
         MenuStyles.Navigation(brand); brand.CustomMinimumSize = new(0, 72); bar.AddChild(brand); _nav["home"] = brand;
         bar.AddChild(MenuStyles.Label("   卡牌作战", 12, MenuStyles.MenuDim));
@@ -32,7 +32,7 @@ public partial class Main
         _pool = MenuStyles.Label($"{_deckService.PlayableCards.Count} 张可用卡牌", 12, MenuStyles.MenuDim); bar.AddChild(_pool);
         foreach (var (id, text) in new[] { ("help", "帮助 / 演示"), ("settings", "设置") })
         {
-            var key = id; var button = MenuStyles.Button(text, () => Show(key)); button.ToggleMode = true;
+            var key = id; var button = MenuStyles.Button(text, () => NavigateMenu(key)); button.ToggleMode = true;
             MenuStyles.Navigation(button); bar.AddChild(button); _nav[id] = button;
         }
         var update = MenuStyles.Button("离线更新", OpenOfflineUpdater); MenuStyles.Navigation(update); bar.AddChild(update);
@@ -50,7 +50,8 @@ public partial class Main
             NavigateFromRoom(id);
         }
         if (_active == "deck") _deckEditor.GuardLeaving(Navigate);
-        else if (_active is "editor" or "diyfx") _workshop.GuardLeaving(Navigate);
+        else if (_active == "hdsl") _blockEditor.GuardLeaving(Navigate);
+        else if (_active == "editor") _workshop.GuardLeaving(Navigate);
         else Navigate();
     }
     // 首页「出击」＝作战准备页：卡组就绪状态、组建房间、局域网房间列表（M4）都在这，

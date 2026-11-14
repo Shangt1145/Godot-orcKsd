@@ -40,7 +40,6 @@ public partial class Main : Control
     private DeckPackPicker _deckPackPicker = null!;
     private DiyCardLibrary _diy = null!;
     private DiyEditorScreen _diyEditor = null!;
-    private DiyEffectEditorScreen _diyEffects = null!;
     private HandlerBlockEditorScreen _blockEditor = null!;
     private OrcImportLibrary _orcImports = null!;
     private IReadOnlyList<OrcImportOutcome> _importedOutcomes = [];
@@ -330,7 +329,7 @@ public partial class Main : Control
             // 试打固定玩家先手：它的目的是立刻看到这张卡上场，不是打一场正式对局。
             Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial, firstPlayerIndex: 0);
         };
-        _diyEditor.ConstructRequested += id =>
+        Action<string> openAuthoredCardInDeck = id =>
         {
             var authored = _catalog.Cards.First(c => c.CardId == id);
             _deckEditor.Search.Text = authored.Name;
@@ -344,6 +343,7 @@ public partial class Main : Control
                 _deckPackPicker.Open(DeckCardPacks.Selected(_deckEditor.Draft), packs => { _deckEditor.ApplyPacks(packs); Show("deck"); }, creating: false);
             else Show("deck");
         };
+        _diyEditor.ConstructRequested += openAuthoredCardInDeck;
         _diyEditor.TrialRequested += card =>
         {
             var starter = _deckService.Starter(12);
@@ -356,36 +356,27 @@ public partial class Main : Control
         _diyEditor.ConfigureWorkshop(_workshopLibrary,RefreshDiy);
         _workshop=new DiyWorkshopScreen();_workshop.Initialize(_workshopLibrary,_diy,_diyEditor,_deckService,_textures,RefreshDiy,()=>_clock.ReducedMotion);
         _workshop.ConfigureNative(_nativeWorkshop, () => { _textures.Clear(); ReloadPacks(); RefreshDiy(); });
-        AddScreen(content, "editor", _workshop);
-        // 效果编辑器（独立屏幕）：主编辑器入口按钮进入，编辑实时写回草稿，完成后返回。
-        _diyEffects = new DiyEffectEditorScreen(); _diyEffects.Initialize();
-        _diyEffects.Catalog=()=>_catalog.Cards;
-        _diyEffects.Drafts=()=>_diyEditor.AuthoredCards;
-        _diyEffects.InspectorSaved+=draft=>_diyEditor.AcceptInspectorDraft(draft);
-        _diyEffects.DraftEdited+=draft=>_diyEditor.ApplyInspectorDraft(draft);
-        _diyEffects.DraftTouched+=()=>_diyEditor.MarkInspectorDirty();
-        _diyEditor.EffectsEditorRequested += () => { _diyEffects.Open(_diyEditor.Draft); Show("diyfx"); };
-        _diyEffects.Applied += (orc, legacy) => _diyEditor.ApplyEffects(orc, legacy);
-        _diyEffects.Finished += () => Show("editor");
-        AddScreen(content, "diyfx", _diyEffects);
-        // 新版 Inspector（Handler DSL v1）：独立成屏，保存出口为当前原生卡包。
-        _blockEditor = new HandlerBlockEditorScreen();
-        _blockEditor.Initialize();
-        // 复杂 DIY 的写回出口：保存目标永远是**当前打开的卡包**（没有会话＝null，画布会给出明确提示）。
-        _blockEditor.ConfigureSave(() => _nativeWorkshop.HandlerAuthoring);
-        var inspectorReturnScreen = "editor";
-        _blockEditor.Finished += () => Show(inspectorReturnScreen);
-        AddScreen(content, "hdsl", _blockEditor);
-        _diyEffects.BlockEditorRequested += () =>
+        _workshop.ConstructRequested += openAuthoredCardInDeck;
+        _workshop.TrialRequested += card =>
         {
-            inspectorReturnScreen = "diyfx";
-            _blockEditor.Open("样例：打出时");
-            Show("hdsl");
+            var starter = _deckService.Starter(12);
+            var copies = Math.Min(2, ConstructionRules.CopyLimit(card.Rarity));
+            var trial = starter with { Name = card.Name + " · 试打",
+                CardIds = Enumerable.Repeat(card.CardId, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
+            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial, firstPlayerIndex: 0);
         };
+        AddScreen(content, "editor", _workshop);
+        // All authoring routes share one block Inspector and an explicit workshop context.
+        _blockEditor = new HandlerBlockEditorScreen(); _blockEditor.Initialize();
+        _blockEditor.ConfigureSave(() => _nativeWorkshop.HandlerAuthoring);
+        _blockEditor.Saved += _workshop.AcceptBlockSave;
+        _blockEditor.Finished += () => { Show("editor"); _workshop.ReturnFromBlocks(); };
+        AddScreen(content, "hdsl", _blockEditor);
+        _diyEditor.EffectsEditorRequested += _workshop.OpenCompatibleBlocks;
         _workshop.BlockAuthoringRequested += () =>
         {
-            inspectorReturnScreen = "editor";
-            _blockEditor.Open("新效果：从积木开始");
+            _blockEditor.Open(_workshop.BlockTitle, _workshop.BlockDocument);
+            _blockEditor.ConfigureTarget(_workshop.BlockEffectId, _workshop.BlockParentId);
             Show("hdsl");
         };
         _helpTabs = new TabContainer { SizeFlagsVertical = SizeFlags.ExpandFill };
@@ -467,6 +458,8 @@ public partial class Main : Control
             Callable.From(VerifyWorkshopRoutes).CallDeferred();
         else if (args.Contains("--verify-card-skins"))
             Callable.From(VerifyCardSkins).CallDeferred();
+        else if (args.Contains("--verify-diy-tutorial") || args.Contains("--capture-diy-tutorial"))
+            Callable.From(VerifyDiyTutorial).CallDeferred();
         else if (args.Contains("--verify-inspector-entry"))
             Callable.From(VerifyInspectorEntry).CallDeferred();
         else if (args.Contains("--verify-inspector-composition") || args.Contains("--capture-inspector-composition"))
@@ -1022,7 +1015,8 @@ public partial class Main : Control
     private void Show(string id)
     {
         if (_active == "deck" && id != "deck") { _deckEditor.GuardLeaving(() => NavigateFromRoom(id)); return; }
-        if (_active is "editor" or "diyfx" or "hdsl" && id is not ("editor" or "diyfx" or "hdsl")) { _workshop.GuardLeaving(() => NavigateFromRoom(id)); return; }
+        if (_active == "hdsl" && id != "hdsl") { _blockEditor.GuardLeaving(() => _workshop.GuardLeaving(() => NavigateFromRoom(id))); return; }
+        if (_active == "editor" && id is not ("editor" or "hdsl")) { _workshop.GuardLeaving(() => NavigateFromRoom(id)); return; }
         NavigateFromRoom(id);
     }
     private void ShowCore(string id)

@@ -40,6 +40,11 @@ namespace Kards.Ui.Tests;
 [Collection("engine-host")]
 public sealed class HandlerDslAuthoringTests : IDisposable
 {
+    [Theory]
+    [InlineData("effect.test", "effect.test.dsl")]
+    [InlineData("effect.test.dsl", "effect.test.dsl")]
+    public void ReeditingGeneratedEffectKeepsStableProductId(string id, string expected)
+        => Assert.Equal(expected, HandlerDslAuthoring.ReplaceProductIdOf(id));
     /// <summary>「打出时」的模板：信号 <c>card.played</c>、守卫档 any。</summary>
     private const string ParentId = "template.card.played.any";
 

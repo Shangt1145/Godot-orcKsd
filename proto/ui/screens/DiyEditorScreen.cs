@@ -45,7 +45,7 @@ public partial class DiyEditorScreen : VBoxContainer
     internal TextEdit Flavor = null!, EffectTextInput = null!;
     internal Label TextNotice = null!;
     private Godot.Timer _textTimer = null!;
-    // 效果编辑在独立屏幕（DiyEffectEditorScreen）；本屏只留摘要＋入口按钮（可读性硬要求）。
+    // 效果编辑在独立屏幕（HandlerBlockEditorScreen）；本屏只留摘要＋入口按钮（可读性硬要求）。
     internal Button OpenEffectsButton = null!;
     internal Button ParseReplaceButton = null!, ParseAppendButton = null!;
     internal Button SaveButton = null!, NewButton = null!, CopyButton = null!, DeleteButton = null!, ValidateButton = null!, TrialButton = null!, ConstructButton = null!, ExportButton = null!, ImportButton = null!;
@@ -230,8 +230,8 @@ public partial class DiyEditorScreen : VBoxContainer
         var inspSec = Section(rulesForm, "效果");
         _effectsSummary = MenuStyles.Label("", 13, MenuStyles.Dim);
         _effectsSummary.AutowrapMode = TextServer.AutowrapMode.WordSmart; inspSec.AddChild(_effectsSummary);
-        OpenEffectsButton = MenuStyles.Button("打开效果编辑器…", () => EffectsEditorRequested?.Invoke());
-        OpenEffectsButton.TooltipText = "在独立屏幕中编辑效果结构（触发/动作/参数），最右侧实时显示原始 DSL。";
+        OpenEffectsButton = MenuStyles.Button("积木 Inspector…", () => EffectsEditorRequested?.Invoke());
+        OpenEffectsButton.TooltipText = "创建保留原件的原生工作副本，并用积木 Inspector 编辑效果。";
         inspSec.AddChild(OpenEffectsButton);
         inspSec.AddChild(MenuStyles.Label("规则文本解析出的效果也会落到效果编辑器；卡面文字仍由本屏规则文本承载。", 12, MenuStyles.Dim));
         rulesForm.MoveChild(inspSec.GetParent().GetParent(),0);
@@ -442,29 +442,13 @@ public partial class DiyEditorScreen : VBoxContainer
         Armor = (int)Armor.Value, ArtFile = _importedArt,
         ArtScale = _importedArt.Length > 0 ? (int)ArtZoom.Value : 100,
         Flavor = Flavor.Text, EffectText = EffectTextInput.Text,
-        // 效果编辑在独立屏幕：结构/简易行真源留在 _draft（经 ApplyEffects 写回）。
+        // 效果编辑在独立屏幕：结构/简易行真源留在 _draft（兼容保留）。
         Effects = _draft.Effects, OrcEffects = _draft.OrcEffects
     };
-    /// <summary>效果编辑器实时写回（Applied 回调）：并入草稿＋刷新预览与摘要。</summary>
-    internal void ApplyEffects(OrcEffectDraft[] orcEffects, DiyEffectDraft[] legacyEffects)
-    {
-        if (_loading || _blocked is not null) return;
-        _draft = _draft.Snapshot() with { OrcEffects = orcEffects, Effects = legacyEffects, UseStructuredEffects=true };
-        Changed(); RefreshEffectsSummary();
-    }
-    internal void MarkInspectorDirty()=>Changed();
     internal void ApplyInspectorDraft(DiyCardDraft draft)
     {
         Load(draft.PackId.Length==0&&_scopePack.Length>0?draft with{PackId=_scopePack}:draft);Changed();
     }
-    internal void AcceptInspectorDraft(DiyCardDraft draft)
-    {
-        if(draft.PackId.Length==0&&_scopePack.Length>0)draft=draft with{PackId=_scopePack};
-        try{_library.Save(draft);Load(draft);Saved?.Invoke();_notice.Text="完整 Inspector 草稿已保存；原生编译通过后方可用于实战。";}
-        catch(Exception e) when(e is IOException or InvalidDataException or UnauthorizedAccessException){_notice.Text="Inspector 草稿尚未落盘："+e.Message;throw;}
-    }
-    internal IReadOnlyList<DiyCardDraft> AuthoredCards=>_library.Cards.Where(c=>_scopePack.Length==0||c.PackId==_scopePack).ToArray();
-    internal void DeleteDesktopDraft(string id){_library.Delete(id);Saved?.Invoke();RefreshList();}
     /// <summary>效果摘要（不把编辑控件堆在本屏——可读性硬要求）。</summary>
     private void RefreshEffectsSummary()
     {

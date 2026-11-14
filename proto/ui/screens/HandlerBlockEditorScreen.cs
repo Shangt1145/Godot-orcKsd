@@ -66,6 +66,44 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     public event Action? Finished;
     public event Action<string>? Changed;
+    public event Action<HandlerDslSaveResult>? Saved;
+    private string? _targetEffect, _targetParent;
+    private OptionButton _timing = null!;
+    private string _savedJson = "";
+    private string? _savedParent;
+    private Action? _afterSave;
+    public void ConfigureTarget(string? effect, string? parent)
+    {
+        _targetEffect = effect; _targetParent = parent;
+        _timing.Clear();
+        var authoring = _authoring?.Invoke();
+        if (authoring is null) return;
+        var parents = authoring.DescribeParents();
+        foreach (var item in parents) { _timing.AddItem(item.Label); _timing.SetItemMetadata(_timing.ItemCount - 1, item.ParentId); }
+        var index = parents.ToList().FindIndex(p => p.ParentId == (parent ?? DefaultParentId));
+        _timing.Select(Math.Max(0, index));
+        _targetParent = parents[Math.Max(0, index)].ParentId;
+        ApplyView(authoring, parents[Math.Max(0, index)]);
+        _savedJson = _doc.ToJsonText(_catalog);
+        _savedParent = _targetParent;
+        if (effect is not null && !System.IO.File.Exists(System.IO.Path.Combine(authoring.PackRoot, "handler-dsl", effect + ".hdsl.json"))
+            && authoring.ReadExistingDsl(effect) is null)
+        {
+            _saveNote = "此效果没有积木源文件，原有行为已保留。当前画布用于重新搭建；保存后才替换卡牌引用。";
+            Rebuild();
+        }
+    }
+
+    public void GuardLeaving(Action action)
+    {
+        if (_doc.ToJsonText(_catalog) == _savedJson && _targetParent == _savedParent) { action(); return; }
+        var dialog = new ConfirmationDialog { Title = "积木尚未保存", DialogText = "保存当前积木后离开，或继续编辑。", OkButtonText = "保存后离开", CancelButtonText = "继续编辑" }; AddChild(dialog);
+        dialog.Confirmed += () => { dialog.Hide(); dialog.QueueFree(); _afterSave = action; OpenSaveDialog(); };
+        dialog.AddButton("不保存，离开", true, "discard");
+        dialog.CustomAction += key => { if (key == "discard")
+        { _savedJson = _doc.ToJsonText(_catalog); _savedParent = _targetParent; dialog.Hide(); dialog.QueueFree(); action(); } };
+        dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
+    }
 
     /// <summary>
     /// 作用域里的一个名字 ＋ 它的静态类型。界面只拿类型来**过滤取值菜单**
@@ -111,6 +149,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     public void Open(string title, HandlerDocument? doc = null)
     {
+        _targetEffect = _targetParent = null;
+        _savedParent = null;
+        _afterSave = null;
         _doc = doc?.Clone() ?? HandlerDocument.Sample();
         _cardLabel.Text = title;
         // 上一份文档的「已保存」不能留给下一份：作者会以为这份也存过了。
@@ -121,12 +162,13 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         if (_authoring?.Invoke() is null)
         {
             _saveNote = "当前没有打开的卡包：可以搭、可以检查，但保存不可用。"
-                + "去 DIY 工坊 → 我的卡包 → 打开一个卡包，再从顶部「新版 Inspector · 积木编辑」进来。";
+                + "去 DIY 工坊 → 我的卡包 → 打开一个卡包，再从顶部「积木 Inspector」进来。";
             _saveFailed = true;
         }
         _history.Clear();
         _historyAt = 0;
         _history.Add(_doc.Clone());
+        _savedJson = _doc.ToJsonText(_catalog);
         _pendingInsert = _doc.Actions;
         _pendingLabel = "整段的最后";
         Rebuild();
@@ -156,7 +198,16 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         save.TooltipText = "把这段积木写成包内的一个效果（DSL 文档 ＋ 草案 ＋ 摊平产物）";
         MenuStyles.Primary(save);
         head.AddChild(save);
-        head.AddChild(MenuStyles.Button("完成", () => Finished?.Invoke()));
+        _timing = new OptionButton { CustomMinimumSize = new(200, 0), FitToLongestItem = false, ClipText = true };
+        _timing.TooltipText = "选择效果触发时机；保存到卡包时沿用此选择。";
+        _timing.ItemSelected += i =>
+        {
+            _targetParent = _timing.GetItemMetadata((int)i).AsString();
+            var authoring = _authoring?.Invoke();
+            if (authoring is not null) ApplyView(authoring, authoring.DescribeParents().Single(p => p.ParentId == _targetParent));
+        };
+        head.AddChild(_timing);
+        head.AddChild(MenuStyles.Button("完成", () => GuardLeaving(() => Finished?.Invoke())));
         return head;
     }
 
@@ -582,7 +633,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var parent = new OptionButton { Name = "ParentPicker", SizeFlagsHorizontal = SizeFlags.ExpandFill };
         foreach (var option in parents) parent.AddItem(option.Label);
         for (var i = 0; i < parents.Count; i++) parent.SetItemMetadata(i, parents[i].ParentId);
-        var defaultIndex = parents.ToList().FindIndex(option => option.ParentId == DefaultParentId);
+        var defaultIndex = parents.ToList().FindIndex(option => option.ParentId == (_targetParent ?? DefaultParentId));
         parent.Select(defaultIndex < 0 ? 0 : defaultIndex);
         DiyEditorScreen.Field(page, "模板（挂载、视图字段与守卫从它继承）", parent);
         ApplyView(authoring, parents[Math.Max(0, parent.Selected)]);
@@ -595,7 +646,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         page.AddChild(replace);
 
         // 目标与父是两个不同的 id：父是模板（往哪填），目标是效果（替换谁）。
-        var targets = authoring.DescribeReplaceableEffects();
+        var targets = authoring.DescribeReplaceableEffects().ToList();
+        if (_targetEffect is { } selectedEffect && targets.All(t => t.EffectId != selectedEffect))
+            targets.Add(new HandlerReplaceTarget(selectedEffect, 0));
         var target = new OptionButton
         {
             Name = "ReplaceTargetPicker",
@@ -604,6 +657,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         };
         foreach (var item in targets) target.AddItem(item.Label);
         for (var i = 0; i < targets.Count; i++) target.SetItemMetadata(i, targets[i].EffectId);
+        if (_targetEffect is not null) target.Select(Math.Max(0, targets.FindIndex(t => t.EffectId == _targetEffect)));
         if (targets.Count == 0) target.AddItem("（包里没有可替换的效果）");
         DiyEditorScreen.Field(page, "替换哪个效果（只有它会被改引用）", target);
 
@@ -623,6 +677,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         };
         replace.Toggled += _ => SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
         target.ItemSelected += _ => SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
+        if (_targetEffect is not null) replace.ButtonPressed = true;
 
         var result = MenuStyles.Label("", 12, MenuStyles.Dim);
         result.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -655,7 +710,17 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 result.Text = saved.Describe();
                 result.AddThemeColorOverride("font_color", saved.Success ? UiStyles.Green : new Color("e0705f"));
                 ShowSaveNote(saved.Describe(), failed: !saved.Success);
-                if (saved.Success) dialog.QueueFree();
+                if (saved.Success)
+                {
+                    Saved?.Invoke(saved);
+                    _targetEffect = saved.ProductId; _targetParent = option.ParentId;
+                    var timingIndex = Enumerable.Range(0, _timing.ItemCount).FirstOrDefault(i => _timing.GetItemMetadata(i).AsString() == option.ParentId, -1);
+                    if (timingIndex >= 0) _timing.Select(timingIndex);
+                    _savedJson = _doc.ToJsonText(_catalog);
+                    _savedParent = _targetParent;
+                    dialog.Hide(); dialog.QueueFree();
+                    var after = _afterSave; _afterSave = null; after?.Invoke();
+                }
             }
             catch (Exception error)
             {
@@ -667,7 +732,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 ShowSaveNote("没保存成功：" + error.Message, failed: true);
             }
         };
-        dialog.Canceled += dialog.QueueFree;
+        dialog.Canceled += () => { _afterSave = null; dialog.QueueFree(); };
         dialog.PopupCentered();
     }
 
@@ -724,6 +789,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var productId = HandlerDslAuthoring.ReplaceProductIdOf(picked.EffectId);
         product.Text = productId;
 
+        // Loading belongs to opening the editor. Toggling save options must never replace unsaved blocks.
         var existing = authoring.ReadExistingDsl(picked.EffectId);
         if (existing is null)
         {
@@ -733,8 +799,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         try
         {
-            Open(_cardLabel.Text, HandlerDocument.FromJson(existing, _catalog));
-            hint.Text = $"已载入上次的积木图（保存会覆盖 {productId}）。";
+            hint.Text = $"保存当前画布到 {productId}；上次的图可从效果列表重新打开。";
         }
         catch (FormatException error)
         {

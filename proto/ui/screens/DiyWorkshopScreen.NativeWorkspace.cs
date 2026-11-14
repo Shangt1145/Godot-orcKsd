@@ -7,6 +7,7 @@ namespace Kards.Ui;
 
 public partial class DiyWorkshopScreen
 {
+    internal void OpenNativeCardForVerification(string packId, NativeWorkshopAsset asset) => OpenNativeCard(packId, asset);
     private Func<bool>? _saveNativeCard;
     internal Button NativeSkinButton = null!;
     private NativeCardDocument? _cardDocument;
@@ -26,7 +27,7 @@ public partial class DiyWorkshopScreen
         })))));
         if (_native.SessionWarnings.Count > 0) row.AddChild(MenuStyles.Button("编辑会话提示", () => NativeText("引擎返回的会话提示", string.Join("\n", _native.SessionWarnings))));
         NativePromoteButton = MenuStyles.Button("应用修改", () => GuardNative(() => NativeTry(() =>
-        { _native.Promote(); _nativeChanged!(); ShowNativePackages(); _notice.Text = "卡包已转正，构筑和新对局使用此版本。"; })));
+        { _native.Promote(); _nativeChanged!(); TutorialApplied(id); ShowNativePackages(); _notice.Text = "卡包已转正，构筑和新对局使用此版本。"; })));
         row.AddChild(NativePromoteButton); MenuStyles.Primary(NativePromoteButton);
     }
     private void BuildNativeLibrary(string id)
@@ -73,10 +74,11 @@ public partial class DiyWorkshopScreen
         NativeWorkspace(); BuildNativeSessionHeader(packId); _nativeAsset = asset;
         _cardDocument = new NativeCardDocument(_native!.Read(asset.Path)); _nativeDirty = false;
         var presentation = _native.CardPresentation(asset.Id); var text = presentation.Text; var flavor = presentation.Flavor;
-        var rules = presentation.EditableRules; var rulesChanged = false;
         var controls = new HBoxContainer(); _workspace.AddChild(controls);
         controls.AddChild(MenuStyles.Button("‹ 卡牌一览", () => OpenNativePack(packId)));
         NativeSaveButton = MenuStyles.Button("保存草稿", () => _saveNativeCard!()); controls.AddChild(NativeSaveButton); MenuStyles.Primary(NativeSaveButton);
+        controls.AddChild(MenuStyles.Button("应用并用于构筑", () => ApplyNativeCardAndUse(packId, asset, false)));
+        controls.AddChild(MenuStyles.Button("应用并试打", () => ApplyNativeCardAndUse(packId, asset, true)));
         controls.AddChild(MenuStyles.Button("删除卡牌…", () => GuardNative(() => NativeTry(() =>
         {
             var affected = _native!.DeleteImpact(asset);
@@ -166,22 +168,8 @@ public partial class DiyWorkshopScreen
                 check.Toggled += enabled => { selected.RemoveAll(id => id == effect.Asset.Id); if (enabled) selected.Add(effect.Asset.Id); _cardDocument.Set("effects", "prefabs", new JsonArray(selected.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray())); Changed(); };
             }
         }
-        var ruleHint = MenuStyles.Label("导入包的原生效果完整保留。可编排的效果使用通用的时机、条件、目标和动作。", 14, MenuStyles.Dim); ruleHint.AutowrapMode = TextServer.AutowrapMode.WordSmart; rulePage.AddChild(ruleHint);
-        rulePage.AddChild(MenuStyles.Button("编排可编辑效果…", () =>
-        {
-            var dialog = new ConfirmationDialog { Title = "规则编排", OkButtonText = "应用到当前卡牌", DialogHideOnOk = false, MinSize = new(1040, 680) }; AddChild(dialog);
-            var scroll = new ScrollContainer { CustomMinimumSize = new(1020, 580), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
-            var inspector = new NativeEffectInspector { CustomMinimumSize = new(1000, 540), SizeFlagsHorizontal = SizeFlags.ExpandFill, Catalog = () => _service.Cards }; scroll.AddChild(inspector); inspector.Initialize(); inspector.UsePlayerAuthoring();
-            var draft = new DiyCardDraft { Name = _cardDocument.Name, OrcEffects = rules, UseStructuredEffects = true }; inspector.Open(InspectorCardRecord.FromDraft(draft));
-            dialog.Confirmed += () => NativeTry(() =>
-            {
-                if (!inspector.CommitPendingRaw()) return;
-                var updated = InspectorCardRecord.ApplyRecord(draft, inspector.Document.Element());
-                if (updated.Effects.Length > 0) throw new InvalidDataException("请使用通用规则编排；旧简易效果行仍保留在原编辑器中。");
-                _native.ComposeRules(_cardDocument.Json, asset.Id, updated.OrcEffects); // validate without changing the native source yet
-                rules = updated.OrcEffects; rulesChanged = true; Changed(); dialog.QueueFree();
-            }); dialog.Canceled += () => dialog.QueueFree(); dialog.PopupCentered();
-        }));
+        var ruleHint = MenuStyles.Label("原有效果完整保留。使用积木 Inspector 添加或重写效果，保存后自动关联当前卡牌。", 14, MenuStyles.Dim); ruleHint.AutowrapMode = TextServer.AutowrapMode.WordSmart; rulePage.AddChild(ruleHint);
+        rulePage.AddChild(MenuStyles.Button("编辑效果 · 积木 Inspector…", () => GuardNative(() => OpenCardBlocks(packId, asset))));
         var displayText = new TextEdit { Text = text, CustomMinimumSize = new(0, 150), WrapMode = TextEdit.LineWrappingMode.Boundary }; DiyEditorScreen.Field(rulePage, "卡面说明（独立于规则执行）", displayText); displayText.TextChanged += () => { text = displayText.Text; Changed(); };
         NativeSkinButton = MenuStyles.Button("异画与数值位置…", () => GuardNative(() =>
         {
@@ -207,7 +195,7 @@ public partial class DiyWorkshopScreen
         {
             try
             {
-                _native.SaveCardDocument(asset, _cardDocument.Json, text, flavor, rulesChanged ? rules : null);
+                _native.SaveCardDocument(asset, _cardDocument.Json, text, flavor);
                 _nativeDirty = false; NativeSaveButton.Text = "保存草稿";
                 _notice.Text = _native.PreviewCards().Any(c => c.CardId == asset.AppId)
                     ? "已保存到临时包；转正后才更新构筑与新对局。"
@@ -216,6 +204,30 @@ public partial class DiyWorkshopScreen
             }
             catch (Exception ex) { _notice.Text = ex.Message; return false; }
         };
-        TypeVisibility(); Preview();
+        _tutorialCheck = () =>
+        {
+            string? problem = null;
+            if ((_tutorialStep == 1 || _tutorialStep >= 5) && !DiyTutorialLesson.AttributesReady(_cardDocument))
+                problem = "请检查名称、单位类型、步兵兵种及 2 费 / 2 攻 / 3 防 / 1 行动费用。";
+            else if ((_tutorialStep == 2 || _tutorialStep >= 5) && !DiyTutorialLesson.KeywordReady(_cardDocument))
+                problem = "请在规则页勾选闪击。";
+            else if ((_tutorialStep == 3 || _tutorialStep >= 5) && !TutorialBlockReady())
+                problem = "需要一条无额外条件的部署效果：自己抽 1 张牌。请检查时机、对象、数量，并应用到当前卡牌。";
+            else if ((_tutorialStep == 4 || _tutorialStep >= 5) && text.Trim() != DiyTutorialLesson.DisplayText)
+                problem = "请填写卡面说明：" + DiyTutorialLesson.DisplayText;
+            _tutorialStatus.Text = problem ?? "检查通过。";
+            return problem is null;
+        };
+        _tutorialFocus = () =>
+        {
+            tabs.CurrentTab = _tutorialStep is >= 2 and <= 4 ? 1 : 0;
+            if (_tutorialStep == 1) name.GrabFocus();
+        };
+        TypeVisibility(); Preview(); RefreshTutorial();
+        if (IsTutorialCard)
+        {
+            _notice.Text = "正在编辑独立练习卡包。未保存的修改会在离开时提示保存；应用修改后用于构筑和新对局。";
+            _tutorialFocus();
+        }
     }));
 }

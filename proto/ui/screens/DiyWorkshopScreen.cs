@@ -43,10 +43,11 @@ public partial class DiyWorkshopScreen : VBoxContainer
         _store=store;_cards=cards;_editor=editor;_service=service;_textures=textures;_changed=changed;_reduced=reduced;
         SizeFlagsVertical=SizeFlags.ExpandFill;AddThemeConstantOverride("separation",12);
         var top=new HBoxContainer();AddChild(top);_nativeToolbar=top;top.AddChild(MenuStyles.Label("DIY 工坊",32,MenuStyles.Ink));top.AddChild(new Control{SizeFlagsHorizontal=SizeFlags.ExpandFill});
-        OpenInspectorButton = MenuStyles.Button("新版 Inspector · 积木编辑", RequestBlockAuthoring);
+        OpenInspectorButton = MenuStyles.Button("积木 Inspector", RequestBlockAuthoring);
         OpenInspectorButton.TooltipText = "打开新版效果搭建界面；进入卡包后可将效果保存到当前卡包。";
         MenuStyles.Primary(OpenInspectorButton); top.AddChild(OpenInspectorButton);
         top.AddChild(MenuStyles.Button("工坊首页",()=>_editor.GuardNavigation(ShowHome)));
+        InitializeTutorial(top);
         _notice=MenuStyles.Label("",13,MenuStyles.Dim);_notice.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_notice);
         _navigation=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_navigation);
         _workspace=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_workspace);AddChild(_editor);ShowHome();
@@ -69,7 +70,7 @@ public partial class DiyWorkshopScreen : VBoxContainer
             });
             return;
         }
-        _editor.GuardNavigation(() => GuardNative(() => BlockAuthoringRequested?.Invoke()));
+        LaunchBlocks("新效果", null, null, () => OpenNativePack(_native!.SessionPackage!));
     }
 
     internal void OpenPack(DiyPackDraft pack)
@@ -96,13 +97,8 @@ public partial class DiyWorkshopScreen : VBoxContainer
         void Describe() => summary.Text = draft.ProgramJson is not null ? "已设置参数或主动技能。" : draft.Effects.Length > 0 ? $"已编排 {draft.Effects.Length} 条效果。" : draft.EffectText.Length > 0 ? draft.EffectText : "尚未编排效果。";
         void Load(DiyKeywordDraft value) { draft = value.Snapshot(); KeywordName.Text = draft.Name; description.Text = draft.Description; battle.ButtonPressed = draft.Battle; Describe(); status.Text = WorkshopAuthoring.Errors.GetValueOrDefault(draft.Id) ?? ""; }
         sidebar.AddChild(MenuStyles.Button("＋ 新建词条", () => Load(new()))); list.ItemSelected += i => Load(pack.Keywords[(int)i]);
-        var edit = MenuStyles.Button("编辑规则…", () =>
-        {
-            void Edit() => OpenKeywordRules(draft, KeywordName.Text, (effects, text) => { draft = draft with { Effects = effects, EffectText = text, ProgramJson = null }; Describe(); status.Text = "规则已更新，保存词条后生效。"; }, _keywordPane.GetWindow());
-            if (draft.ProgramJson is null) { Edit(); return; }
-            var confirm = new ConfirmationDialog { Title = "重新编排词条", DialogText = "这会以触发效果替换当前的参数与主动技能。取消编辑会保留原有行为。", OkButtonText = "重新编排", CancelButtonText = "保留原有效果" }; _keywordPane.AddChild(confirm);
-            confirm.Confirmed += () => { confirm.QueueFree(); Edit(); }; confirm.Canceled += confirm.QueueFree; confirm.PopupCentered();
-        }); MenuStyles.Primary(edit); form.AddChild(edit);
+        var edit = MenuStyles.Button("在积木工作副本中编辑…", () => OpenKeywordBlocks(pack, draft with { Name = KeywordName.Text.Trim() }, _keywordPane.GetWindow()));
+        MenuStyles.Primary(edit); form.AddChild(edit);
         form.AddChild(MenuStyles.Button("参数与主动技能…", () =>
         {
             var dialog = new AcceptDialog { Title = "参数与主动技能", OkButtonText = "完成", MinSize = new(1000, 680) }; _keywordPane.AddChild(dialog);

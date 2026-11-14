@@ -26,7 +26,8 @@ public partial class Main
         GetViewport().PushInput(new InputEventKey { Keycode = Key.Escape, Pressed = true }, true);
         if (modal || cancelBattle) return;
         if (_active == "battle") Show("setup");
-        else if (_active is "deck" or "editor" or "diyfx") Show(_active == "deck" ? "decklib" : "home");
+        else if (_active == "hdsl") _blockEditor.GuardLeaving(() => { Show("editor"); _workshop.ReturnFromBlocks(); });
+        else if (_active is "deck" or "editor") NavigateMenu(_active == "deck" ? "decklib" : "home");
         else if (_active == "home")
         {
             var confirm = new ConfirmationDialog { Title = "退出游戏？", DialogText = "退出会关闭本机房间。卡组和工坊内容已保存在本机。", OkButtonText = "退出", CancelButtonText = "继续游戏" };

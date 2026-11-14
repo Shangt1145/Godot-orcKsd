@@ -164,7 +164,7 @@ public sealed class HandlerDslAuthoring
     public static string ReplaceProductIdOf(string parentId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(parentId);
-        return parentId + ".dsl";
+        return parentId.EndsWith(".dsl", StringComparison.Ordinal) ? parentId : parentId + ".dsl";
     }
 
     /// <summary>
