@@ -408,6 +408,7 @@ public partial class Main : Control
         footRow.AddChild(gap);
         _speedLabel = UiStyles.Label("", 12, UiStyles.Dim);
         footRow.AddChild(_speedLabel);
+        InitializeUpdateStatus(footRow);
         _clock.Changed += UpdateStatus;
         _clock.Changed += RefreshMenuMotion;
         UpdateStatus();
@@ -462,6 +463,8 @@ public partial class Main : Control
             Callable.From(VerifyWorkshopRoutes).CallDeferred();
         else if (args.Contains("--verify-card-skins"))
             Callable.From(VerifyCardSkins).CallDeferred();
+        else if (args.Contains("--verify-auto-update"))
+            Callable.From(VerifyAutoUpdate).CallDeferred();
         else if (args.Contains("--verify-diy-capabilities"))
             Callable.From(VerifyDiyCapabilities).CallDeferred();
         else if (args.Contains("--verify-diy-tutorial") || args.Contains("--capture-diy-tutorial"))

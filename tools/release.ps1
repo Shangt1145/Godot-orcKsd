@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = (Join-Path $PSScriptRoot 'godot-wait.ps1'),
     [string]$Preset = 'Windows Desktop',
@@ -128,7 +128,7 @@ if (Test-Path -LiteralPath (Join-Path $EngineRoot 'src\Orc.Game\Orc.Game.csproj'
 }
 if (!$SkipGate) {
     $testArgs = @('test', (Join-Path $sourceRoot 'tests/Kards.Ui.Tests.csproj'), '--nologo')
-    if (!$FullTests) { $testArgs += @('--filter', 'FullyQualifiedName~HandlerDslAuthoringTests|FullyQualifiedName~HandlerDslEditorTests|FullyQualifiedName~DiyTutorialTests|FullyQualifiedName~WorkshopTests|FullyQualifiedName~IdleTurnDeliveryTests|FullyQualifiedName~TurnInputGateTests|FullyQualifiedName~InspectorCompositionTests|FullyQualifiedName~InspectorBackendBaselineTests|FullyQualifiedName~DiyEditorUpdateTests|FullyQualifiedName~DeckPackTests|FullyQualifiedName~DeckConstructionTests|FullyQualifiedName~DiyCardTests|FullyQualifiedName~DiyInspectorTests|FullyQualifiedName~SourceEffectConverterTests|FullyQualifiedName~DesktopAuthoringTests|FullyQualifiedName~NativeScriptHostIsolationTests|FullyQualifiedName~OfficialCardExpansionTests|FullyQualifiedName~OfflineUpdateTests') }
+    if (!$FullTests) { $testArgs += @('--filter', 'FullyQualifiedName~HandlerDslAuthoringTests|FullyQualifiedName~HandlerDslEditorTests|FullyQualifiedName~DiyTutorialTests|FullyQualifiedName~WorkshopTests|FullyQualifiedName~IdleTurnDeliveryTests|FullyQualifiedName~TurnInputGateTests|FullyQualifiedName~InspectorCompositionTests|FullyQualifiedName~InspectorBackendBaselineTests|FullyQualifiedName~DiyEditorUpdateTests|FullyQualifiedName~DeckPackTests|FullyQualifiedName~DeckConstructionTests|FullyQualifiedName~DiyCardTests|FullyQualifiedName~DiyInspectorTests|FullyQualifiedName~SourceEffectConverterTests|FullyQualifiedName~DesktopAuthoringTests|FullyQualifiedName~NativeScriptHostIsolationTests|FullyQualifiedName~OfficialCardExpansionTests|FullyQualifiedName~OfflineUpdateTests|FullyQualifiedName~ReleaseFeedTests|FullyQualifiedName~AndroidUpdateNoticeTests|FullyQualifiedName~InspectorCapabilityTests') }
     & dotnet @testArgs
     if ($LASTEXITCODE -ne 0) { throw 'Release unit test gate failed.' }
     & (Join-Path $PSScriptRoot 'run.ps1') -BuildRoot $BuildRoot -Godot $Godot -Verify
@@ -331,7 +331,8 @@ $fullBytes=(Get-Item -LiteralPath $zip).Length;$bootstrapBytes=(Get-Item -Litera
 # 发版后把它挂到固定 tag `channel`：gh release upload channel dist/releases/latest.json --clobber
 $tag="v$version"
 $assetBase="https://github.com/Shangt1145/Godot-orcKsd/releases/download/$tag"
-$manifestAssets=@()
+$fullName=[IO.Path]::GetFileName($deliveredZip)
+$manifestAssets=@([ordered]@{name=$fullName;size=$fullBytes;url="$assetBase/$fullName"})
 if($patch){
     $patchName=[IO.Path]::GetFileName($patch)
     $manifestAssets+=[ordered]@{name=$patchName;size=$patchBytes;url="$assetBase/$patchName"}

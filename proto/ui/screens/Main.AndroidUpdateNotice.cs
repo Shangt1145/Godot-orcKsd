@@ -12,20 +12,9 @@ public partial class Main
         if (string.IsNullOrWhiteSpace(current)) return;
         using var http = NewHttpClient();
         var release = ReleaseFeed.SelectAndroidNotice(await LoadReleasesAsync(http), current);
-        if (release is null || !GodotObject.IsInstanceValid(this) || !IsInsideTree()
-            || !GodotObject.IsInstanceValid(_speedLabel)) return;
-
-        var notice = new Button
-        {
-            Text = $"有新版 {release.Version} · 查看发布页",
-            TooltipText = "在发布页查看更新说明，手动下载 APK 覆盖安装以保留卡组和工坊。",
-            FocusMode = Control.FocusModeEnum.None,
-        };
-        notice.Pressed += () =>
-        {
-            var result = OS.ShellOpen($"https://github.com/{ReleaseFeed.Repository}/releases/tag/{Uri.EscapeDataString(release.Tag)}");
-            if (result != Error.Ok) GD.PushWarning("无法打开更新发布页：" + result);
-        };
-        _speedLabel.GetParent().AddChild(notice);
+        if (!GodotObject.IsInstanceValid(this) || !IsInsideTree()) return;
+        if (release is null) { SetUpdateStatus("已是最新 " + current, "点击重新检查更新。"); return; }
+        SetUpdateStatus($"有新版 {release.Version} · 查看发布页", "手动下载 APK 覆盖安装以保留卡组和工坊；不自动下载或安装。", () => OpenRelease(release.Version));
+        LogUpdate("Android 发现新版 " + release.Version + "，仅提示。");
     }
 }
