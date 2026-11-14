@@ -1,0 +1,58 @@
+diff --git a/src/Orc.Mcp/McpService.MatchLaunch.cs b/src/Orc.Mcp/McpService.MatchLaunch.cs
+index f43af85..1bf0fca 100644
+--- a/src/Orc.Mcp/McpService.MatchLaunch.cs
++++ b/src/Orc.Mcp/McpService.MatchLaunch.cs
+@@ -154,6 +154,7 @@ public sealed partial class McpService
+                 options: new MatchOptions
+                 {
+                     SkipMulligan = options.SkipMulligan,
++                    ScriptEvaluator = Options.ScriptEvaluator,
+                     OpeningHandSizeFirstPlayer = options.OpeningHandSizeFirstPlayer,
+                     OpeningHandSizeSecondPlayer = options.OpeningHandSizeSecondPlayer,
+                     // 沙盒授权（R2）：仅 Authoring（沙盒）装配路径开启；play 路径不开启。
+diff --git a/src/Orc.Mcp/McpServiceOptions.cs b/src/Orc.Mcp/McpServiceOptions.cs
+index 4640def..c8f400d 100644
+--- a/src/Orc.Mcp/McpServiceOptions.cs
++++ b/src/Orc.Mcp/McpServiceOptions.cs
+@@ -17,6 +17,9 @@ public enum McpServiceMode
+ /// </summary>
+ public sealed class McpServiceOptions
+ {
++    /// <summary>Optional in-process host adapter for platforms whose assemblies have no file paths.</summary>
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
++
+     /// <summary>运行模式（决定工具集与门控）。</summary>
+     public McpServiceMode Mode { get; init; } = McpServiceMode.Authoring;
+ 
+diff --git a/src/Orc.Server/ServerOptions.cs b/src/Orc.Server/ServerOptions.cs
+index d3e71af..ec72282 100644
+--- a/src/Orc.Server/ServerOptions.cs
++++ b/src/Orc.Server/ServerOptions.cs
+@@ -53,6 +53,9 @@ public sealed record SeatConfig(
+ /// </summary>
+ public sealed class ServerOptions
+ {
++    /// <summary>Optional in-process host adapter for platforms whose assemblies have no file paths.</summary>
++    public Orc.Core.IScriptEvaluator? ScriptEvaluator { get; init; }
++
+     /// <summary>卡包目录列表（管理器按资产库解析后下发；服务端只校验"可索引"）。</summary>
+     public required IReadOnlyList<string> PackDirectories { get; init; }
+ 
+diff --git a/src/Orc.Server/Transport/ServerHost.cs b/src/Orc.Server/Transport/ServerHost.cs
+index f32e6a6..c24e7f5 100644
+--- a/src/Orc.Server/Transport/ServerHost.cs
++++ b/src/Orc.Server/Transport/ServerHost.cs
+@@ -1,4 +1,4 @@
+-﻿using System.Collections.Concurrent;
++using System.Collections.Concurrent;
+ using System.Collections.Frozen;
+ using System.Net;
+ using System.Net.Sockets;
+@@ -200,6 +200,7 @@ public sealed partial class ServerHost : IAsyncDisposable
+             Mode = _options.Mode == ServerMode.Sandbox ? McpServiceMode.Authoring : McpServiceMode.Player,
+             SandboxRoot = _options.SandboxRoot,
+             MatchId = room.RoomId,
++            ScriptEvaluator = _options.ScriptEvaluator,
+             TargetSelectionTimeout = _options.TargetSelectionTimeout,
+             Seed = _options.Seed,
+             AiSeats = _options.Seats

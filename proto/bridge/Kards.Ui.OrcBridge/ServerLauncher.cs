@@ -35,7 +35,7 @@ public sealed class ServerLauncher : IAsyncDisposable
         // 由调用方决定"换端口重试"还是"报错"——这里不替玩家静默换端口。
         // v4 删除的三个开关（原样记在这里，免得下次又去引擎里找）：
         //   PluginsRoot         —— 服务端不再收插件根目录；插件包只经 PackDirectories 发现。
-        //   ScriptEvaluator     —— 服务端改用引擎自己的求值器（NativeScriptHost 只服务宿主侧 DIY 编译）。
+        //   移动端内嵌服务端使用宿主的内存程序集适配；独立桌面服务端仍使用引擎缺省求值器。
         //   ReuseProcessVocabulary —— 进程级注册已前移到 ServerBootstrap（无条件执行），无需开关。
         if (inProcess || OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
         {
@@ -44,6 +44,7 @@ public sealed class ServerLauncher : IAsyncDisposable
             var host = await Orc.Server.ServerBootstrap.StartAsync(new Orc.Server.ServerOptions {
                 PackDirectories = packsDirectories, SandboxRoot = sandboxDirectory,
                 Port = port,
+                ScriptEvaluator = OperatingSystem.IsAndroid() || OperatingSystem.IsIOS() ? NativeScriptHost.Evaluator : null,
                 DeckRules = fixedDeckForVerification ? Orc.Game.Decks.DeckRuleTier.None : Orc.Game.Decks.DeckRuleTier.Strict,
                 Seats = Enumerable.Range(0, 2).Select(n => new Orc.Server.SeatConfig(
                     n == aiSeat ? Orc.Server.SeatKind.Ai : Orc.Server.SeatKind.Agent,
