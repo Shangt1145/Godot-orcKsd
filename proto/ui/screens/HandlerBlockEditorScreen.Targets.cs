@@ -31,6 +31,7 @@ public partial class HandlerBlockEditorScreen
     {
         var side = selector.Value("side")?.Text switch { "friendly" => "友方", "both" => "双方", _ => "敌方" };
         if (selector.Op == "headquartersOf") return side + "总部";
+        side += selector.Value("zone")?.Text switch { "frontline" => "前线", "support" => "支援阵线", _ => "" };
         var count = selector.Value("count")?.Number ?? 1;
         return selector.Value("mode")?.Text switch
         {
@@ -43,58 +44,58 @@ public partial class HandlerBlockEditorScreen
     {
         var value = node.Value(pin);
         var selection = HandlerTargetAuthoring.FindSelection(_doc, node, pin);
-        var chip = InputChip(selection is null ? value?.Describe() ?? "选择作用目标…" : SelectionLabel(selection.Selector), value is null);
-        chip.Pressed += () =>
+        void OpenTargets()
         {
-            var dialog = new AcceptDialog { Title = "选择作用目标", OkButtonText = "取消", MinSize = new(560, 560) }; AddChild(dialog);
+            var dialog = new AcceptDialog { Title = "选择作用目标", OkButtonText = "返回", MinSize = new(560, 560) }; AddChild(dialog);
             var scroll = new ScrollContainer { CustomMinimumSize = new(520, 480), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
             var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; box.AddThemeConstantOverride("separation", 12); scroll.AddChild(box);
             var existing = HandlerTargetAuthoring.FindSelection(_doc, node, pin);
-            box.AddChild(MenuStyles.Label("直接使用", 17, MenuStyles.Gold));
-            foreach (var field in _view.Values.Where(f => f.Type == "entity"))
-                box.AddChild(MenuStyles.Button(HandlerVocabulary.ViewFieldLabel(field.Name), () => { dialog.Hide(); dialog.QueueFree(); SetValue(node, pin, HandlerValue.ViewField(field.Name)); }));
-            foreach (var bound in scope.Where(s => s.IsEntity))
-                box.AddChild(MenuStyles.Button(HandlerVocabulary.BindingLabel(bound.Name), () => { dialog.Hide(); dialog.QueueFree(); SetValue(node, pin, HandlerValue.Var(bound.Name)); }));
-            box.AddChild(MenuStyles.Label("指定新的目标范围", 17, MenuStyles.Gold));
-            var kind = new OptionButton(); kind.AddItem("战场单位"); kind.AddItem("总部"); DiyEditorScreen.Field(box, "作用对象", kind);
-            var side = new OptionButton(); foreach (var text in new[] { "敌方", "友方", "双方" }) side.AddItem(text); DiyEditorScreen.Field(box, "目标阵营", side);
-            var mode = new OptionButton(); mode.AddItem("由玩家选择"); mode.AddItem("随机选择"); mode.AddItem("全部符合条件的目标"); mode.AddItem("本卡自身"); DiyEditorScreen.Field(box, "选取方式", mode);
-            var count = new SpinBox { MinValue = 1, MaxValue = 99, Value = 1 }; DiyEditorScreen.Field(box, "目标数量", count);
-            var zone = new OptionButton(); zone.AddItem("不限区域"); zone.AddItem("前线"); zone.AddItem("支援阵线"); DiyEditorScreen.Field(box, "所在区域", zone);
-            kind.ItemSelected += _ => { mode.Disabled = zone.Disabled = kind.Selected == 1; count.Editable = kind.Selected == 0; if (kind.Selected == 1) mode.Select(2); };
-            if (existing is not null)
-            {
-                var selection = existing.Selector;
-                kind.Select(selection.Op == "headquartersOf" ? 1 : 0);
-                side.Select(Math.Max(0, Array.IndexOf(new[] { "enemy", "friendly", "both" }, selection.Value("side")?.Text)));
-                mode.Select(Math.Max(0, Array.IndexOf(new[] { "one", "random", "all", "self" }, selection.Value("mode")?.Text)));
-                count.Value = selection.Value("count")?.Number ?? 1;
-                zone.Select(selection.Value("zone")?.Text switch { "frontline" => 1, "support" => 2, _ => 0 });
-                kind.EmitSignal(OptionButton.SignalName.ItemSelected, (long)kind.Selected);
-            }
-            box.AddChild(MenuStyles.Button("使用此目标范围", () =>
+            void Apply(string side, string mode, bool headquarters, string zone, int count)
             {
                 var list = FindParentList(node); if (list is null) return;
                 var place = list.IndexOf(node);
                 var index = 1; while (_doc.ToJsonText(_catalog).Contains("selectedTargets_" + index, StringComparison.Ordinal)) index++;
-                var pickedSide = new[] { "enemy", "friendly", "both" }[side.Selected];
                 dialog.Hide(); dialog.QueueFree();
                 Edit(() =>
                 {
-                    if (existing is not null)
-                    {
-                        HandlerTargetAuthoring.UpdateSelection(existing, pickedSide, new[] { "one", "random", "all", "self" }[mode.Selected], kind.Selected == 1,
-                            (int)count.Value, new[] { "", "frontline", "support" }[zone.Selected]);
-                        return;
-                    }
-                    var nodes = HandlerTargetAuthoring.SelectForAction(node, pin, pickedSide, new[] { "one", "random", "all", "self" }[mode.Selected], kind.Selected == 1, index,
-                        (int)count.Value, new[] { "", "frontline", "support" }[zone.Selected]);
+                    if (existing is not null) { HandlerTargetAuthoring.UpdateSelection(existing, side, mode, headquarters, count, zone); return; }
+                    var nodes = HandlerTargetAuthoring.SelectForAction(node, pin, side, mode, headquarters, index, count, zone);
                     list.RemoveAt(place); list.InsertRange(place, nodes);
                 });
-            }));
-            box.AddChild(MenuStyles.Button("更多取值与属性读取…", () => { dialog.Hide(); dialog.QueueFree(); OpenValueMenu(chip, value, v => SetValue(node, pin, v), scope); }));
+            }
+            box.AddChild(MenuStyles.Label("目标数量", 14, MenuStyles.Gold));
+            var count = new SpinBox { MinValue = 1, MaxValue = 99, Value = existing?.Selector.Value("count")?.Number ?? 1 }; box.AddChild(count);
+            var shelf = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; shelf.AddThemeConstantOverride("separation", 8); box.AddChild(shelf);
+            void RebuildTargets()
+            {
+                foreach (var child in shelf.GetChildren()) { shelf.RemoveChild(child); child.QueueFree(); }
+                foreach (var field in _view.Values.Where(f => f.Type == "entity"))
+                    shelf.AddChild(PaletteBlock(HandlerVocabulary.ViewFieldLabel(field.Name), BlockTheme.Query, BlockShape.Form.Reporter,
+                        () => { dialog.Hide(); dialog.QueueFree(); SetValue(node, pin, HandlerValue.ViewField(field.Name)); }));
+                foreach (var bound in scope.Where(s => s.IsEntity))
+                    shelf.AddChild(PaletteBlock(HandlerVocabulary.BindingLabel(bound.Name), BlockTheme.Query, BlockShape.Form.Reporter,
+                        () => { dialog.Hide(); dialog.QueueFree(); SetValue(node, pin, HandlerValue.Var(bound.Name)); }));
+                foreach (var side in new[] { ("enemy", "敌方"), ("friendly", "友方"), ("both", "双方") })
+                {
+                    foreach (var zone in new[] { ("", ""), ("frontline", "前线"), ("support", "支援阵线") })
+                        foreach (var mode in new[] { ("one", "选择"), ("random", "随机"), ("all", "全部") })
+                        {
+                            var label = mode.Item2 + (mode.Item1 == "all" ? "" : $" {count.Value:0} 个") + side.Item2 + zone.Item2 + "单位";
+                            var block = PaletteBlock(label, BlockTheme.Query, BlockShape.Form.Reporter,
+                                () => Apply(side.Item1, mode.Item1, false, zone.Item1, (int)count.Value));
+                            block.SetMeta("target_variant", side.Item1 + "/" + mode.Item1 + "/" + zone.Item1); shelf.AddChild(block);
+                        }
+                    var hq = PaletteBlock(side.Item2 + "总部", BlockTheme.Query, BlockShape.Form.Reporter, () => Apply(side.Item1, "all", true, "", 1));
+                    hq.SetMeta("target_variant", side.Item1 + "/hq"); shelf.AddChild(hq);
+                }
+                var self = PaletteBlock("本卡自身", BlockTheme.Query, BlockShape.Form.Reporter, () => Apply("friendly", "self", false, "", 1));
+                self.SetMeta("target_variant", "self"); shelf.AddChild(self);
+            }
+            count.ValueChanged += _ => RebuildTargets(); RebuildTargets();
+            box.AddChild(MenuStyles.Button("更多取值与属性读取…", () => { dialog.Hide(); dialog.QueueFree(); OpenValueMenu(value, v => SetValue(node, pin, v), scope); }));
             dialog.Confirmed += dialog.QueueFree; dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
-        };
-        return chip;
+        }
+        var result = PaletteBlock(selection is null ? value?.Describe() ?? "放入作用目标积木…" : SelectionLabel(selection.Selector), BlockTheme.Query, BlockShape.Form.Reporter, OpenTargets);
+        result.SetMeta("target_socket", pin); return result;
     }
 }

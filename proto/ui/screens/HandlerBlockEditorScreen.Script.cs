@@ -19,7 +19,7 @@ public partial class HandlerBlockEditorScreen
             box.AddChild(MenuStyles.Label("脚本正文（由引擎编译和执行）", 16, MenuStyles.Gold));
             var body = new CodeEdit { Text = node.Text("body") ?? "", CustomMinimumSize = new(640, 240), SizeFlagsHorizontal = SizeFlags.ExpandFill };
             box.AddChild(body);
-            var fields = new Dictionary<string, List<(LineEdit Name, OptionButton Type, JsonObject Original)>>();
+            var fields = new Dictionary<string, List<(LineEdit Name, string Type, JsonObject Original)>>();
             var types = new[] { "number", "string", "boolean", "entity", "list<entity>", "list<number>", "list<string>" };
             var labels = new[] { "数值", "文字", "是或否", "实体", "实体列表", "数值列表", "文字列表" };
             foreach (var field in new[] { "inputs", "outputs" })
@@ -30,16 +30,22 @@ public partial class HandlerBlockEditorScreen
                 {
                     var row = new HBoxContainer(); rows.AddChild(row);
                     var name = new LineEdit { Text = original["name"]?.GetValue<string>() ?? "", PlaceholderText = "脚本中的变量名", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-                    var type = new OptionButton(); foreach (var label in labels) type.AddItem(label);
-                    var current = original["type"]?.GetValue<string>() ?? "number";
-                    var selected = Array.IndexOf(types, current);
-                    if (selected < 0) { type.AddItem("保留原类型：" + current); selected = types.Length; }
-                    type.Select(selected); row.AddChild(name); row.AddChild(type);
+                    var type = original["type"]?.GetValue<string>() ?? "number";
+                    var selected = Array.IndexOf(types, type);
+                    var caption = (selected < 0 ? "原有类型" : labels[selected]) + (field == "inputs" ? "输入" : "输出");
+                    var typed = PaletteBlock(caption, BlockTheme.Query, BlockShape.Form.Reporter, null);
+                    typed.CustomMinimumSize = new(130, 36); row.AddChild(typed); row.AddChild(name);
                     var entry = (name, type, original); fields[field].Add(entry);
                     row.AddChild(MenuStyles.Button("删除", () => { fields[field].Remove(entry); row.QueueFree(); }));
                 }
                 if (node.ScriptPins.TryGetValue(field, out var pins)) foreach (var pin in pins.OfType<JsonObject>()) Add((JsonObject)pin.DeepClone());
-                box.AddChild(MenuStyles.Button(field == "inputs" ? "＋ 添加输入" : "＋ 添加输出", () => Add(new JsonObject())));
+                for (var i = 0; i < types.Length; i++)
+                {
+                    var type = types[i];
+                    var add = PaletteBlock("添加" + labels[i] + (field == "inputs" ? "输入" : "输出"), BlockTheme.Variables, BlockShape.Form.Stack,
+                        () => Add(new JsonObject { ["type"] = type }));
+                    add.SetMeta("script_pin_kind", field + "/" + type); box.AddChild(add);
+                }
             }
             var error = MenuStyles.Label("", 13, MenuStyles.Gold); box.AddChild(error);
             dialog.Confirmed += () =>
@@ -53,7 +59,7 @@ public partial class HandlerBlockEditorScreen
                         var value = name.Text.Trim();
                         if (value.Length == 0 || !names.Add(value)) { error.Text = "变量名不能为空，同一组中的名称不能重复。"; return; }
                         var pin = (JsonObject)original.DeepClone(); pin["name"] = value;
-                        pin["type"] = type.Selected < types.Length ? types[type.Selected] : original["type"]?.GetValue<string>(); array.Add(pin);
+                        pin["type"] = type; array.Add(pin);
                     }
                     result[field] = array;
                 }

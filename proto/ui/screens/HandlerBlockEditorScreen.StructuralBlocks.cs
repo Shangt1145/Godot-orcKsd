@@ -5,6 +5,21 @@ namespace Kards.Ui;
 
 public partial class HandlerBlockEditorScreen
 {
+    // Data for the value-block shelf; never creates a native option menu.
+    private sealed class ValueBlockChoices
+    {
+        private readonly List<(string Text, int Id, bool Separator, bool Disabled)> _items = [];
+        public int ItemCount => _items.Count;
+        public void Clear() => _items.Clear();
+        public void AddItem(string text, int id) => _items.Add((text, id, false, false));
+        public void AddSeparator() => _items.Add(("", -1, true, false));
+        public void SetItemDisabled(int index, bool disabled) { var item = _items[index]; _items[index] = (item.Text, item.Id, item.Separator, disabled); }
+        public bool IsItemSeparator(int index) => _items[index].Separator;
+        public bool IsItemDisabled(int index) => _items[index].Disabled;
+        public string GetItemText(int index) => _items[index].Text;
+        public int GetItemId(int index) => _items[index].Id;
+    }
+
     private IReadOnlyList<HandlerParentOption> _triggerParents = [];
     private bool _showTriggerLibrary, _showValueLibrary;
     internal string? SelectedTrigger => _targetParent;
@@ -64,19 +79,11 @@ public partial class HandlerBlockEditorScreen
     {
         var block = new BlockShape { Name = "TriggerHat", Fill = BlockTheme.Hat, ShowNotch = false, TopRadius = 18, SizeFlagsHorizontal = SizeFlags.ShrinkBegin };
         var box = new VBoxContainer(); box.AddThemeConstantOverride("separation", 10);
-        var row = new HBoxContainer(); row.AddThemeConstantOverride("separation", 10); box.AddChild(row);
-        row.AddChild(MenuStyles.Label("当", 18, BlockTheme.InkFor(BlockTheme.Hat)));
-        var picker = new OptionButton { CustomMinimumSize = new(270, 38), FitToLongestItem = false, ClipText = true,
-            TooltipText = "选择效果触发时机；这是当前触发积木的事件参数。" }; _timing = picker;
-        foreach (var option in _triggerParents) { picker.AddItem(option.DisplayLabel); picker.SetItemMetadata(picker.ItemCount - 1, option.ParentId); }
-        if (_triggerParents.Count == 0) { picker.AddItem("先打开卡包，选择触发事件"); picker.Disabled = true; }
-        else picker.Select(Math.Max(0, _triggerParents.ToList().FindIndex(p => p.ParentId == _targetParent)));
-        picker.ItemSelected += i => SelectTrigger(picker.GetItemMetadata((int)i).AsString()); row.AddChild(picker);
-        row.AddChild(MenuStyles.Label("时", 18, BlockTheme.InkFor(BlockTheme.Hat)));
         var current = CurrentTrigger;
+        box.AddChild(MenuStyles.Label(current is null ? "从工具箱放入触发积木" : "当「" + current.DisplayName + "」时", 18, BlockTheme.InkFor(BlockTheme.Hat)));
         var guard = PaletteBlock(current is null ? "选择触发对象条件" : GuardCaption(current.Guard), BlockTheme.Query,
-            BlockShape.Form.Predicate, current is null ? null : () => ShowTriggerConditions(current));
-        guard.Name = "TriggerConditionBlock"; guard.TooltipText = "点击更换同一事件支持的对象条件。"; box.AddChild(guard);
+            BlockShape.Form.Predicate, null);
+        guard.Name = "TriggerConditionBlock"; guard.TooltipText = "从工具箱放入对应的触发条件积木。"; box.AddChild(guard);
         if (current is not null) box.AddChild(MenuStyles.Label(TriggerLifetime(current), 12, BlockTheme.InkFor(BlockTheme.Hat)));
         block.SetBody(BlockPadding(box)); return block;
     }
@@ -98,20 +105,10 @@ public partial class HandlerBlockEditorScreen
         margin.AddThemeConstantOverride("margin_top", 12); margin.AddThemeConstantOverride("margin_bottom", 12); margin.AddChild(content); return margin;
     }
 
-    private void ShowTriggerConditions(HandlerParentOption current)
-    {
-        var dialog = new AcceptDialog { Title = "选择触发条件积木", OkButtonText = "返回" }; AddChild(dialog);
-        var scroll = new ScrollContainer { CustomMinimumSize = new(490, 350), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
-        var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; box.AddThemeConstantOverride("separation", 10); scroll.AddChild(box);
-        foreach (var option in _triggerParents.Where(p => p.Signal == current.Signal))
-            box.AddChild(PaletteBlock(GuardCaption(option.Guard), BlockTheme.Query, BlockShape.Form.Predicate, () => { dialog.Hide(); dialog.QueueFree(); SelectTrigger(option.ParentId); }));
-        dialog.Confirmed += dialog.QueueFree; dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
-    }
-
     private void AppendStructuralToolbox(string query)
     {
-        var category = _toolboxGroup.GetItemText(Math.Max(0, _toolboxGroup.Selected));
-        bool Category(string name) => _toolboxGroup.Selected == 0 || category == name;
+        var category = _toolboxCategory;
+        bool Category(string name) => category == "全部分类" || category == name;
         bool Match(string text) => query.Length == 0 || text.Contains(query, StringComparison.OrdinalIgnoreCase);
         if (Category("触发事件") && _triggerParents.Count > 0)
         {
@@ -175,6 +172,7 @@ public partial class HandlerBlockEditorScreen
             if (id is >= 300 and < 400) predicate = _view.Values.ElementAt(id - 300).Type == "boolean";
             var block = PaletteBlock(text, disabled ? BlockTheme.Advanced : BlockTheme.Query, predicate ? BlockShape.Form.Predicate : BlockShape.Form.Reporter,
                 disabled ? null : () => { dialog.Hide(); dialog.QueueFree(); OnValuePicked(id); });
+            if (id is >= 500 and < 600) block.SetMeta("fixed_literal", _valueLiterals[id - 500]);
             box.AddChild(block);
         }
         dialog.Confirmed += dialog.QueueFree; dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();

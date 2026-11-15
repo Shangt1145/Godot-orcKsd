@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using Kards.Ui.OrcBridge.HandlerDsl;
 
 namespace Kards.Ui;
@@ -44,12 +44,15 @@ public partial class Main
             var damage = _blockEditor.FindChildren("*", "Label", true, false).OfType<Label>().Single(l => l.Text == "造成伤害");
             damage.GetParent().GetParent().EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             Require(_blockEditor.Document.Actions is [{ Op: "damage" }], "工具箱不能添加伤害动作");
-            await DeckClickAsync(Button(_blockEditor, "选择作用目标…"));
+            _blockEditor.FindChildren("*", "Control", true, false).OfType<BlockShape>().Single(b => b.HasMeta("target_socket") && b.GetMeta("target_socket").AsString() == "target")
+                .EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             var target = _blockEditor.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "选择作用目标");
+            Require(!target.FindChildren("*", "OptionButton", true, false).Any(), "目标积木仍有选项控件");
+            var targetBlocks = target.FindChildren("*", "Control", true, false).OfType<BlockShape>().Where(b => b.HasMeta("target_variant")).ToArray();
+            Require(targetBlocks.Length == 31, "目标固定积木覆盖不完整");
             await Capture("02-target-picker");
-            var use = Button(target, "使用此目标范围");
-            target.GetChildren().OfType<ScrollContainer>().Single().EnsureControlVisible(use);
-            await DeckClickAsync(use);
+            targetBlocks.Single(b => b.GetMeta("target_variant").AsString() == "enemy/one/")
+                .EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             Require(_blockEditor.Document.Actions is [{ Op: "selectTargets" }, { Op: "iterate" }], "目标选择没有构建可执行积木");
             Require(_blockEditor.Document.Actions[1].Body("actions") is [{ Op: "damage" }], "伤害动作没有作用于选中的目标");
             var targetJson = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
@@ -82,7 +85,10 @@ public partial class Main
             var script = _blockEditor.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "高级脚本");
             var code = script.FindChildren("*", "CodeEdit", true, false).OfType<CodeEdit>().Single();
             code.Text = "// 多行正文\nvar output = 2;";
-            await DeckClickAsync(Button(script, "＋ 添加输出"));
+            Require(!script.FindChildren("*", "OptionButton", true, false).Any(), "脚本声明仍有类型选项");
+            script.FindChildren("*", "Control", true, false).OfType<BlockShape>()
+                .Single(b => b.HasMeta("script_pin_kind") && b.GetMeta("script_pin_kind").AsString() == "outputs/number")
+                .EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             script.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(l => l.PlaceholderText == "脚本中的变量名").Text = "output";
             await DeckClickAsync(script.GetOkButton());
             Require(_blockEditor.Document.Actions[0].Text("body") == "// 多行正文\nvar output = 2;" && _blockEditor.Document.Actions[0].ScriptPins["outputs"].Count == 1, "脚本正文或输出声明没有应用");

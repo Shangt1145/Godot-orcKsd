@@ -19,13 +19,14 @@ public partial class Main
         var originalParent = _blockEditor.SelectedTrigger;
         var actions = Blocks().Where(b => b.HasMeta("action_node")).Select(b => b.GetMeta("action_node").AsString()).ToHashSet();
         Check(_blockEditor.Catalog.Nodes.All(n => actions.Contains(n.Name)), "Action catalog is missing block-shaped entries");
-        var category = _blockEditor.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>()
-            .Single(p => Enumerable.Range(0, p.ItemCount).Any(i => p.GetItemText(i) == "触发事件"));
         async Task Category(string name)
         {
-            var i = Enumerable.Range(0, category.ItemCount).Single(i => category.GetItemText(i) == name);
-            category.Select(i); category.EmitSignal(OptionButton.SignalName.ItemSelected, i); await Frame();
+            _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+                .Single(b => b.HasMeta("block_category") && b.GetMeta("block_category").AsString() == name).EmitSignal(Button.SignalName.Pressed);
+            await Frame();
         }
+        Check(!_blockEditor.FindChildren("*", "OptionButton", true, false).Any(), "Inspector contains an option selector");
+        Check(!_blockEditor.FindChildren("*", "PopupMenu", true, false).Any(), "Inspector contains an option menu");
         await Category("触发事件");
         var triggers = Blocks().Where(b => b.HasMeta("trigger_parent")).ToArray();
         Check(triggers.Length == _blockEditor.TriggerOptions.Count, "Trigger palette omitted engine templates");
@@ -76,6 +77,30 @@ public partial class Main
         Check(!_blockEditor.Document.Actions.Last().Bodies.ContainsKey("else"), "Selecting an optional branch changed the document");
         await Click(Blocks().Single(b => b.HasMeta("action_node") && b.GetMeta("action_node").AsString() == "draw"));
         Check(_blockEditor.Document.Actions.Last().Bodies["else"] is [{ Op: "draw" }], "Optional else branch did not attach on insertion");
+        var literalPins = _blockEditor.Catalog.Nodes.SelectMany(spec => spec.Inputs
+            .Where(pin => pin.EnumValues is { Count: > 0 }).Select(pin => (spec, pin))).ToArray();
+        foreach (var (spec, pin) in literalPins)
+        {
+            var node = new HandlerNode(spec.Name);
+            if (pin.Kind == HandlerPinKind.Enum) node.SetText(pin.Name, pin.EnumValues![0]);
+            else node.Set(pin.Name, HandlerValue.Str(pin.EnumValues![0]));
+            var doc = new HandlerDocument(); doc.Actions.Add(node);
+            _blockEditor.Open("固定取值积木验证", doc); await Frame();
+            var socket = Blocks().Single(b => b.HasMeta("handler_pin") && b.GetMeta("handler_pin").AsString() == pin.Name);
+            await Click(socket);
+            var shelf = _blockEditor.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title is "可拼入的积木" or "选择取值积木");
+            Check(!shelf.FindChildren("*", "OptionButton", true, false).Any() && !shelf.FindChildren("*", "PopupMenu", true, false).Any(), "Fixed values contain a native option selector");
+            var blocks = shelf.FindChildren("*", "Control", true, false).OfType<BlockShape>().ToArray();
+            var expected = pin.EnumValues![^1];
+            if (pin.Kind == HandlerPinKind.Enum)
+            {
+                Check(blocks.Length == pin.EnumValues.Count, "Fixed enum omitted a separate block"); await Click(blocks[^1]);
+            }
+            else await Click(blocks.Single(b => b.HasMeta("fixed_literal") && b.GetMeta("fixed_literal").AsString() == expected));
+            var stored = _blockEditor.Document.Actions[0];
+            Check((pin.Kind == HandlerPinKind.Enum ? stored.Text(pin.Name) : stored.Value(pin.Name)?.Text) == expected, "Fixed literal block did not preserve its engine value");
+        }
+        GD.Print($"INSPECTOR_FIXED_BLOCKS_OK literal-pins={literalPins.Length} no-dropdown no-popup-menu");
         _blockEditor.Open("积木能力验证", original);
         _blockEditor.ConfigureTarget(null, originalParent);
         await Frame();

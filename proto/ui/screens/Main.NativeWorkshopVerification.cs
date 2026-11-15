@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Nodes;
+using System.Text.Json.Nodes;
 using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
@@ -90,7 +90,7 @@ public partial class Main
             .Single(d => d.Visible && d.Title == "保存到卡包");
         var replaceToggle = replaceDialog.FindChildren("*", "CheckBox", true, false).OfType<CheckBox>().Single();
         replaceToggle.ButtonPressed = true;
-        var targetPicker = replaceDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>()
+        var targetPicker = replaceDialog.FindChildren("*", "Control", true, false).OfType<BlockShelf>()
             .Single(picker => picker.Name == "ReplaceTargetPicker");
         var replaceId = replaceDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>()
             .Single(l => l.Name == "ProductId");

@@ -64,9 +64,15 @@ public partial class Main
             var selection = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Title == "卡牌效果 · 积木 Inspector");
             Click(selection.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "＋ 添加积木效果"));
             Require(_active == "hdsl", "卡牌没有打开积木 Inspector");
-            var timing = _blockEditor.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().Single(b => b.TooltipText.StartsWith("选择效果触发时机"));
             var deployed = _nativeWorkshop.HandlerAuthoring!.DescribeParents().Single(p => p.Signal == "unit.deployed" && p.Guard == "Self");
-            DiyEditorScreen.Select(timing, deployed.ParentId); timing.EmitSignal(OptionButton.SignalName.ItemSelected, (long)timing.Selected);
+            var triggerCategory = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+                .Single(b => b.HasMeta("block_category") && b.GetMeta("block_category").AsString() == "触发事件");
+            Click(triggerCategory);
+            _blockEditor.FindChildren("*", "Control", true, false).OfType<BlockShape>()
+                .Single(b => b.HasMeta("trigger_parent") && b.GetMeta("trigger_parent").AsString() == deployed.ParentId)
+                .EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
+            Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+                .Single(b => b.HasMeta("block_category") && b.GetMeta("block_category").AsString() == "全部分类"));
             var drawLabel = _blockEditor.FindChildren("*", "Label", true, false).OfType<Label>().Single(l => l.Text == "抽牌");
             drawLabel.GetParent().GetParent().EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             Require(_blockEditor.Document.Actions is [{ Op: "draw" }], "工具箱没有插入抽牌积木");

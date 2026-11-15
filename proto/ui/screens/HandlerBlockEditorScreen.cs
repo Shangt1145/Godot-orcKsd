@@ -36,7 +36,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private Label _summary = null!, _issueCount = null!, _cardLabel = null!;
     private Button _undo = null!, _redo = null!;
 
-    private PopupMenu _valueMenu = null!;
+    private readonly ValueBlockChoices _valueMenu = new();
     private AcceptDialog _prompt = null!;
     private LineEdit _promptEdit = null!;
     private Action<string>? _promptAccept;
@@ -44,7 +44,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private PanelContainer _toolbox = null!;
     private VBoxContainer _toolboxList = null!;
     private LineEdit _toolboxSearch = null!;
-    private OptionButton _toolboxGroup = null!;
+    private string _toolboxCategory = "全部分类";
+    private readonly Dictionary<string, Button> _categoryButtons = [];
     private readonly HashSet<HandlerNode> _expandedOptions = [];
     private Label _toolboxTarget = null!;
     private Button _toolboxToggle = null!;
@@ -75,7 +76,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     public event Action<string>? Changed;
     public event Action<HandlerDslSaveResult>? Saved;
     private string? _targetEffect, _targetParent;
-    private OptionButton _timing = null!;
+
     private string _savedJson = "";
     private string? _savedParent;
     private Action? _afterSave;
@@ -159,7 +160,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _pendingElseOwner = null;
         _expandedOptions.Clear();
         _expandedTargetSteps.Clear();
-        _toolboxGroup.Select(0); _toolboxSearch.Text = "";
+        SetToolboxCategory("全部分类"); _toolboxSearch.Text = "";
         _targetEffect = _targetParent = null;
         _triggerParents = _authoring?.Invoke()?.DescribeParents() ?? [];
         RestoreTrigger(_triggerParents.FirstOrDefault(p => p.ParentId == DefaultParentId)?.ParentId ?? _triggerParents.FirstOrDefault()?.ParentId);
@@ -346,11 +347,14 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _toolboxSearch.AddThemeFontSizeOverride("font_size", 14);
         _toolboxSearch.TextChanged += _ => RefreshToolbox();
         box.AddChild(_toolboxSearch);
-        _toolboxGroup = new OptionButton { FitToLongestItem = false, ClipText = true };
-        _toolboxGroup.AddItem("全部分类");
-        _toolboxGroup.AddItem("触发事件"); _toolboxGroup.AddItem("触发条件"); _toolboxGroup.AddItem("取值与运算");
-        foreach (var group in _catalog.Nodes.Select(n => n.Group).Distinct()) _toolboxGroup.AddItem(group);
-        _toolboxGroup.ItemSelected += _ => RefreshToolbox(); box.AddChild(_toolboxGroup);
+        var categories = new HFlowContainer(); categories.AddThemeConstantOverride("h_separation", 4);
+        foreach (var category in new[] { "全部分类", "触发事件", "触发条件", "取值与运算" }.Concat(_catalog.Nodes.Select(n => n.Group).Distinct()))
+        {
+            var button = MenuStyles.Button(category, () => SetToolboxCategory(category));
+            button.AddThemeFontSizeOverride("font_size", 11); button.SetMeta("block_category", category);
+            _categoryButtons[category] = button; categories.AddChild(button);
+        }
+        box.AddChild(categories);
 
         var targetRow = new HBoxContainer();
         targetRow.AddThemeConstantOverride("separation", 4);
@@ -395,7 +399,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         AppendStructuralToolbox(query);
         var groups = _catalog.Nodes
             .Where(spec => Matches(spec, query))
-            .Where(spec => _toolboxGroup.Selected == 0 || spec.Group == _toolboxGroup.GetItemText(_toolboxGroup.Selected))
+            .Where(spec => _toolboxCategory == "全部分类" || spec.Group == _toolboxCategory)
             .GroupBy(spec => spec.Group)
             .OrderBy(group => GroupRank(group.Key))
             .ToList();
@@ -631,7 +635,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var targets = authoring.DescribeReplaceableEffects().ToList();
         if (_targetEffect is { } selectedEffect && targets.All(t => t.EffectId != selectedEffect))
             targets.Add(new HandlerReplaceTarget(selectedEffect, 0));
-        var target = new OptionButton
+        var target = new BlockShelf
         {
             Name = "ReplaceTargetPicker",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
@@ -741,7 +745,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private void SyncReplaceMode(
         HandlerDslAuthoring authoring,
         CheckBox replace,
-        OptionButton target,
+        BlockShelf target,
         IReadOnlyList<HandlerReplaceTarget> targets,
         LineEdit product,
         Label hint)
@@ -1123,7 +1127,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 new Color(ink.R, ink.G, ink.B, 0.9f));
             label.CustomMinimumSize = new Vector2(82, 0);
             row.AddChild(label);
-            row.AddChild(pin.Type == "entity" ? EntityTargetChip(node, pin.Name, scope) : pin.Kind switch
+            var input = pin.Type == "entity" ? EntityTargetChip(node, pin.Name, scope) : pin.Kind switch
             {
                 HandlerPinKind.Bind => TextChip(node.Text(pin.Name), "命名…", v => SetText(node, pin.Name, v), "绑定名"),
                 HandlerPinKind.Text when node.Op == "script" && pin.Name == "body" => ScriptChip(node),
@@ -1133,7 +1137,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                 HandlerPinKind.Enum => EnumChip(node, pin),
                 _ => ValueChip(node.Value(pin.Name), v => SetValue(node, pin.Name, v), scope, !pin.Required,
                     pin.EnumValues),
-            });
+            };
+            input.SetMeta("handler_pin", pin.Name); row.AddChild(input);
             var filled = node.Value(pin.Name) is not null || !string.IsNullOrWhiteSpace(node.Text(pin.Name));
             if (pin.Required || filled) box.AddChild(row); else optional.AddChild(row);
         }
@@ -1238,11 +1243,11 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     // ── 输入控件（做旧纸张的椭圆芯片）────────────────────────────────────
 
-    private static Button InputChip(string text, bool empty, bool dropdown = false)
+    private static Button InputChip(string text, bool empty)
     {
         var button = new Button
         {
-            Text = dropdown ? text + "  ▾" : text,
+            Text = text,
             CustomMinimumSize = new(36, 36),
             SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
         };
@@ -1258,19 +1263,32 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private Control EnumChip(HandlerNode node, HandlerPinSpec pin)
     {
         var current = node.Text(pin.Name);
-        var button = InputChip(current is null ? "选择…" : EnumLabel(pin.Name, current), current is null, true);
-        var values = pin.EnumValues ?? [];
-        var menu = new PopupMenu();
-        AddChild(menu);
-        for (var i = 0; i < values.Count; i++) menu.AddItem(EnumLabel(pin.Name, values[i]), i);
-        menu.IdPressed += id => SetText(node, pin.Name, values[(int)id]);
-        menu.PopupHide += () => menu.QueueFree();
-        button.Pressed += () =>
-        {
-            menu.Position = (Vector2I)button.GetScreenPosition() + new Vector2I(0, (int)button.Size.Y);
-            menu.Popup();
-        };
-        return button;
+        return FixedLiteralBlock(current is null ? "未放入积木" : EnumLabel(pin.Name, current),
+            pin.EnumValues ?? [], value => EnumLabel(pin.Name, value), value => SetText(node, pin.Name, value));
+    }
+
+    private Control FixedLiteralBlock(string label, IReadOnlyList<string> values, Func<string, string> caption, Action<string> commit)
+    {
+        return PaletteBlock(label, BlockTheme.Query, BlockShape.Form.Reporter, () =>
+            ShowFixedBlocks("可拼入的积木", values.Select(value => (caption(value), (Action)(() => commit(value))))));
+    }
+
+    private void ShowFixedBlocks(string title, IEnumerable<(string Caption, Action Apply)> blocks)
+    {
+        var dialog = new AcceptDialog { Title = title, OkButtonText = "返回" }; AddChild(dialog);
+        var scroll = new ScrollContainer { CustomMinimumSize = new(480, 360), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; dialog.AddChild(scroll);
+        var box = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; box.AddThemeConstantOverride("separation", 8); scroll.AddChild(box);
+        foreach (var (caption, apply) in blocks)
+            box.AddChild(PaletteBlock(caption, BlockTheme.Query, BlockShape.Form.Reporter, () => { dialog.Hide(); dialog.QueueFree(); apply(); }));
+        if (box.GetChildCount() == 0) box.AddChild(MenuStyles.Label("当前触发事件没有开放可用字段。", 14, MenuStyles.Dim));
+        dialog.Confirmed += dialog.QueueFree; dialog.Canceled += dialog.QueueFree; dialog.PopupCentered();
+    }
+
+    private void SetToolboxCategory(string category)
+    {
+        _toolboxCategory = category;
+        foreach (var (name, button) in _categoryButtons) button.Modulate = name == category ? Colors.White : new Color(.7f, .7f, .7f);
+        RefreshToolbox();
     }
 
     /// <summary>取值集里的裸值 → 中文。只用于**枚举型**引脚，别拿它翻 read.of。</summary>
@@ -1298,21 +1316,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         IReadOnlyList<string>? choices = null, Func<string, string>? label = null)
     {
         var shown = string.IsNullOrEmpty(value) ? placeholder : label?.Invoke(value!) ?? (title == "绑定名" ? HandlerVocabulary.BindingLabel(value!) : value!);
-        var chip = InputChip(shown, string.IsNullOrEmpty(value), choices is { Count: > 0 });
+        if (choices is not null) return FixedLiteralBlock(shown, choices, v => label?.Invoke(v) ?? v, v => commit(v));
+        var chip = InputChip(shown, string.IsNullOrEmpty(value));
         chip.Pressed += () =>
         {
-            if (choices is { Count: > 0 })
-            {
-                var menu = new PopupMenu();
-                AddChild(menu);
-                for (var i = 0; i < choices.Count; i++)
-                    menu.AddItem(label?.Invoke(choices[i]) ?? choices[i], i);
-                menu.IdPressed += id => commit(choices[(int)id]);
-                menu.PopupHide += () => menu.QueueFree();
-                menu.Position = (Vector2I)chip.GetScreenPosition() + new Vector2I(0, (int)chip.Size.Y);
-                menu.Popup();
-                return;
-            }
             Prompt(title, title == "绑定名" ? HandlerVocabulary.BindingLabel(value ?? "") : value ?? "", text =>
                 commit(string.IsNullOrWhiteSpace(text) ? null : title == "绑定名"
                     ? text == HandlerVocabulary.BindingLabel(value ?? "") ? value : HandlerVocabulary.BindingId(text) : text));
@@ -1332,8 +1339,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             : value.Kind == HandlerValueKind.Operator ? HandlerVocabulary.OperatorLabel(value.Name ?? "?")
             : value is { Kind: HandlerValueKind.Literal, Text: { } literal } && literals is { Count: > 0 }
                 ? LiteralLabel(literal) : value.Describe();
+        if (literals is { Count: > 0 } && value is { Kind: HandlerValueKind.Literal, Text: not null })
+            return PaletteBlock(text, BlockTheme.Query, BlockShape.Form.Reporter, () => OpenValueMenu(value, commit, scope, literals));
         var chip = InputChip(text, value is null);
-        chip.Pressed += () => OpenValueMenu(chip, value, commit, scope, literals);
+        chip.Pressed += () => OpenValueMenu(value, commit, scope, literals);
         if (value is null || value.Kind == HandlerValueKind.Literal) return chip;
 
         var predicate = IsPredicate(value, scope);
@@ -1352,7 +1361,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         return block;
     }
 
-    private void OpenValueMenu(Button anchor, HandlerValue? value, Action<HandlerValue?> commit, List<ScopeVar> scope,
+    private void OpenValueMenu(HandlerValue? value, Action<HandlerValue?> commit, List<ScopeVar> scope,
         IReadOnlyList<string>? literals = null)
     {
         _valueCommit = commit;
@@ -1732,9 +1741,6 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     public override void _Ready()
     {
-        _valueMenu = new PopupMenu();
-        AddChild(_valueMenu);
-        _valueMenu.IdPressed += OnValuePicked;
 
         _prompt = new AcceptDialog { Title = "输入", OkButtonText = "确定" };
         _promptEdit = new LineEdit { CustomMinimumSize = new Vector2(320, 0) };
