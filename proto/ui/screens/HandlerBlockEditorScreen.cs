@@ -25,7 +25,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private HandlerDocument _doc = HandlerDocument.Sample();
     private IReadOnlyDictionary<string, HandlerViewField> _view = DemoView();
 
-    private readonly List<HandlerDocument> _history = [];
+    private sealed record EditorSnapshot(HandlerDocument Document, string? Parent);
+    private readonly List<EditorSnapshot> _history = [];
     private int _historyAt;
 
     private VBoxContainer _blocks = null!;
@@ -54,6 +55,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private List<HandlerValue> _readOptions = [];
     private List<string> _valueLiterals = [];
     private List<HandlerNode>? _pendingInsert;
+    private HandlerNode? _pendingElseOwner;
     private bool _toolboxOpen = true;
 
     private HashSet<HandlerNode> _errorNodes = [];
@@ -80,18 +82,15 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     public void ConfigureTarget(string? effect, string? parent)
     {
         _targetEffect = effect; _targetParent = parent;
-        _timing.Clear();
         var authoring = _authoring?.Invoke();
-        if (authoring is null) return;
-        var parents = authoring.DescribeParents();
-        foreach (var item in parents) { _timing.AddItem(item.DisplayLabel); _timing.SetItemMetadata(_timing.ItemCount - 1, item.ParentId); }
-        var index = parents.ToList().FindIndex(p => p.ParentId == (parent ?? DefaultParentId));
-        _timing.Select(Math.Max(0, index));
-        _targetParent = parents[Math.Max(0, index)].ParentId;
-        ApplyView(authoring, parents[Math.Max(0, index)]);
+        _triggerParents = authoring?.DescribeParents() ?? [];
+        _targetParent = _triggerParents.FirstOrDefault(p => p.ParentId == (parent ?? DefaultParentId))?.ParentId ?? _triggerParents.FirstOrDefault()?.ParentId;
+        if (authoring is not null && CurrentTrigger is { } option) ApplyView(authoring, option, false);
+        _history.Clear(); _historyAt = 0; _history.Add(new(_doc.Clone(), _targetParent));
+        Rebuild();
         _savedJson = _doc.ToJsonText(_catalog);
         _savedParent = _targetParent;
-        if (effect is not null && !System.IO.File.Exists(System.IO.Path.Combine(authoring.PackRoot, "handler-dsl", effect + ".hdsl.json"))
+        if (authoring is not null && effect is not null && !System.IO.File.Exists(System.IO.Path.Combine(authoring.PackRoot, "handler-dsl", effect + ".hdsl.json"))
             && authoring.ReadExistingDsl(effect) is null)
         {
             _saveNote = "此效果没有积木源文件，原有行为已保留。当前画布用于重新搭建；保存后才替换卡牌引用。";
@@ -149,7 +148,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         AddChild(BuildBody());
         _pendingInsert = _doc.Actions;
         SetToolboxOpen(_toolboxOpen);
-        _history.Add(_doc.Clone());
+        _history.Add(new(_doc.Clone(), _targetParent));
         _savedJson = _doc.ToJsonText(_catalog);
         _savedParent = _targetParent;
         Rebuild();
@@ -157,11 +156,14 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     public void Open(string title, HandlerDocument? doc = null)
     {
+        _pendingElseOwner = null;
         _expandedOptions.Clear();
         _expandedTargetSteps.Clear();
         _toolboxGroup.Select(0); _toolboxSearch.Text = "";
         _targetEffect = _targetParent = null;
-        _savedParent = null;
+        _triggerParents = _authoring?.Invoke()?.DescribeParents() ?? [];
+        RestoreTrigger(_triggerParents.FirstOrDefault(p => p.ParentId == DefaultParentId)?.ParentId ?? _triggerParents.FirstOrDefault()?.ParentId);
+        _savedParent = _targetParent;
         _afterSave = null;
         _doc = doc?.Clone() ?? HandlerDocument.Sample();
         _cardLabel.Text = title;
@@ -178,7 +180,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         }
         _history.Clear();
         _historyAt = 0;
-        _history.Add(_doc.Clone());
+        _history.Add(new(_doc.Clone(), _targetParent));
         _savedJson = _doc.ToJsonText(_catalog);
         _pendingInsert = _doc.Actions;
         _pendingLabel = "整段的最后";
@@ -212,17 +214,6 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         save.TooltipText = "保存当前积木，更新正在编辑的卡牌效果或包内效果。";
         MenuStyles.Primary(save);
         head.AddChild(save);
-        _timing = new OptionButton { CustomMinimumSize = new(200, 0), FitToLongestItem = false, ClipText = true };
-        _timing.TooltipText = "选择效果触发时机；保存到卡包时沿用此选择。";
-        _timing.ItemSelected += i =>
-        {
-            _targetParent = _timing.GetItemMetadata((int)i).AsString();
-            var authoring = _authoring?.Invoke();
-            if (authoring is not null) ApplyView(authoring, authoring.DescribeParents().Single(p => p.ParentId == _targetParent));
-        };
-        var timingRow = new HBoxContainer(); timingRow.AddThemeConstantOverride("separation", 14); header.AddChild(timingRow);
-        timingRow.AddChild(MenuStyles.Label("当什么发生时", 15, MenuStyles.Gold)); timingRow.AddChild(_timing);
-        var hint = MenuStyles.Label("选择触发时机，再把要执行的动作放到下方。", 13, MenuStyles.Dim); timingRow.AddChild(hint);
         head.AddChild(MenuStyles.Button("完成", () => GuardLeaving(() => Finished?.Invoke())));
         return header;
     }
@@ -331,7 +322,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         var head = new HBoxContainer();
         head.AddThemeConstantOverride("separation", 6);
         head.AddChild(MenuStyles.Label("工具箱", 13, MenuStyles.Gold));
-        var count = MenuStyles.Label(_catalog.Nodes.Count + " 块", 11, MenuStyles.Dim);
+        var count = MenuStyles.Label(_catalog.Nodes.Count + " 种动作", 11, MenuStyles.Dim);
         count.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         count.HorizontalAlignment = HorizontalAlignment.Right;
         count.TooltipText = HandlerCatalog.DefaultIsFallback
@@ -357,6 +348,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         box.AddChild(_toolboxSearch);
         _toolboxGroup = new OptionButton { FitToLongestItem = false, ClipText = true };
         _toolboxGroup.AddItem("全部分类");
+        _toolboxGroup.AddItem("触发事件"); _toolboxGroup.AddItem("触发条件"); _toolboxGroup.AddItem("取值与运算");
         foreach (var group in _catalog.Nodes.Select(n => n.Group).Distinct()) _toolboxGroup.AddItem(group);
         _toolboxGroup.ItemSelected += _ => RefreshToolbox(); box.AddChild(_toolboxGroup);
 
@@ -400,6 +392,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _toolboxTarget.Text = _pendingLabel;
 
         var query = _toolboxSearch.Text.Trim();
+        AppendStructuralToolbox(query);
         var groups = _catalog.Nodes
             .Where(spec => Matches(spec, query))
             .Where(spec => _toolboxGroup.Selected == 0 || spec.Group == _toolboxGroup.GetItemText(_toolboxGroup.Selected))
@@ -407,7 +400,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             .OrderBy(group => GroupRank(group.Key))
             .ToList();
 
-        if (groups.Count == 0)
+        if (groups.Count == 0 && _toolboxList.GetChildCount() == 0)
         {
             _toolboxList.AddChild(MenuStyles.Label("没有这样的积木，换个说法试试。", 11, MenuStyles.Dim));
             return;
@@ -468,64 +461,11 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     private Control ToolboxRow(HandlerNodeSpec spec)
     {
-        var color = BlockTheme.ForGroup(spec.Group);
-        // 预览态：颜色降饱和、加角标、tooltip 摆原因。**照常可点**——契约要求「允许先搭图，
-        // 保存前再拦」，藏起来或点不动都会让作者以为这版没这个能力（FRONTEND §5.5）。
-        var preview = spec.IsPreview;
-        var row = new PanelContainer
-        {
-            SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            CustomMinimumSize = new(0, 38),
-            MouseDefaultCursorShape = CursorShape.PointingHand,
-            TooltipText = preview
-                ? spec.Name + "　还不能用：" + (spec.Problem ?? "")
-                : spec.Name + "　" + PinSummary(spec),
-        };
-        row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, false, preview));
-        row.MouseEntered += () => row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, true, preview));
-        row.MouseExited += () => row.AddThemeStyleboxOverride("panel", ToolboxRowStyle(color, false, preview));
-        row.GuiInput += @event =>
-        {
-            if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
-                Insert(spec.Name);
-        };
-
-        var line = new HBoxContainer();
-        line.AddThemeConstantOverride("separation", 6);
-        line.AddChild(MenuStyles.Label(spec.Title, 14,
-            preview ? new Color(BlockTheme.InkFor(color), 0.55f) : BlockTheme.InkFor(color)));
-        // 右侧优先标「还不能用」——它比「带子块」重要得多：一个影响能不能跑，一个只影响点几下。
-        var tail = MenuStyles.Label(
-            preview ? "还不能用" : spec.IsContainer ? "带子块" : "", 10,
-            preview ? new Color(MenuStyles.Gold, 0.85f) : BlockTheme.MutedInkFor(color));
-        tail.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        tail.HorizontalAlignment = HorizontalAlignment.Right;
-        tail.ClipText = true;
-        line.AddChild(tail);
-        row.AddChild(line);
-        return row;
+        var block = PaletteBlock(spec.Title + (spec.IsPreview ? " · 尚未开放运行" : ""), spec.IsPreview ? BlockTheme.Advanced : BlockTheme.ForGroup(spec.Group), BlockShape.Form.Stack, () => Insert(spec.Name));
+        block.SetMeta("action_node", spec.Name);
+        block.TooltipText = spec.IsPreview ? "还不能运行：" + (spec.Problem ?? "") : PinSummary(spec);
+        return block;
     }
-
-    private static StyleBoxFlat ToolboxRowStyle(Color color, bool hover, bool preview = false) => new()
-    {
-        // 预览态整体压暗：alpha 降一档，读起来是「灰的」，不是「换了个颜色」。
-        BgColor = hover ? new Color(color, preview ? 0.45f : 0.95f) : new Color(color, preview ? 0.22f : 0.62f),
-        BorderColor = hover ? MenuStyles.Gold : new Color(color.Lightened(0.35f), preview ? 0.45f : 0.85f),
-        // 左边那道色脊是分组色的「标签」，一行扫过去就能认出这组是什么颜色。
-        BorderWidthLeft = 3,
-        BorderWidthTop = 1,
-        BorderWidthRight = 1,
-        BorderWidthBottom = 1,
-        CornerRadiusTopLeft = 3,
-        CornerRadiusTopRight = 6,
-        CornerRadiusBottomLeft = 3,
-        CornerRadiusBottomRight = 6,
-        ContentMarginLeft = 7,
-        ContentMarginRight = 8,
-        ContentMarginTop = 5,
-        ContentMarginBottom = 5,
-        AntiAliasing = true,
-    };
 
     private static string PinSummary(HandlerNodeSpec spec)
     {
@@ -540,12 +480,22 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// </summary>
     private void Insert(string op)
     {
-        var target = _pendingInsert ??= _doc.Actions;
         var node = NewNode(op);
-        Edit(() => target.Add(node));
+        Edit(() => InsertAtSelection(node));
         // 新块可能落在折叠区外，不滚过去就像「点了没反应」。
         // 要等**两帧**：第一帧容器才按新块的高度重排，这一帧拿到的是旧矩形，滚了也没用。
         if (_nodeControls.TryGetValue(node, out var control)) Reveal(control);
+    }
+
+    private void InsertAtSelection(HandlerNode node)
+    {
+        if (_pendingElseOwner is { } owner)
+        {
+            if (FindParentList(owner) is null) ResetInsertTarget();
+            else owner.Bodies["else"] = _pendingInsert!;
+            _pendingElseOwner = null;
+        }
+        (_pendingInsert ?? _doc.Actions).Add(node);
     }
 
     private void Reveal(Control control) => Callable.From(() => Callable.From(() =>
@@ -564,7 +514,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _nodeControls.Clear();
 
         // Scratch 的「帽子」：说明这段逻辑挂在哪。触发时机属于预制体成员，DSL 里不写。
-        _blocks.AddChild(Hat("这个效果被触发时，从上往下做"));
+        _blocks.AddChild(TriggerHat());
         _blocks.AddChild(RenderArray(_doc.Actions, "actions", [], 0, "整段的最后"));
 
         foreach (var child in _issues.GetChildren()) { _issues.RemoveChild(child); child.QueueFree(); }
@@ -665,13 +615,10 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         // 父是**模板**（R39）：104 个「信号 × 守卫档」的模板，成员恒为 onHook。
         // 缺省选「打出时」——卡牌效果里最常见的一档，省一次点击。
-        var parent = new OptionButton { Name = "ParentPicker", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        foreach (var option in parents) parent.AddItem(option.DisplayLabel);
-        for (var i = 0; i < parents.Count; i++) parent.SetItemMetadata(i, parents[i].ParentId);
-        var defaultIndex = parents.ToList().FindIndex(option => option.ParentId == (_targetParent ?? DefaultParentId));
-        parent.Select(defaultIndex < 0 ? 0 : defaultIndex);
-        DiyEditorScreen.Field(page, "触发时机", parent);
-        ApplyView(authoring, parents[Math.Max(0, parent.Selected)]);
+        var option = parents.FirstOrDefault(p => p.ParentId == _targetParent);
+        if (option is null) { dialog.QueueFree(); ShowSaveNote("请先在画布中选择触发事件积木。", true); return; }
+        page.AddChild(TriggerSummary(option));
+        page.AddChild(MenuStyles.Button("返回画布修改触发积木", () => { _afterSave = null; dialog.Hide(); dialog.QueueFree(); }));
 
         var replace = new CheckBox
         {
@@ -710,13 +657,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
         // 选了哪个模板，画布的「视图字段」就跟着换成它的——作者能读什么由模板声明决定，
         // 而不是由这份界面猜（猜错的代价是「校验通过、装载期报字段不存在」）。
-        parent.ItemSelected += index =>
-        {
-            ApplyView(authoring, parents[Math.Clamp((int)index, 0, parents.Count - 1)]);
-            SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
-        };
-        replace.Toggled += _ => SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
-        target.ItemSelected += _ => SyncReplaceMode(authoring, parent, replace, target, targets, product, hint);
+        replace.Toggled += _ => SyncReplaceMode(authoring, replace, target, targets, product, hint);
+        target.ItemSelected += _ => SyncReplaceMode(authoring, replace, target, targets, product, hint);
         if (_targetEffect is not null) replace.ButtonPressed = true;
 
         var result = MenuStyles.Label("", 12, MenuStyles.Dim);
@@ -726,7 +668,6 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         dialog.Confirmed += () =>
         {
             if (string.IsNullOrWhiteSpace(effectName.Text)) { result.Text = "请填写效果名称。"; return; }
-            var option = parents[Math.Max(0, parent.Selected)];
             var replaceId = replace.ButtonPressed && targets.Count > 0
                 ? targets[Math.Clamp(target.Selected, 0, targets.Count - 1)].EffectId
                 : null;
@@ -757,8 +698,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
                     _cardLabel.Text = effectName.Text.Trim();
                     Saved?.Invoke(saved);
                     _targetEffect = saved.ProductId; _targetParent = option.ParentId;
-                    var timingIndex = Enumerable.Range(0, _timing.ItemCount).FirstOrDefault(i => _timing.GetItemMetadata(i).AsString() == option.ParentId, -1);
-                    if (timingIndex >= 0) _timing.Select(timingIndex);
+                    Rebuild();
                     _savedJson = _doc.ToJsonText(_catalog);
                     _savedParent = _targetParent;
                     dialog.Hide(); dialog.QueueFree();
@@ -800,7 +740,6 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// </summary>
     private void SyncReplaceMode(
         HandlerDslAuthoring authoring,
-        OptionButton parent,
         CheckBox replace,
         OptionButton target,
         IReadOnlyList<HandlerReplaceTarget> targets,
@@ -851,24 +790,15 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     }
 
     /// <summary>
-    /// 把画布的视图换成这个父成员声明的视图字段（`read`／`write` 的合法范围）。
-    /// <para>
-    /// 读不出来（父没了、成员没了）＝**保持现状**并留一条警告，不清空：把视图清成空表会让画布上
-    /// 每个读取都变红，看起来像「作者的图坏了」，其实是父效果没读到。
-    /// </para>
+    /// 把可读写字段切换到当前触发模板；没有字段时也清除上一模板的字段。
     /// </summary>
-    private void ApplyView(HandlerDslAuthoring authoring, HandlerParentOption option)
+    private void ApplyView(HandlerDslAuthoring authoring, HandlerParentOption option, bool rebuild = true)
     {
         try
         {
             var fields = authoring.ViewFieldsOf(option.ParentId, option.Member);
-            if (fields.Count == 0)
-            {
-                GD.PushWarning($"父效果 {option.ParentId}#{option.Member} 没有声明视图字段。");
-                return;
-            }
             _view = fields;
-            Rebuild();
+            if (rebuild) Rebuild();
         }
         catch (Exception error)
         {
@@ -898,29 +828,6 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         msg.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         row.AddChild(msg);
         return row;
-    }
-
-    private Control Hat(string text)
-    {
-        var block = new BlockShape
-        {
-            Fill = BlockTheme.Hat,
-            ShowNotch = false,
-            ShowTab = true,
-            TopRadius = 18,
-            BottomRadius = 6,
-            SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
-            NotchColor = MenuStyles.Bg,
-            TooltipText = "什么时候触发由卡牌设定决定，这里不用管。",
-        };
-        var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 16);
-        margin.AddThemeConstantOverride("margin_right", 16);
-        margin.AddThemeConstantOverride("margin_top", 9);
-        margin.AddThemeConstantOverride("margin_bottom", 12);
-        margin.AddChild(MenuStyles.Label(text, 14, BlockTheme.InkFor(BlockTheme.Hat)));
-        block.SetBody(margin);
-        return block;
     }
 
     /// <summary>
@@ -991,7 +898,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// 画布上的「＋ 添加积木」：**只负责选插入位置**，不再弹菜单。
     /// 选中后按钮变成「↓ 就插在这儿」——工具箱里点哪块，就落在这个位置。
     /// </summary>
-    private Button AddBlockButton(List<HandlerNode> target, int depth, string where, string? text = null)
+    private Button AddBlockButton(List<HandlerNode> target, int depth, string where, string? text = null, HandlerNode? elseOwner = null)
     {
         var active = ReferenceEquals(_pendingInsert, target);
         var tint = active ? MenuStyles.Gold : depth == 0 ? BlockTheme.Hat : BlockTheme.Advanced;
@@ -1000,6 +907,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             () =>
             {
                 _pendingInsert = target;
+                _pendingElseOwner = elseOwner;
                 _pendingLabel = where;
                 Rebuild();
             });
@@ -1088,8 +996,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
                 if (field == "else" && (!node.Bodies.TryGetValue("else", out var elseList) || elseList.Count == 0))
                 {
+                    var draft = ReferenceEquals(_pendingElseOwner, node) ? _pendingInsert! : elseList ?? [];
                     inner.AddChild(WithTopMargin(
-                        AddBlockButton(node.Body("else"), 1, where, "＋ 添加「不然」"), 2));
+                        AddBlockButton(draft, 1, where, "＋ 添加「不然」", node), 2));
                     continue;
                 }
                 if (field != "actions")
@@ -1419,31 +1328,28 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     private Control ValueChip(HandlerValue? value, Action<HandlerValue?> commit, List<ScopeVar> scope,
         bool optional = false, IReadOnlyList<string>? literals = null)
     {
-        var row = new HBoxContainer();
-        row.AddThemeConstantOverride("separation", 4);
-
-        var text = value is null
-            ? (optional ? "不用填" : "还没填")
+        var text = value is null ? (optional ? "不用填" : "还没填")
             : value.Kind == HandlerValueKind.Operator ? HandlerVocabulary.OperatorLabel(value.Name ?? "?")
             : value is { Kind: HandlerValueKind.Literal, Text: { } literal } && literals is { Count: > 0 }
-                ? LiteralLabel(literal)
-                : value.Describe();
+                ? LiteralLabel(literal) : value.Describe();
         var chip = InputChip(text, value is null);
         chip.Pressed += () => OpenValueMenu(chip, value, commit, scope, literals);
-        row.AddChild(chip);
+        if (value is null || value.Kind == HandlerValueKind.Literal) return chip;
 
-        if (value is { Kind: HandlerValueKind.Operator })
-        {
-            row.AddChild(MenuStyles.Label("(", 12, new Color(MenuStyles.Ink, 0.8f)));
+        var predicate = IsPredicate(value, scope);
+        var block = new BlockShape { Shape = predicate ? BlockShape.Form.Predicate : BlockShape.Form.Reporter,
+            Fill = BlockTheme.Query, ShowNotch = false, ShowTab = false, Name = "ValueExpressionBlock" };
+        var row = new HBoxContainer(); row.AddThemeConstantOverride("separation", 8); row.AddChild(chip);
+        if (value.Kind == HandlerValueKind.Operator)
             for (var i = 0; i < value.Args.Count; i++)
             {
-                if (i > 0) row.AddChild(MenuStyles.Label(",", 12, new Color(MenuStyles.Ink, 0.8f)));
                 var index = i;
                 row.AddChild(ValueChip(value.Args[i], arg => commit(value.WithArg(index, arg ?? HandlerValue.Num(0))), scope));
             }
-            row.AddChild(MenuStyles.Label(")", 12, new Color(MenuStyles.Ink, 0.8f)));
-        }
-        return row;
+        if (value is { Kind: HandlerValueKind.Read, ReadTarget: { } target })
+            row.AddChild(ValueChip(target, changed => { if (changed is not null) commit(HandlerValue.ReadFrom(changed, value.Name!)); }, scope));
+        block.SetBody(BlockPadding(row));
+        return block;
     }
 
     private void OpenValueMenu(Button anchor, HandlerValue? value, Action<HandlerValue?> commit, List<ScopeVar> scope,
@@ -1530,8 +1436,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _valueMenu.AddSeparator();
         _valueMenu.AddItem("清除", 999);
 
-        _valueMenu.Position = (Vector2I)anchor.GetScreenPosition() + new Vector2I(0, (int)anchor.Size.Y);
-        _valueMenu.Popup();
+        ShowValueBlockPalette();
     }
 
     private void OnValuePicked(long id)
@@ -1583,7 +1488,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
             var arity = HandlerDslValidator.OperatorArity(op);
             var args = new List<HandlerValue>();
             if (arity == 2 && _valueCurrent is not null) args.Add(_valueCurrent);
-            while (args.Count < arity) args.Add(HandlerValue.Num(0));
+            while (args.Count < arity) args.Add(op is "and" or "or" or "not" ? HandlerValue.Bool(false) : HandlerValue.Num(0));
             commit(HandlerValue.Call(op, args.ToArray()));
         }
     }
@@ -1594,7 +1499,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     {
         mutate?.Invoke();
         _history.RemoveRange(_historyAt + 1, _history.Count - _historyAt - 1);
-        _history.Add(_doc.Clone());
+        _history.Add(new(_doc.Clone(), _targetParent));
         _historyAt = _history.Count - 1;
         Rebuild();
     }
@@ -1613,7 +1518,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     {
         if (_historyAt <= 0) return;
         _historyAt--;
-        _doc = _history[_historyAt].Clone();
+        _doc = _history[_historyAt].Document.Clone();
+        RestoreTrigger(_history[_historyAt].Parent);
         ResetInsertTarget();
         Rebuild();
     }
@@ -1622,7 +1528,8 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     {
         if (_historyAt >= _history.Count - 1) return;
         _historyAt++;
-        _doc = _history[_historyAt].Clone();
+        _doc = _history[_historyAt].Document.Clone();
+        RestoreTrigger(_history[_historyAt].Parent);
         ResetInsertTarget();
         Rebuild();
     }
@@ -1633,6 +1540,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
     /// </summary>
     private void ResetInsertTarget()
     {
+        _pendingElseOwner = null;
         _pendingInsert = _doc.Actions;
         _pendingLabel = "整段的最后";
     }

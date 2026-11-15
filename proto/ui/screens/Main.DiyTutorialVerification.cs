@@ -92,6 +92,7 @@ public partial class Main
                 var pick = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "卡牌效果 · 积木 Inspector");
                 Click(pick.FindChildren("*", "Button", true, false).OfType<Button>().First(b => b.Text.StartsWith("编辑 · ")));
                 Require(_active == "hdsl" && _blockEditor.Document.Actions is [{ Op: "draw" }], "重开效果没有恢复原积木");
+                Require(_blockEditor.SelectedTrigger == deployed.ParentId, "重新打开丢失了部署事件或本单位条件");
                 var json = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
                 Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "保存到卡包"));
                 var again = _blockEditor.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "保存到卡包");

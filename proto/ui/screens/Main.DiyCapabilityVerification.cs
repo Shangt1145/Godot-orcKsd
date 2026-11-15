@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 using Kards.Ui.OrcBridge.HandlerDsl;
 
 namespace Kards.Ui;
@@ -40,6 +40,7 @@ public partial class Main
             await DeckClickAsync(edit);
             var choose = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "卡牌效果 · 积木 Inspector");
             await DeckClickAsync(Button(choose, "＋ 添加积木效果"));
+            await VerifyInspectorBlockForms();
             var damage = _blockEditor.FindChildren("*", "Label", true, false).OfType<Label>().Single(l => l.Text == "造成伤害");
             damage.GetParent().GetParent().EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             Require(_blockEditor.Document.Actions is [{ Op: "damage" }], "工具箱不能添加伤害动作");

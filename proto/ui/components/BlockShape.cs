@@ -1,4 +1,4 @@
-using Godot;
+﻿using Godot;
 
 namespace Kards.Ui;
 
@@ -85,6 +85,8 @@ public static class BlockTheme
 /// </summary>
 public partial class BlockShape : Control
 {
+    public enum Form { Stack, Reporter, Predicate }
+    public Form Shape { get; set; }
     private Color _fill = BlockTheme.Advanced;
     private Control? _body;
 
@@ -115,6 +117,7 @@ public partial class BlockShape : Control
     {
         _body = body;
         AddChild(body);
+        body.MinimumSizeChanged += UpdateMinimumSize;
         body.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         UpdateMinimumSize();
         QueueRedraw();
@@ -130,6 +133,14 @@ public partial class BlockShape : Control
 
     public override void _Draw()
     {
+        if (Shape == Form.Predicate)
+        {
+            var bevel = Math.Min(14, Size.Y / 2);
+            Vector2[] points = [new(bevel, 0), new(Size.X - bevel, 0), new(Size.X, Size.Y / 2), new(Size.X - bevel, Size.Y), new(bevel, Size.Y), new(0, Size.Y / 2)];
+            DrawColoredPolygon(points, _fill);
+            DrawPolyline([.. points, points[0]], new Color(0, 0, 0, .35f), 1, true);
+            return;
+        }
         // 一圈极淡的描边把块从同样偏暗的底上托起来——土色系亮度都低，不描边会糊在一起。
         var body = new StyleBoxFlat
         {
@@ -139,15 +150,15 @@ public partial class BlockShape : Control
             BorderWidthLeft = 1,
             BorderWidthRight = 1,
             BorderWidthBottom = 1,
-            CornerRadiusTopLeft = TopRadius,
-            CornerRadiusTopRight = TopRadius,
-            CornerRadiusBottomLeft = BottomRadius,
-            CornerRadiusBottomRight = BottomRadius,
+            CornerRadiusTopLeft = Shape == Form.Reporter ? 18 : TopRadius,
+            CornerRadiusTopRight = Shape == Form.Reporter ? 18 : TopRadius,
+            CornerRadiusBottomLeft = Shape == Form.Reporter ? 18 : BottomRadius,
+            CornerRadiusBottomRight = Shape == Form.Reporter ? 18 : BottomRadius,
             AntiAliasing = true,
         };
         DrawStyleBox(body, new Rect2(Vector2.Zero, Size));
 
-        if (ShowNotch)
+        if (ShowNotch && Shape == Form.Stack)
         {
             var notch = new StyleBoxFlat
             {
@@ -159,7 +170,7 @@ public partial class BlockShape : Control
             DrawStyleBox(notch, new Rect2(NotchX, 0, NotchWidth, NotchDepth));
         }
 
-        if (ShowTab)
+        if (ShowTab && Shape == Form.Stack)
         {
             var tab = new StyleBoxFlat
             {

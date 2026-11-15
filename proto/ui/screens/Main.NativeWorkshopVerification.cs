@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using Godot;
 using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
@@ -69,10 +69,9 @@ public partial class Main
         var saveDialog = _blockEditor.FindChildren("*", "ConfirmationDialog", true, false).OfType<ConfirmationDialog>()
             .Single(d => d.Visible && d.Title == "保存到卡包");
         var savePickers = saveDialog.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>().ToArray();
-        var parentPicker = savePickers.Single(picker => picker.Name == "ParentPicker");
-        Check(parentPicker.ItemCount > 0, "Save dialog listed no parent template");
-        Check(parentPicker.GetItemMetadata(parentPicker.Selected).AsString().StartsWith("template.", StringComparison.Ordinal),
-            "Save dialog parent list did not come from the template library");
+        Check(!savePickers.Any(picker => picker.Name == "ParentPicker"), "Save dialog duplicated canvas trigger selection");
+        Check(_blockEditor.TriggerOptions.Count > 0 && _blockEditor.SelectedTrigger?.StartsWith("template.", StringComparison.Ordinal) == true,
+            "Canvas trigger did not come from the template library");
         await Capture("block-save-dialog.png");
         var productId = saveDialog.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(l => l.Name == "ProductId").Text;
         // 直接发按下信号而不是模拟鼠标：这个对话框挂在积木屏下，headless 里坐标映射点不中（探针实测）。
