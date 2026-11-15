@@ -19,6 +19,8 @@ param(
     # 更新器版本独立于游戏版本：补丁校验规则变化时必须进位，否则新旧更新器同名、玩家无法区分。
     [string]$UpdaterVersion='1.2.0',
     [string]$UpdaterBuildRoot='H:\g\orc-offline-update',
+    # Reuse an already published updater unchanged when only the game changes.
+    [string]$ReuseUpdaterZip='',
     # Delivered-version ZIPs are archived so older players can still be patched. They are large
     # (200-300 MB each) and none of them ship, so they live outside the working tree by default;
     # keeping them inside made the project folder grow past 1 GB for no build-time benefit.
@@ -207,9 +209,17 @@ if($TestPackage){
 }
 
 # 5) Package.
-& (Join-Path $PSScriptRoot 'build-updater.ps1') -BuildRoot $UpdaterBuildRoot -Godot $Godot
-if($LASTEXITCODE -ne 0){throw 'Offline updater build failed.'}
-$updaterOutput=Join-Path $UpdaterBuildRoot 'dist/current'
+if($ReuseUpdaterZip){
+    $ReuseUpdaterZip=[IO.Path]::GetFullPath($ReuseUpdaterZip)
+    if(!(Test-Path -LiteralPath $ReuseUpdaterZip)){throw 'Published updater archive not found.'}
+    $updaterOutput=Join-Path $BuildRoot ('artifacts/reused-updater-'+[Guid]::NewGuid().ToString('N'))
+    Expand-Archive -LiteralPath $ReuseUpdaterZip -DestinationPath $updaterOutput
+    if(!(Test-Path -LiteralPath (Join-Path $updaterOutput '更新游戏.exe'))){throw 'Published updater archive has no updater executable.'}
+}else{
+    & (Join-Path $PSScriptRoot 'build-updater.ps1') -BuildRoot $UpdaterBuildRoot -Godot $Godot
+    if($LASTEXITCODE -ne 0){throw 'Offline updater build failed.'}
+    $updaterOutput=Join-Path $UpdaterBuildRoot 'dist/current'
+}
 Get-ChildItem -LiteralPath $updaterOutput | Copy-Item -Destination $target -Recurse -Force
 $updateCli=Join-Path $sourceRoot 'tools/OfflineUpdate/OrC.Update.Cli'
 & dotnet build $updateCli --nologo -v:q
@@ -250,7 +260,8 @@ if($BaselineZip){
 }
 $bootstrap=Join-Path (Split-Path -Parent $target) "OrC-KSD-offline-updater-$UpdaterVersion-win-x64.zip"
 if(Test-Path -LiteralPath $bootstrap){Clear-Path $bootstrap}
-Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $updaterOutput|Select-Object -ExpandProperty FullName) -DestinationPath $bootstrap
+if($ReuseUpdaterZip){Copy-Item -LiteralPath $ReuseUpdaterZip -Destination $bootstrap}
+else{Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $updaterOutput|Select-Object -ExpandProperty FullName) -DestinationPath $bootstrap}
 $packageSuffix = if($TestPackage){'-test'}else{''}
 $zip = Join-Path (Split-Path -Parent $target) "OrC-KSD-$version$packageSuffix-win-x64.zip"
 if (Test-Path -LiteralPath $zip) { Clear-Path $zip }

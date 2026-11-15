@@ -34,3 +34,7 @@ tests/TestResults/
 .codex-remote-attachments/
 
 .codex-attachments/
+
+# Python release tooling caches.
+__pycache__/
+*.pyc

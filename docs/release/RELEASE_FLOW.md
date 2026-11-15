@@ -7,13 +7,14 @@
 1. 使用 `tools/version.ps1 -Set <版本>` 同步 VERSION、Godot 显示版本和 Android 递增安装代码。已公开的版本不覆盖重打；修复应使用新版本号。
 2. 运行发布相关测试、受影响的 Godot 实际操作验证，以及对应平台的检查。`tools/release.ps1` 默认执行测试和 UI 发布门；只有已经另行完成并保存同等证据时才使用 `-SkipGate`。
 3. `tools/release.ps1` 同步短路径工程、导出 Windows 游戏、发布独立服务器和私有 .NET 运行时、构建离线更新器、记录构建清单并生成补丁和完整 ZIP。脚本必须通过解压后的独立 EXE 与工坊验证。
+   仅游戏发生变化时，可通过 `-ReuseUpdaterZip <已发布更新器 ZIP>` 原样复用更新器。它保留归档字节和更新器文件，不重打相同版本号的更新器。beta.13 复用已发布的 1.2.0。
 4. 对实际仍在使用的旧构建分别生成补丁。来源必须读取已交付 ZIP 中 `.orcksd-build.json` 的完整 BuildId，不能只按显示版本猜测。beta.12 发布 beta.9、beta.10、beta.11 三个精确来源补丁。旧安装文件若被修改，仍应停止并提示使用完整包。
 5. 使用 `tools/export-android.ps1` 导出同版本 APK，检查包名、安装代码、签名连续性、ABI 和 APK 内容；在可用的设备或模拟器上运行回归。覆盖安装不能更换签名。Android 准备脚本按内容校验并去重双架构重复的 Java 依赖，保留全部原生 ABI。工作盘空间不足时可将 `ORC_ANDROID_BUILD_DIR` 设为专用的、空间充足的 Gradle 生成目录。
 6. 将完整 ZIP 放在 `dist/releases/<版本>/full/`，APK 放在 `android/`，全部补丁放在 `patches/`；准备对应发行说明。实际运行离线更新器升级旧包，核对升级文件与新完整包一致，并验证玩家文件保留。
 7. 提交并推送已验证的源码后运行：
 
    ```powershell
-   python tools/publish-release.py 2.0.0-beta.12 --notes docs/release/RELEASE_2.0.0_BETA12_20261115.md
+   python tools/publish-release.py 2.0.0-beta.13 --notes docs/release/RELEASE_2.0.0_BETA13_20261115.md
    ```
 
    脚本创建草稿发行，上传完整 ZIP、APK、全部补丁、离线更新器、发行说明和 SHA256.txt。逐项核对 GitHub 返回的资产大小与 SHA256 digest，全部通过才公开发行。公开后使用正式版本下载地址生成固定 `channel` 发行中的 `latest.json`；草稿中的 `untagged-*` 临时地址会被拒绝，不能进入客户端清单。上传失败不会提前推进客户端清单。发布地址回归使用 `python -m unittest discover -s tests -p test_release_manifest.py`。
