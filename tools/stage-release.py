@@ -54,6 +54,9 @@ def main():
     files += sorted((delivery / "patches").glob("OrC-*.orcupdate"))
     files += [root / "dist/updaters/1.2.0/OrC-KSD-offline-updater-1.2.0-win-x64.zip", pathlib.Path(args.notes).resolve()]
     manifest = {"repository": repo, "version": args.version, "commit": commit, "staging_release": release["id"], "notes": pathlib.Path(args.notes).resolve().relative_to(root).as_posix(), "assets": []}
+    target_release = upload.find_release(session, repo, "v" + args.version)
+    if target_release is not None:
+        manifest["targetReleaseId"] = target_release["id"]
     if args.seed_from:
         if not args.apk_delta: raise RuntimeError("Seeded publication requires a verified APK transport delta")
         def public_asset(path, version):

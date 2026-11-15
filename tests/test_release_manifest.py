@@ -1,9 +1,27 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import Mock
 
 spec = importlib.util.spec_from_file_location("publisher", pathlib.Path(__file__).resolve().parents[1] / "tools/publish-release.py")
 publisher = importlib.util.module_from_spec(spec); spec.loader.exec_module(publisher)
+upload_spec = importlib.util.spec_from_file_location("uploader", pathlib.Path(__file__).resolve().parents[1] / "tools/upload-release.py")
+uploader = importlib.util.module_from_spec(upload_spec); upload_spec.loader.exec_module(uploader)
+
+
+class ReleaseIdentityTests(unittest.TestCase):
+    def test_known_draft_id_does_not_depend_on_tag_listing(self):
+        session = Mock()
+        session.get.return_value.json.return_value = {"id": 42, "tag_name": "v2.0.0-beta.13", "draft": True}
+        result = uploader.resolve_release(session, "owner/repo", "v2.0.0-beta.13", 42)
+        self.assertTrue(result["draft"])
+        session.get.assert_called_once_with("https://api.github.com/repos/owner/repo/releases/42", timeout=uploader.TIMEOUT)
+
+    def test_known_id_cannot_upload_into_another_version(self):
+        session = Mock()
+        session.get.return_value.json.return_value = {"id": 42, "tag_name": "v2.0.0-beta.12"}
+        with self.assertRaises(RuntimeError):
+            uploader.resolve_release(session, "owner/repo", "v2.0.0-beta.13", 42)
 
 
 class PublishedManifestTests(unittest.TestCase):

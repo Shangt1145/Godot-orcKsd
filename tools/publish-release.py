@@ -28,6 +28,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version")
     parser.add_argument("--notes", required=True)
+    parser.add_argument("--release-id", type=int)
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     delivery = root / "dist/releases" / args.version
@@ -58,12 +59,12 @@ def main():
         result.raise_for_status()
         return result.json()
 
-    release = upload.find_release(session, upload.REPO_DEFAULT, tag)
+    release = upload.resolve_release(session, upload.REPO_DEFAULT, tag, args.release_id)
     if release is None:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, encoding="utf-8").strip()
         release = request("POST", "/releases", json={"tag_name": tag, "target_commitish": commit, "name": "OrC-KSD " + args.version,
             "body": notes.read_text(encoding="utf-8"), "draft": True, "prerelease": "-" in args.version})
-    subprocess.run([sys.executable, str(root / "tools/upload-release.py"), "--tag", tag, *map(str, files)], cwd=root, check=True)
+    subprocess.run([sys.executable, str(root / "tools/upload-release.py"), "--tag", tag, "--release-id", str(release["id"]), *map(str, files)], cwd=root, check=True)
     release = request("GET", "/releases/" + str(release["id"]))
     assets = []
     for path in files:

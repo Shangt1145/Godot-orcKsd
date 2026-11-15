@@ -55,6 +55,17 @@ def find_release(session, repo: str, tag: str):
     return response.json()
 
 
+def resolve_release(session, repo: str, tag: str, release_id=None):
+    if release_id is None:
+        return find_release(session, repo, tag)
+    response = session.get(f"https://api.github.com/repos/{repo}/releases/{int(release_id)}", timeout=TIMEOUT)
+    response.raise_for_status()
+    release = response.json()
+    if release["tag_name"] != tag:
+        raise RuntimeError("Release ID belongs to a different version")
+    return release
+
+
 def upload_asset(session, url: str, path: str, size: int):
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if curl:
@@ -86,6 +97,7 @@ def upload_asset(session, url: str, path: str, size: int):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", required=True)
+    ap.add_argument("--release-id", type=int)
     ap.add_argument("--repo", default=REPO_DEFAULT)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("files", nargs="+")
@@ -98,7 +110,7 @@ def main() -> int:
         "User-Agent": "orcksd-release",
     })
 
-    release = find_release(session, args.repo, args.tag)
+    release = resolve_release(session, args.repo, args.tag, args.release_id)
     if release is None:
         raise SystemExit(f"找不到 release {args.tag}（包括当前凭据可访问的草稿）")
     print(f"Release {args.tag}  id={release['id']}  已有资产 {len(release['assets'])} 个")

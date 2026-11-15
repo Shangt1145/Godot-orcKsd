@@ -69,7 +69,10 @@ def main():
     # A draft's notes may be edited during verification; binaries remain immutable.
     # The publisher creates the target draft before uploading any asset, including notes.
     # A newly numbered release need not have been created by a previous upload attempt.
-    subprocess.run([sys.executable, str(root / "tools/publish-release.py"), version, "--notes", manifest["notes"]], check=True)
+    publish = [sys.executable, str(root / "tools/publish-release.py"), version, "--notes", manifest["notes"]]
+    if manifest.get("targetReleaseId"):
+        publish += ["--release-id", str(int(manifest["targetReleaseId"]))]
+    subprocess.run(publish, check=True)
     # The staging release is task-owned and never public; remove its temporary chunks.
     result = session.delete(api + "/releases/" + str(int(manifest["staging_release"])), timeout=60)
     result.raise_for_status()
