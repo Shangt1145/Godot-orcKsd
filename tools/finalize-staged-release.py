@@ -67,7 +67,8 @@ def main():
         plan_file.write_text(json.dumps(manifest), encoding="utf-8")
         subprocess.run([sys.executable, str(root / "tools/materialize-seeded-release.py"), str(plan_file)], check=True)
     # A draft's notes may be edited during verification; binaries remain immutable.
-    subprocess.run([sys.executable, str(root / "tools/upload-release.py"), "--tag", "v" + version, "--force", manifest["notes"]], check=True)
+    # The publisher creates the target draft before uploading any asset, including notes.
+    # A newly numbered release need not have been created by a previous upload attempt.
     subprocess.run([sys.executable, str(root / "tools/publish-release.py"), version, "--notes", manifest["notes"]], check=True)
     # The staging release is task-owned and never public; remove its temporary chunks.
     result = session.delete(api + "/releases/" + str(int(manifest["staging_release"])), timeout=60)
