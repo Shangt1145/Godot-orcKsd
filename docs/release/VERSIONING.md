@@ -29,6 +29,7 @@ MAJOR.MINOR.PATCH[-预发布标识]
 |---|---|---|---|
 | alpha | `A.N` | `0.0.0-alpha.N` | 功能未完整、契约可能变的测试版，N 从 1 起 |
 | beta | `B.N` | `0.0.0-beta.N` | 功能已完整、进入打磨与回归的测试版，N 从 1 起 |
+| rc | `RC.N` | `2.0.0-rc.N` | 使用目标正式版的三位编号，N 从 1 起 |
 | hotfix | — | `0.1.0-hotfix` | **已发布版本**上的紧急修复，三位编号不变；同版本第 2 次起 `-hotfix.2` |
 
 **优先级**（由低到高）：
@@ -37,7 +38,7 @@ MAJOR.MINOR.PATCH[-预发布标识]
 0.0.0-alpha.1 < 0.0.0-alpha.2 < 0.0.0-beta.1 < 0.1.0 < 0.1.0-hotfix < 0.1.0-hotfix.2 < 0.1.1
 ```
 
-即：alpha → beta → 首个正式版 `0.1.0`；正式版之后的紧急修复排在下一个常规版本之前。
+同一组三位编号的顺序为 alpha → beta → rc → 正式版 → hotfix，种类相同时按序号比较。
 
 ## 规则要点
 
@@ -59,7 +60,7 @@ MAJOR.MINOR.PATCH[-预发布标识]
 & 'H:\Working Folder\OrC-KSD.Godot\tools\version.ps1' -Set 0.0.0-alpha.2
 ```
 
-脚本会校验格式（含 `0.0.0-alpha.N` / `0.0.0-beta.N` / `x.y.z-hotfix[.N]`）并同时更新 `VERSION` 与 `project.godot`。
+脚本会校验格式（含 `0.0.0-alpha.N` / `0.0.0-beta.N` / `x.y.z-rc.N` / `x.y.z-hotfix[.N]`）并同步更新 `VERSION`、`project.godot` 和 Android 导出设置。
 
 ## 发行规则（全量与增量）
 

@@ -13,8 +13,20 @@ public partial class Main
     private void InitializeAppearance()
     {
         _cosmetics=new CosmeticLibrary(ProjectSettings.GlobalizePath(_verificationRun?$"res://artifacts/appearance/{Guid.NewGuid():N}":"user://appearance"));
+        _cosmetics.ExportStaticModelAsync = ExportStaticDeskModelAsync;
         OriginalCosmetics.Register(_cosmetics);
         AppearanceRuntime.Configure(_cosmetics);
+    }
+    private async Task<byte[]> ExportStaticDeskModelAsync(byte[] bytes, CancellationToken ct)
+    {
+        var completion = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Callable.From(() =>
+        {
+            if (ct.IsCancellationRequested) { completion.TrySetCanceled(ct); return; }
+            try { completion.TrySetResult(DeskPropInstance.ExportStaticModel(bytes)); }
+            catch (Exception error) { completion.TrySetException(error); }
+        }).CallDeferred();
+        return await completion.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
     }
     private void AddAppearanceScreen(Control content)
     {

@@ -12,6 +12,25 @@ public partial class DeskPropInstance : Node3D
     public Aabb Bounds { get; private set; }
     public bool IsPerforming => _motion?.IsRunning() == true || Players(this).Any(p => p.IsPlaying());
     public string[] Animations => Players(this).SelectMany(p => p.GetAnimationList()).Where(n => n != "RESET").Distinct().ToArray();
+
+    internal static byte[] ExportStaticModel(byte[] bytes)
+    {
+        var importer = new GltfDocument();
+        var imported = new GltfState { CreateAnimations = false };
+        if (importer.AppendFromBuffer(bytes, "", imported) != Error.Ok)
+            throw new InvalidDataException("无法读取桌饰模型。");
+        var scene = importer.GenerateScene(imported);
+        try
+        {
+            var exporter = new GltfDocument();
+            var exported = new GltfState();
+            if (exporter.AppendFromScene(scene, exported) != Error.Ok)
+                throw new InvalidDataException("无法导出无动画桌饰。");
+            return exporter.GenerateBuffer(exported);
+        }
+        finally { scene.Free(); }
+    }
+
     public static DeskPropInstance? Load(string image, DeskPropSettings settings)
     {
         settings.Checked();

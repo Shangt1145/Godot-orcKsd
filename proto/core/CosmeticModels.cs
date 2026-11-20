@@ -7,6 +7,13 @@ namespace Kards.Ui.Core;
 public static class CosmeticModel
 {
     public const int MaximumBytes = 20 * 1024 * 1024;
+    public static bool HasAnimations(byte[] bytes)
+    {
+        Inspect(bytes);
+        var length = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(12, 4));
+        using var doc = JsonDocument.Parse(bytes.AsMemory(20, length));
+        return doc.RootElement.TryGetProperty("animations", out var animations) && animations.GetArrayLength() > 0;
+    }
     public static string Inspect(byte[] bytes)
     {
         if (bytes.Length is < 20 or > MaximumBytes || !bytes.AsSpan(0, 4).SequenceEqual("glTF"u8)
@@ -28,6 +35,8 @@ public static class CosmeticModel
 
 public sealed partial class CosmeticLibrary
 {
+    public Func<byte[], CancellationToken, Task<byte[]>>? ExportStaticModelAsync { get; set; }
+
     public string ModelPath(string id)
     {
         if (!CosmeticImage.IsId(id)) throw new InvalidDataException("无效的桌饰模型编号。");
@@ -39,7 +48,17 @@ public sealed partial class CosmeticLibrary
         var hash = CosmeticModel.Inspect(glb);
         Directory.CreateDirectory(Path.Combine(_root, "models"));
         var path = ModelPath(hash);
-        if (!File.Exists(path)) File.WriteAllBytes(path, glb);
+        if (!File.Exists(path))
+        {
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllBytes(temporary, glb);
+                try { File.Move(temporary, path); }
+                catch (IOException) when (File.Exists(path)) { }
+            }
+            finally { File.Delete(temporary); }
+        }
         return hash;
     }
     public CosmeticAsset ImportModel(string name, byte[] glb, byte[] thumbnail)

@@ -247,7 +247,7 @@ public static class ReleaseFeed
 
     /// <summary>
     /// 版本比较（与 <c>docs/release/VERSIONING.md</c> 的优先级一致）：
-    /// 三段数字 → 预发布种类（alpha &lt; beta &lt; 正式 &lt; hotfix）→ 序号。
+    /// 三段数字 → 发布种类（alpha &lt; beta &lt; rc &lt; 正式 &lt; hotfix）→ 序号。
     /// </summary>
     /// <returns>负数＝a 旧，0＝相同，正数＝a 新。</returns>
     public static int Compare(string a, string b)
@@ -283,12 +283,12 @@ public static class ReleaseFeed
         var minor = Int(numbers, 1);
         var patch = Int(numbers, 2);
 
-        // alpha=0 < beta=1 < 正式=2 < hotfix=3（VERSIONING.md 的优先级表）。
-        var kind = 2;
+        var kind = 3;
         var number = 0;
         if (suffix.StartsWith("alpha", StringComparison.OrdinalIgnoreCase)) { kind = 0; number = Tail(suffix); }
         else if (suffix.StartsWith("beta", StringComparison.OrdinalIgnoreCase)) { kind = 1; number = Tail(suffix); }
-        else if (suffix.StartsWith("hotfix", StringComparison.OrdinalIgnoreCase)) { kind = 3; number = Tail(suffix); }
+        else if (suffix.StartsWith("rc.", StringComparison.OrdinalIgnoreCase)) { kind = 2; number = Tail(suffix); }
+        else if (suffix.StartsWith("hotfix", StringComparison.OrdinalIgnoreCase)) { kind = 4; number = Tail(suffix); }
 
         return (major, minor, patch, kind, number);
     }

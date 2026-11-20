@@ -22,13 +22,15 @@
 
 `CosmeticProfile.Tablecloth` 保存桌布图片哈希；`Prop` 保存模型哈希、点击模式、动画名、大小和朝向。自定义模型位于外观库 `models/<SHA256>.glb`；图片及模型的编号均校验路径，GLB 不接受外部文件引用。
 
-当前服务端 `cosmetics.set` 仅接受旧的图片资料结构，`cosmetics.asset` 仅接受 PNG。客户端发布时移除新增本地字段，继续同步桌饰预览图，避免破坏旧房间协议。自定义 GLB 及其动作配置目前仅本机完整呈现，对手显示预览图；桌布为本机观感。完整模型同步需要后端增加模型载荷、配置的校验与传输能力，本轮未改动引擎仓库。
+支持 `cosmetics-model-v1` 的房间会分片同步桌饰 GLB、尺寸和朝向，双方都能显示并各自在本机点击两侧桌饰。模型中的动画会在同步前由 Godot 导出为静态 GLB，点击模式、动画名称、播放状态和点击事件留在本机。远端桌饰使用接收方本地生成的轻晃反馈。桌布仅在其所有者的客户端绘制。
+
+模型以 SHA-256 校验并缓存，单件上限为 20 MiB。旧房主程序继续提供桌饰预览图，模型传输或渲染失败时也会回退到预览。新房主程序通过 [引擎补丁](../engine/v4-network-desk-model.patch) 获得分片 RPC。
 
 ## 验证
 
 - `dotnet build Kards.Ui.csproj --no-restore --nologo -v:q`
 - `dotnet test tests/Kards.Ui.Tests.csproj --filter FullyQualifiedName~CosmeticLibraryTests`：10 项，包括桌布作用域、模型配置保存重载与移除。
-- `dotnet test tests/Kards.Ui.Tests.csproj --filter FullyQualifiedName~DeskCosmeticNetworkTests`：真实双端外观通道，验证新增本地字段不破坏原有协议、预览图可接收。
+- `dotnet test tests/Kards.Ui.Tests.csproj --filter FullyQualifiedName~DeskCosmeticNetworkTests`：双端房间分片传输、模型校验、尺寸与朝向、私有桌布和动画设置、卸下同步。
 - `--verify-desk-cosmetics` / `tools/run.ps1 -VerifyDeskCosmetics`：带动画 GLB 导入、缩略图、五分类编辑器鼠标选择、大小／朝向／动画保存、重载、两种镜头点击播放、原版桌饰替换与卸下。Forward+ 与 Compatibility 实机渲染。
 - 日志与截图：`artifacts/desk-cosmetics/`。
 

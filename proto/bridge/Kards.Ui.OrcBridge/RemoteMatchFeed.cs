@@ -154,11 +154,13 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         var client = await OrcClient.ConnectAsync(new ClientOptions { Host = host, Port = port }, ct)
             .ConfigureAwait(false);
         var supportsCosmetics = false;
+        var supportsCosmeticModels = false;
         var supportsPacks = false;
         try
         {
             var initialized = await client.InitializeAsync(new InitializeParams { ClientName = "godot" }, ct).ConfigureAwait(false);
             supportsCosmetics = initialized.Capabilities.Contains("cosmetics-v1");
+            supportsCosmeticModels = initialized.Capabilities.Contains("cosmetics-model-v1");
             supportsPacks = initialized.Capabilities.Contains("pack-transfer-v1");
         }
         catch
@@ -169,7 +171,7 @@ public sealed partial class RemoteMatchFeed : IMatchFeed, IAsyncDisposable
         // v4：卡包传输整条线已停用（对端没有 pool.* RPC），SupportsPackTransfer 恒 false——
         // 这里不再把握手里的 pack-transfer-v1 能力位写进来，免得界面以为"可以同步"。
         _ = supportsPacks;
-        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics };
+        return new RemoteMatchFeed(client, seat) { SupportsCosmetics = supportsCosmetics, SupportsCosmeticModels = supportsCosmeticModels };
     }
 
     /// <summary>读房间快照（座位、可连地址、卡包状态）。</summary>

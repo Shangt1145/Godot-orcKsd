@@ -5,6 +5,19 @@ namespace Kards.Ui;
 
 public partial class BattleScreen
 {
+    internal async Task VerifyRemoteDeskAppearanceAsync(string modelHash)
+    {
+        RefreshCosmetics();
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        var prop = _world3D.PropFor("enemy");
+        if (prop?.Settings.Model != modelHash || prop.Animations.Length != 0)
+            throw new Exception("Remote static model did not reach the battle.");
+        var point = _canvas.GetGlobalTransformWithCanvas() * _world3D.Project(prop.GlobalTransform * prop.Bounds.GetCenter());
+        GetViewport().PushInput(new InputEventMouseButton { Position = point, GlobalPosition = point, ButtonIndex = MouseButton.Left, Pressed = true }, true);
+        GetViewport().PushInput(new InputEventMouseButton { Position = point, GlobalPosition = point, ButtonIndex = MouseButton.Left, Pressed = false }, true);
+        if (!prop.IsPerforming) throw new Exception("Remote prop did not respond to a real mouse click.");
+    }
+
     internal async Task VerifyDeskAppearanceAsync(string directory, CosmeticAsset model, Func<CosmeticProfile> read, Action<CosmeticProfile> write)
     {
         async Task Frame() { await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw); }

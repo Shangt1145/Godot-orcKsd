@@ -231,7 +231,14 @@ public partial class BattleWorld3D : SubViewportContainer
             RemoveChildProp(existing.Root); _props.Remove(side);
         }
         if (hash.Length == 0) return false;
-        var root = DeskPropInstance.Load(hash, settings);
+        DeskPropInstance? root = null;
+        try { root = DeskPropInstance.Load(hash, settings); }
+        catch (InvalidDataException error) when (settings.Model.Length > 0)
+        {
+            GD.PushWarning(error.Message);
+        }
+        if (root is null && settings.Model.Length > 0)
+            root = DeskPropInstance.Load(hash, settings with { Model = "" });
         if (root is null) return false;
         _root.AddChild(root);
         root.Position = DeskPoint(new(165, side == "self" ? 495 : 165), .02f);

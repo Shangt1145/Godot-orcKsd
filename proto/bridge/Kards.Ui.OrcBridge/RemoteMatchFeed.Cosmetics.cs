@@ -8,6 +8,9 @@ namespace Kards.Ui.OrcBridge;
 public sealed partial class RemoteMatchFeed
 {
     public bool SupportsCosmetics { get; private init; }
+    public bool SupportsCosmeticModels { get; private init; }
+    private const int ModelChunkBytes = 512 * 1024;
+    private (string LocalHash, string WireHash) _publishedModel;
     private CosmeticLibrary? _cosmetics;
     private string? _cosmeticDeckId, _cosmeticNation;
     public CosmeticProfile LocalCosmetics => _cosmetics?.Resolve(_cosmeticDeckId,_cosmeticNation) ?? new();
@@ -42,9 +45,7 @@ public sealed partial class RemoteMatchFeed
         await _cosmeticPublish.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            // The current server accepts only its original PNG profile schema. Keep local
-            // tabletop/model settings out of this wire object, preserving older room hosts.
-            var profile=LocalCosmetics.Checked() with { Tablecloth="", Prop=new() };
+            var profile=LocalCosmetics.Checked() with { Tablecloth="" };
             foreach(var hash in profile.Images())
             {
                 var bytes=_cosmetics.ReadImage(hash); CosmeticImage.Inspect(bytes);
@@ -52,10 +53,74 @@ public sealed partial class RemoteMatchFeed
                 if(result["hash"]?.GetValue<string>()!=hash) throw new InvalidDataException("外观上传校验失败。");
             }
             var wire=JsonSerializer.SerializeToNode(profile)!.AsObject(); wire.Remove("Tablecloth"); wire.Remove("Prop");
+            string? modelWarning = null;
+            if (SupportsCosmeticModels)
+            {
+                var model = "";
+                try { model = await PublishModelAsync(_cosmetics, profile.Prop.Model, ct).ConfigureAwait(false); }
+                catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+                { modelWarning = "桌饰模型未同步，房间仍会显示预览图：" + e.Message; }
+                wire["Prop"] = new JsonObject { ["Model"] = model, ["Size"] = profile.Prop.Size, ["Yaw"] = profile.Prop.Yaw };
+            }
             await CosmeticCallAsync("cosmetics.set",new JsonObject { ["profile"]=wire },ct).ConfigureAwait(false);
-            CosmeticStatus?.Invoke("外观已同步到房间。");
+            CosmeticStatus?.Invoke(modelWarning ?? (!SupportsCosmeticModels && profile.Prop.Model.Length > 0
+                ? "当前房主程序仅支持桌饰预览图，请更新房主程序。" : "外观已同步到房间。"));
         }
         finally { _cosmeticPublish.Release(); }
+    }
+    private async Task<string> PublishModelAsync(CosmeticLibrary library, string model, CancellationToken ct)
+    {
+        if (model.Length == 0) return "";
+        byte[] bytes;
+        if (_publishedModel.LocalHash == model && library.HasModel(_publishedModel.WireHash))
+            bytes = File.ReadAllBytes(library.ModelPath(_publishedModel.WireHash));
+        else
+        {
+            bytes = File.ReadAllBytes(library.ModelPath(model));
+            if (CosmeticModel.HasAnimations(bytes))
+            {
+                var export = library.ExportStaticModelAsync ?? throw new InvalidDataException("无法生成无动画桌饰。");
+                bytes = await export(bytes, ct).ConfigureAwait(false);
+            }
+        }
+        if (CosmeticModel.HasAnimations(bytes)) throw new InvalidDataException("联机桌饰不能携带动画。");
+        var hash = library.CacheModel(bytes);
+        _publishedModel = (model, hash);
+        for (var offset = 0; offset < bytes.Length; offset += ModelChunkBytes)
+        {
+            var response = await CosmeticCallAsync("cosmetics.model.upload", new JsonObject
+            {
+                ["hash"] = hash, ["total"] = bytes.Length, ["offset"] = offset,
+                ["data"] = Convert.ToBase64String(bytes, offset, Math.Min(ModelChunkBytes, bytes.Length - offset))
+            }, ct).ConfigureAwait(false);
+            if (response["hash"]?.GetValue<string>() != hash) throw new InvalidDataException("桌饰上传校验失败。");
+            if (response["complete"]?.GetValue<bool>() == true) return hash;
+        }
+        throw new InvalidDataException("桌饰上传未完成。");
+    }
+
+    private async Task DownloadModelAsync(CosmeticLibrary library, int seat, string hash, CancellationToken ct)
+    {
+        using var output = new MemoryStream();
+        int total;
+        do
+        {
+            var response = await CosmeticCallAsync("cosmetics.model.read", new JsonObject
+            {
+                ["seat"] = seat, ["hash"] = hash, ["offset"] = (int)output.Length
+            }, ct).ConfigureAwait(false);
+            total = response["total"]!.GetValue<int>();
+            if (total is < 20 or > CosmeticModel.MaximumBytes || output.Length >= total)
+                throw new InvalidDataException("远端桌饰模型大小无效。");
+            var chunk = Convert.FromBase64String(response["data"]!.GetValue<string>());
+            if (chunk.Length != Math.Min(ModelChunkBytes, total - output.Length))
+                throw new InvalidDataException("远端桌饰模型分片大小无效。");
+            output.Write(chunk);
+        } while (output.Length < total);
+        var bytes = output.ToArray();
+        if (CosmeticModel.Inspect(bytes) != hash || CosmeticModel.HasAnimations(bytes))
+            throw new InvalidDataException("远端桌饰模型校验失败。");
+        library.CacheModel(bytes);
     }
     public async Task RefreshCosmeticsAsync(CancellationToken ct=default)
     {
@@ -88,7 +153,8 @@ public sealed partial class RemoteMatchFeed
             _cosmeticVersions[seat]=revision;
             generation=_cosmeticLoads.GetValueOrDefault(seat)+1;_cosmeticLoads[seat]=generation;
         }
-        var profile=(node.Deserialize<CosmeticProfile>()??throw new InvalidDataException("外观资料为空。")).Checked();
+        var profile=node.Deserialize<CosmeticProfile>()??throw new InvalidDataException("外观资料为空。");
+        profile = (profile with { Tablecloth = "", Prop = profile.Prop with { Click = "rock", Animation = "" } }).Checked();
         foreach(var hash in profile.Images())
         {
             if(_cosmetics.HasImage(hash)) continue;
@@ -96,6 +162,16 @@ public sealed partial class RemoteMatchFeed
             var bytes=Convert.FromBase64String(response["png"]!.GetValue<string>());
             if(CosmeticImage.Inspect(bytes).Id!=hash) throw new InvalidDataException("远端外观图片校验失败。");
             _cosmetics.CacheImage(bytes);
+        }
+        var modelHash = profile.Prop.Model;
+        if (modelHash.Length > 0 && !_cosmetics.HasModel(modelHash))
+        {
+            try { await DownloadModelAsync(_cosmetics, seat, modelHash, ct).ConfigureAwait(false); }
+            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                profile = profile with { Prop = profile.Prop with { Model = "" } };
+                CosmeticStatus?.Invoke("桌饰模型未能加载，已使用预览图：" + e.Message);
+            }
         }
         lock(_cosmeticLock)
         {

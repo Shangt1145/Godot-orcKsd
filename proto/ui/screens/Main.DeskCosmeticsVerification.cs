@@ -20,6 +20,10 @@ public partial class Main
             }
             var cloth = _cosmetics.Import("tablecloth", "验证·自定义桌布", image.SavePngToBuffer());
             var glb = AnimatedDeskFixture(); var hash = _cosmetics.CacheModel(glb);
+            var staticBytes = await ExportStaticDeskModelAsync(glb, default);
+            if (!CosmeticModel.HasAnimations(glb) || CosmeticModel.HasAnimations(staticBytes))
+                throw new Exception("Animated GLB was not converted to a static network model");
+            var staticHash = _cosmetics.CacheModel(staticBytes);
             var capture = new DeskPropPreview { Position = new(-2048, 0), Size = new(512, 512) }; capture.Initialize(); GetTree().Root.AddChild(capture);
             CosmeticAsset model;
             try
@@ -39,11 +43,16 @@ public partial class Main
             AppearanceRuntime.LocalProfile = () => profile;
             Show("battle");
             await _battle.VerifyDeskAppearanceAsync(directory, model, () => profile, p => profile = p);
-            GD.Print("DESK_COSMETICS_VERIFY_OK tablecloth-import model-import animations thumbnail editor equip restart switch click flat tilted remove");
+            AppearanceRuntime.RemoteProfiles = () => new Dictionary<int, CosmeticProfile>
+            {
+                [1] = new() { Decoration = model.Image, Prop = new(Model: staticHash, Click: "rock") }
+            };
+            await _battle.VerifyRemoteDeskAppearanceAsync(staticHash);
+            GD.Print("DESK_COSMETICS_VERIFY_OK tablecloth-import model-import animations thumbnail editor equip restart switch click flat tilted remove remote-static-click");
             GetTree().Quit();
         }
         catch (Exception error) { GD.PushError("DESK_COSMETICS_VERIFY_FAIL " + error); GetTree().Quit(1); }
-        finally { AppearanceRuntime.LocalProfile = local; _clock.SetReducedMotion(quiet); _clock.SetTiltedBattleView(tilted); }
+        finally { AppearanceRuntime.RemoteProfiles = null; AppearanceRuntime.LocalProfile = local; _clock.SetReducedMotion(quiet); _clock.SetTiltedBattleView(tilted); }
     }
 
     private static byte[] AnimatedDeskFixture()

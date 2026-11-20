@@ -1,0 +1,171 @@
+--- a/src/Orc.Server/Transport/ServerHost.cs
++++ b/src/Orc.Server/Transport/ServerHost.cs
+@@ -400,5 +400,5 @@
+             ProtocolMethods.ToolsList => HandleToolsList(request, session),
+             ProtocolMethods.ToolsCall => await HandleToolsCallAsync(request, session, ct).ConfigureAwait(false),
+-            "cosmetics.get" or "cosmetics.set" or "cosmetics.asset" or "cosmetics.image" or "cosmetics.emote" => HandleCosmetics(request, session),
++            "cosmetics.get" or "cosmetics.set" or "cosmetics.asset" or "cosmetics.image" or "cosmetics.emote" or "cosmetics.model.upload" or "cosmetics.model.read" => HandleCosmetics(request, session),
+             _ => RpcResponse.Failure(request.Id, RpcErrorCodes.MethodNotFound, $"未知方法 '{request.Method}'。"),
+         };
+@@ -432,5 +432,5 @@
+             ProtocolVersion = ProtocolInfo.ProtocolVersion,
+             SchemaVersion = Service.Options.ContractSchemaVersion,
+-            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1", AssetSyncLimits.Capability],
++            Capabilities = ["push", "targeting", "session", "admin-channel", "cosmetics-v1", "cosmetics-model-v1", AssetSyncLimits.Capability],
+             ConnectionId = session.Id,
+             Label = session.Label,
+--- a/src/Orc.Server/Transport/ServerHost.Cosmetics.cs
++++ b/src/Orc.Server/Transport/ServerHost.Cosmetics.cs
+@@ -1,4 +1,5 @@
+ ﻿using System.Buffers.Binary;
+ using System.Security.Cryptography;
++using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Orc.Protocol;
+@@ -19,4 +20,9 @@
+         public JsonObject? Profile;
+         public readonly Dictionary<string,byte[]> Images = new();
++        public string ModelHash = "";
++        public byte[]? Model;
++        public string UploadHash = "";
++        public byte[]? Upload;
++        public int Uploaded;
+         public long LastEmote;
+         public long Revision;
+@@ -48,8 +54,12 @@
+                     return RpcResponse.Success(request.Id,new JsonObject { ["hash"]=hash,["png"]=Convert.ToBase64String(bytes) });
+                 }
++                if (request.Method == "cosmetics.model.read")
++                    return ReadCosmeticModel(request, args);
+                 if (!session.IsController || session.Seat is not { } ownSeat || string.IsNullOrEmpty(session.SeatToken))
+                     return RpcResponse.Failure(request.Id,RpcErrorCodes.InvalidRequest,"只有已批准的座位控制者可以装备外观或发送表情。");
+                 if (!_cosmeticSeats.TryGetValue(ownSeat,out var own) || own.Token != session.SeatToken)
+                     _cosmeticSeats[ownSeat] = own = new CosmeticSeat { Token=session.SeatToken };
++                if (request.Method == "cosmetics.model.upload")
++                    return UploadCosmeticModel(request, args, own);
+                 if (request.Method == "cosmetics.asset")
+                 {
+@@ -72,5 +82,5 @@
+                 {
+                     var profile = (args["profile"] as JsonObject)?.DeepClone() as JsonObject ?? throw new ArgumentException("缺少外观资料。");
+-                    if (profile.Any(p => p.Key is not ("CardBack" or "Decoration" or "Headquarters" or "HeadquartersName" or "Emotes")))
++                    if (profile.Any(p => p.Key is not ("CardBack" or "Decoration" or "Headquarters" or "HeadquartersName" or "Emotes" or "Prop")))
+                         throw new ArgumentException("外观通道不接受规则字段。");
+                     static void Text(string? s,int max,bool multiline=false) { if (s is null || s.Length>max || s.Any(c=>char.IsControl(c)&&!(multiline&&c=='\n'))) throw new ArgumentException("外观文字无效。"); }
+@@ -91,4 +101,23 @@
+                     var used = ProfileImages(profile).ToHashSet();
+                     if (used.Any(hash => hash.Length!=64 || !hash.All(Uri.IsHexDigit) || !own.Images.ContainsKey(hash))) throw new ArgumentException("请先上传已装备的外观图片。");
++                    var model = "";
++                    if (profile["Prop"] is JsonObject prop)
++                    {
++                        if (prop.Any(p => p.Key is not ("Model" or "Size" or "Yaw")) ||
++                            !ValidModelHash(model = prop["Model"]!.GetValue<string>(), allowEmpty: true) ||
++                            prop["Size"]!.GetValue<double>() is not (>= .25 and <= 3) ||
++                            prop["Yaw"]!.GetValue<double>() is not (>= -180 and <= 180))
++                            throw new ArgumentException("桌饰配置无效。");
++                    }
++                    else if (profile.ContainsKey("Prop")) throw new ArgumentException("桌饰配置无效。");
++                    if (model.Length > 0 && model != own.ModelHash)
++                    {
++                        if (model != own.UploadHash || own.Upload is not { } upload || own.Uploaded != upload.Length)
++                            throw new ArgumentException("请先上传已装备的桌饰模型。");
++                        own.Model = upload;
++                    }
++                    if (model.Length == 0) own.Model = null;
++                    own.ModelHash = model;
++                    ClearModelUpload(own);
+                     own.Profile=profile;own.Revision=++_cosmeticRevision;
+                     foreach (var hash in own.Images.Keys.Where(h => !used.Contains(h)).ToArray()) own.Images.Remove(hash);
+@@ -106,7 +135,91 @@
+             }
+         }
+-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or FormatException or NullReferenceException)
++        catch (Exception e) when (e is ArgumentException or InvalidOperationException or FormatException or NullReferenceException or JsonException or OverflowException)
+         { return RpcResponse.Failure(request.Id,RpcErrorCodes.InvalidParams,e.Message); }
+     }
++    private const int ModelChunkBytes = 512 * 1024;
++    private const int MaxModelBytes = 20 * 1024 * 1024;
++
++    private static bool ValidModelHash(string hash, bool allowEmpty = false) =>
++        (allowEmpty && hash.Length == 0) || (hash.Length == 64 && hash.All(c => char.IsAsciiHexDigit(c) && !char.IsLower(c)));
++
++    private static void ClearModelUpload(CosmeticSeat seat)
++    {
++        seat.Upload = null;
++        seat.UploadHash = "";
++        seat.Uploaded = 0;
++    }
++
++    private static RpcResponse UploadCosmeticModel(RpcRequest request, JsonObject args, CosmeticSeat own)
++    {
++        var hash = args["hash"]!.GetValue<string>();
++        var total = args["total"]!.GetValue<int>();
++        var offset = args["offset"]!.GetValue<int>();
++        var encoded = args["data"]!.GetValue<string>();
++        if (!ValidModelHash(hash) || total is < 20 or > MaxModelBytes || offset < 0 || offset >= total ||
++            encoded.Length > ((ModelChunkBytes + 2) / 3) * 4)
++            throw new ArgumentException("桌饰模型分片无效。");
++        var bytes = Convert.FromBase64String(encoded);
++        if (bytes.Length != Math.Min(ModelChunkBytes, total - offset))
++            throw new ArgumentException("桌饰模型分片大小无效。");
++        if (hash == own.ModelHash)
++            return RpcResponse.Success(request.Id, new JsonObject { ["hash"] = hash, ["complete"] = true });
++        if (offset == 0)
++        {
++            own.Upload = new byte[total];
++            own.UploadHash = hash;
++            own.Uploaded = 0;
++        }
++        if (own.Upload is not { } upload || own.UploadHash != hash || upload.Length != total || own.Uploaded != offset)
++            throw new ArgumentException("桌饰模型分片顺序无效。");
++        bytes.CopyTo(upload, offset);
++        own.Uploaded += bytes.Length;
++        var complete = own.Uploaded == total;
++        if (complete)
++        {
++            try
++            {
++                if (Convert.ToHexString(SHA256.HashData(upload)) != hash)
++                    throw new ArgumentException("桌饰模型校验失败。");
++                CheckStaticModel(upload);
++            }
++            catch { ClearModelUpload(own); throw; }
++        }
++        return RpcResponse.Success(request.Id, new JsonObject { ["hash"] = hash, ["complete"] = complete });
++    }
++
++    private static void CheckStaticModel(byte[] model)
++    {
++        var jsonLength = BinaryPrimitives.ReadInt32LittleEndian(model.AsSpan(12, 4));
++        if (!model.AsSpan(0, 4).SequenceEqual("glTF"u8) ||
++            BinaryPrimitives.ReadInt32LittleEndian(model.AsSpan(4, 4)) != 2 ||
++            BinaryPrimitives.ReadInt32LittleEndian(model.AsSpan(8, 4)) != model.Length ||
++            !model.AsSpan(16, 4).SequenceEqual("JSON"u8) || jsonLength <= 0 || jsonLength > model.Length - 20)
++            throw new ArgumentException("需要有效的 GLB 2.0 桌饰。");
++        using var doc = JsonDocument.Parse(model.AsMemory(20, jsonLength));
++        if (doc.RootElement.TryGetProperty("animations", out var animations) && animations.GetArrayLength() != 0)
++            throw new ArgumentException("联机桌饰不能携带动画。");
++        foreach (var key in new[] { "buffers", "images" })
++            if (doc.RootElement.TryGetProperty(key, out var entries))
++                foreach (var entry in entries.EnumerateArray())
++                    if (entry.TryGetProperty("uri", out var uri) && !(uri.GetString() ?? "").StartsWith("data:", StringComparison.Ordinal))
++                        throw new ArgumentException("联机桌饰不能引用外部资源。");
++    }
++
++    private RpcResponse ReadCosmeticModel(RpcRequest request, JsonObject args)
++    {
++        var seat = args["seat"]!.GetValue<int>();
++        var hash = args["hash"]!.GetValue<string>();
++        var offset = args["offset"]!.GetValue<int>();
++        if (!_cosmeticSeats.TryGetValue(seat, out var owner) || owner.ModelHash != hash ||
++            owner.Model is not { } bytes || offset < 0 || offset >= bytes.Length)
++            throw new ArgumentException("桌饰模型不存在。");
++        return RpcResponse.Success(request.Id, new JsonObject
++        {
++            ["total"] = bytes.Length,
++            ["data"] = Convert.ToBase64String(bytes, offset, Math.Min(ModelChunkBytes, bytes.Length - offset))
++        });
++    }
++
+     private static IEnumerable<string> ProfileImages(JsonObject profile) => new[]{"CardBack","Decoration","Headquarters"}
+         .Select(k => profile[k]!.GetValue<string>()).Concat(((JsonArray)profile["Emotes"]!).SelectMany(e => new[]{e!["Image"]!.GetValue<string>(),e!["EnemyImage"]?.GetValue<string>()??""})).Where(s => s.Length>0).Distinct();
