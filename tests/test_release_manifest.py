@@ -7,6 +7,20 @@ spec = importlib.util.spec_from_file_location("publisher", pathlib.Path(__file__
 publisher = importlib.util.module_from_spec(spec); spec.loader.exec_module(publisher)
 upload_spec = importlib.util.spec_from_file_location("uploader", pathlib.Path(__file__).resolve().parents[1] / "tools/upload-release.py")
 uploader = importlib.util.module_from_spec(upload_spec); upload_spec.loader.exec_module(uploader)
+finalizer_spec = importlib.util.spec_from_file_location("finalizer", pathlib.Path(__file__).resolve().parents[1] / "tools/finalize-staged-release.py")
+finalizer = importlib.util.module_from_spec(finalizer_spec); finalizer_spec.loader.exec_module(finalizer)
+
+
+class ReleaseVersionTests(unittest.TestCase):
+    def test_allows_hyphenated_rc_hotfix_version(self):
+        for version in ("2.0.0-rc1-hotfix", "2.0.0-rc1-hotfix.2", "2.0.0-rc.1", "2.0.0"):
+            with self.subTest(version=version):
+                self.assertIsNotNone(finalizer.RELEASE_VERSION.fullmatch(version))
+
+    def test_rejects_path_characters_and_empty_version_segments(self):
+        for version in ("2.0.0-rc1-hotfix/../rc.1", "2.0.0-rc1-hotfix\\alt", "2.0.0-rc1-hotfix..2"):
+            with self.subTest(version=version):
+                self.assertIsNone(finalizer.RELEASE_VERSION.fullmatch(version))
 
 
 class ReleaseIdentityTests(unittest.TestCase):

@@ -12,6 +12,8 @@ import sys
 
 import requests
 
+RELEASE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -35,7 +37,7 @@ def main():
         raise RuntimeError("Staging repository/commit does not match the dispatched source")
     if not manifest["notes"].startswith("docs/release/") or ".." in pathlib.PurePosixPath(manifest["notes"]).parts or not manifest["notes"].endswith(".md"):
         raise RuntimeError("Unsafe release notes path")
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?", version):
+    if not RELEASE_VERSION.fullmatch(version):
         raise RuntimeError("Invalid release version")
     for asset in manifest["assets"]:
         relative = pathlib.PurePosixPath(asset["path"])
