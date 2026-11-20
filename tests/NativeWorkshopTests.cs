@@ -11,6 +11,53 @@ namespace Kards.Ui.Tests;
 public sealed class NativeWorkshopTests : IDisposable
 {
     [Fact]
+    public void PackageRemovalArchivesInstalledAndDraftAndBlocksDependentDraft()
+    {
+        var store = Store;
+        store.Import(Archive());
+        store.Create("user.remove.base", "测试基础包", "demo");
+        store.CreateCard("test.card");
+        store.Promote();
+        store.Create("user.remove.extension", "测试扩展包", "user.remove.base", "user.remove.base");
+        store.CreateCard("extension.card");
+        Assert.Throws<InvalidOperationException>(() => store.RemovePackage("user.remove.base"));
+        var extensionBackup = store.RemovePackage("user.remove.extension");
+        Assert.Single(Directory.GetDirectories(extensionBackup));
+        Assert.DoesNotContain(store.InterruptedDrafts(), draft => draft.Id == "user.remove.extension");
+        store.Begin("user.remove.base");
+        store.CreateCard("draft.card");
+        var backup = store.RemovePackage("user.remove.base");
+        Assert.Equal(2, Directory.GetDirectories(backup).Length);
+        Assert.DoesNotContain(Store.Packages(), pack => pack.Id == "user.remove.base");
+        Assert.Contains(Store.Packages(), pack => pack.Id == "demo");
+    }
+
+    [Theory]
+    [InlineData("unit", "draw")]
+    [InlineData("unit", "damage")]
+    [InlineData("unit", "buff")]
+    [InlineData("order", "draw")]
+    [InlineData("order", "damage")]
+    [InlineData("order", "buff")]
+    public void QuickEffectsPersistWithTheirEditableParameters(string cardType, string action)
+    {
+        var store = Store;
+        store.Import(Archive());
+        store.Begin("demo");
+        var asset = store.CreateCard("quick.card");
+        var document = new NativeCardDocument(store.Read(asset.Path));
+        document.SetType(cardType, "infantry");
+        var effect = new WorkshopQuickEffect(action, 2, 3);
+        var draft = effect.Compile(asset.AppId, cardType, []);
+        store.SaveCardDocument(asset, document.Json, effect.Description(cardType), "", [draft]);
+        var presentation = store.CardPresentation(asset.Id);
+        Assert.Equal(effect, WorkshopQuickEffect.From(Assert.Single(presentation.EditableRules)));
+        Assert.Equal(effect.Description(cardType), presentation.Text);
+        Assert.Contains(store.PreviewCards(), card => card.CardId == asset.AppId);
+        Assert.Contains(store.CreateTrialPackSet().Definitions, entry => entry.Id == asset.AppId);
+    }
+
+    [Fact]
     public void NativeTextParserAppendsReplacesAndRejectsWithoutLosingOriginalData()
     {
         var store = Store; store.Import(Archive()); store.Begin("demo");

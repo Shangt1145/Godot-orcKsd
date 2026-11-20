@@ -23,8 +23,7 @@ public sealed class OrcAiGateway : IAiMatchGateway
     private readonly Match _match;
     private readonly OrcTargeterBridge? _bridge;
     private readonly int _seat;
-    private Task? _activeAction;
-    private TaskCompletionSource<AiActionOutcome>? _actionResult;
+    private Task<AiActionOutcome>? _activeAction;
     private ISelectorInstance? _heldSelector;
     private string _sessionId = Guid.NewGuid().ToString("N");
 
@@ -50,17 +49,16 @@ public sealed class OrcAiGateway : IAiMatchGateway
 
     // ---------- 动作链状态机 ----------
 
-    private async Task<AiActionOutcome> RunChainAsync(Func<Task> start, CancellationToken ct)
+    private async Task<AiActionOutcome> RunChainAsync(Func<Task<AiActionOutcome>> start, CancellationToken ct)
     {
         _bridge?.BeginAiChain();
         _sessionId = Guid.NewGuid().ToString("N");
-        var result = new TaskCompletionSource<AiActionOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
         _activeAction = Task.Run(async () =>
         {
-            try { await start().ConfigureAwait(false); result.TrySetResult(AiActionOutcome.Success()); }
-            catch (OperationCanceledException) { result.TrySetResult(AiActionOutcome.Fail("动作被取消。")); }
-            catch (Exception ex) { result.TrySetResult(AiActionOutcome.Fail($"{ex.GetType().Name}: {ex.Message}")); }
-        }, ct);
+            try { ct.ThrowIfCancellationRequested(); return await start().ConfigureAwait(false); }
+            catch (OperationCanceledException) { return AiActionOutcome.Fail("动作被取消。"); }
+            catch (Exception ex) { return AiActionOutcome.Fail($"{ex.GetType().Name}: {ex.Message}"); }
+        });
         _heldSelector = null;
         return await AdvanceAsync(ct).ConfigureAwait(false);
     }
@@ -81,9 +79,8 @@ public sealed class OrcAiGateway : IAiMatchGateway
             return AiActionOutcome.Targeting(Translate(selector, _sessionId));
         }
         _bridge?.EndAiChain();
-        var outcome = await _actionResult!.Task.ConfigureAwait(false);
+        var outcome = await engine.ConfigureAwait(false);
         _activeAction = null;
-        _actionResult = null;
         return outcome;
     }
 
@@ -123,39 +120,49 @@ public sealed class OrcAiGateway : IAiMatchGateway
         {
             if (Resolve(cardRef) is not UnitCard unit) throw new KeyNotFoundException(cardRef);
             // 部署槽由 targeter 会话给出（AiPilot 对 slot 选择器取最靠前候选），slot 参数不入引擎。
-            await Match.PlayManager.BeginUnitPrePlayAsync(unit, ct).ConfigureAwait(false);
+            return Outcome(await Match.PlayManager.BeginUnitPrePlayAsync(unit, ct).ConfigureAwait(false));
         }, ct).ConfigureAwait(false);
 
     public async Task<AiActionOutcome> PlayCommandPreAsync(string cardRef, CancellationToken ct)
         => await RunChainAsync(async () =>
         {
             if (Resolve(cardRef) is not OrderCard order) throw new KeyNotFoundException(cardRef);
-            await Match.PlayManager.BeginOrderPrePlayAsync(order, ct).ConfigureAwait(false);
+            return Outcome(await Match.PlayManager.BeginOrderPrePlayAsync(order, ct).ConfigureAwait(false));
         }, ct).ConfigureAwait(false);
 
     public async Task<AiActionOutcome> UseCounterAsync(string cardRef, CancellationToken ct)
         => await RunChainAsync(async () =>
         {
             if (Resolve(cardRef) is not CounterCard counter) throw new KeyNotFoundException(cardRef);
-            await Match.PlayManager.UseCounterAsync(counter, ct).ConfigureAwait(false);
+            return Outcome(await Match.PlayManager.UseCounterAsync(counter, ct).ConfigureAwait(false));
         }, ct).ConfigureAwait(false);
 
     public async Task<AiActionOutcome> BeginAttackAsync(string unitRef, CancellationToken ct)
         => await RunChainAsync(async () =>
         {
             if (Resolve(unitRef) is not UnitCard unit) throw new KeyNotFoundException(unitRef);
-            await Match.CommandManager.BeginAttackAsync(unit, ct).ConfigureAwait(false);
+            return Outcome(await Match.CommandManager.BeginAttackAsync(unit, ct).ConfigureAwait(false));
         }, ct).ConfigureAwait(false);
 
     public async Task<AiActionOutcome> BeginMoveAsync(string unitRef, CancellationToken ct)
         => await RunChainAsync(async () =>
         {
             if (Resolve(unitRef) is not UnitCard unit) throw new KeyNotFoundException(unitRef);
-            await Match.CommandManager.BeginMoveAsync(unit, ct).ConfigureAwait(false);
+            return Outcome(await Match.CommandManager.BeginMoveAsync(unit, ct).ConfigureAwait(false));
         }, ct).ConfigureAwait(false);
 
     public async Task<AiActionOutcome> EndTurnAsync(CancellationToken ct)
-        => await RunChainAsync(() => Match.EndTurn(ct), ct).ConfigureAwait(false);
+        => await RunChainAsync(async () =>
+        {
+            await Match.EndTurn(ct).ConfigureAwait(false);
+            return AiActionOutcome.Success();
+        }, ct).ConfigureAwait(false);
+
+    private static AiActionOutcome Outcome(PlayResult result) => result.IsSuccess
+        ? AiActionOutcome.Success() : AiActionOutcome.Fail(result.FailureReason?.ToString() ?? result.Status.ToString());
+
+    private static AiActionOutcome Outcome(CommandResult result) => result.IsSuccess
+        ? AiActionOutcome.Success() : AiActionOutcome.Fail(result.FailureReason?.ToString() ?? result.Status.ToString());
 
     public async Task<AiActionOutcome> MulliganDoneAsync(int seat, CancellationToken ct)
     {

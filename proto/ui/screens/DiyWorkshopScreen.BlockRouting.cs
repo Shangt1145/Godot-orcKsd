@@ -8,16 +8,24 @@ namespace Kards.Ui;
 public partial class DiyWorkshopScreen
 {
     public event Action<string>? ConstructRequested;
-    public event Action<UiCardDefinition>? TrialRequested;
+    public event Action<UiCardDefinition, PackSet>? TrialRequested;
 
-    private void ApplyNativeCardAndUse(string packId, NativeWorkshopAsset asset, bool trial) => NativeTry(() =>
+    private void TryNativeDraft(NativeWorkshopAsset asset) => NativeTry(() =>
+    {
+        if (_saveNativeCard?.Invoke() != true) return;
+        var card = _native!.PreviewCards().SingleOrDefault(c => c.CardId == asset.AppId)
+            ?? throw new InvalidDataException("这张卡还不能试打。请检查卡牌属性和效果。");
+        TrialRequested?.Invoke(card, _native.CreateTrialPackSet());
+    });
+
+    private void ApplyNativeCardAndUse(NativeWorkshopAsset asset) => NativeTry(() =>
     {
         if (_saveNativeCard?.Invoke() != true) return;
         if (!_native!.PreviewCards().Any(c => c.CardId == asset.AppId))
             throw new InvalidDataException("此卡尚未通过引擎准入，请先修正属性或效果。");
-        _native.Promote(); _nativeChanged!(); TutorialApplied(packId); ShowNativePackages();
+        _native.Promote(); _nativeChanged!(); ShowNativePackages();
         var card = _service.Cards.Single(c => c.CardId == asset.AppId);
-        if (trial) TrialRequested?.Invoke(card); else ConstructRequested?.Invoke(card.CardId);
+        ConstructRequested?.Invoke(card.CardId);
     });
     internal string BlockTitle { get; private set; } = "新效果";
     internal HandlerDocument BlockDocument { get; private set; } = new();
@@ -26,12 +34,12 @@ public partial class DiyWorkshopScreen
     private NativeWorkshopAsset? _blockCard;
     private Action? _blockReturn;
 
-    private void LaunchBlocks(string title, string? effectId, NativeWorkshopAsset? card, Action back)
+    private void LaunchBlocks(string title, string? effectId, NativeWorkshopAsset? card, Action back, HandlerDocument? imported = null)
         => _editor.GuardNavigation(() => GuardNative(() => NativeTry(() =>
         {
             if (_native?.HasSession != true) { ShowNativePackages(); _notice.Text = "请先打开一个卡包。"; return; }
             BlockTitle = string.IsNullOrWhiteSpace(title) ? "新效果" : title; BlockEffectId = effectId; _blockCard = card; _blockReturn = back;
-            BlockDocument = new(); BlockParentId = null;
+            BlockDocument = imported ?? new(); BlockParentId = null;
             if (effectId is not null)
             {
                 var authoring = _native.HandlerAuthoring!;
@@ -97,24 +105,6 @@ public partial class DiyWorkshopScreen
     }
 
     internal void ReturnFromBlocks() { _blockReturn?.Invoke(); _blockReturn = null; }
-
-    private bool TutorialBlockReady()
-    {
-        if (_native?.HandlerAuthoring is not { } authoring || _cardDocument is null) return false;
-        var references = _cardDocument.Component("effects")?["prefabs"] as JsonArray ?? new();
-        foreach (var reference in references)
-        {
-            var id = reference?.ToString();
-            var dsl = System.IO.Path.Combine(authoring.PackRoot, "handler-dsl", id + ".hdsl.json");
-            var draft = System.IO.Path.Combine(authoring.PackRoot, "modings", id + ".draft.moding.json");
-            if (!System.IO.File.Exists(dsl) || !System.IO.File.Exists(draft)) continue;
-            var parent = JsonNode.Parse(System.IO.File.ReadAllText(draft))?["asset"]?["extends"]?.ToString();
-            var timing = authoring.DescribeParents().FirstOrDefault(p => p.ParentId == parent);
-            var doc = HandlerDocument.FromJson(System.IO.File.ReadAllText(dsl), HandlerCatalog.Default);
-            if (timing is not null && DiyTutorialLesson.BlockEffectReady(doc, timing.Signal, timing.Guard)) return true;
-        }
-        return false;
-    }
 
     internal void OpenCompatibleBlocks() => _editor.GuardNavigation(() => NativeTry(() =>
     {

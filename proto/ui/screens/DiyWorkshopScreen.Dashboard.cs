@@ -43,8 +43,10 @@ public partial class DiyWorkshopScreen
         {
             MenuStyles.Clear(list);
             ProjectOpenButtons.Clear();
-            var packs = WorkshopPacks().Where(p => p.Name.Contains(search.Text, StringComparison.OrdinalIgnoreCase)
-                && (filter == "全部" || (filter == "自带卡包" ? p.IsBuiltIn : !p.IsBuiltIn))).ToArray();
+            var nativePacks = _native?.Packages().ToDictionary(p => "pack/" + p.Id) ?? [];
+            bool IsBuiltIn(DiyPackDraft pack) => nativePacks.TryGetValue(pack.Id, out var native) ? !native.Installed : pack.IsBuiltIn;
+            var packs = WorkshopPacks(nativePacks.Values).Where(p => p.Name.Contains(search.Text, StringComparison.OrdinalIgnoreCase)
+                && (filter == "全部" || (filter == "自带卡包" ? IsBuiltIn(p) : !IsBuiltIn(p)))).ToArray();
             count.Text = $"{packs.Length} 个卡包";
             foreach (var b in filterButtons) b.SetPressedNoSignal(b.Text == filter);
             foreach (var pack in packs)
@@ -56,7 +58,7 @@ public partial class DiyWorkshopScreen
                 var name = MenuStyles.Label(pack.Name, 21, MenuStyles.Ink); name.AutowrapMode = TextServer.AutowrapMode.WordSmart; info.AddChild(name);
                 var detail = MenuStyles.Label(PackSummary(pack).Replace("\n", "  ·  "), 13, MenuStyles.Dim);
                 detail.AutowrapMode = TextServer.AutowrapMode.WordSmart; info.AddChild(detail);
-                var state = _native?.Packages().FirstOrDefault(p => "pack/" + p.Id == pack.Id);
+                var state = nativePacks.GetValueOrDefault(pack.Id);
                 if (state is not null && (state.HasDraft || !state.Enabled))
                     info.AddChild(MenuStyles.Label((state.HasDraft ? "有未应用的草稿" : "") + (!state.Enabled ? "  ·  当前已停用" : ""), 13, MenuStyles.Gold));
                 var open = MenuStyles.Button("打开卡包 →", () => OpenPack(pack)); open.SizeFlagsVertical = SizeFlags.ShrinkCenter; row.AddChild(open);
@@ -72,7 +74,13 @@ public partial class DiyWorkshopScreen
             }
             if (_native is not null && filter != "自带卡包")
                 foreach (var draft in _native.InterruptedDrafts().Where(d => d.IsNew && d.Name.Contains(search.Text, StringComparison.OrdinalIgnoreCase)))
-                    list.AddChild(MenuStyles.Button($"继续未完成的草稿：{draft.Name} →", () => OpenNativePack(draft.Id)));
+                {
+                    var actions = new HFlowContainer();
+                    list.AddChild(actions);
+                    actions.AddChild(MenuStyles.Button($"继续未完成的草稿：{draft.Name} →", () => OpenNativePack(draft.Id)));
+                    var expansion = _native.BasePackOf(draft.Root, draft.Id) is not null;
+                    actions.AddChild(MenuStyles.Button($"删除{PackKind(expansion)}…", () => ConfirmNativeRemoval(actions, draft.Id, draft.Name, expansion)));
+                }
             if (list.GetChildCount() == 0) list.AddChild(MenuStyles.Label("没有找到卡包。试试其他名称，或在左侧创建作品。", 16, MenuStyles.Dim));
         }
         foreach (var label in new[] { "全部", "我的制作", "自带卡包" })

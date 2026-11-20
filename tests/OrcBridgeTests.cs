@@ -261,7 +261,8 @@ public sealed class OrcBridgeTests
         // Pass the first turn; the driver plays the enemy turn through the engine's own entry points.
         await match.EndTurn();
         // 走宿主+桥接路径：部署要选空隙（FormationGap），没有桥接就没人应答，AI 只能干瞪眼。
-        await OrcOpponentDriver.PlayTurnAsync(host, _bridge!, enemy, message => Console.WriteLine("[driver] " + message));
+        var problems = new List<string>();
+        await OrcOpponentDriver.PlayTurnAsync(host, _bridge!, enemy, problems.Add);
         host.Pump();
 
         var view = host.Refresh();
@@ -269,6 +270,7 @@ public sealed class OrcBridgeTests
         Assert.Equal(deckBefore - 1, view.EnemyDeckCount); // the enemy drew at their turn start
         // The enemy deployed with their first point: a unit now stands on their support line.
         Assert.True(view.EnemyLine.Count > 0, "Enemy driver never deployed a unit.");
+        Assert.Empty(problems);
     }
 
     [Fact]

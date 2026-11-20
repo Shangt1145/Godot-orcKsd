@@ -80,6 +80,9 @@ public partial class BattleScreen : Control
 
     /// <summary>Raised by the gear menu: run the screen from a real engine match instead of the demo fixture.</summary>
     public event Action? RealMatchRequested;
+    public event Action? ReturnToWorkshopRequested;
+    private Button _returnToWorkshop = null!;
+    internal void ShowWorkshopReturn(bool visible) => _returnToWorkshop.Visible = visible;
 
     /// <summary>Shows text supplied from outside (for example an engine refusal reason).</summary>
     public void ShowHint(string text)
@@ -111,6 +114,12 @@ public partial class BattleScreen : Control
         popup.AddItem("认输", 29);
         popup.AddItem("DIY 卡牌", 30);
         popup.AddItem("外观装扮", 32);
+        _returnToWorkshop = UiStyles.Button("返回改卡", () => ReturnToWorkshopRequested?.Invoke());
+        _returnToWorkshop.Position = new(35, 62);
+        _returnToWorkshop.Size = new(140, 40);
+        _returnToWorkshop.ZIndex = 100;
+        _returnToWorkshop.Hide();
+        _canvas.AddChild(_returnToWorkshop);
         _concedeDialog = new ConfirmationDialog { Title = "认输", DialogText = "确认认输并结束本局？", Exclusive = true };
         _concedeDialog.GetOkButton().Text = "认输"; _concedeDialog.GetCancelButton().Text = "继续对局";
         AddChild(_concedeDialog);

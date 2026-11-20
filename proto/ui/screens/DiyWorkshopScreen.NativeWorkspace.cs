@@ -27,7 +27,7 @@ public partial class DiyWorkshopScreen
         })))); row.AddChild(export); export.Visible = !editingCard;
         if (_native.SessionWarnings.Count > 0) row.AddChild(MenuStyles.Button("编辑会话提示", () => NativeText("引擎返回的会话提示", string.Join("\n", _native.SessionWarnings))));
         NativePromoteButton = MenuStyles.Button("应用修改", () => GuardNative(() => NativeTry(() =>
-        { _native.Promote(); _nativeChanged!(); TutorialApplied(id); ShowNativePackages(); _notice.Text = "已应用到游戏，构筑和新对局使用此版本。"; })));
+        { _native.Promote(); _nativeChanged!(); ShowNativePackages(); _notice.Text = "已应用到游戏，构筑和新对局使用此版本。"; })));
         row.AddChild(NativePromoteButton); MenuStyles.Primary(NativePromoteButton);
         NativePromoteButton.Visible = !editingCard;
     }
@@ -38,6 +38,8 @@ public partial class DiyWorkshopScreen
         var search = new LineEdit { PlaceholderText = "搜索卡牌", SizeFlagsHorizontal = SizeFlags.ExpandFill }; tools.AddChild(search);
         tools.AddChild(MenuStyles.Button("＋ 新建卡牌", () => NativeNameDialog("新建卡牌", "卡牌名称", name =>
         { var asset = _native!.CreateCard("card." + Guid.NewGuid().ToString("N")); var document = new NativeCardDocument(_native.Read(asset.Path)); document.Rename(name); _native.Commit(asset.Path, document.Json); OpenNativeCard(id, asset); })));
+        tools.AddChild(MenuStyles.Button("从模板新建…", () => ShowCardTemplates(id)));
+        tools.AddChild(MenuStyles.Button("打开 DSL…", () => OpenDslFile(id)));
         EffectLibraryButton = MenuStyles.Button("词条与效果", OpenEffectLibrary); tools.AddChild(EffectLibraryButton);
         var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; _workspace.AddChild(scroll);
         var grid = new GridContainer { Columns = 5, SizeFlagsHorizontal = SizeFlags.ExpandFill }; grid.AddThemeConstantOverride("h_separation", 22); grid.AddThemeConstantOverride("v_separation", 18); scroll.AddChild(grid);
@@ -75,11 +77,17 @@ public partial class DiyWorkshopScreen
         NativeWorkspace(); BuildNativeSessionHeader(packId, editingCard: true); _nativeAsset = asset;
         _cardDocument = new NativeCardDocument(_native!.Read(asset.Path)); _nativeDirty = false;
         var presentation = _native.CardPresentation(asset.Id); var text = presentation.Text; var flavor = presentation.Flavor;
+        var rules = presentation.EditableRules.ToList();
+        var savedCardType = _cardDocument.CardType;
+        var quickEffectsChanged = false;
         var controls = new HBoxContainer(); _workspace.AddChild(controls);
         controls.AddChild(MenuStyles.Button("‹ 卡牌一览", () => OpenNativePack(packId)));
         NativeSaveButton = MenuStyles.Button("保存草稿", () => _saveNativeCard!()); controls.AddChild(NativeSaveButton); MenuStyles.Primary(NativeSaveButton);
-        controls.AddChild(MenuStyles.Button("应用并用于构筑", () => ApplyNativeCardAndUse(packId, asset, false)));
-        controls.AddChild(MenuStyles.Button("应用并试打", () => ApplyNativeCardAndUse(packId, asset, true)));
+        controls.AddChild(MenuStyles.Button("应用并用于构筑", () => ApplyNativeCardAndUse(asset)));
+        var trial = MenuStyles.Button("试打这张卡", () => TryNativeDraft(asset));
+        trial.TooltipText = "保存草稿后进入练习对局。";
+        controls.AddChild(trial);
+        controls.AddChild(MenuStyles.Button("？", () => ShowWorkshopGuide("制作卡牌")));
         controls.AddChild(MenuStyles.Button("删除卡牌…", () => GuardNative(() => NativeTry(() =>
         {
             var affected = _native!.DeleteImpact(asset);
@@ -98,7 +106,7 @@ public partial class DiyWorkshopScreen
             var step = MenuStyles.Button(name, () => tabs.CurrentTab = index); step.ToggleMode = true; step.Alignment = HorizontalAlignment.Left; step.CustomMinimumSize = new(0, 48); navigation.AddChild(step); pageButtons.Add(step);
             var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; form.AddThemeConstantOverride("separation", 16); scroll.AddChild(form); return form;
         }
-        var properties = Page("01  基础属性"); var rulePage = Page("02  词条与效果"); var art = Page("03  卡图与外观"); var story = Page("04  卡牌描述");
+        var properties = Page("基础属性"); var rulePage = Page("词条与效果"); var art = Page("卡图与外观"); var story = Page("卡牌描述");
         void SelectPage() { for (var i = 0; i < pageButtons.Count; i++) pageButtons[i].SetPressedNoSignal(i == tabs.CurrentTab); }
         tabs.TabChanged += _ => SelectPage(); SelectPage();
         var workflow = MenuStyles.Label("保存草稿\n保留当前制作进度\n\n应用修改\n让新对局使用这张卡", 13, MenuStyles.Dim); workflow.AutowrapMode = TextServer.AutowrapMode.WordSmart; navigation.AddChild(workflow);
@@ -125,7 +133,12 @@ public partial class DiyWorkshopScreen
             }
             status.Text = result.Diagnostics.Count > 0 ? string.Join("\n", result.Diagnostics) : "实时预览 · 草稿";
         }
-        void Changed() { NativeTouched(); Preview(); }
+        void Changed()
+        {
+            NativeTouched();
+            Preview();
+            if (IsTutorialCard) _tutorialStatus.Text = "";
+        }
         var name = new LineEdit { Text = _cardDocument.Name }; NativeField(properties, "名称", name); name.TextChanged += value => { _cardDocument.Rename(value); Changed(); };
         var columns = new HBoxContainer(); columns.AddThemeConstantOverride("separation", 28); properties.AddChild(columns);
         var identity = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; identity.AddThemeConstantOverride("separation", 16); columns.AddChild(identity);
@@ -183,16 +196,21 @@ public partial class DiyWorkshopScreen
         }
         var ruleHint = MenuStyles.Label("原有效果完整保留。使用积木 Inspector 添加或重写效果，保存后自动关联当前卡牌。", 14, MenuStyles.Dim); ruleHint.AutowrapMode = TextServer.AutowrapMode.WordSmart; rulePage.AddChild(ruleHint);
         var editBlocks = MenuStyles.Button("编辑效果 · 积木 Inspector…", () => GuardNative(() => OpenCardBlocks(packId, asset)));
-        MenuStyles.Primary(editBlocks); rulePage.AddChild(editBlocks); rulePage.MoveChild(editBlocks, 1); rulePage.MoveChild(ruleHint, 2);
-        var parser = new VBoxContainer(); parser.AddThemeConstantOverride("separation", 10); rulePage.AddChild(parser); rulePage.MoveChild(parser, 1);
+        rulePage.AddChild(editBlocks);
+        var parser = new VBoxContainer(); parser.AddThemeConstantOverride("separation", 10); rulePage.AddChild(parser);
         parser.AddChild(MenuStyles.Label("自动解析器", 18, MenuStyles.Gold));
         var displayText = new TextEdit { Text = text, CustomMinimumSize = new(0, 110), PlaceholderText = "例如：部署：对一个敌方单位造成 2 点伤害。", WrapMode = TextEdit.LineWrappingMode.Boundary };
         DiyEditorScreen.Field(parser, "卡牌效果文字", displayText); displayText.TextChanged += () => { text = displayText.Text; Changed(); };
-        BuildNativeTextAuthoring(parser, displayText, packId, asset, () => flavor, () =>
+        BuildNativeTextAuthoring(parser, displayText, packId, asset, () => flavor, rules, () =>
         {
             if (!GodotObject.IsInstanceValid(displayText)) return;
-            tabs.CurrentTab = 1; displayText.GrabFocus(); ((ScrollContainer)rulePage.GetParent()).EnsureControlVisible(displayText);
+            tabs.CurrentTab = 1; parser.Show(); displayText.GrabFocus(); ((ScrollContainer)rulePage.GetParent()).EnsureControlVisible(displayText);
         });
+        var quick = BuildQuickEffects(rules, asset, displayText, () => { quickEffectsChanged = true; Changed(); });
+        rulePage.AddChild(quick); rulePage.MoveChild(quick, 1);
+        var showParser = MenuStyles.Button("从文字解析效果", () => parser.Visible = !parser.Visible);
+        rulePage.AddChild(showParser);
+        parser.Hide();
         NativeSkinButton = MenuStyles.Button("异画与数值位置…", () => GuardNative(() =>
         {
             var card = _cardDocument.Preview(asset.AppId, _native.PreviewArtFor(asset.AppId), text, flavor).Card;
@@ -217,7 +235,24 @@ public partial class DiyWorkshopScreen
         {
             try
             {
-                _native.SaveCardDocument(asset, _cardDocument.Json, text, flavor);
+                if (savedCardType != _cardDocument.CardType)
+                {
+                    var oldText = string.Join("\n", rules.Select(WorkshopQuickEffect.From).OfType<WorkshopQuickEffect>()
+                        .Select(effect => effect.Description(savedCardType)));
+                    var updated = rules.Select(rule => WorkshopQuickEffect.From(rule)?.Compile(asset.AppId, _cardDocument.CardType, _service.Cards) ?? rule).ToArray();
+                    rules.Clear(); rules.AddRange(updated);
+                    if (oldText.Length > 0 && text == oldText)
+                    {
+                        displayText.Text = string.Join("\n", rules.Select(WorkshopQuickEffect.From).OfType<WorkshopQuickEffect>()
+                            .Select(effect => effect.Description(_cardDocument.CardType)));
+                        displayText.EmitSignal(TextEdit.SignalName.TextChanged);
+                    }
+                    quickEffectsChanged = true;
+                }
+                _native.SaveCardDocument(asset, _cardDocument.Json, text, flavor, quickEffectsChanged ? rules : null);
+                if (quickEffectsChanged) _cardDocument = new NativeCardDocument(_native.Read(asset.Path));
+                quickEffectsChanged = false;
+                savedCardType = _cardDocument.CardType;
                 _nativeDirty = false; NativeSaveButton.Text = "保存草稿";
                 _notice.Text = _native.PreviewCards().Any(c => c.CardId == asset.AppId)
                     ? "草稿已保存。点击“应用修改”后，构筑和新对局会使用这版卡牌。"
@@ -229,20 +264,22 @@ public partial class DiyWorkshopScreen
         _tutorialCheck = () =>
         {
             string? problem = null;
-            if ((_tutorialStep == 1 || _tutorialStep >= 5) && !DiyTutorialLesson.AttributesReady(_cardDocument))
+            if (_tutorialStep == 1 && !DiyTutorialLesson.AttributesReady(_cardDocument))
                 problem = "请检查名称、单位类型、步兵兵种及 2 费 / 2 攻 / 3 防 / 1 行动费用。";
-            else if ((_tutorialStep == 2 || _tutorialStep >= 5) && !DiyTutorialLesson.KeywordReady(_cardDocument))
+            else if (_tutorialStep == 2 && !DiyTutorialLesson.KeywordReady(_cardDocument))
                 problem = "请在规则页勾选闪击。";
-            else if ((_tutorialStep == 3 || _tutorialStep >= 5) && !TutorialBlockReady())
-                problem = "需要一条无额外条件的部署效果：自己抽 1 张牌。请检查时机、对象、数量，并应用到当前卡牌。";
-            else if ((_tutorialStep == 4 || _tutorialStep >= 5) && text.Trim() != DiyTutorialLesson.DisplayText)
-                problem = "请填写卡面说明：" + DiyTutorialLesson.DisplayText;
+            else if (_tutorialStep is >= 3 and <= 6)
+            {
+                var count = _tutorialStep <= 4 ? 1 : 2;
+                if (!rules.Any(rule => WorkshopQuickEffect.From(rule) is { Action: "draw" } effect && effect.Amount == count))
+                    problem = $"请设置「部署：抽 {count} 张牌」。";
+            }
             _tutorialStatus.Text = problem ?? "检查通过。";
             return problem is null;
         };
         _tutorialFocus = () =>
         {
-            tabs.CurrentTab = _tutorialStep is >= 2 and <= 4 ? 1 : 0;
+            tabs.CurrentTab = _tutorialStep >= 2 ? 1 : 0;
             if (_tutorialStep == 1) name.GrabFocus();
         };
         TypeVisibility(); Preview(); RefreshTutorial();

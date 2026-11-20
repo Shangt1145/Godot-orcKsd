@@ -98,15 +98,18 @@ public sealed class NativeStateFeedbackTests
     }
 
     [Fact]
-    public async Task ConcedeCannotChangeAnEnemyTurnOrAParkedMulligan()
+    public async Task ConcedeWorksOnEnemyTurnButNotDuringMulligan()
     {
         using var session = await OrcMatchSession.CreateProbeAsync("probe", 24, 17, "concede-gates", firstPlayerIndex: 0);
         session.DriveOpponent = false; await session.SettleMulliganAsync(true);
         Assert.Equal(UiSubmitOutcome.WrongPhase, await session.SubmitAsync(new Concede())); Assert.True(session.MulliganPending);
         await session.CompleteMulliganAsync(session.View.SelfHand.Select(c => c.Uid).ToArray());
         await session.SubmitAsync(new EndTurn());
-        Assert.Equal(UiSubmitOutcome.NotYourTurn, await session.SubmitAsync(new Concede()));
-        Assert.Equal("play", session.View.Phase); Assert.Null(session.View.ResultTitle);
+        Assert.Equal("enemy", session.View.ActivePlayerSide);
+        session.InteractionStateReader = () => new(UiInteractionPhase.TurnTransition, []);
+        Assert.Equal(UiSubmitOutcome.Applied, await session.SubmitAsync(new Concede()));
+        Assert.Equal("over", session.View.Phase);
+        Assert.Equal("Concede", session.View.ResultReason);
     }
 
     [Fact]

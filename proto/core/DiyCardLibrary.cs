@@ -137,6 +137,11 @@ public sealed class DiyCardLibrary
         _cards.RemoveAll(c => c.Id == id);
         try { File.Delete(Path.Combine(ArtDirectory, ArtFileName(id))); } catch (IOException) { }
     });
+    internal void RemovePackCards(string packId)
+    {
+        if (_cards.Any(card => card.PackId == packId))
+            Mutate(() => _cards.RemoveAll(card => card.PackId == packId));
+    }
     private void Mutate(Action change)
     {
         if (LoadError is not null) throw new IOException(LoadError);

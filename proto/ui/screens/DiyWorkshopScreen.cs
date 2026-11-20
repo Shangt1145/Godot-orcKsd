@@ -45,6 +45,7 @@ public partial class DiyWorkshopScreen : VBoxContainer
         OpenInspectorButton.TooltipText = "打开新版效果搭建界面；进入卡包后可将效果保存到当前卡包。";
         top.AddChild(OpenInspectorButton);
         InitializeTutorial(top);
+        top.AddChild(MenuStyles.Button("说明书", () => ShowWorkshopGuide()));
         _notice=MenuStyles.Label("",13,MenuStyles.Dim);_notice.AutowrapMode=TextServer.AutowrapMode.WordSmart;AddChild(_notice);
         _navigation=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_navigation);
         _workspace=new VBoxContainer{SizeFlagsVertical=SizeFlags.ExpandFill};AddChild(_workspace);AddChild(_editor);ShowHome();

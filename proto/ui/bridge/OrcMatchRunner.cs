@@ -82,6 +82,7 @@ public sealed class OrcMatchRunner : IMatchFeed
     /// lets the deployment slam be observed at every size tier in a real match. Null deals normally.
     /// </summary>
     public IReadOnlyList<string>? OpeningHand { get; init; }
+    public string? WorkshopTrialCard { get; init; }
 
     /// <summary>Which seat is currently shown: 0 or 1. Only meaningful when <see cref="ManualOpponentForVerification"/>.</summary>
     public int ActiveSeat { get; private set; }
@@ -152,6 +153,11 @@ public sealed class OrcMatchRunner : IMatchFeed
         // (the request parks until ChooseMulligan arrives) or keeps everything.
         await session.SettleMulliganAsync(InteractiveMulligan, ct);
         if (_stopped) return;
+        if (WorkshopTrialCard is { } trialCard)
+        {
+            await session.PrepareWorkshopTrialAsync(trialCard, ct);
+            Publish();
+        }
         session.PollEvents();
         session.Pump();
         ScheduleOpponent();
@@ -226,6 +232,7 @@ public sealed class OrcMatchRunner : IMatchFeed
             return;
         }
         var session = _session;
+        if (command is Concede && session.IsSubmitting) HintRequested?.Invoke("正在结束当前动作，随后认输。");
         UiSubmitOutcome outcome;
         try
         {

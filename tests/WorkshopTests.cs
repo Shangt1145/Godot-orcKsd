@@ -36,6 +36,24 @@ public sealed class WorkshopTests : IDisposable
             Assert.True(DiyCardCompiler.Validate(new(){Nation=legacy},catalog.Cards).Success);
     }
     [Fact]
+    public void RemoveLegacyExpansionKeepsItsBaseAndArchivesItsCards()
+    {
+        var pack = new DiyPackDraft { Name = "基础包" };
+        var extension = new DiyPackDraft { Name = "扩展包", BasePackId = pack.Id };
+        store.Save(pack);
+        store.Save(extension);
+        var baseCard = new DiyCardDraft { Name = "基础卡", PackId = pack.Id };
+        var extensionCard = new DiyCardDraft { Name = "扩展卡", PackId = extension.Id };
+        cards.Save(baseCard);
+        cards.Save(extensionCard);
+        Assert.Throws<InvalidOperationException>(() => store.Remove(pack.Id, cards));
+        var backup = store.Remove(extension.Id, cards);
+        Assert.Contains(extensionCard.Id, File.ReadAllText(backup));
+        Assert.Equal(pack.Id, Assert.Single(store.Packs).Id);
+        Assert.Equal(baseCard.Id, Assert.Single(cards.Cards).Id);
+    }
+
+    [Fact]
     public void PackExpansionAndVocabularyPersistWithoutAliasing()
     {
         var nation=new DiyNationDraft{Name="测试国家"};var keyword=new DiyKeywordDraft{Name="成长",EffectText="友方回合开始时，获得 +1+1。"};

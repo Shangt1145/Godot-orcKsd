@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $versionFile = Join-Path $root 'VERSION'
 $projectFile = Join-Path $root 'project.godot'
-$pattern = '^(\d+\.\d+\.\d+(-(alpha|beta)\.\d+|-rc\.[1-9]\d*|-hotfix(\.\d+)?)?|0\.0\.0beta[1-9]\d*\.hotfix(\.[1-9]\d*)?)$'
+$pattern = '^(\d+\.\d+\.\d+(-(alpha|beta)\.\d+|-rc\.[1-9]\d*|-rc[1-9]\d*-hotfix(\.[1-9]\d*)?|-hotfix(\.\d+)?)?|0\.0\.0beta[1-9]\d*\.hotfix(\.[1-9]\d*)?)$'
 
 function Get-Version {
     if (!(Test-Path -LiteralPath $versionFile)) { throw "Missing $versionFile" }
@@ -15,7 +15,7 @@ function Get-Version {
 
 function Set-Version([string]$value) {
     if ($value -notmatch $pattern) {
-        throw "版本号格式无效：$value （应为 MAJOR.MINOR.PATCH，可加 -alpha.N / -beta.N / -rc.N / -hotfix[.N]；预发布热修复可用 0.0.0betaN.hotfix[.N]）"
+        throw "版本号格式无效：$value （应为 MAJOR.MINOR.PATCH，可加 -alpha.N / -beta.N / -rc.N / -rcN-hotfix[.N] / -hotfix[.N]；旧预发布热修复可用 0.0.0betaN.hotfix[.N]）"
     }
     # 预发布默认不占号：alpha/beta 期间三位数字必须恒为 0.0.0，首个正式版才是 0.1.0。
     # 例外：整代重写允许用 X.0.0-alpha.N 宣告（如手机版独立成代 → 2.0.0-alpha.1）。

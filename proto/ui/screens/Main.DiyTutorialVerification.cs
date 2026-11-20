@@ -1,7 +1,6 @@
 using Godot;
-using System.Text.Json.Nodes;
+using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
-using Kards.Ui.OrcBridge.HandlerDsl;
 
 namespace Kards.Ui;
 
@@ -41,7 +40,35 @@ public partial class Main
             Require(_nativeWorkshop.HasSession && _nativeWorkshop.WorkingPackage.Name == "工作台扩展验证", "扩展包未进入工作台");
             using (var metadata = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(_nativeWorkshop.TemporaryRoot!, "workshop.presentation.json"))))
                 Require(metadata.RootElement.GetProperty("basePackId").GetString() == "builtin", "扩展包未保留基础卡包");
-            _nativeWorkshop.Discard(); _workshop.ShowHome();
+            Button OnScreen(string label) => _workshop.FindChildren("*", "Button", true, false).OfType<Button>()
+                .Single(b => b.Text == label && b.IsVisibleInTree());
+            foreach (var (template, action) in new[] { ("火力打击", "damage"), ("增援指令", "buff"), ("补给步兵", "draw") })
+            {
+                Click(OnScreen("从模板新建…"));
+                var templates = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "卡牌模板");
+                Click(templates.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text.StartsWith(template + " ·")));
+                Require(_nativeWorkshop.PreviewCards().Any(c => c.Name == template && c.CardId.StartsWith("pack/" + _nativeWorkshop.SessionPackage + "/")),
+                    "模板卡没有进入所选扩展包：" + _workshop.NoticeText);
+                Require(_nativeWorkshop.Assets().Where(a => a.Kind == "Card")
+                    .Any(a => _nativeWorkshop.CardPresentation(a.Id).EditableRules.Any(r => WorkshopQuickEffect.From(r)?.Action == action)),
+                    "模板卡没有写入实际效果");
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                Click(OnScreen("‹ 卡牌一览"));
+                await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            }
+            Click(OnScreen("说明书"));
+            var guide = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "工坊说明书");
+            Click(guide.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "保存和试打"));
+            Require(guide.FindChildren("*", "TextEdit", true, false).OfType<TextEdit>().Single().Text.Contains("返回改卡"), "说明书章节无法打开");
+            Click(guide.GetOkButton());
+            var removedExpansion = _nativeWorkshop.SessionPackage;
+            _workshop.ShowNativePackages();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            Click(OnScreen("删除扩展包…"));
+            var remove = _workshop.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "删除扩展包");
+            Click(remove.GetOkButton());
+            Require(!_nativeWorkshop.InterruptedDrafts().Any(d => d.Id == removedExpansion) &&
+                _workshop.NoticeText.Contains("已删除"), "工坊删除扩展包入口失败：" + _workshop.NoticeText);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
             Click(_workshop.OpenInspectorButton);
             Require(_active == "editor" && _workshop.NoticeText.Contains("先打开一个卡包"), "无卡包会话时积木入口没有引导到保存目标");
@@ -59,74 +86,46 @@ public partial class Main
             var blitz = _workshop.FindChildren("*", "CheckBox", true, false).OfType<CheckBox>().Single(b => b.Text == "闪击" && b.IsVisibleInTree());
             blitz.ButtonPressed = true; Click(_workshop.TutorialNext); Step(3);
             Click(_workshop.TutorialNext); Step(3);
-            Click(_workshop.NativeSaveButton);
-            Click(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "编辑效果 · 积木 Inspector…"));
-            var selection = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Title == "卡牌效果 · 积木 Inspector");
-            Click(selection.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "＋ 添加积木效果"));
-            Require(_active == "hdsl", "卡牌没有打开积木 Inspector");
-            var deployed = _nativeWorkshop.HandlerAuthoring!.DescribeParents().Single(p => p.Signal == "unit.deployed" && p.Guard == "Self");
-            var triggerCategory = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
-                .Single(b => b.HasMeta("block_category") && b.GetMeta("block_category").AsString() == "触发事件");
-            Click(triggerCategory);
-            _blockEditor.FindChildren("*", "Control", true, false).OfType<BlockShape>()
-                .Single(b => b.HasMeta("trigger_parent") && b.GetMeta("trigger_parent").AsString() == deployed.ParentId)
-                .EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
-            Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
-                .Single(b => b.HasMeta("block_category") && b.GetMeta("block_category").AsString() == "全部分类"));
-            var drawLabel = _blockEditor.FindChildren("*", "Label", true, false).OfType<Label>().Single(l => l.Text == "抽牌");
-            drawLabel.GetParent().GetParent().EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
-            Require(_blockEditor.Document.Actions is [{ Op: "draw" }], "工具箱没有插入抽牌积木");
-            var beforeOptions = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
-            var options = _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "附加设置 ▸");
-            Click(options);
-            Require(options.Text == "收起附加设置 ▾", "附加设置未展开");
-            Click(options);
-            Require(_blockEditor.Document.ToJsonText(_blockEditor.Catalog) == beforeOptions, "展开附加设置不应改写效果");
-            await Capture("03-effect");
-            Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "保存到卡包"));
-            var save = _blockEditor.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Title == "保存到卡包");
-            Click(save.GetOkButton());
-            Require(_blockEditor.SaveNote?.Contains("已保存") == true, "积木未保存：" + _blockEditor.SaveNote);
-            Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "完成"));
-            Require(_active == "editor", "积木完成后没有返回卡牌");
-            // Reopen from the card: load the saved blocks, keep edits when save options change,
-            // and save twice without producing a .dsl.dsl chain.
-            for (var pass = 0; pass < 2; pass++)
+            async Task SetDraw(string button, int amount)
             {
+                Click(OnScreen(button));
+                var dialog = _workshop.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "效果");
+                dialog.FindChildren("*", "SpinBox", true, false).OfType<SpinBox>().First().Value = amount;
+                Click(dialog.GetOkButton());
                 await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-                Click(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.IsVisibleInTree() && b.Text == "编辑效果 · 积木 Inspector…"));
-                var pick = _workshop.GetChildren().OfType<AcceptDialog>().Single(d => d.Visible && d.Title == "卡牌效果 · 积木 Inspector");
-                Click(pick.FindChildren("*", "Button", true, false).OfType<Button>().First(b => b.Text.StartsWith("编辑 · ")));
-                Require(_active == "hdsl" && _blockEditor.Document.Actions is [{ Op: "draw" }], "重开效果没有恢复原积木");
-                Require(_blockEditor.SelectedTrigger == deployed.ParentId, "重新打开丢失了部署事件或本单位条件");
-                var json = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
-                Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "保存到卡包"));
-                var again = _blockEditor.GetChildren().OfType<ConfirmationDialog>().Single(d => d.Visible && d.Title == "保存到卡包");
-                Require(_blockEditor.Document.ToJsonText(_blockEditor.Catalog) == json, "保存选项覆盖了当前积木");
-                var product = again.FindChildren("*", "LineEdit", true, false).OfType<LineEdit>().Single(l => l.Name == "ProductId");
-                Require(!product.Text.EndsWith(".dsl.dsl"), "再次编辑产生了递归后缀");
-                Click(again.GetOkButton()); Require(_blockEditor.SaveNote?.Contains("已保存") == true, "再次保存失败");
-                Click(_blockEditor.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "完成"));
             }
+            async Task Trial(int expected)
+            {
+                Click(_workshop.TutorialNext);
+                var deadline = Time.GetTicksMsec() + 30_000;
+                while (_workshopTrialOpening is null && _active == "battle" && Time.GetTicksMsec() < deadline)
+                    await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                Require(_runner?.CurrentView is not null && _workshopTrialOpening.HasValue, "试打没有启动：" + _workshop.NoticeText);
+                var before = _runner!.CurrentView!;
+                var unit = before.SelfHand.Single();
+                var deadlineForInput = Time.GetTicksMsec() + 15_000;
+                while (_battle.ReadInteractionState().Phase != UiInteractionPhase.Ready && Time.GetTicksMsec() < deadlineForInput)
+                    await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                await _battle.DragAsync(unit.Uid, _battle.DropAtRowEdge(false, false));
+                var deadlineForDeployment = Time.GetTicksMsec() + 15_000;
+                while (!_runner.CurrentView!.SelfLine.Any(card => card.Uid == unit.Uid) && Time.GetTicksMsec() < deadlineForDeployment)
+                    await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+                Require(_runner.CurrentView!.SelfLine.Any(card => card.Uid == unit.Uid)
+                    && before.SelfDeckCount - _runner.CurrentView.SelfDeckCount == expected, "试打抽牌数量不符：" + _runner.LastRejectionReason);
+                Click(_battle.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "返回改卡"));
+            }
+            await SetDraw("＋ 添加效果", 1);
+            await Capture("03-effect");
             Click(_workshop.TutorialNext); Step(4);
-            Field<TextEdit>("卡牌效果文字").Text = DiyTutorialLesson.DisplayText;
-            Field<TextEdit>("卡牌效果文字").EmitSignal(TextEdit.SignalName.TextChanged);
-            Click(_workshop.TutorialNext); Step(5);
-            await Capture("04-save"); Click(_workshop.TutorialNext); Step(6);
-            // Leave and resume through the player-facing controls; the saved card must reopen intact.
-            Click(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.Text == "暂时退出"));
-            Click(_workshop.TutorialButton); Step(5); Click(_workshop.TutorialNext); Step(6);
-            Click(_workshop.TutorialNext); Step(7); await Capture("05-complete");
-            Require(_nativeWorkshop.Packages().Any(p => p.Name == "DIY 练习 · 补给步兵" && p.Cards == 1 && p.Enabled), "教程卡包未应用并启用");
-            var lessonPack = _nativeWorkshop.Packages().Single(p => p.Name == "DIY 练习 · 补给步兵");
-            _workshop.OpenNativePack(lessonPack.Id);
-            var lessonAsset = _nativeWorkshop.Assets().Single(a => a.Kind == "Card");
-            _workshop.OpenNativeCardForVerification(lessonPack.Id, lessonAsset);
-            Click(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Single(b => b.IsVisibleInTree() && b.Text == "应用并试打"));
-            var deadline = Time.GetTicksMsec() + 30_000;
-            while (_feed is null && Time.GetTicksMsec() < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-            Require(_active == "battle" && _feed is not null, "原生卡牌试打入口没有建立真实对局");
-            StopRealMatch(); Show("editor");
+            Click(OnScreen("暂时退出"));
+            Click(_workshop.TutorialButton); Step(4);
+            var lessonId = _nativeWorkshop.SessionPackage;
+            await Trial(1); Step(5);
+            await SetDraw("编辑", 2);
+            Click(_workshop.TutorialNext); Step(6);
+            await Trial(2); Step(7);
+            await Capture("05-complete");
+            Require(!_nativeWorkshop.Packages().Any(p => p.Id == lessonId && p.Installed), "试打不应应用练习草稿");
             // The retained legacy card entry creates a native working copy and enters the same Inspector.
             var customNation = new Kards.Ui.Contracts.DiyNationDraft { Name = "副本测试国家" };
             var customKeyword = new Kards.Ui.Contracts.DiyKeywordDraft { Name = "副本测试词条", EffectText = "部署：抽一张牌。" };
@@ -136,7 +135,7 @@ public partial class Main
             Click(_diyEditor.OpenEffectsButton);
             Require(_active == "hdsl" && _nativeWorkshop.HasSession, "旧卡入口没有进入可保存的积木工作副本：" + _workshop.NoticeText);
             Require(_diy.Cards.Any(c => c.Name == "保留原件"), "旧卡原件丢失");
-            GD.Print("DIY_TUTORIAL_VERIFY_OK: validation -> attributes -> keyword -> block effect -> display -> save -> resume -> promote");
+            GD.Print("DIY_TUTORIAL_VERIFY_OK: attributes keyword quick-effect save resume draft-trial draw-one draw-two return");
             GetTree().Quit();
         }
         catch (Exception error) { GD.PushError(error.ToString()); GetTree().Quit(1); }

@@ -1,4 +1,5 @@
 using Godot;
+using Kards.Ui.Contracts;
 using Kards.Ui.OrcBridge;
 
 namespace Kards.Ui;
@@ -19,7 +20,7 @@ public partial class DiyWorkshopScreen
     }
 
     private void BuildNativeTextAuthoring(VBoxContainer parent, TextEdit input, string packId, NativeWorkshopAsset asset,
-        Func<string> flavor, Action focus)
+        Func<string> flavor, IReadOnlyList<OrcEffectDraft> currentRules, Action focus)
     {
         NativeRuleText = input; _focusNativeParser = focus;
         var row = new HFlowContainer(); row.AddThemeConstantOverride("h_separation", 8); parent.AddChild(row);
@@ -39,10 +40,17 @@ public partial class DiyWorkshopScreen
         }
         void Apply(bool append)
         {
-            var result = NativeTextAuthoring.Apply(_native!, asset, _cardDocument!.Json, input.Text, flavor(), append, _service.Cards);
+            var quickText = string.Join("\n", currentRules
+                .Select(WorkshopQuickEffect.From).OfType<WorkshopQuickEffect>().Select(effect => effect.Description(_cardDocument!.CardType)));
+            if (quickText.Length > 0 && input.Text.Trim() == quickText)
+            {
+                NativeParseStatus.Text = "这段文字已经由快捷效果生成。要修改效果，请用上方的「编辑」。";
+                return;
+            }
+            var result = NativeTextAuthoring.Apply(_native!, asset, _cardDocument!.Json, input.Text, flavor(), append, _service.Cards, currentRules);
             if (!result.Success) { NativeParseStatus.Text = "未应用，原有效果保持完整：" + string.Join("；", result.Problems); return; }
             _nativeDirty = false; OpenNativeCard(packId, asset); _focusNativeParser?.Invoke();
-            NativeParseStatus.Text = append ? "已解析并追加到草稿。可继续编辑，应用修改后用于对局。" : "已替换自动解析的效果并保存草稿；积木和导入效果保留。";
+            NativeParseStatus.Text = append ? "已解析并追加到草稿。可继续编辑，应用修改后用于对局。" : "已替换自动解析的效果；快捷效果、积木和导入效果已保留。";
         }
         row.AddChild(MenuStyles.Button("检查解析", Check));
         NativeParseAppend = MenuStyles.Button("解析并追加", () => Apply(true)); row.AddChild(NativeParseAppend);

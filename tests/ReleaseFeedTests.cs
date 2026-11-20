@@ -50,6 +50,8 @@ public class ReleaseFeedTests
         Assert.True(ReleaseFeed.Compare("2.0.0-rc.1", "2.0.0-beta.13") > 0);
         Assert.True(ReleaseFeed.Compare("2.0.0-rc.10", "2.0.0-rc.2") > 0);
         Assert.True(ReleaseFeed.Compare("2.0.0", "2.0.0-rc.1") > 0);
+        Assert.True(ReleaseFeed.Compare("2.0.0-rc1-hotfix", "2.0.0-rc.1") > 0);
+        Assert.True(ReleaseFeed.Compare("2.0.0-rc.2", "2.0.0-rc1-hotfix") > 0);
         Assert.True(ReleaseFeed.Compare("2.0.0-hotfix", "2.0.0") > 0);
         Assert.True(ReleaseFeed.Compare("2.0.0-hotfix.2", "2.0.0-hotfix") > 0);
         Assert.True(ReleaseFeed.Compare("2.0.0-alpha.1", "2.0.0-beta.1") < 0);

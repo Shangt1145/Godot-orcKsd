@@ -61,7 +61,7 @@ public static class OrcOpponentDriver
                 catch (OperationCanceledException) { break; }
                 catch (Exception e)
                 {
-                    log?.Invoke($"ai step failed: {e.GetType().Name}: {e.Message}");
+                    log?.Invoke($"ai step failed: {e}");
                     break;
                 }
                 actionCompleted?.Invoke();

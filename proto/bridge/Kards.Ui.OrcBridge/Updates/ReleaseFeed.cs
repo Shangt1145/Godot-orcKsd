@@ -261,7 +261,8 @@ public static class ReleaseFeed
         if (result != 0) return result;
         result = left.Kind.CompareTo(right.Kind);
         if (result != 0) return result;
-        return left.Number.CompareTo(right.Number);
+        result = left.Number.CompareTo(right.Number);
+        return result != 0 ? result : left.Hotfix.CompareTo(right.Hotfix);
     }
 
     /// <summary>去掉 <c>v</c>／<c>V</c> 前缀。</summary>
@@ -271,7 +272,7 @@ public static class ReleaseFeed
         return text.Length > 0 && (text[0] is 'v' or 'V') ? text[1..] : text;
     }
 
-    private static (int Major, int Minor, int Patch, int Kind, int Number) ParseVersion(string version)
+    private static (int Major, int Minor, int Patch, int Kind, int Number, int Hotfix) ParseVersion(string version)
     {
         var text = Normalize(version);
         var dash = text.IndexOf('-');
@@ -285,12 +286,21 @@ public static class ReleaseFeed
 
         var kind = 3;
         var number = 0;
+        var hotfix = 0;
         if (suffix.StartsWith("alpha", StringComparison.OrdinalIgnoreCase)) { kind = 0; number = Tail(suffix); }
         else if (suffix.StartsWith("beta", StringComparison.OrdinalIgnoreCase)) { kind = 1; number = Tail(suffix); }
         else if (suffix.StartsWith("rc.", StringComparison.OrdinalIgnoreCase)) { kind = 2; number = Tail(suffix); }
+        else if (suffix.StartsWith("rc", StringComparison.OrdinalIgnoreCase)
+            && suffix.IndexOf("-hotfix", StringComparison.OrdinalIgnoreCase) is var separator && separator > 2
+            && int.TryParse(suffix.AsSpan(2, separator - 2), NumberStyles.None, CultureInfo.InvariantCulture, out var rc))
+        {
+            kind = 2;
+            number = rc;
+            hotfix = Math.Max(1, Tail(suffix));
+        }
         else if (suffix.StartsWith("hotfix", StringComparison.OrdinalIgnoreCase)) { kind = 4; number = Tail(suffix); }
 
-        return (major, minor, patch, kind, number);
+        return (major, minor, patch, kind, number, hotfix);
     }
 
     private static int Int(string[] parts, int index) =>

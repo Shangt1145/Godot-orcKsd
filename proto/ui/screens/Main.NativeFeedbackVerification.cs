@@ -42,8 +42,10 @@ public partial class Main
             if (runner.CurrentView.Phase != "play" || _battle.ConcedeDialogForVerification.Visible)
                 throw new Exception("Cancelling concede changed the game or left the dialog open.");
             await runner.SubmitAsync(new EndTurn()); runner.Pump();
-            if (_battle.ConcedeEnabledForVerification) throw new Exception("Enemy turn enabled concede.");
-            _battle.OpenConcedeForVerification(); if (_battle.ConcedeDialogForVerification.Visible) throw new Exception("Enemy turn opened concede dialog.");
+            if (!_battle.ConcedeEnabledForVerification) throw new Exception("Local enemy turn disabled concede.");
+            _battle.OpenConcedeForVerification();
+            if (!_battle.ConcedeDialogForVerification.Visible) throw new Exception("Local enemy turn refused to open concede dialog.");
+            await DeckClickAsync(_battle.ConcedeDialogForVerification.GetCancelButton());
             runner.SwitchViewerForVerification(); await runner.SubmitAsync(new EndTurn()); runner.SwitchViewerForVerification();
             await AwaitIdleAsync(20);
             _battle.PresentationPhase += OnPhase;
@@ -96,6 +98,24 @@ public partial class Main
                     new Dictionary<string, IReadOnlyList<string>> { [oldRequest.Slots[0].Name] = ["0"] }))
                 throw new Exception("Old native selection survived restart or answered the new game.");
             GD.Print("NATIVE_TERMINAL_UI_VERIFY_OK mouse-cancel-confirm one-result-after-deployment immediate-input-lock restart-to-mulligan old-native-choice-cancelled stale-answer-rejected");
+
+            await StartRealMatchAsync(interactiveMulligan: false, deckSeed: 7, probe: true, firstPlayerIndex: 0);
+            var training = _runner!;
+            await Until(() => _battle.EndTurnEnabled && training.CurrentView!.SelfHand.Any(c => training.CurrentActions.PlayableUids.Contains(c.Uid)));
+            await AwaitIdleAsync(20);
+            var infantry = training.CurrentView!.SelfHand.First(c => training.CurrentActions.PlayableUids.Contains(c.Uid));
+            await _battle.DragAsync(infantry.Uid, _battle.DropAtRowEdge(false, false));
+            await Until(() => training.CurrentView!.SelfLine.Any(c => c.Uid == infantry.Uid));
+            await training.SubmitAsync(new EndTurn());
+            await Until(() => _battle.EndTurnEnabled && training.CurrentActions.Moves.Any(m => m.Uid == infantry.Uid && m.ToZone == "frontline"));
+            await AwaitIdleAsync(20);
+            if (training.CurrentView!.EnemyLine.Count == 0) throw new Exception("Training opponent passed without deploying.");
+            await _battle.DragAsync(infantry.Uid, _battle.DropAtRowEdge(true, false));
+            await Until(() => training.CurrentView!.SelfLine.Any(c => c.Uid == infantry.Uid && c.Zone == "frontline"));
+            _battle.OpenConcedeForVerification();
+            await DeckClickAsync(_battle.ConcedeDialogForVerification.GetOkButton());
+            await Until(() => training.CurrentView!.ResultReason == "Concede");
+            GD.Print("TRAINING_TURN_VERIFY_OK opponent-deployed friendly-turn-restored player-moved local-concede");
         }
         finally { _battle.PresentationPhase -= OnPhase; StopRealMatch(); _battle.ResetDemo(); _clock.SetSpeed(speed); _clock.SetReducedMotion(quiet); }
     }

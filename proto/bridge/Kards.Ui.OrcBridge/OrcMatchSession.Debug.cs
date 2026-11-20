@@ -18,6 +18,26 @@ public sealed record MatchDebugSnapshot(bool Enabled, bool AutoOpponent, bool Bu
 
 public sealed partial class OrcMatchSession
 {
+    public async Task PrepareWorkshopTrialAsync(string cardId, CancellationToken ct)
+    {
+        var player = _host.Viewer;
+        var card = View.SelfHand.Single(item => item.CardId == cardId);
+        var cost = Math.Max(0, card.EffectiveCost ?? card.Definition.Cost ?? 0);
+        if (cost > 0)
+        {
+            await Match.EffectRuntime.GainPointSlotsAsync(player.Hq, cost, ct);
+            await Match.EffectRuntime.GainPointsAsync(player.Hq, cost, ct);
+        }
+        const string practiceUnit = "USG/units/_4";
+        foreach (var side in Match.Players)
+        {
+            var result = await Match.CardService.CreateAndPlaceToAdjacentAsync(practiceUnit, side, gaps => gaps[0], ct);
+            if (!result.IsSuccess) throw new InvalidDataException("试打未能准备练习目标。");
+        }
+        _host.PollEvents();
+        _host.SettleProjection();
+    }
+
     private bool _debugEnabled;
     private bool _debugOriginalOpponent;
     public MatchDebugSnapshot ReadDebugSnapshot() => new(_debugEnabled, DriveOpponent, IsSubmitting || MulliganPending || TargetPending,

@@ -48,8 +48,31 @@ public sealed class DiyWorkshopLibrary
         ? Id(id,"pack/diy-") : id.StartsWith("pack/",StringComparison.Ordinal)&&DeckCardPacks.ValidSelection([id])));
     public void Save(DiyPackDraft pack)
     {
+        Write(_packs.Where(p=>p.Id!=pack.Id).Append(pack.Snapshot()).ToArray());
+    }
+    public string Remove(string id, DiyCardLibrary cards)
+    {
+        var pack = _packs.Single(p => p.Id == id);
+        var children = _packs.Where(p => p.BasePackId == id).Select(p => p.Name).ToArray();
+        if (children.Length > 0)
+            throw new InvalidOperationException("请先处理仍在使用此卡包的扩展包：" + string.Join("、", children));
+        if (LoadError is not null || cards.LoadError is not null) throw new InvalidDataException(LoadError ?? cards.LoadError);
+        var before = _packs.ToArray();
+        var next = before.Where(p => p.Id != id).ToArray();
+        Validate(next);
+        var backups = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(_path))!, "backups");
+        Directory.CreateDirectory(backups);
+        var archive = Path.Combine(backups, "removed-pack-" + Guid.NewGuid().ToString("N") + ".json");
+        File.WriteAllText(archive, JsonSerializer.Serialize(new { Pack = pack, Cards = cards.Cards.Where(c => c.PackId == id).ToArray() }));
+        Write(next);
+        try { cards.RemovePackCards(id); }
+        catch { Write(before); throw; }
+        return archive;
+    }
+    private void Write(DiyPackDraft[] next)
+    {
         if(LoadError is not null)throw new InvalidDataException(LoadError);
-        var next=_packs.Where(p=>p.Id!=pack.Id).Append(pack.Snapshot()).ToArray();Validate(next);
+        Validate(next);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
         // 覆盖前留一份上一版（同卡库：删卡包/改坏卡包之后还有回头路）。
         BackupRing.Rotate(_path);

@@ -38,7 +38,20 @@ public partial class BattleScreen
     private bool IsFriendlyTurn => !MulliganMotionActive && _readOnlyMode is null && _turnInput.AllowsInput(InteractionView);
     private UiBattleActions InteractionActions => IsFriendlyTurn ? _liveInputActions ?? _actions : NoTurnActions;
     private bool CanEndTurnNow => IsFriendlyTurn && !TargetChoiceVisible && InteractionActions.CanEndTurn;
-    private bool CanConcedeNow => !_usingDemo && CanEndTurnNow && !TargetChoiceVisible;
+    private bool _allowsLocalConcede;
+    public void SetLocalConcede(bool enabled)
+    {
+        _allowsLocalConcede = enabled;
+        UpdateEndTurnButton();
+    }
+    private bool CanConcedeNow => !_usingDemo && _readOnlyMode is null && !TargetChoiceVisible && !MulliganPanelVisible
+        && (CanEndTurnNow || _allowsLocalConcede && InteractionView.Phase == "play");
+
+    public void ReconcileLocalTurn(UiMatchView view)
+    {
+        if (_usingDemo || _state.MatchId != view.MatchId || MulliganMotionActive || TargetChoiceVisible || MulliganPanelVisible) return;
+        if (_turnInput.Reconcile(view)) RefreshTurnInput();
+    }
     private bool? _endTurnFriendlyStyle;
 
     public UiActionInteractionState ReadInteractionState()

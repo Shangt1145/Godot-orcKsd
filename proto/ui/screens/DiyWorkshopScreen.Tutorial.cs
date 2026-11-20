@@ -17,7 +17,6 @@ public partial class DiyWorkshopScreen
     private bool _tutorialActive;
     private Func<bool>? _tutorialCheck;
     private Action? _tutorialFocus;
-    private bool _tutorialSaved;
     internal int TutorialStep => _tutorialStep;
     internal string TutorialStatus => _tutorialStatus.Text;
 
@@ -29,6 +28,8 @@ public partial class DiyWorkshopScreen
             _tutorialPack = config.GetValue("lesson", "pack", "").AsString();
             _tutorialCard = config.GetValue("lesson", "card", "").AsString();
             _tutorialStep = Math.Clamp(config.GetValue("lesson", "step", 0).AsInt32(), 0, 7);
+            if (config.GetValue("lesson", "version", 1).AsInt32() == 1 && _tutorialStep < 7)
+                _tutorialStep = 0;
         }
         TutorialButton = MenuStyles.Button("DIY 引导教程", () => _editor.GuardNavigation(() => GuardNative(StartTutorial)));
         toolbar.AddChild(TutorialButton);
@@ -46,7 +47,7 @@ public partial class DiyWorkshopScreen
         row.AddChild(MenuStyles.Button("暂时退出", () => _editor.GuardNavigation(() => GuardNative(() =>
         { _tutorialActive = false; _tutorialPanel.Hide(); SaveTutorial(); }))));
         row.AddChild(MenuStyles.Button("从头练习（新卡包）", () => _editor.GuardNavigation(() => GuardNative(() =>
-        { _tutorialStep = 0; _tutorialSaved = false; SaveTutorial(); RefreshTutorial(); }))));
+        { _tutorialStep = 0; SaveTutorial(); RefreshTutorial(); }))));
         _tutorialStatus = MenuStyles.Label("", 13, MenuStyles.Dim); _tutorialStatus.AutowrapMode = TextServer.AutowrapMode.WordSmart; box.AddChild(_tutorialStatus);
     }
 
@@ -54,14 +55,13 @@ public partial class DiyWorkshopScreen
     {
         var config = new ConfigFile(); config.SetValue("lesson", "pack", _tutorialPack);
         config.SetValue("lesson", "card", _tutorialCard); config.SetValue("lesson", "step", _tutorialStep);
+        config.SetValue("lesson", "version", 2);
         if (config.Save(TutorialFile) != Error.Ok) _tutorialStatus.Text = "教程进度暂时无法写入磁盘；已保存的卡包草稿仍可在我的卡包中找到。";
     }
 
     private void StartTutorial()
     {
         _tutorialActive = true; _tutorialPanel.Show();
-        _tutorialSaved = false;
-        if (_tutorialStep == 6) _tutorialStep = 5;
         if (_tutorialStep is > 0 and < 7)
         {
             LocateTutorial();
@@ -87,20 +87,20 @@ public partial class DiyWorkshopScreen
     private void RefreshTutorial()
     {
         if (!_tutorialActive) return;
-        var titles = new[] { "第一课 · 制作补给步兵", "1 / 6 · 确定卡牌属性", "2 / 6 · 添加闪击词条", "3 / 6 · 编排部署抽牌", "4 / 6 · 写清卡面说明", "5 / 6 · 保存并检查草稿", "6 / 6 · 应用到游戏", "第一课已完成" };
+        var titles = new[] { "第一课 · 制作补给步兵", "填写卡牌属性", "添加闪击", "添加部署抽牌", "试打第一版", "改成抽两张", "再试一次", "第一课已完成" };
         var bodies = new[] {
             "目标：2 费、2 攻、3 防、行动费用 1 的步兵，带闪击，部署时抽 1 张牌。点击开始会新建独立练习卡包和空白卡牌。",
             "在“基础属性”分区把名称改为“补给步兵”，类型选单位、兵种选步兵；部署费用 2，攻击 2，防御 3，行动费用 1。国家任选。右侧卡面会实时更新。",
             "在“词条与效果”分区勾选“闪击”。词条描述卡牌自身的能力；下一步再制作部署时执行的效果。",
-            "在“词条与效果”分区打开“编辑效果 · 积木 Inspector…”，添加积木效果。顶部时机选择单位部署后的 Self 模板，在工具箱添加“抽牌”，数量填 1。点击“保存到卡包”，再点“完成”返回；效果会自动关联当前卡牌。",
-            "在“词条与效果”分区的“卡面说明”填写“闪击。部署：抽 1 张牌。”。这段文字给玩家阅读；真正的抽牌行为来自上一步的效果。卡图可以在完成教程后导入。",
-            "点击下方“保存并检查”。教程会检查属性、词条和效果，并确认卡牌已通过引擎准入。保存草稿后，构筑和新对局还不会更新。",
-            "点击下方“应用修改”。成功后，这张练习卡会进入当前启用的卡池，可去卡组构筑中选择练习卡包并加入卡组。",
-            "你已完成属性 → 词条 → 效果 → 说明 → 草稿 → 应用。练习卡包保留在“我的卡包”。接下来可导入卡图、修改抽牌数量，再保存并应用；也可导出卡包分享。"
+            "在“词条与效果”点“添加效果”，选抽牌，数量保留为 1。完成后，核对卡面上的“部署：抽 1 张牌”。",
+            "进入试打后，把起手的补给步兵拖到我方支援线。确认抽到一张牌，然后点“返回改卡”。",
+            "点抽牌效果旁的“编辑”，把数量从 1 改为 2。",
+            "再次部署补给步兵。确认抽到两张牌，然后点“返回改卡”。",
+            "练习卡留在练习卡包的草稿中。你可以继续改卡，也可以在卡包内应用修改或导出分享。"
         };
         _tutorialTitle.Text = titles[_tutorialStep]; _tutorialBody.Text = bodies[_tutorialStep];
-        TutorialNext.Text = _tutorialStep switch { 0 => "创建练习卡包并开始", 5 => "保存并检查", 6 => "应用修改", 7 => "完成教程", _ => "检查并继续 →" };
-        _tutorialBack.Visible = _tutorialStep is > 1 and < 6;
+        TutorialNext.Text = _tutorialStep switch { 0 => "创建练习卡包并开始", 4 or 6 => "试打这张卡", 7 => "完成教程", _ => "检查并继续 →" };
+        _tutorialBack.Visible = _tutorialStep is 2 or 3;
         _tutorialLocate.Visible = _tutorialStep is > 0 and < 7;
         _tutorialStatus.Text = "";
     }
@@ -126,23 +126,22 @@ public partial class DiyWorkshopScreen
         }
         if (!IsTutorialCard) { _tutorialStatus.Text = "请点击“定位操作区域”返回练习卡牌。"; return; }
         if (_tutorialCheck?.Invoke() != true) return;
-        if (_tutorialStep == 5)
+        if (_tutorialStep is 4 or 6)
         {
-            if (_saveNativeCard?.Invoke() != true) { _tutorialStatus.Text = "草稿未保存，请查看上方错误提示。"; return; }
-            if (!_native!.PreviewCards().Any(c => c.CardId == _nativeAsset!.AppId)) { _tutorialStatus.Text = "草稿已保存，但未通过引擎准入。请检查上方提示和规则。"; return; }
-            _tutorialSaved = true;
+            TryNativeDraft(_nativeAsset!);
+            return;
         }
-        if (_tutorialStep == 6)
-        {
-            if (_nativeDirty || !_tutorialSaved) { _tutorialStep = 5; RefreshTutorial(); return; }
-            NativePromoteButton.EmitSignal(Button.SignalName.Pressed); return;
-        }
+        if (_saveNativeCard?.Invoke() != true) { _tutorialStatus.Text = "草稿未保存，请查看工坊提示。"; return; }
         _tutorialStep++; SaveTutorial(); RefreshTutorial(); _tutorialFocus?.Invoke();
     });
 
-    private void TutorialApplied(string id)
+    internal void ReportTrialError(string error) => _notice.Text = "试打未能开始：" + error;
+
+    internal void FinishTutorialTrial(int? drawn)
     {
-        if (!_tutorialActive || id != _tutorialPack || _tutorialStep != 6) return;
-        _tutorialStep = 7; SaveTutorial(); RefreshTutorial();
+        if (!IsTutorialCard || _tutorialStep is not (4 or 6)) return;
+        var expected = _tutorialStep == 4 ? 1 : 2;
+        if (drawn != expected) { _tutorialStatus.Text = $"请部署练习卡并确认抽到 {expected} 张牌，再返回。"; return; }
+        _tutorialStep++; SaveTutorial(); RefreshTutorial(); _tutorialFocus?.Invoke();
     }
 }

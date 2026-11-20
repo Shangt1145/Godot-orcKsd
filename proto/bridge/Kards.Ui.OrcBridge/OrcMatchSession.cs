@@ -107,7 +107,7 @@ public sealed partial class OrcMatchSession : IDisposable
         try
         {
             await OrcOpponentDriver.PlayTurnAsync(_host, TargeterBridge, Match.CurrentPlayer, ct: ct,
-                actionCompleted: _host.PollEvents).WaitAsync(OpponentTurnBudget, ct);
+                actionCompleted: _host.PollEvents, log: message => GameLog.Warn("ai", message)).WaitAsync(OpponentTurnBudget, ct);
         }
         catch (TimeoutException)
         {
@@ -758,7 +758,12 @@ public sealed partial class OrcMatchSession : IDisposable
         if (_disposed) return UiSubmitOutcome.Interrupted;
         if (command is ChooseMulligan keep) return await CompleteMulliganAsync(keep.KeepUids, ct, keep.RequestId);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
-        try { if (!await _commands.WaitAsync(0, linked.Token)) return UiSubmitOutcome.Busy; }
+        try
+        {
+            if (command is Concede && !MulliganPending && !TargetPending)
+                await _commands.WaitAsync(linked.Token);
+            else if (!await _commands.WaitAsync(0, linked.Token)) return UiSubmitOutcome.Busy;
+        }
         catch (OperationCanceledException) { return UiSubmitOutcome.Interrupted; }
         try
         {
@@ -769,6 +774,13 @@ public sealed partial class OrcMatchSession : IDisposable
             _activeCommandToken = ct;
             using var cancelChoice = ct.Register(CancelTargetChoice);
             if (Match.Phase != MatchPhase.Play) return UiSubmitOutcome.WrongPhase;
+            if (command is Concede)
+            {
+                var conceded = Match.Concede(_host.Viewer, ct);
+                if (conceded.IsAccepted) return UiSubmitOutcome.Applied;
+                LastRejectionReason = conceded.FailureReason?.ToString();
+                return UiSubmitOutcome.Rejected;
+            }
             if (!IsViewerOnTurn) return UiSubmitOutcome.NotYourTurn;
             var inputActor = BattleInteractionStateMachine.Actor(command) is { } actorUid
                 ? OrcRefs.EntityOf(Resolve(actorUid)) : _host.Viewer.Hq;
@@ -787,11 +799,6 @@ public sealed partial class OrcMatchSession : IDisposable
                     _interactiveCommand = true;
                     if(component is null||!await component.UseAsync(skill.SkillId,ct))return UiSubmitOutcome.Rejected;
                     _host.CaptureCompletedActions();return UiSubmitOutcome.Applied;
-                case Concede:
-                    var conceded = Match.Concede(_host.Viewer, ct);
-                    if (conceded.IsAccepted) return UiSubmitOutcome.Applied;
-                    LastRejectionReason = conceded.FailureReason?.ToString();
-                    return UiSubmitOutcome.Rejected;
                 case PlayCard play:
                     _choiceSourceUid = play.Uid;
                     _interactiveCommand = true;

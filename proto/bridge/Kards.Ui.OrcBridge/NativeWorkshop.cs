@@ -287,6 +287,13 @@ public sealed partial class NativeWorkshop
         CollectPresentationWarnings(warnings);
         return cards;
     }
+    public PackSet CreateTrialPackSet()
+    {
+        var root = Editor.Session!.TemporaryRoot;
+        var draft = OrcEngineHost.LoadPackContent(root, Manifest(root));
+        var packs = PackSet.FromSnapshot(OrcEngineHost.Snapshot());
+        return packs with { Contents = packs.Contents.Where(content => content.Prefix != draft.Prefix).Append(draft).ToArray() };
+    }
     private AssetEditor Editor => HasSession ? _editor! : throw new InvalidOperationException("请先进入原生卡包编辑。");
 
     /// <summary>

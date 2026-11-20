@@ -15,7 +15,8 @@ public static class NativeTextAuthoring
 {
     /// <summary>Complete text and native compilation must succeed before the atomic card save starts.</summary>
     public static NativeTextAuthoringResult Apply(NativeWorkshop workshop, NativeWorkshopAsset asset,
-        string cardJson, string text, string flavor, bool append, IReadOnlyList<UiCardDefinition> catalog)
+        string cardJson, string text, string flavor, bool append, IReadOnlyList<UiCardDefinition> catalog,
+        IReadOnlyList<OrcEffectDraft>? currentRules = null)
     {
         try
         {
@@ -24,8 +25,9 @@ public static class NativeTextAuthoring
             var parsed = OrcInspector.CompileText(asset.AppId, text, document.CardType, catalog);
             if (!parsed.ParseComplete || !parsed.AllCompiled) return new(null, parsed.Problems);
             var incoming = parsed.Parse.Effects.Select(OrcEffectEditing.ToDraft).ToArray();
-            var previous = workshop.CardPresentation(asset.Id).EditableRules;
-            var rules = append ? previous.Concat(incoming).ToArray() : incoming;
+            var previous = currentRules ?? workshop.CardPresentation(asset.Id).EditableRules;
+            var rules = (append ? previous : previous.Where(rule => WorkshopQuickEffect.From(rule) is not null))
+                .Concat(incoming).ToArray();
 
             // Use the engine's own keyword writer, including quantified declarations. Keep opaque attributes.
             if (parsed.Parse.Keywords.Count > 0)

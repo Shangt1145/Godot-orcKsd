@@ -242,8 +242,13 @@ public partial class Main : Control
             CommandRequested?.Invoke(command);
         };
         // 验证环境里重开沿用同一套固定条件（人工对手、玩家先手），产品环境仍按种子随机。
-        _battle.RealMatchRequested += () => _ = StartRealMatchAsync(trialDeck: _trialDeck,
-            manualOpponentForVerification: _verificationRun, firstPlayerIndex: _verificationRun ? 0 : null);
+        _battle.RealMatchRequested += () =>
+        {
+            if (_workshopTrial is { } trial) _ = StartWorkshopTrialAsync(trial.Card, trial.Packs);
+            else _ = StartRealMatchAsync(trialDeck: _trialDeck,
+                manualOpponentForVerification: _verificationRun, firstPlayerIndex: _verificationRun ? 0 : null);
+        };
+        _battle.ReturnToWorkshopRequested += ReturnFromWorkshopTrial;
         _battle.NavigationRequested += id => {
             if (id == "deck" && _deckEditor.Draft.PackIds is { Length: 0 }) _deckEditor.CreateNew();
             else Show(id);
@@ -357,14 +362,7 @@ public partial class Main : Control
         _workshop=new DiyWorkshopScreen();_workshop.Initialize(_workshopLibrary,_diy,_diyEditor,_deckService,_textures,RefreshDiy,()=>_clock.ReducedMotion);
         _workshop.ConfigureNative(_nativeWorkshop, () => { _textures.Clear(); ReloadPacks(); RefreshDiy(); });
         _workshop.ConstructRequested += openAuthoredCardInDeck;
-        _workshop.TrialRequested += card =>
-        {
-            var starter = _deckService.Starter(12);
-            var copies = Math.Min(2, ConstructionRules.CopyLimit(card.Rarity));
-            var trial = starter with { Name = card.Name + " · 试打",
-                CardIds = Enumerable.Repeat(card.CardId, copies).Concat(starter.CardIds.Take(12 - copies)).ToArray() };
-            Show("battle"); _ = StartRealMatchAsync(deckSeed: 37, trialDeck: trial, firstPlayerIndex: 0);
-        };
+        _workshop.TrialRequested += (card, packs) => _ = StartWorkshopTrialAsync(card, packs);
         AddScreen(content, "editor", _workshop);
         // All authoring routes share one block Inspector and an explicit workshop context.
         _blockEditor = new HandlerBlockEditorScreen(); _blockEditor.Initialize();
@@ -614,6 +612,7 @@ public partial class Main : Control
     {
         _feed = feed;
         BindAppearance(feed);
+        _battle.SetLocalConcede(feed is OrcMatchRunner);
         _battle.SetReadOnlyMode(feed is ReplayMatchFeed ? "回放中" : feed is RemoteMatchFeed { IsObserver: true } ? "观战中" : null);
         AttachRecording(feed);
         // 单机＝主线程，保持同步；远端＝协议线程，必须 deferred。
@@ -679,7 +678,12 @@ public partial class Main : Control
         UpdateReplayControls();
         UpdateLifecycleNotice(delta);
         if (_feed == feed && feed?.CurrentView is { } view)
+        {
+            if (feed is OrcMatchRunner { IsSubmitting: false, MulliganPending: false, TargetPending: false }
+                && _presentations is { IsBusy: false })
+                _battle.ReconcileLocalTurn(view);
             _battle.UpdateInputProjection(view, feed.CurrentActions);
+        }
     }
 
     /// <summary>
@@ -726,6 +730,9 @@ public partial class Main : Control
 
     private void StopRealMatch()
     {
+        _workshopTrial = null;
+        _workshopTrialOpening = null;
+        _battle?.ShowWorkshopReturn(false);
         _replayLoadVersion++;
         _battle?.SetReadOnlyMode(null);
         _replayRecorder?.Dispose(); _replayRecorder = null;

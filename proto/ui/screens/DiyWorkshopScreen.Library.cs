@@ -6,10 +6,14 @@ namespace Kards.Ui;
 
 public partial class DiyWorkshopScreen
 {
-    private DiyPackDraft[] WorkshopPacks()
+    private DiyPackDraft[] WorkshopPacks(IEnumerable<NativeWorkshopPack>? nativePacks = null)
     {
         var known = BuiltInWorkshopCatalog.Packs(_store);
-        var installed = _native?.Packages().Select(p => new DiyPackDraft { Id = "pack/" + p.Id, Name = p.Name }) ?? [];
+        var installed = (nativePacks ?? _native?.Packages() ?? []).Select(p => new DiyPackDraft
+        {
+            Id = "pack/" + p.Id, Name = p.Name,
+            BasePackId = _native?.BasePackOf(p.Root, p.Id) is { } parent ? "pack/" + parent : null
+        });
         return installed.Concat(known).GroupBy(p => p.Id, StringComparer.Ordinal).Select(g => g.Last()).ToArray();
     }
 
@@ -38,6 +42,8 @@ public partial class DiyWorkshopScreen
             }));
         if (native.Diagnostics.Count > 0)
             parent.AddChild(MenuStyles.Button($"查看 {native.Diagnostics.Count} 条检查结果", () => NativeText("卡包检查结果", string.Join("\n", native.Diagnostics))));
+        if (_native!.CanRemoveInstalledPack(native))
+            parent.AddChild(MenuStyles.Button($"删除{PackKind(pack.IsExpansion)}…", () => ConfirmNativeRemoval(parent, native.Id, native.Name, pack.IsExpansion)));
     }
 
     /// <summary>
@@ -54,6 +60,49 @@ public partial class DiyWorkshopScreen
             $"DIY 卡包 · {cards.Length} 张卡 · {pack.Keywords.Length} 个词条"
             + (pack.IsExpansion ? " · 扩展包" : ""), 14, MenuStyles.Gold));
         AddCompatibleExportButtons(parent, pack, cards);
+        if (!pack.IsBuiltIn && _store.Packs.Any(p => p.Id == pack.Id))
+            parent.AddChild(MenuStyles.Button($"删除{PackKind(pack.IsExpansion)}…", () => ConfirmPackRemoval(parent, pack.Name, pack.IsExpansion, () =>
+            {
+                if (OrcEngineHost.Current?.CardPacksLocked == true)
+                    throw new InvalidOperationException("请先结束当前对局，再更改卡包。");
+                return _store.Remove(pack.Id, _cards);
+            })));
+    }
+
+    private static string PackKind(bool expansion) => expansion ? "扩展包" : "卡包";
+
+    private void ConfirmNativeRemoval(Control parent, string id, string name, bool expansion)
+        => ConfirmPackRemoval(parent, name, expansion, () =>
+        {
+            var extensions = _store.Packs.Where(p => p.BasePackId == "pack/" + id).Select(p => p.Name).ToArray();
+            if (extensions.Length > 0)
+                throw new InvalidOperationException("请先处理仍在使用此卡包的扩展包：" + string.Join("、", extensions));
+            return _native!.RemovePackage(id);
+        });
+
+    private void ConfirmPackRemoval(Control parent, string name, bool expansion, Func<string> remove)
+    {
+        if (parent.GetParent() is Window window && window != GetWindow()) window.Hide();
+        GuardLeaving(() =>
+        {
+            var kind = PackKind(expansion);
+            var confirm = new ConfirmationDialog
+            {
+                Title = "删除" + kind, OkButtonText = "删除" + kind, CancelButtonText = "取消",
+                DialogText = $"从工坊删除「{name}」？这个包及其草稿会备份到本机。使用该包的卡组会保留原记录，缺失卡牌的卡组需要调整后才能出战。"
+            };
+            AddChild(confirm);
+            confirm.Confirmed += () => NativeTry(() =>
+            {
+                var backup = remove();
+                if (_nativeChanged is { } refresh) refresh(); else _changed();
+                ShowNativePackages();
+                _notice.Text = $"已删除「{name}」。备份：{backup}";
+            });
+            confirm.Confirmed += confirm.QueueFree;
+            confirm.Canceled += confirm.QueueFree;
+            confirm.PopupCentered();
+        });
     }
 
     /// <summary>

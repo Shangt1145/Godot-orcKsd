@@ -74,10 +74,14 @@ public sealed record DiyCardDraft
     };
 }
 
+public sealed record UiWorkshopQuickEffect(string Action, int Amount, int Defense);
+
 /// <summary>一条结构化效果：触发模板 ＋ 守卫 ＋ op 序列（编辑器持久化形态，纯 POCO）。</summary>
 public sealed record OrcEffectDraft
 {
     [JsonExtensionData] public Dictionary<string,JsonElement>? ExtraFields {get;init;}
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public UiWorkshopQuickEffect? QuickEffect { get; init; }
     /// <summary>Desktop OrC/Inspector 的完整声明图。存在时为唯一效果真源；未知字段也必须保留。</summary>
     public string? DesktopJson { get; init; }
     /// <summary>Imported native effect snapshot, retained losslessly and displayed read-only.</summary>
