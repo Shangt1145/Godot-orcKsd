@@ -4,6 +4,8 @@ namespace Kards.Ui.OrcBridge;
 
 public sealed partial class NativeWorkshop
 {
+    public static bool CardPacksLocked => OrcEngineHost.Current?.CardPacksLocked == true;
+
     public string? BasePackOf(string root, string id)
     {
         try { return WorkshopPackagePresentation.Parent(root, id); }

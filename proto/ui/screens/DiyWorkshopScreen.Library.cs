@@ -63,7 +63,7 @@ public partial class DiyWorkshopScreen
         if (!pack.IsBuiltIn && _store.Packs.Any(p => p.Id == pack.Id))
             parent.AddChild(MenuStyles.Button($"删除{PackKind(pack.IsExpansion)}…", () => ConfirmPackRemoval(parent, pack.Name, pack.IsExpansion, () =>
             {
-                if (OrcEngineHost.Current?.CardPacksLocked == true)
+                if (NativeWorkshop.CardPacksLocked)
                     throw new InvalidOperationException("请先结束当前对局，再更改卡包。");
                 return _store.Remove(pack.Id, _cards);
             })));
