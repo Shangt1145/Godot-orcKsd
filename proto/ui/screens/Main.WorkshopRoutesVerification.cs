@@ -59,8 +59,13 @@ public partial class Main
             var id = face.Definition.CardId; await DeckClickAsync(face);
             var previews = _workshop.FindChildren("*", "Control", true, false).OfType<CardFace>().Where(c => c.IsVisibleInTree()).ToArray();
             Check(previews.Any(c => c.Size.Y >= 330), "Pack preview is too small to read: " + pack.Name);
-            Check(_workshop.FindChildren("*", "Button", true, false).OfType<Button>().Count(b => b.IsVisibleInTree() && b.Text.Length > 3 && b.Text[0] == '0' && char.IsDigit(b.Text[1])) >= 4,
-                "Card editor is missing its section navigation: " + pack.Name);
+            var sectionNames = new[] { "基础属性", "词条与效果", "卡图与外观", "卡牌描述", "01  属性", "02  规则", "03  卡图", "04  描述" };
+            var sections = _workshop.FindChildren("*", "Button", true, false).OfType<Button>()
+                .Where(b => b.IsVisibleInTree() && b.ToggleMode && sectionNames.Contains(b.Text)).ToArray();
+            Check(sections.Length == 4, "Card editor is missing its section navigation: " + pack.Name);
+            await DeckClickAsync(sections[1]);
+            Check(sections[1].ButtonPressed && !sections[0].ButtonPressed, "Card editor did not switch sections: " + pack.Name);
+            await DeckClickAsync(sections[0]);
             Check(!_diyEditor.Cards.IsVisibleInTree(), "Pack exposed the legacy sidebar: " + pack.Name); checkedCards++;
             if (!pack.IsBuiltIn && _diy.Cards.FirstOrDefault(c => c.RuntimeId == id) is { } before)
             {
