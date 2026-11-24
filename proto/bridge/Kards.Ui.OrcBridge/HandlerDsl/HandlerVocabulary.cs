@@ -273,6 +273,83 @@ public static class HandlerVocabulary
             ? label : "label_" + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(label));
     }
 
+    // ── 反查：中文名 → 契约里的 id ───────────────────────────────────────────
+    // 打印器只做了单向翻译；文本要能读回来（将来还要能编辑），就得有回程票。
+    // 一律「查不到就算了」：猜错的代价比报错大得多——保存是覆盖式的。
+
+    private static Dictionary<string, List<string>>? _byTitle;
+
+    /// <summary>同一个标题可能对应多个 op（历史遗留），所以返回候选而不是单个。</summary>
+    public static IReadOnlyList<string> OpsByTitle(string title)
+    {
+        if (_byTitle is null)
+        {
+            _byTitle = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var (op, info) in Nodes)
+            {
+                if (!_byTitle.TryGetValue(info.Title, out var list)) _byTitle[info.Title] = list = [];
+                list.Add(op);
+            }
+        }
+        return _byTitle.TryGetValue(title, out var ops) ? ops : [];
+    }
+
+    public static bool TryReadablePath(string label, out string path) => TryReverse(Readables, label, out path);
+
+    public static bool TryViewFieldName(string label, out string name) => TryReverse(ViewFields, label, out name);
+
+    public static bool TryOperatorName(string label, out string op) => TryReverse(Operators, label, out op);
+
+    /// <summary>
+    /// 字面量中文名 → 原值。名单必须与 <see cref="LiteralLabel"/> 的 switch 一致——
+    /// 两份表对不上，就会出现"打得出来、读不回去"的词。
+    /// </summary>
+    public static bool TryLiteralValue(string label, out string value)
+    {
+        foreach (var candidate in LiteralIds)
+        {
+            if (!string.Equals(LiteralLabel(candidate), label, StringComparison.Ordinal)) continue;
+            value = candidate;
+            return true;
+        }
+        value = label;
+        return false;
+    }
+
+    /// <summary>绑定名 → 作者看得到的那句话（<see cref="BindingLabel"/> 的反向）。</summary>
+    public static bool TryBindingName(string label, out string name)
+    {
+        foreach (var candidate in new[] { "picked", "t", "x" })
+        {
+            if (BindingLabel(candidate) != label) continue;
+            name = candidate;
+            return true;
+        }
+        name = label;
+        return false;
+    }
+
+    private static readonly string[] LiteralIds =
+    [
+        "one", "all", "random", "self", "both", "enemy", "friendly", "any",
+        "unit", "hq", "card", "frontline", "support", "hand", "deck",
+        "attack", "defense", "opCost", "deployCost",
+        "gte", "lte", "gt", "lt", "eq", "empty", "first",
+        "Permanent", "TurnEnd", "NextOwnerTurnStart",
+    ];
+
+    private static bool TryReverse(IReadOnlyDictionary<string, string> table, string label, out string id)
+    {
+        foreach (var (key, value) in table)
+        {
+            if (value != label) continue;
+            id = key;
+            return true;
+        }
+        id = label;
+        return false;
+    }
+
     /// <summary>
     /// 把契约的节点路径（<c>actions[0].value.read.path</c>）翻成作者能读的位置
     /// ——「第1块 · 值 · 读取 · 属性」。原始路径放进 tooltip，排查时仍能拿到。

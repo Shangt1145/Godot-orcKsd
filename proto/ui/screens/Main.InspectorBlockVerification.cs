@@ -15,6 +15,9 @@ public partial class Main
             block.EmitSignal(Control.SignalName.GuiInput, new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = true });
             await Frame();
         }
+        void PressButton(string text) =>
+            _blockEditor.FindChildren("*", "Button", true, false).OfType<Button>()
+                .Single(b => b.Text == text).EmitSignal(Button.SignalName.Pressed);
         var original = _blockEditor.Document.Clone();
         var originalParent = _blockEditor.SelectedTrigger;
         var actions = Blocks().Where(b => b.HasMeta("action_node")).Select(b => b.GetMeta("action_node").AsString()).ToHashSet();
@@ -101,6 +104,59 @@ public partial class Main
             Check((pin.Kind == HandlerPinKind.Enum ? stored.Text(pin.Name) : stored.Value(pin.Name)?.Text) == expected, "Fixed literal block did not preserve its engine value");
         }
         GD.Print($"INSPECTOR_FIXED_BLOCKS_OK literal-pins={literalPins.Length} no-dropdown no-popup-menu");
+
+        // 伪代码与积木**并排**（不是切换）：默认就该看得见，且用的是游戏词。
+        _blockEditor.Open("伪代码视图验证", HandlerDocument.Sample());
+        await Frame();
+        var codeEdit = _blockEditor.FindChildren("*", "CodeEdit", true, false).OfType<CodeEdit>().Single();
+        var printed = codeEdit.Text;
+        Check(codeEdit.IsVisibleInTree(), "伪代码面板默认没有显示（应与积木并排）。");
+        Check(printed.Contains("当「", StringComparison.Ordinal), "伪代码没有打印触发行：" + printed);
+        Check(printed.Contains("如果 ", StringComparison.Ordinal) && printed.Contains("否则 {", StringComparison.Ordinal),
+            "伪代码没有打印分支与否则段：" + printed);
+        Check(printed.Contains("造成伤害", StringComparison.Ordinal) && !printed.Contains("\"damage\"", StringComparison.Ordinal),
+            "伪代码用了 op 英文名而不是游戏词：" + printed);
+        Check(printed.Contains("遍历 ", StringComparison.Ordinal), "伪代码没有打印遍历：" + printed);
+        // 回读自检：伪代码必须能被解析回同一棵树，否则"可编辑"就是改结构的许可证。
+        var status = _blockEditor.FindChildren("*", "Label", true, false).OfType<Label>()
+            .FirstOrDefault(l => l.Text.Contains("回读自检", StringComparison.Ordinal));
+        Check(status is not null && status.Text.Contains("通过", StringComparison.Ordinal),
+            "伪代码回读自检没有通过：" + (status?.Text ?? "没有状态行"));
+
+        // 可编辑 + 应用：改一个数字 → 应用 → 积木跟着变 → 撤销能回去。
+        var jsonBefore = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
+        codeEdit.Text = codeEdit.Text.Replace("打多少: 3", "打多少: 7", StringComparison.Ordinal);
+        codeEdit.EmitSignal(CodeEdit.SignalName.TextChanged);
+        await Frame();
+        Check(status!.Text.Contains("已改动", StringComparison.Ordinal), "改动文本后没有提示「已改动」：" + status.Text);
+        PressButton("应用到积木");
+        await Frame();
+        var jsonAfter = _blockEditor.Document.ToJsonText(_blockEditor.Catalog);
+        // JSON 是缩进格式：amount 下面是 {"lit": 7}，不是 "amount": 7。
+        Check(jsonAfter.Contains("\"lit\": 7", StringComparison.Ordinal) && jsonAfter != jsonBefore,
+            "应用伪代码后积木没有跟着变：" + jsonAfter);
+        PressButton("撤销");
+        await Frame();
+        Check(_blockEditor.Document.ToJsonText(_blockEditor.Catalog) == jsonBefore, "应用之后撤销没有回到原来的结构");
+
+        // 读不回来的文本必须**拒绝应用**，且不许动文档——这是这块面板唯一的安全边界。
+        codeEdit.Text = "当「部署时」时 {\n  造成伤害(打多少: 7\n";
+        codeEdit.EmitSignal(CodeEdit.SignalName.TextChanged);
+        await Frame();
+        PressButton("应用到积木");
+        await Frame();
+        Check(_blockEditor.Document.ToJsonText(_blockEditor.Catalog) == jsonBefore, "坏文本居然被应用了");
+        Check(status.Text.Contains("行", StringComparison.Ordinal), "坏文本没有给出带行号的错误：" + status.Text);
+        PressButton("还原");
+        await Frame();
+        if (DisplayServer.GetName() != "headless")
+        {
+            await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+            var shotDir = ProjectSettings.GlobalizePath("res://artifacts/inspector-blocks");
+            Directory.CreateDirectory(shotDir);
+            GetViewport().GetTexture().GetImage().SavePng(Path.Combine(shotDir, "code-view.png"));
+        }
+        GD.Print($"INSPECTOR_CODE_VIEW_OK lines={printed.Split('\n').Length}");
         _blockEditor.Open("积木能力验证", original);
         _blockEditor.ConfigureTarget(null, originalParent);
         await Frame();

@@ -2678,6 +2678,33 @@
     //   （"若可能"的语义由 `OPS.move` 自带 —— 前线被占/已满就静默跳过。）
     if (/^(?:若可能|如果可能|尽可能|有空位的话?|尚有空间)$/.test(s)) return { actions: [] };
 
+    // ★ 2026-11-14（制作者报）：「下个(友方/敌方)回合开始时，<动作>」= 延迟执行。
+    //   `nextTurnStart` 原语**早就存在**（effects.js / engine.js 的 turnStart 派发），缺的只是"认出这句话"。
+    //   ⚠ 必须放在**切段之前**（这里）：复合句按「，」切分在 P.parse 内部更靠后的流程里发生，
+    //     写成一条 LONGTAIL 整句正则实测完全无效——前段自己先被判 unparsed，整句就废了。
+    //   ⚠ 内层动作省略阵营时（"失去两个指挥点"）必须跟随外层：执行点用 ctxOwner（排定时的施动者）
+    //     重建上下文，内层 self 恒指施动者；「下个敌方回合开始时」若不改写就是"我方在敌方回合掉 2 点"，语义反了。
+    if (!opts._noDelayStart) {
+      const dm = /^下个?(友方|我方|敌方|对方|对手)?回合开始时[，,]\s*([\s\S]+)$/.exec(s);
+      if (dm) {
+        const outer = /敌方|对方|对手/.test(dm[1] || '') ? 'enemy' : 'self';
+        const inner = P.parse(dm[2], Object.assign({}, opts, { _noDelayStart: true }));
+        if (inner && !inner.unparsed && inner.actions && inner.actions.length) {
+          const acts = inner.actions.map(function (a) {
+            return a && a.side === 'self' ? Object.assign({}, a, { side: outer }) : a;
+          });
+          const delayed = { actions: [{ op: 'nextTurnStart', side: outer, actions: acts }] };
+          if (inner.targets && inner.targets.length) delayed.targets = inner.targets;
+          return delayed;
+        }
+        // ⚠ 内层解析不了时**不要**自己造诊断：放手交给原链路（后续按「，」切段那套），
+        //   产出的仍是原来那句「复合句中至少有一个子句未能完整解析」。理由有二：
+        //   ① 语义上没变差，只是文案不同；② 1553 张基准卡逐卡比 SHA（DesktopAuthoringTests
+        //      「全语料_使用完整原版编译器而非缩减句式表」），自造文案会平白让 3 张**没有变好**的卡
+        //      指纹漂移，逼着复核清单为无收益的改动背书。只在真的接管成功时改变行为。
+      }
+    }
+
     /* ★★ 卡面变量（Alan 09-28「变量系统也弄好」）—— 与 Inspector 同一套 v1/v2 命名。
      *   ①「等同于v1的费用 / 攻击力 / 防御力 / 行动花费」→ 数值 {cardVar:'v1', stat:'cost'}
      *      ⚠ 做法：先把这段换成**哨兵数字**，让原语组合器照常解析出动作（amount 先当普通数字），

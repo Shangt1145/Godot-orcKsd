@@ -64,6 +64,7 @@
 | [DIY_WORKSHOP_UI_CASE_STUDY](research/DIY_WORKSHOP_UI_CASE_STUDY_20261021.md) | 制卡工具与规则组合的案例 | 参照 |
 | [MOBILE_PORT](research/MOBILE_PORT_20261024.md) | 安卓优先的移植调研 | 参照 |
 | [ASSET_EDITOR_ISSUE_REVIEW](research/ASSET_EDITOR_ISSUE_REVIEW_20261022.md) | "编辑器未接入资产编辑器"的核对结论 | 记录 |
+| [ENGINE_ISSUES_20261121](research/ENGINE_ISSUES_20261121.md) | 已提交引擎仓库的三份 issue 原文（#6 外部服务端无法引用宿主程序集、#7 词条预制体绑定、#8 orderTargets 与跨效果回指） | 现行 |
 | [KARDS_RESEARCH_2026-10-07](research/KARDS_RESEARCH_2026-10-07.md) | 最初的接入差距分析 | 历史 |
 | [RESEARCH_2026-10-06](research/RESEARCH_2026-10-06.md) | 阶段调研（第一天） | 历史 |
 

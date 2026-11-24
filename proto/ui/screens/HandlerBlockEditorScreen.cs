@@ -31,6 +31,14 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     private VBoxContainer _blocks = null!;
     private ScrollContainer _canvas = null!;
+    private PanelContainer? _codePanel;
+    private CodeEdit? _codeView;
+    private Label? _codeStatus;
+    private Label? _canvasHint;
+    private bool _codeMode = true;
+    /// <summary>作者在伪代码里改过、还没落实回积木。为真时重画**不许**覆盖文本。</summary>
+    private bool _codeDirty;
+    private bool _suppressCodeEdit;
     private VBoxContainer _issues = null!;
     private TextEdit _json = null!;
     private Label _summary = null!, _issueCount = null!, _cardLabel = null!;
@@ -208,6 +216,9 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _toolboxToggle = MenuStyles.Button("工具箱 ▾", () => SetToolboxOpen(!_toolboxOpen));
         _toolboxToggle.TooltipText = "所有能用的积木都在左栏，点一块就插进去";
         head.AddChild(_toolboxToggle);
+        var codeToggle = MenuStyles.Button("伪代码", () => SetCodeMode(!_codeMode));
+        codeToggle.TooltipText = "收起或展开右侧的伪代码；它与积木是同一份文档的两种画法";
+        head.AddChild(codeToggle);
         head.AddChild(MenuStyles.Button("自动解析器", () => GuardLeaving(() => TextAuthoringRequested?.Invoke())));
         head.AddChild(_undo);
         head.AddChild(_redo);
@@ -240,8 +251,53 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         canvasPanel.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("151f1b"), new("405448"), 1, 18));
         var canvasContent = new VBoxContainer(); canvasContent.AddThemeConstantOverride("separation", 12); canvasPanel.AddChild(canvasContent);
         canvasContent.AddChild(MenuStyles.Label("执行顺序", 18, MenuStyles.Ink));
-        canvasContent.AddChild(MenuStyles.Label("从左侧添加动作，按从上到下的顺序执行。", 13, MenuStyles.Dim));
-        canvasContent.AddChild(scroll); body.AddChild(canvasPanel);
+        _canvasHint = MenuStyles.Label("左边拼积木，右边是同一份效果的伪代码：可以直接改，点「应用到积木」生效；拖动分隔条可调宽度。", 13, MenuStyles.Dim);
+        canvasContent.AddChild(_canvasHint);
+
+        // 代码视图：与积木**并排**，不是替代。积木负责改，伪代码负责读，
+        // 两块同屏才能一边改一边对——切换式视图逼作者在脑子里来回换。
+        _codePanel = new PanelContainer
+        {
+            CustomMinimumSize = new Vector2(300, 0),
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        _codePanel.AddThemeStyleboxOverride("panel", MenuStyles.Box(new("11170f"), new("2d3a2c"), 1, 12));
+        _codeView = new CodeEdit
+        {
+            Editable = true,
+            SelectingEnabled = true,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        _codeView.TextChanged += OnCodeEdited;
+        // 只读文本也要能读：默认主题给的是暗灰字，压在深底上等于让你猜。
+        _codeView.AddThemeColorOverride("font_color", new Color("dfe6d8"));
+        _codeView.AddThemeColorOverride("font_readonly_color", new Color("dfe6d8"));
+        _codeView.AddThemeFontSizeOverride("font_size", 15);
+        _codeView.AddThemeStyleboxOverride("normal", new StyleBoxEmpty());
+        _codeView.AddThemeStyleboxOverride("read_only", new StyleBoxEmpty());
+        // 伪代码是"读"的一面，回读校验是它的自检：读不回来就说明这段文本不可信。
+        _codeStatus = MenuStyles.Label("", 11, MenuStyles.Dim);
+        _codeStatus.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        var codeActions = new HBoxContainer();
+        codeActions.AddThemeConstantOverride("separation", 8);
+        var apply = MenuStyles.Button("应用到积木", ApplyCode);
+        apply.TooltipText = "把这段伪代码读回来，替换画布上的结构；可以撤销。";
+        MenuStyles.Primary(apply);
+        codeActions.AddChild(apply);
+        codeActions.AddChild(MenuStyles.Button("还原", () => { _codeDirty = false; RefreshCode(force: true); }));
+        var codeBox = new VBoxContainer();
+        codeBox.AddThemeConstantOverride("separation", 6);
+        codeBox.AddChild(_codeView);
+        codeBox.AddChild(_codeStatus);
+        codeBox.AddChild(codeActions);
+        _codePanel.AddChild(codeBox);
+
+        var split = new HSplitContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
+        split.AddChild(scroll);
+        split.AddChild(_codePanel);
+        canvasContent.AddChild(split);
+        body.AddChild(canvasPanel);
         body.AddChild(BuildSide());
         return body;
     }
@@ -509,6 +565,109 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
 
     // ── 渲染 ───────────────────────────────────────────────────────────────
 
+    /// <summary>积木与代码是同一份文档的两种画法，切换只动可见性，不动数据。</summary>
+    /// <summary>伪代码默认与积木并排显示；这个开关只是收起/展开，不改变任何数据。</summary>
+    private void SetCodeMode(bool on)
+    {
+        _codeMode = on;
+        if (_codePanel is not null) _codePanel.Visible = on;
+        if (_canvasHint is not null)
+            _canvasHint.Text = on
+                ? "左边拼积木，右边是同一份效果的伪代码：可以直接改，点「应用到积木」生效；拖动分隔条可调宽度。"
+                : "从左侧添加动作，按从上到下的顺序执行。伪代码已收起。";
+        if (on) RefreshCode();
+    }
+
+    /// <summary>把当前文档打印成伪代码，并**读回来自检**。触发时机不属于 DSL，由画布上选中的模板给。</summary>
+    /// <param name="force">为真时连作者正在编辑的文本一起覆盖（还原、应用成功后用）。</param>
+    private void RefreshCode(bool force = false)
+    {
+        if (_codeView is null) return;
+
+        // 作者正在打字就别冲掉他：画布重画（撤销、插入、切换）都可能走到这里。
+        if (_codeDirty && !force) { UpdateCodeStatus(); return; }
+
+        var trigger = CurrentTrigger is { } option
+            ? option.DisplayName + (option.Guard.Length > 0 ? "，" + GuardCaption(option.Guard) : "")
+            : null;
+        _suppressCodeEdit = true;
+        _codeView.Text = HandlerTextPrinter.Print(_doc, _catalog, trigger);
+        _suppressCodeEdit = false;
+        _codeDirty = false;
+        UpdateCodeStatus();
+    }
+
+    private void OnCodeEdited()
+    {
+        if (_suppressCodeEdit) return;
+        _codeDirty = true;
+        UpdateCodeStatus();
+    }
+
+    /// <summary>
+    /// 只解析、不写回的自检。三种结局：原样读回、读回但内容变了、读不回来。
+    /// 第三种必须把光标挪到出问题那一行——只给一句话，作者还得自己数行。
+    /// </summary>
+    private void UpdateCodeStatus()
+    {
+        if (_codeStatus is null || _codeView is null) return;
+
+        if (!HandlerTextParser.TryParse(_codeView.Text, _catalog, out var parsed, out var error) || parsed is null)
+        {
+            _codeStatus.Text = "⟲ " + (error ?? "读不回来");
+            _codeStatus.AddThemeColorOverride("font_color", new Color("e0705f"));
+            var line = ParseErrorLine(error);
+            if (line > 0)
+            {
+                _codeView.SetCaretLine(Math.Min(line - 1, Math.Max(0, _codeView.GetLineCount() - 1)));
+                _codeView.CenterViewportToCaret();
+            }
+            return;
+        }
+
+        var same = parsed.ToJsonText(_catalog) == _doc.ToJsonText(_catalog);
+        _codeStatus.Text = same
+            ? $"⟲ 回读自检通过：{CountNodes(_doc.Actions)} 块能原样读回来"
+            : $"✎ 文本已改动：读回 {CountNodes(parsed.Actions)} 块，点「应用到积木」生效";
+        _codeStatus.AddThemeColorOverride("font_color", same ? UiStyles.Green : MenuStyles.Gold);
+    }
+
+    /// <summary>把「第 7 行：…」里的行号捞出来；捞不到就别乱挪光标。</summary>
+    private static int ParseErrorLine(string? message)
+    {
+        if (message is null) return 0;
+        var start = message.IndexOf('第');
+        if (start < 0) return 0;
+        var end = message.IndexOf('行', start);
+        if (end <= start) return 0;
+        return int.TryParse(message[(start + 1)..end], out var line) ? line : 0;
+    }
+
+    /// <summary>应用伪代码：先读回，再走 <see cref="Edit"/> 进撤销栈，最后重画。</summary>
+    private void ApplyCode()
+    {
+        if (_codeView is null) return;
+        if (!HandlerTextParser.TryParse(_codeView.Text, _catalog, out var parsed, out var error) || parsed is null)
+        {
+            _codeStatus!.Text = "✎ 还不能应用：" + (error ?? "文本读不回来");
+            _codeStatus.AddThemeColorOverride("font_color", new Color("e0705f"));
+            return;
+        }
+        if (parsed.ToJsonText(_catalog) == _doc.ToJsonText(_catalog))
+        {
+            _codeDirty = false;
+            RefreshCode(force: true);
+            return;
+        }
+
+        var applied = parsed;
+        Edit(() => _doc = applied);
+        _codeDirty = false;
+        RefreshCode(force: true);
+        _codeStatus!.Text = "✓ 已应用到积木（可撤销）";
+        _codeStatus.AddThemeColorOverride("font_color", UiStyles.Green);
+    }
+
     private void Rebuild()
     {
         var issues = HandlerDslValidator.Validate(_doc, _catalog, _view);
@@ -559,6 +718,7 @@ public partial class HandlerBlockEditorScreen : VBoxContainer
         _undo.Disabled = _historyAt <= 0;
         _redo.Disabled = _historyAt >= _history.Count - 1;
         RefreshToolbox();   // 插入位置可能在这次重画里变了（撤销、切换文档）
+        RefreshCode();      // 伪代码常驻并排显示，每次重画都跟着重算
         Changed?.Invoke(_json.Text);
     }
 

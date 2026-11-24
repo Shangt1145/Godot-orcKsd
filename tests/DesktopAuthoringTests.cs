@@ -109,7 +109,7 @@ public class DesktopAuthoringTests(ITestOutputHelper output)
         // 数量不写死：审核清单本身就是逐项人工复核的产物（每加一条都要手填 text + sha）。
         Assert.Equal(reviewed.Count,changes.Count);
         var complete=result.EnumerateArray().Count(c=>c.GetProperty("complete").GetBoolean());
-        output.WriteLine($"完整移植 OrC＋总部语义修复：{complete}/{rows.Length}，其余保持原版结果，{reviewed.Count} 项逐项审核扩展");Assert.Equal(698,complete);
+        output.WriteLine($"完整移植 OrC＋总部语义修复：{complete}/{rows.Length}，其余保持原版结果，{reviewed.Count} 项逐项审核扩展");Assert.Equal(711,complete);
         var report=Path.Combine(root,"artifacts","desktop-authoring");Directory.CreateDirectory(report);File.WriteAllText(Path.Combine(report,"full-corpus.json"),result.GetRawText());
     }
     [Fact]

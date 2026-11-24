@@ -78,5 +78,75 @@
     "id": "shadow_strike",
     "sha256": "016EAA35293B899F2DDAF25664EE13C1F2A113ACDAEA84AA4B78A76B9D4882A8",
     "text": "使 1 个友方单位获得冲击。回合结束时，使其获得烟幕。"
+  },
+  {
+    "id": "synthetic_oil",
+    "sha256": "E69F7A031BD41A9E27A0424BAD851CEF133EAE6388C4F620C2D4F0AB8C9583EF",
+    "text": "下个回合开始时，获得 10 个指挥点并抽 1 张牌。"
+  },
+  {
+    "id": "99th_kholm",
+    "sha256": "F74EA121C769283028974EEA1A0E993813928459FE8ECAC46F46B1575176A91E",
+    "text": "部署：下个友方回合开始时，失去 1 个指挥点。"
+  },
+  {
+    "id": "defeat_in_detail",
+    "sha256": "9C66064612F730D1BF8C62EF3230946DDC6C35291327658935FE92531768E2BF",
+    "text": "使所有友方单位获得：“本单位对敌方总部造成伤害时，获得 +1+1。”"
+  },
+  {
+    "id": "panzer_ib",
+    "sha256": "BD5970F9A8114E02B473A323E922757A40AE02C370DBB59630820BE2FBF3DD30",
+    "text": "本单位对敌方总部造成伤害时，升为老兵。"
+  },
+  {
+    "id": "type_92_jyushokosha",
+    "sha256": "8EAD99B1603DCA09D1B0DB1EEA8B51FC9F990638C3C33CF0EFA4EFABFA25B50E",
+    "text": "本单位对敌方总部造成伤害后，获得 +1 攻击力。"
+  },
+  {
+    "id": "type_94_tk_early",
+    "sha256": "8EAD99B1603DCA09D1B0DB1EEA8B51FC9F990638C3C33CF0EFA4EFABFA25B50E",
+    "text": "本单位对敌方总部造成伤害后，获得 +1 攻击力。"
+  },
+  {
+    "id": "extended_barrage",
+    "sha256": "09F93F70040FB2991348B07F3188D3D8E2D172C7FA19CD87280317A312DC9438",
+    "text": "对 1 个单位造成 6 点伤害。下个友方回合开始时，失去 2 个指挥点。"
+  },
+  {
+    "id": "farman_f_222",
+    "sha256": "3CF17F4322EC7BF8EFEBDF7DE9307B73CF68174E90449691C2A1B1DC81400BB5",
+    "text": "本单位对敌方总部造成伤害时，抽 1 张牌。"
+  },
+  {
+    "id": "vystrel_course",
+    "sha256": "875F649C46BCDAA79EDD8E5A49D0F215B8CC70BF73C72DDD7E930CD30DD91EDB",
+    "text": "指向 1 个友方坦克或步兵。下个友方回合开始时，使其获得 +3+3。"
+  },
+  {
+    "id": "55th_rifles",
+    "sha256": "F63243CA7701A05C39510298ED5D8AC24442501DB6C445ECF17624A7173A38CC",
+    "text": "亡计：下个友方回合开始时，获得 3 个指挥点。"
+  },
+  {
+    "id": "naval_supply_run",
+    "sha256": "8EB0762A105FB80D1D758A51804355F106AFE1CB753B33C4E68C39C3B77A148E",
+    "text": "使所有友方单位获得 +2+1。下个友方回合开始时，随机弃 1 张牌。"
+  },
+  {
+    "id": "ju_87_b_stuka",
+    "sha256": "27455DC1211EC4DA9E7E47DE4209A022BFE65ADA408451BBF70957DEE5B4437F",
+    "text": "本单位对敌方总部造成伤害时，敌方随机弃 1 张牌。"
+  },
+  {
+    "id": "war_bonds",
+    "sha256": "6AB3E7D0D9BE3B95EADDDE6B92994EB75D2A84685E66F32C9F802958BE9A739F",
+    "text": "额外获得 2 个指挥点槽。下个友方回合开始时，额外抽 1 张牌。"
+  },
+  {
+    "id": "a34_comet",
+    "sha256": "3CF17F4322EC7BF8EFEBDF7DE9307B73CF68174E90449691C2A1B1DC81400BB5",
+    "text": "本单位对敌方总部造成伤害时，抽 1 张牌。"
   }
 ]

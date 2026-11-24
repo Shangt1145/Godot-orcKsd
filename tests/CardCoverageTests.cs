@@ -39,6 +39,6 @@ public class CardCoverageTests(ITestOutputHelper output)
         Directory.CreateDirectory(Path.Combine(root, "artifacts"));
         File.WriteAllText(Path.Combine(root, "artifacts/beta1-card-coverage.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
         output.WriteLine($"official={official.Length} chinese={total} parsed={parsed} nativeTextCompiled={native} reference={reviewed.Total} structural={reviewed.StructurallyRepresentable} reviewed={reviewed.Verified}");
-        Assert.Equal(1553, total); Assert.Equal(698, parsed); Assert.InRange(native, 1, parsed);
+        Assert.Equal(1553, total); Assert.Equal(711, parsed); Assert.InRange(native, 1, parsed);
     }
 }
