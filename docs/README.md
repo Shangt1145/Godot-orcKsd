@@ -188,7 +188,8 @@
 |---|---|---|
 | [VERSIONING](release/VERSIONING.md) | 一版一补丁、发版顺序、资产上传规则 | **现行（硬约束）** |
 | [RELEASE_INDEX](release/RELEASE_INDEX.md) | 发行文件索引，`tools/` 生成，勿手改 | 生成物 |
-| [2.0.0-rc1-hotfix（11-24 重建）](release/RELEASE_2.0.0_RC1_HOTFIX_20261124.md) | 当前发行：两处卡面语句解析 + 启动弹框式自动更新 | 现行 |
+| [2.0.0-rc.2](release/RELEASE_2.0.0_RC2_20261124.md) | 当前发行：两处卡面语句解析 + 启动弹框式自动更新 | 现行 |
+| [2.0.0-rc1-hotfix（11-24 重建）](release/RELEASE_2.0.0_RC1_HOTFIX_20261124.md) | 同版本重建（客户端会跳过同版本，已被 rc.2 取代） | 记录 |
 | [2.0.0-rc1-hotfix（11-20）](release/RELEASE_2.0.0_RC1_HOTFIX_20261120.md) | 同版本上一构建：电脑回合与训练认输修复 | 记录 |
 | [2.0.0-beta.3](release/RELEASE_2.0.0_BETA3_20261102.md) | 当前发行：能力分区（把「现在跑不起来」的积木标出来） | 现行 |
 | [2.0.0-beta.2](release/RELEASE_2.0.0_BETA2_20261101.md) | 积木式效果编辑面、界面去术语 | 记录 |
