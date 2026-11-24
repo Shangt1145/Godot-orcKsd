@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$BuildRoot = 'H:\g\kards',
     [string]$Godot = (Join-Path $PSScriptRoot 'godot-wait.ps1'),
     [string]$Preset = 'Windows Desktop',
