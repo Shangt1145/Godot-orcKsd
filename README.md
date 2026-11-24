@@ -1,5 +1,7 @@
 # OrC-KSD.Godot · 对战 UI
 
+**当前发行：2.0.0-rc.2**（[发行说明](docs/release/RELEASE_2.0.0_RC2_20261124.md) · [全部发行](docs/release/RELEASE_INDEX.md)）
+
 ## 从源码构建（给别人看的唯一前置）
 
 本仓库**不含引擎源码**，构建时引用同级的引擎 checkout。三选一：

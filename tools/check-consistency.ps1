@@ -28,7 +28,29 @@ Write-Host ''
 
 # ── R1 发行目录清单 ────────────────────────────────────────────────
 if (!(Test-Path -LiteralPath $distPath)) { throw "找不到发行目录：$distPath" }
-$dirs = @(Get-ChildItem -LiteralPath $distPath -Directory | Sort-Object { [regex]::Replace($_.Name, "\d+", { param($m) $m.Value.PadLeft(12, "0") }) })
+# 版本序：与客户端 ReleaseFeed.ParseVersion 同口径。
+# **不能按目录名字符串排**：'2.0.0-rc.2' 里 rc 后面是 '.'（比 '1' 小），
+# 字符串排序会把 '2.0.0-rc1-hotfix' 认成最新，于是 VERSION 一升到 rc.2 就红（2026-11-24 实测）。
+function Get-VersionKey([string]$name) {
+    $text = $name -replace '^[vV]', ''
+    $dash = $text.IndexOf('-')
+    $core = if ($dash -lt 0) { $text } else { $text.Substring(0, $dash) }
+    $suffix = if ($dash -lt 0) { '' } else { $text.Substring($dash + 1) }
+    $parts = $core.Split('.')
+    $tail = { param($value) if ($value -match '(\d+)$') { [int]$Matches[1] } else { 0 } }
+    $kind = 3; $number = 0; $hotfix = 0
+    if ($suffix -like 'alpha*') { $kind = 0; $number = & $tail $suffix }
+    elseif ($suffix -like 'beta*') { $kind = 1; $number = & $tail $suffix }
+    elseif ($suffix -like 'rc.*') { $kind = 2; $number = & $tail $suffix }
+    elseif ($suffix -like 'rc*-hotfix*') {
+        $kind = 2
+        $number = if ($suffix -match '^rc(\d+)') { [int]$Matches[1] } else { 0 }
+        $hotfix = [Math]::Max(1, (& $tail $suffix))
+    }
+    elseif ($suffix -like 'hotfix*') { $kind = 4; $number = & $tail $suffix }
+    '{0:D6}.{1:D6}.{2:D6}.{3:D2}.{4:D6}.{5:D6}' -f [int]$parts[0], [int]$parts[1], [int]$parts[2], $kind, $number, $hotfix
+}
+$dirs = @(Get-ChildItem -LiteralPath $distPath -Directory | Sort-Object { Get-VersionKey $_.Name })
 if ($dirs.Count -eq 0) { throw "发行目录为空：$distPath" }
 $latest = $dirs[-1].Name
 
