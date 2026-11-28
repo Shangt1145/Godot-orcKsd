@@ -53,6 +53,25 @@ function Clear-Path([string]$Path) {
     try { Rename-Item -LiteralPath $Path -NewName ([IO.Path]::GetFileName($Path) + $suffix) -Force -ErrorAction Stop } catch { }
 }
 
+# 每次发版 `Clear-Path` 删不掉就改名让位，`windows.stale-*` 每个约 1.6 GB，而且**没人会回头清**：
+# 2026-10-28 → 11-28 攒了 25 个 / 39.9 GB，把 H 盘挤到只剩 0.2 GB（2026-11-28 实测）。
+# 所以出包成功后留最近一个（＝本次让位的那个），更早的删掉；删不动只警告，绝不让清理失败拖垮发版。
+function Remove-StaleExports([string]$DistPath) {
+    $stale = @(Get-ChildItem -LiteralPath $DistPath -Directory -Filter 'windows.stale-*' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+    if ($stale.Count -le 1) { return }
+    $victims = @($stale | Select-Object -Skip 1)
+    $freed = 0L
+    foreach ($item in $victims) {
+        $size = (Get-ChildItem -LiteralPath $item.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+        try { [IO.Directory]::Delete($item.FullName, $true); $freed += [long]$size }
+        catch { Write-Warning "旧导出目录删不掉，留着下次再说：$($item.Name) —— $($_.Exception.Message)" }
+    }
+    if ($freed -gt 0) {
+        Write-Host ("STALE_CLEANUP 清掉 {0} 个旧导出目录（各约 1.6 GB），回收 {1:N1} GB" -f $victims.Count, ($freed / 1GB))
+    }
+}
+
 # 1) Preflight: a C# project needs the .NET ("mono") export templates, not the plain ones.
 #    Without them the export dies with "Cannot export project ... due to configuration errors",
 #    which says nothing about the real cause.
@@ -360,3 +379,4 @@ Write-Host "MANIFEST_OK $tag assets=$($manifestAssets.Count)"
 & (Join-Path $PSScriptRoot 'write-dist-index.ps1') -DistRoot $distRoot -CurrentRelease "$version$packageSuffix"
 Write-Host "EXPORTED_PLAYER_VERIFY_OK $smokeLog"
 Write-Host "$(if($TestPackage){'TEST_PACKAGE_OK'}else{'RELEASE_OK'}) $deliveredZip"
+Remove-StaleExports (Split-Path -Parent $target)
